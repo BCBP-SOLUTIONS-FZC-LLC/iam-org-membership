@@ -1,0 +1,79 @@
+sequenceDiagram
+    participant SVC as core/service
+    participant TX as pgcommon.RunInTx
+    participant DB as PostgreSQL (business table)
+    participant OB as outbox_events
+    participant Codec as ValidatingCodec wrapping GlueCodec (prod) · NoopCodec (dev)
+    participant Runner as Outbox Runner (goroutine, poll 500 ms)
+    participant Router as RoutingPublisher (events.NewRoutingPublisher)
+    participant SNS_M as SNS iam.membership.events
+    participant SNS_T as SNS iam.tenant.events
+    participant SQS as SQS subscribers (§7.3.2 fan-out)
+    participant Consumer as Downstream Consumer
+
+    Note over SVC,OB: Phase 1 — Atomic write + event enqueue (same transaction, EVT-10 / CONS-1)
+
+    SVC ->>+ TX: RunInTx(ctx, func(txCtx))
+    TX ->>+ DB: UPDATE / INSERT business row (with record_version optimistic lock, TRG-1)
+    DB -->>- TX: row affected
+
+    TX ->>+ SVC: pub.EnqueueCtx(txCtx, domainEvent)
+    SVC ->> Codec: Encode(ctx, event.Type, jsonPayload)
+    Note over Codec: ValidatingCodec runs schema-gov Draft-07 validation<br/>against embedded schemas/*.json (13 event types) — fail-closed:<br/>invalid payload or unregistered type → error → whole TX rolls back<br/>(no orphan business write, no orphan outbox row).
+    alt schema validation fails
+        Codec -->> SVC: error
+        SVC -->>- TX: error
+        TX ->> DB: ROLLBACK (business row change discarded)
+    else validation passes
+        Note over Codec: GlueCodec prepends 18-byte header {0x03, 0x00, schema_version_UUID}<br/>Version IDs prefetched from two Glue registries at startup:<br/>  GLUE_REGISTRY_NAME_MEMBERSHIP (iam-membership-events)<br/>  GLUE_REGISTRY_NAME_TENANT     (iam-tenant-events)<br/>NoopCodec pass-through in dev (registry env vars unset).
+        Codec -->> SVC: (encoded bytes, schemaVersionID)
+        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  source ('iam.membership.events' | 'iam.tenant.events'),<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)
+        OB -->>- SVC: inserted
+
+        TX ->>+ DB: COMMIT
+        DB -->>- TX: committed — business row + outbox row durable together
+        TX -->>- SVC: nil
+    end
+
+    Note over Runner,Consumer: Phase 2 — Outbox polling + routed SNS publish (at-least-once, FAIL-3)
+
+    loop every OUTBOX_POLL_INTERVAL_MS (500 ms)
+        Runner ->>+ OB: SELECT * FROM outbox_events<br/>WHERE published_at IS NULL<br/>ORDER BY created_at<br/>LIMIT OUTBOX_BATCH_SIZE (50) FOR UPDATE SKIP LOCKED
+        OB -->>- Runner: unpublished batch
+
+        loop for each envelope
+            Runner ->>+ Router: Route(envelope)
+            Note over Router: Routing key = Envelope.Source<br/>Selects TopicARNs[Source] from RoutingPublisher config
+
+            alt envelope.Source == 'iam.membership.events'
+                Router ->>+ SNS_M: Publish(TopicArn=SNS_TOPIC_ARN_MEMBERSHIP,<br/>MessageAttributes{EventType, TenantID, Source, EventID, Subject})
+                Note over SNS_M: 11 event types produced (§7.3):<br/>DepartmentMembershipGranted/Revoked/LevelChanged<br/>TenantRoleGranted · TenantRoleRevoked (§16 A14)<br/>DelegationStarted · DelegationEnded (with ended_reason)<br/>TenderAssigneeOverridden (I-13 validate-and-emit)<br/>TenantSeatOverageStarted/Resolved (SEAT-5)<br/>TenantStateChanged (§16 A61, EVT-16 relay)
+                SNS_M -->>- Router: MessageID
+            else envelope.Source == 'iam.tenant.events'
+                Router ->>+ SNS_T: Publish(TopicArn=SNS_TOPIC_ARN_TENANT, ...)
+                Note over SNS_T: O&M produces ONLY:<br/>  TenantCreated · TrialStarted (§7.3)<br/>All other iam.tenant.events messages are Realm-Provisioner-produced<br/>(consumed by O&M via tenant-orgm-q; produce/consume disjoint, HLD §9.1.1)
+                SNS_T -->>- Router: MessageID
+            end
+            Router -->>- Runner: published
+
+            Runner ->>+ OB: UPDATE outbox_events SET published_at = now() WHERE id = $1
+            OB -->>- Runner: marked published
+
+            alt publish fails (network / SNS unavailable)
+                Runner ->> OB: increment attempts, retry up to OUTBOX_MAX_ATTEMPTS (5)
+                Note over Runner: Exponential backoff with jitter.<br/>Beyond 5 attempts → dead letter (outbox_dead_letters_total pages).<br/>Selective replay via platform-events v1.3.0 ReprocessDeadLettersWith.
+            end
+        end
+    end
+
+    SNS_M ->>+ SQS: fan-out (§7.3.2) — 6 subscribers filtered by EventType<br/>membership-audit-q · membership-authz-q · membership-realm-q<br/>membership-notification-q · membership-workflow-q · membership-billing-q
+    SNS_T ->>+ SQS: fan-out — tenant-audit-q · tenant-notification-q<br/>(O&M's tenant-orgm-q listens to RP-produced events on the same topic, not O&M's own)
+    SQS -->>- Consumer: SQS message
+
+    Consumer ->>+ DB: INSERT processed_events(event_id, consumer, processed_at)<br/>ON CONFLICT DO NOTHING (EVT-4 canonical dedup)
+    Note over Consumer: 8-day retention (PE-1) — strictly > 7-day SQS lifetime<br/>Beyond-window duplicates backstopped by EVT-14 recency guard / PI-10 / IDEMP-3
+    DB -->>- Consumer: idempotency checked
+
+    Consumer ->>+ SQS: DeleteMessage (ACK)
+    SQS -->>- Consumer: deleted
+    Note over Consumer,SQS: DLQ maxReceiveCount = 5 → outbox_dead_letters_total{event_type} pages (EVT-5)

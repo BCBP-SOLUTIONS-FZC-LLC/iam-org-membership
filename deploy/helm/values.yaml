@@ -1,0 +1,323 @@
+# Default values for iam-org-membership.
+# LLD v1.61 §13 deployment topology (HPA 2-8, 8 CronJobs dispatched by
+# cmd/reconciler --job=<name>, 4 metric-exporter goroutines in cmd/server).
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/bcbp-solutions-fzc-llc/iam-org-membership
+  pullPolicy: IfNotPresent
+  tag: ""  # overridden by CI to the git SHA
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: iam-org-membership
+  # Annotations added to the ServiceAccount — use for IRSA on EKS:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/iam-org-membership
+  # When IRSA is configured, remove AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+  # from envFromSecret / secretValues and rely on the pod's ambient IAM role instead.
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# HPA — LLD §13.1, HPA 2-8 replicas.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 75
+  targetRPSPerReplica: 500
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+# Non-secret env — mirrors .env-example. Anything with a URL/ARN/credential
+# lives in envFromSecret below.
+env:
+  APP_ENV: "production"
+  APP_PORT: "8080"
+
+  # Postgres (LLD §4.4). Host/user/dbname wire in at deploy time; PG_SSLMODE
+  # stays "require" in prod.
+  PG_HOST: ""
+  PG_PORT: "5432"
+  PG_USER: "org_membership_app"
+  PG_DBNAME: "org_membership"
+  PG_SSLMODE: "require"
+  PG_MAX_CONNS: "20"
+  PG_MIN_CONNS: "0"
+  PG_BOUNCER_MODE: "true"
+  PG_SLOW_QUERY_THRESHOLD: "200ms"
+  PG_STATEMENT_TIMEOUT: "5s"
+
+  # AWS region / Glue registry names (ARNs live in secret refs).
+  AWS_REGION: "ap-south-1"
+  GLUE_REGISTRY_MEMBERSHIP_NAME: "iam-membership-events"
+  GLUE_REGISTRY_TENANT_NAME: "iam-tenant-events"
+
+  # Outbox runner (§7.3, transactional outbox).
+  OUTBOX_POLL_INTERVAL: "500ms"
+  OUTBOX_BATCH_SIZE: "50"
+  OUTBOX_MAX_ATTEMPTS: "5"
+  OUTBOX_DRAIN_TIMEOUT: "30s"
+  OUTBOX_PUBLISH_CONCURRENCY: "4"
+  OUTBOX_PUBLISH_TIMEOUT: "10s"
+  OUTBOX_STARTUP_JITTER: "2s"
+  OUTBOX_CLAIM_LEASE_DURATION: "10m"
+
+  # processed_events retention (PE-1 strictly > 7-day SQS lifetime, IDEMP-4).
+  PROCESSED_EVENTS_TTL_DAYS: "8"
+
+  # Business timers (LLD §12).
+  INVITATION_EXPIRY_DAYS: "7"
+  SEAT_OVERAGE_GRACE_DAYS: "30"
+  MAX_LIFECYCLE_EVENT_SKEW_SECONDS: "300"
+  INVITE_REINVITE_COOLDOWN_MINUTES: "15"
+  INVITE_MAX_PER_TENANT_PER_HOUR: "60"
+
+  # Outbound service clients (LLD §18). Fail-open where noted in CLAUDE.md.
+  WORKFLOW_SERVICE_BASE_URL: ""
+  WORKFLOW_TIMEOUT_MS: "3000"
+  USER_PROFILE_SERVICE_BASE_URL: ""
+  USER_PROFILE_TIMEOUT_MS: "3000"
+  REALM_PROVISIONER_BASE_URL: ""
+  REALM_PROVISIONER_TIMEOUT_MS: "3000"
+
+  # OpenTelemetry.
+  OTEL_SERVICE_NAME: "iam-org-membership"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""    # gRPC OTel collector (e.g. otelcollector:4317)
+  OTEL_EXPORTER_OTLP_INSECURE: "false"
+
+  # Docs surface (optional).
+  DOCS_ENABLED: "false"
+
+# Env vars whose value comes from a Kubernetes Secret. Keys must be present
+# in either .Values.existingSecret or .Values.secretValues.
+envFromSecret:
+  - DATABASE_URL
+  - MIGRATION_DATABASE_URL
+  - SYSTEM_DATABASE_URL
+  - VALKEY_URL
+  - SNS_TOPIC_MEMBERSHIP_ARN
+  - SNS_TOPIC_TENANT_ARN
+  - SQS_TENANT_ORGM_QUEUE_URL
+  - SQS_BILLING_ORGM_QUEUE_URL
+  - GLUE_REGISTRY_MEMBERSHIP_ARN
+  - GLUE_REGISTRY_TENANT_ARN
+  - AWS_ACCESS_KEY_ID
+  - AWS_SECRET_ACCESS_KEY
+  - DOCS_AUTH_TOKEN
+
+# existingSecret — preferred for production.
+# Set to the name of a pre-existing Kubernetes Secret whose keys match envFromSecret.
+# When set, the chart will NOT create a Secret resource; secretValues is ignored.
+# Use with External Secrets Operator, AWS Secrets Manager CSI, or Sealed Secrets:
+#   existingSecret: "iam-org-membership-secrets"
+existingSecret: ""
+
+# rotationEpoch — used only when existingSecret is set.
+# Bump this value to trigger a rolling restart after an external secret is rotated:
+#   helm upgrade ... --set rotationEpoch=$(date +%s)
+rotationEpoch: "0"
+
+# Secret values — used ONLY when existingSecret is empty.
+# Pass via --set or a Helm secrets plugin (never commit real values).
+# Warning: Helm stores these in the release history Secret (base64, not encrypted).
+# In production, always prefer existingSecret over this map.
+secretValues:
+  DATABASE_URL: ""
+  MIGRATION_DATABASE_URL: ""
+  SYSTEM_DATABASE_URL: ""
+  VALKEY_URL: ""
+  SNS_TOPIC_MEMBERSHIP_ARN: ""
+  SNS_TOPIC_TENANT_ARN: ""
+  SQS_TENANT_ORGM_QUEUE_URL: ""
+  SQS_BILLING_ORGM_QUEUE_URL: ""
+  GLUE_REGISTRY_MEMBERSHIP_ARN: ""
+  GLUE_REGISTRY_TENANT_ARN: ""
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  DOCS_AUTH_TOKEN: ""
+
+terminationGracePeriodSeconds: 75   # 30 s HTTP drain + 30 s outbox drain + 15 s buffer
+
+# podDisruptionBudget — ensures at least 1 pod survives voluntary disruptions
+# (node drains, cluster upgrades). With minReplicas: 2 we keep minAvailable=1
+# so a single node drain doesn't take the service to zero.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532      # distroless nonroot UID
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# startupProbe covers the migration window on cold start / schema upgrades.
+# Once it passes, liveness and readiness take over. failureThreshold * periodSeconds
+# = 120 s maximum startup budget (migrations rarely exceed 30 s in practice).
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 24   # 24 × 5 s = 120 s startup budget
+  timeoutSeconds: 3
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 0   # startupProbe handles the initial delay
+  periodSeconds: 15
+  failureThreshold: 3
+  timeoutSeconds: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8080
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 3
+
+# CronJobs — 8 reconcilers per LLD §13.1 (exporters run as goroutines in
+# cmd/server/main.go per our Option A decision, not as CronJobs). Each entry
+# dispatches the same reconciler binary with a different --job flag.
+# See templates/cronjobs.yaml.
+cronjobs:
+  invitation-expiry:
+    schedule: "*/5 * * * *"
+    job: invitation-expiry
+  invitation-kc-cleanup:
+    schedule: "*/10 * * * *"
+    job: invitation-kc-cleanup
+  realm-config-sync:
+    schedule: "*/10 * * * *"
+    job: realm-config-sync
+  seat-overage-reconcile:
+    schedule: "0 */6 * * *"
+    job: seat-overage-reconcile
+  delegation-expiry:
+    schedule: "*/5 * * * *"
+    job: delegation-expiry
+  trial-cleanup:
+    schedule: "0 2 * * *"
+    job: trial-cleanup
+  outbox-prune:
+    schedule: "0 3 * * *"
+    job: outbox-prune
+  processed-events-prune:
+    schedule: "0 4 * * *"
+    job: processed-events-prune
+
+# NetworkPolicy — enabled by default. Restricts traffic to the ingress
+# controller / gateway namespace and the monitoring namespace (/metrics).
+# Egress permits Postgres/Valkey/AWS(443)/OTel and the three outbound
+# services (Workflow, User Profile, Realm Provisioner) via cluster DNS.
+networkPolicy:
+  enabled: true
+  ingressControllerNamespaceSelector:
+    kubernetes.io/metadata.name: envoy-gateway-system
+  ingressControllerPodSelector: {}
+  metricsIngress:
+    enabled: true
+    namespaceSelector:
+      kubernetes.io/metadata.name: monitoring
+    podSelector:
+      app.kubernetes.io/name: prometheus
+  additionalIngressRules: []
+  additionalEgressRules: []
+
+# ServiceMonitor — requires kube-prometheus-stack (monitoring.coreos.com/v1 CRD).
+# Enable to have Prometheus auto-discover and scrape /metrics.
+# NOTE: PrometheusRule (alerting rules) is also gated on this flag — no scrape
+# means no metrics, which means all alerts stay permanently inactive. Set to
+# true (and add the correct serviceMonitorSelector labels) before relying on
+# any alert in deploy/monitoring/ or deploy/helm/templates/prometheusrule.yaml.
+serviceMonitor:
+  enabled: true
+  interval: "30s"
+  scrapeTimeout: "10s"
+  additionalLabels: {}
+  relabelings: []
+  namespaceSelector: {}
+
+# Ingress — disabled by default.
+# type: HTTPRoute  — Envoy Gateway / any Gateway API-compatible controller (recommended)
+# type: Ingress    — classic nginx / traefik Ingress controller
+ingress:
+  enabled: false
+  type: HTTPRoute
+
+  hosts:
+    - host: iam-org-membership.internal.example.com
+      paths:
+        - path: /api/v1
+          pathType: PathPrefix
+
+  # Gateway API (type: HTTPRoute) — reference the Gateway resource that
+  # Envoy Gateway manages. Deploy the Gateway separately.
+  gateway:
+    name: ""              # required — name of the Gateway resource
+    namespace: ""         # optional — defaults to the release namespace
+    sectionName: ""       # optional — target a specific listener (e.g. "https")
+
+  # Envoy Gateway SecurityPolicy — CORS and gateway-level rate limiting.
+  # Requires gateway.envoyproxy.io/v1alpha1 CRD (Envoy Gateway v0.6+).
+  # The in-process per-user token-bucket limiter remains active in all cases.
+  securityPolicy:
+    enabled: false
+    cors:
+      enabled: false
+      allowOrigins: []
+      allowMethods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allowHeaders:
+        - Authorization
+        - Content-Type
+        - X-Tenant-ID
+        - X-User-ID
+        - X-Idempotency-Key
+      maxAge: "86400"
+    rateLimit:
+      enabled: false
+      requestsPerUnit: 1000
+      unit: Second          # Second | Minute | Hour
+
+  # Classic Ingress (type: Ingress)
+  className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls: []
+  #  - secretName: iam-org-membership-tls
+  #    hosts:
+  #      - iam-org-membership.internal.example.com

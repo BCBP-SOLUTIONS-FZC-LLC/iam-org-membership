@@ -1,0 +1,43 @@
+sequenceDiagram
+    participant MW as GUCBridgeMiddleware
+    participant RC as requestctx.RequestContext
+    participant GUC as pgcommon.GUCSetFromContext
+    participant Pool as pgx Pool (platform-pgcommon)
+    participant PGB as PgBouncer (tx pooling)
+    participant DB as PostgreSQL (RLS)
+
+    Note over MW,GUC: On every protected request — runs after ContextMiddleware<br/>gincommon.DefaultMiddlewares chain: ... → RequireAuth → ContextMiddleware → GUCBridge
+
+    MW ->>+ RC: requestctx.FromContext(ctx)
+    RC -->>- MW: {UserID, TenantID, Roles, ClientIP, UserAgent}
+
+    MW ->>+ GUC: pgcommon.GUCSetFromContext(ctx)
+    GUC -->>- MW: zero-value GUCSet
+
+    MW ->> GUC: g.TenantID = rc.TenantID.String()
+    MW ->> GUC: pgcommon.WithGUCSet(ctx, g)
+    Note over MW: GUCSet stored in context — available to every downstream RunInTx call.<br/>O&M binds only app.tenant_id (no app.user_id or app.roles GUC — RLS policies key on tenant_id only).
+
+    Note over Pool,DB: On every pool checkout — pgcommon.NewPool configured with GUCProvider = GUCSetFromContext<br/>Binding happens BEFORE the app query, inside the SAME transaction (RLS-6).
+
+    Pool ->>+ PGB: acquire backend from pool
+    PGB -->>- Pool: pooled connection (may be shared with prior tenants)
+
+    Pool ->>+ DB: BEGIN
+    Pool ->>+ DB: SELECT set_config('app.tenant_id', '{tenantID}', true)
+    Note over DB: is_local => true ⇒ SET LOCAL semantics.<br/>Value scoped to THIS transaction only.<br/>Never a session-scoped SET — would persist on pooled PgBouncer<br/>backend and leak across tenants (canonical RLS-6 hazard).
+
+    Pool ->>+ DB: SELECT / UPDATE / INSERT (application query)
+    Note over DB: RLS policy on every tenant-scoped table (12 of 15):<br/>  FORCE ROW LEVEL SECURITY<br/>  REVOKE ALL FROM PUBLIC<br/>  POLICY tenant_isolation USING (tenant_id = current_setting('app.tenant_id')::uuid)<br/>Also WITH CHECK on INSERT/UPDATE — cross-tenant write attempts fail.<br/>Missing GUC → current_setting throws → RLS returns 0 rows (fail closed, FAIL-5).
+
+    DB -->>- Pool: rows (tenant-scoped) or WITH CHECK violation
+
+    Pool ->>+ DB: COMMIT (or ROLLBACK)
+    Note over DB: SET LOCAL value discarded on tx end.<br/>Next transaction on same backend starts with a fresh, empty app.tenant_id.
+
+    Pool ->>+ PGB: release backend to pool
+    PGB -->>- Pool: connection returned (safe to hand to next tenant — no residual GUC)
+
+    Note over DB,PGB: Canonical RLS Case 5 test (test/postgres/rls_test.go — MaxConns=1):<br/>tenant A tx → commit → return conn → tenant B tx on SAME backend →<br/>assert B sees 0 of A's rows. Even a mis-written non-transactional read must fail closed —<br/>never inherit A's stale session GUC. CI additionally greps for non-LOCAL SET app.tenant_id as forbidden pattern.
+
+    Note over MW,DB: Threat model summary:<br/>Layer 1 — Keycloak realm boundary.<br/>Layer 2 — RLS + app.tenant_id GUC (this diagram, RLS-1..RLS-6, T-1..T-15).<br/>Layer 3 — rls_violation_log + CloudWatch alarms for defence-in-depth telemetry.

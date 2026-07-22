@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "TrialStarted",
+  "title": "TrialStarted",
+  "description": "Emitted alongside TenantCreated on trial signup (§8.1). Carries trial_ends_at (now + plan.trial_duration_days). Routes to iam.tenant.events.",
+  "type": "object",
+  "required": ["tenant_id", "plan", "trial_ends_at"],
+  "properties": {
+    "tenant_id":     { "type": "string", "format": "uuid" },
+    "plan":          { "type": "string", "enum": ["starter", "pro", "enterprise"] },
+    "trial_ends_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

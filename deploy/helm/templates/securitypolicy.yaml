@@ -1,0 +1,43 @@
+{{- $httpRouteEnabled := and .Values.ingress.enabled (eq (.Values.ingress.type | default "Ingress") "HTTPRoute") }}
+{{- $anyPolicyEnabled := or .Values.ingress.securityPolicy.cors.enabled .Values.ingress.securityPolicy.rateLimit.enabled }}
+{{- if and $httpRouteEnabled .Values.ingress.securityPolicy.enabled $anyPolicyEnabled }}
+# Envoy Gateway SecurityPolicy — attaches CORS and/or rate limiting to the
+# HTTPRoute at the gateway layer. Requires Envoy Gateway v0.6+ (gateway.envoyproxy.io/v1alpha1 CRD).
+#
+# NOTE: The in-process token-bucket rate limiter remains active regardless.
+# The gateway-level limit here is a coarser burst shield applied before requests
+# reach the service.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "iam-org-membership.fullname" . }}
+  {{- if .Values.ingress.securityPolicy.cors.enabled }}
+  cors:
+    allowOrigins:
+      {{- range .Values.ingress.securityPolicy.cors.allowOrigins }}
+      - type: Exact
+        value: {{ . | quote }}
+      {{- end }}
+    allowMethods:
+      {{- toYaml .Values.ingress.securityPolicy.cors.allowMethods | nindent 6 }}
+    allowHeaders:
+      {{- toYaml .Values.ingress.securityPolicy.cors.allowHeaders | nindent 6 }}
+    maxAge: {{ .Values.ingress.securityPolicy.cors.maxAge | quote }}
+  {{- end }}
+  {{- if .Values.ingress.securityPolicy.rateLimit.enabled }}
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        - limit:
+            requests: {{ .Values.ingress.securityPolicy.rateLimit.requestsPerUnit }}
+            unit: {{ .Values.ingress.securityPolicy.rateLimit.unit }}
+  {{- end }}
+{{- end }}

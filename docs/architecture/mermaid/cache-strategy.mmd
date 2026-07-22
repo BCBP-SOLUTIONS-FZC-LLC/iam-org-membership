@@ -1,0 +1,48 @@
+flowchart TD
+    subgraph keys["Cache Key Namespace  (Valkey — ElastiCache via go-redis/v9)"]
+        k1["om:memberships:{tenant}:{user}\n→ Full I-8 response (roles/depts/active_delegations JSON)\nTTL: 300 s ± 30 s jitter (CACHE-4, I8-5)"]
+        k2["om:tenant:{tenant}\n→ Tenant row (plan, locale, feature_flags, mfa_freshness)\nTTL: 600 s"]
+        k3["om:members:{tenant}:50\n→ P-4 page-1 only, limit=50 only (CACHE-10)\nTTL: 120 s"]
+        k4["om:dept_members:{tenant}:{dept}\n→ Dept members list\nTTL: 120 s"]
+        k5["om:locale:{tenant}   TTL 600 s\nom:roles:{tenant}    TTL 600 s\nom:grm:{tenant}      TTL 600 s (group→dept-role)\nom:gdm:{tenant}      TTL 600 s (group→dept)"]
+        k6["om:seat_usage:{tenant}\n→ {active_users, pending, licensed_seats, over_cap, overage_since, grace_ends_at}\nTTL: 30 s (CACHE-5) — SEAT-1 always re-reads Postgres FOR UPDATE"]
+        k7["om:plans\n→ Whole plan catalog (3 tiers)\nTTL: 600 s — evicted by O-6 PATCH /plans/:code"]
+    end
+
+    subgraph read["Read Path (I-8 hot path shown; all other reads mirror)"]
+        R1([GET /internal/users/:id/memberships]) --> R2{Cache hit?}
+        R2 -- yes --> R3[Decode JSON → inject derived 'member' role\nReturn immediately\nSLO 15 ms p99]
+        R2 -- no or 50 ms timeout --> R4[Single joined SELECT over 5 tables\nRLS enforces tenant isolation on app.tenant_id]
+        R4           --> R5[Back-fill cache with TTL jitter ±30 s\nprevents thundering herd on deploy restart]
+        R5           --> R6[Return entity\nSLO 30 ms p99]
+    end
+
+    subgraph write["Write / Invalidation Path (post-commit only, CACHE-6)"]
+        W1([P-6 invite / P-8 remove / P-10 dept assign / P-19 delegation / P-28 role reconcile]) --> W2["RunInTx {\n  UPDATE business row\n  INSERT outbox_events\n}"]
+        W2 --> W3{Committed?}
+        W3 -- no → rollback --> W4[No cache operation\ntransaction error returned]
+        W3 -- yes --> W5["DEL affected keys (CACHE-7):\nDEL om:memberships:{t}:{user}\nDEL om:members:{t}:50\nDEL om:dept_members:{t}:{dept}\nDEL om:seat_usage:{t}   (invite/remove)\nbest-effort — failure logged, TTL heals"]
+        W5 --> W6[Return updated entity\nNext read repopulates cache]
+    end
+
+    subgraph delcascade["Delegation Expiry Cascade (§8.7 CronJob)"]
+        D1([delegation ends_at <= now()]) --> D2["Call UP SetAvailability {delegate_id: null}"]
+        D2 --> D3{UP 200?}
+        D3 -- no → 5xx/timeout --> D3a["Leave delegation status='active'\niam_delegation_expiry_deferred_total++ (DEL-6)"]
+        D3 -- yes --> D4["RunInTx: UPDATE delegations SET status='ended', deleted_at=now()\n+ outbox DelegationEnded"]
+        D4 --> D4a[COMMIT]
+        D4a --> D5["POST-COMMIT: DEL om:memberships:{tenant}:{delegator}\n(pre-commit DEL would race with concurrent reads)"]
+    end
+
+    subgraph tenantwipe["Tenant Offboarding Cache Wipe (CACHE-8, §15.5)"]
+        O1([TenantOffboarded consumed on tenant-orgm-q]) --> O2["Read set: tenant_memberships → user list before soft-delete"]
+        O2 --> O3["Post-commit DEL om:memberships:{tenant}:{u}  ∀ users\nDEL om:tenant:{tenant} · om:members:{t}:50 · om:seat_usage:{t}"]
+    end
+
+    subgraph ttl["TTL Self-Healing (CACHE-9, FAIL-2)"]
+        T1[Cache unavailable / DEL fails / 50 ms timeout] --> T2["Advisory — Postgres is source of truth"]
+        T2 --> T3[Stale entry expires at TTL boundary\nNext read fetches from DB and re-populates"]
+        T3 --> T4["/readyz reports degraded, stays ready while Postgres healthy"]
+    end
+
+    note1["CACHE-1 — All keys tenant-scoped (mirrors RLS boundary)\nCACHE-2 — Cache advisory only; miss/timeout falls through to Postgres\nCACHE-4 — Jitter ±30 s prevents thundering herd on many-key expiry\nCACHE-5 — Seat-usage 30 s only; hard cap enforced via SELECT ... FOR UPDATE (CONS-4)\nCACHE-10 — Only P-4 page-1 default limit=50 cached; other pages bypass (avoids SCAN on invalidation)"]

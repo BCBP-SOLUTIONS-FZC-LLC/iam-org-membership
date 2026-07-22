@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant AuthZ as AuthZ Enrichment
+    participant GW as API Gateway (Envoy)
+    participant OBS as ObservabilityMiddlewares
+    participant AUTH as RequireAuth + ContextMiddleware + GUCBridge
+    participant H as Gin Handler (I-8)
+    participant Cache as Valkey (om:memberships)
+    participant SVC as MembershipService
+    participant DB as PostgreSQL (RLS)
+
+    Note over AuthZ,GW: I-8 = GET /api/v1/internal/users/:id/memberships<br/>Hot path — hit on every authenticated request. SLO: 15 ms p99 hit / 30 ms p99 miss (SLO-1)
+
+    AuthZ ->>+ GW: GET /internal/users/:id/memberships
+    GW ->>+ OBS: inject x-user-id, x-tenant-id, x-tenant-roles<br/>(mTLS mesh — no JWT on /internal/*, IAPI-1)
+    Note over OBS: PanicRecovery · RequestID · Tracing<br/>CorrelationHeaders · Metrics · Logging<br/>(gincommon.DefaultMiddlewares)
+
+    OBS ->>+ AUTH: c.Next()
+    Note over AUTH: RequireAuth — 401 missing_identity_headers if absent<br/>ContextMiddleware — build RequestContext{UserID,TenantID,Roles}<br/>GUCBridgeMiddleware — pgcommon.GUCSetFromContext binds<br/>app.tenant_id transaction-locally on every pool checkout (RLS-6)
+
+    AUTH ->>+ H: c.Next()
+    Note over H: parse :id (uuid.Parse) → 400 invalid_uuid on fail<br/>AUTH-5 — system principal (…00a1) accepted only on /internal/*
+
+    H ->>+ Cache: GET om:memberships:{tenant}:{user}
+    Note over Cache: 50 ms timeout = miss (CONFIG-3)<br/>Advisory only (CACHE-2/CACHE-9)
+
+    alt cache hit (SLO-1 hit path, p99 15 ms)
+        Cache -->> H: JSON I-8 response bytes
+        Note over H: decode → inject derived member role<br/>(resp.Roles = union(["member"], resp.Roles) — TR-7/§16 A29)<br/>iam_membership_lookup_latency_seconds{result="hit"} observed
+    else cache miss (SLO-1 miss path, p99 30 ms)
+        Cache -->> H: nil
+
+        H ->>+ SVC: GetMemberships(ctx, tenantID, userID)
+        SVC ->>+ DB: Single joined SELECT over<br/>tenant_memberships + tenants + tenant_roles<br/>+ dept_memberships + delegations<br/>WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.deleted_at IS NULL
+        Note over DB: RLS policy on app.tenant_id — fails closed (0 rows) on missing GUC<br/>array_agg(...) FILTER (...) + COALESCE(...,'{}') so departments/active_delegations<br/>always []-typed, never null (I8-4)
+        DB -->>- SVC: aggregated row (or empty → 404 I8-3)
+
+        SVC -->>- H: *domain.MembershipView
+
+        H ->> Cache: SET om:memberships:{tenant}:{user} TTL=300s±30s jitter (I8-5, CACHE-4)
+        Note over Cache: best-effort — DEL on failure logged, not fatal
+    end
+    deactivate Cache
+
+    H -->>- AUTH: 200 MembershipResponse{tenant, roles[], departments[], active_delegations[]}
+    AUTH -->>- OBS: return
+    OBS -->>- GW: return
+    Note over OBS: http_request log (Info/Warn/Error by class)<br/>OTel span ended · iam_membership_lookup_latency_seconds observed
+    GW -->>- AuthZ: 200 + X-Trace-ID + X-Request-ID

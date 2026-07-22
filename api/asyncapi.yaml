@@ -1,0 +1,2550 @@
+asyncapi: 3.0.0
+
+info:
+  title: IAM Org & Membership Events
+  version: "1.0.0"
+  description: |
+    Domain events published by iam-org-membership. Unlike the sibling
+    iam-user-profile service (single topic, single Glue registry), this
+    service publishes to TWO SNS topics backed by TWO Glue Schema
+    Registries — one per topic, per SCHEMA-7 (LLD §7.3.1):
+
+      Topic                        Glue registry            Events
+      ─────────────────────────────────────────────────────────────
+      iam-membership-events        iam-membership-events    11 (see below)
+      iam-tenant-events            iam-tenant-events        2  (TenantCreated, TrialStarted)
+
+    The two-topic split follows HLD §9.1: tenant lifecycle (creation,
+    trial start) fans out to a different consumer set than membership
+    lifecycle (department grants, role grants, delegation, seat overage,
+    tenant-state relay). Selecting the destination topic by
+    Envelope.Source is the job of platform-events RoutingPublisher —
+    see internal/adapter/outbound/eventbus/publisher.go.
+
+    Wire format: each SNS message body is prefixed with an 18-byte AWS Glue
+    Schema Registry header before the EventEnvelope JSON:
+      byte 0     : header version (0x03)
+      byte 1     : compression    (0x00 = none)
+      bytes 2-17 : schema version UUID (big-endian)
+
+    Glue registries : iam-membership-events, iam-tenant-events (ap-south-1, JSON data format)
+    Schemas         : one per event type, named by PascalCase event type string
+                      (e.g. DepartmentMembershipGranted). This convention matches
+                      the on-disk files under
+                      internal/adapter/outbound/eventbus/schemas/*.json — the
+                      filename stem IS the Glue schema name and the value of the
+                      envelope.type field.
+
+    Schema versioning: the authoritative schema version identifier is the 16-byte
+    UUID in the Glue wire-format header (bytes 2–17). The same UUID is echoed into
+    the envelope JSON as dataschema so consumers that work with the decoded body
+    can inspect or log it without re-parsing the binary header. The UUID is resolved
+    from the appropriate Glue registry at startup and cached; it changes automatically
+    whenever a new schema version is registered in Glue. In dev/test (NoopCodec) there
+    is no Glue header and dataschema is absent from the envelope.
+
+    Failure mode: the ValidatingCodec loads every schema in
+    internal/adapter/outbound/eventbus/schemas/ at startup (embedded via
+    //go:embed schemas/*.json) and resolves the corresponding Glue schema version
+    UUIDs from BOTH registries in a single startup pass. If any lookup fails,
+    cmd/server/main.go panics — the pod crashes and Kubernetes restarts it
+    (CrashLoopBackoff). This is intentional: a pod that cannot reach a Glue
+    registry would silently produce malformed events rather than failing visibly.
+
+    Resolution path:
+      1. Verify GLUE_REGISTRY_MEMBERSHIP_NAME and GLUE_REGISTRY_TENANT_NAME are
+         both correct and both registries + their schemas exist.
+      2. Verify the pod IAM role has glue:GetSchemaVersion on BOTH registry ARNs.
+      3. Fix the root cause — the pod will recover automatically on the next restart.
+    Alert on outbox_dead_letters_total (per source topic) for events that fail
+    after a successful startup.
+
+    ── Message Size Limit ───────────────────────────────────────────────────────
+    SNS hard limit: 256 KB per message (total wire size including the 18-byte Glue
+    header and all SNS framing).
+
+    This service enforces a 240 KB soft limit at outbox-enqueue time (inside
+    insertEnvelope in eventbus/publisher.go). The 16 KB headroom covers:
+      • 18-byte Glue wire-format header
+      • SNS base64 encoding overhead (~33 % for binary attributes)
+      • SNS JSON framing for the PublishInput body
+
+    If the envelope exceeds 240 KB, Enqueue returns an error and the business
+    transaction is rolled back — the event is never written to the outbox.
+    Consumers do not need to handle oversized messages; they cannot arrive.
+
+    Payload budget guidance (per event type): all 13 payloads emitted by this
+    service are small — UUIDs, short enums, timestamps, and (for
+    TenantStateChanged) a bounded event-type string. None approach the
+    240 KB soft limit under any realistic load.
+
+    ── Schema Evolution Rules (CLOSED schemas) ──────────────────────────────────
+    All 13 on-disk JSON Schemas at internal/adapter/outbound/eventbus/schemas/*.json
+    declare "additionalProperties": false. This is a deliberate contract choice
+    (see §16 open-question register): consumers MAY safely reject unknown fields
+    at the JSON-schema-validation layer, and every payload change is observable.
+
+    This means the reference "add optional field = silent Glue version bump"
+    workflow used by iam-user-profile DOES NOT APPLY here. Under closed schemas:
+
+      • Adding ANY payload field (even an optional one) is a Glue schema version
+        bump AND requires a coordinated producer → consumer rollout: consumers
+        that strictly validate against the previous schema version will reject
+        the new envelope until they are redeployed with the updated schema.
+      • Removing a field is a breaking change.
+      • Renaming a field is a breaking change.
+      • Widening an enum is a Glue schema version bump; consumers that switch
+        exhaustively on the enum MUST include a default/else branch before the
+        widened version is deployed on the producer.
+      • Narrowing an enum, changing a field's type/format, or making an optional
+        field required are breaking changes.
+
+    Breaking changes (MUST bump wire type to <EventName>.v2):
+      • Removing or renaming a field.
+      • Changing a field's type or format.
+      • Narrowing an enum (removing a value).
+      • Making an optional field required.
+
+    When introducing a v2: publish BOTH the old and new type for one release
+    cycle to give all consumers time to migrate, then retire the old type.
+
+    ── Consumer Conformance ─────────────────────────────────────────────────────
+    See ARCHITECTURE.md § "Consumer conformance checklist" for the full checklist
+    that downstream services must satisfy before subscribing to these channels.
+    See x-forward-compatibility below for the closed-schema rollout protocol.
+
+  x-forward-compatibility:
+    summary: >-
+      This service publishes CLOSED-schema payloads (additionalProperties: false
+      on every on-disk JSON Schema). Consequently there is NO free forward-
+      compatibility — every payload addition requires a coordinated rollout of
+      the producer AND all validating consumers, in that order.
+    schema-shape: CLOSED
+    rollout-sequence:
+      - "1. Register new schema in the appropriate Glue registry (membership or tenant); the UUID rotates and envelope.dataschema changes accordingly."
+      - "2. Deploy all consumers with the updated schema embedded (or with lenient deserialization enabled — see defense-in-depth below)."
+      - "3. Deploy the producer (starts emitting the new field / wider enum). ONLY step 3 causes wire behaviour to change; earlier steps merely prepare consumers."
+    defense-in-depth-settings:
+      summary: >-
+        Even with closed schemas at the wire-contract level, consumers are
+        RECOMMENDED (not required) to enable lenient JSON deserialization at the
+        SDK/language layer. This protects against Glue version drift during
+        a rolling deploy — a consumer replica that has not yet picked up the
+        new schema definition still decodes the message body cleanly rather
+        than crashing on an unknown-field error. JSON-schema validation
+        against the pinned schema version is where the closed-schema contract
+        is enforced; SDK-level strict mode adds no safety and only creates
+        deploy-order fragility.
+      go-encoding-json: "Do NOT call json.Decoder.DisallowUnknownFields(). Unknown fields are silently ignored by default."
+      go-sonic: "Do NOT use sonic.ConfigStrict. Use sonic.ConfigDefault or sonic.ConfigFastest."
+      java-jackson: "mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false) OR @JsonIgnoreProperties(ignoreUnknown=true) on every payload class."
+      python-pydantic-v2: "model_config = ConfigDict(extra='ignore') on every payload model."
+      kotlin-serialization: "Json { ignoreUnknownKeys = true } on the Json instance used to decode payloads."
+    enum-safety: >-
+      All switch/match/when on enum values MUST include a default/else branch.
+      Enum widening bumps the Glue schema version but does NOT force a wire type
+      bump — a rolling deploy will briefly have consumer replicas seeing values
+      they do not recognise. An unhandled enum value crashes exhaustive matchers.
+    closed-schema-contract: >-
+      All payload schemas in internal/adapter/outbound/eventbus/schemas/ declare
+      "additionalProperties": false. This is a deliberate contract signal: the
+      shape is CLOSED and every field addition is observable at the JSON-schema
+      layer. CI schema-registry.yml enforces registration and lifecycle diff
+      against this convention. Do NOT flip any payload to additionalProperties:
+      true without an org-wide decision and a matching update to schema-gov
+      configuration — the closed-schema decision is documented in the LLD §16
+      open-question register.
+    ci-integration: >-
+      .github/workflows/schema-registry.yml runs the platform-schemagov container
+      (ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4) on every PR:
+      extract → validate → enforce-lifecycle → diff. On main it additionally runs
+      register / changelog / metrics against BOTH Glue registries. The diff step
+      distinguishes breaking from non-breaking changes and blocks the former;
+      the enforce-lifecycle step blocks any active-status schema removal.
+
+  x-semantic-contract:
+    summary: >-
+      JSON Schema structural diff cannot detect semantic drift: a field's units,
+      scale, or business meaning can change without any structural difference.
+      Example: "licensed_seats": 100 was licensed users, now is licensed
+      workspaces — type stays integer, constraints unchanged, but every
+      consumer's interpretation is wrong.
+    detection: >-
+      If field descriptions or titles change between Glue schema versions, the
+      platform-schemagov diff step emits a semantic-drift warning in the
+      changelog. This is the only automated signal available — semantic intent
+      lives in human-readable documentation, not in the JSON Schema type system.
+    required-action: >-
+      When a semantic-drift annotation appears in CI output, the PR author MUST
+      confirm in the "Event Schema Semantic Evolution" checklist that the
+      change is wording-only. If the field's observable meaning changed (units,
+      scale, encoding, nullability), create a versioned type (e.g.
+      TenantSeatOverageStarted.v2) and mark the old type deprecated. Do not
+      reuse an existing field name for a semantically different value.
+    field-annotation-guidance: >-
+      Annotate fields with semantic intent in their description or a companion
+      x-unit extension so drift is detectable during review. Examples:
+        licensed_seats:
+          type: integer
+          description: "Number of paid user seats sold on the plan.
+                        Not workspaces, not tenants, not devices. Excludes
+                        pending invitations (those are counted separately)."
+        overage_since:
+          type: string
+          format: date-time
+          description: "UTC timestamp of the first observation that (active_users
+                        + pending_invitations) > licensed_seats. Not the moment
+                        an invitation was staged, not the moment a user was added."
+
+  x-consumer-sdk:
+    summary: >-
+      Consumer SDKs are RECOMMENDED to be configured for lenient JSON decoding
+      at the SDK layer even though this service publishes closed-schema payloads.
+      Lenient SDK decoding protects consumers against a rolling deploy window
+      where the schema in Glue has advanced past the schema pinned in the
+      consumer binary. Strict validation of the closed contract is the job of
+      JSON-schema validation against the pinned schema version, not SDK strict
+      mode.
+    in-repo-enforcement: >-
+      This service embeds all 13 schemas at compile time via //go:embed
+      schemas/*.json in internal/adapter/outbound/eventbus/codec.go. The
+      ValidatingCodec validates outgoing payloads against those pinned schemas
+      before publish; drift between the pinned schema and Glue is caught by CI
+      (schema-registry.yml diff step), not at runtime.
+    out-of-repo-guidance: >-
+      External consumer services should embed the schema files from this
+      repository (or from schema-gov's exported artefact) rather than fetching
+      them from Glue at runtime. Cold-start Glue lookups couple every consumer
+      pod restart to the Glue control plane, which is neither the design nor
+      the failure profile you want on the hot path. The recommended approach
+      for platform-managed services is to depend on the shared platform-events
+      SQS consumer and layer JSON-schema validation on top with the schemas
+      embedded from a versioned artefact.
+
+  x-version-governance:
+    summary: >-
+      Glue schema version numbers (per registry) are not API versions — they are
+      internal counters that increment on every registered schema change. High
+      version numbers (beyond SCHEMA_VERSIONS_ALERT_THRESHOLD, default 10) signal
+      that a schema has been evolving in-place rather than being compacted into
+      a clean .v2 event type. Because this service uses two Glue registries, the
+      threshold applies per (registry, schema) pair.
+    compaction-protocol: |
+      When a schema exceeds the version threshold, introduce a clean-slate replacement:
+        1. Create  internal/adapter/outbound/eventbus/schemas/{name}.v2.json  (new field layout from scratch)
+        2. Register {name}.v2 as a new AsyncAPI message in this file with x-lifecycle:
+           {status: active}
+        3. Mark the old message: x-lifecycle: {status: deprecated, deprecated-by: {name}.v2,
+           retire-after: YYYY-MM-DD}
+        4. Dual-publish from the producer for one release cycle (RoutingPublisher
+           preserves per-message topic routing — the .v2 stays on the same topic).
+        5. Migrate all consumers to the .v2 type (notify owners via x-owner.slack)
+        6. Retire the old type — schema-gov emits the exact cleanup commands
+           against the correct registry.
+    why-not-always-v2: >-
+      Under closed schemas ANY field addition already forces a Glue version bump
+      AND a coordinated consumer rollout, but that does NOT necessarily require
+      a .v2 wire type — the wire type name only changes for genuinely breaking
+      changes (field removal/rename, type change, required-widening). A .v2 is
+      also warranted when cumulative evolution has made the schema complex
+      enough that a clean redesign improves clarity.
+    two-registry-matrix: >-
+      Cleanup workflow (schema-registry.yml → platform-schemagov) targets BOTH
+      registries in a single CI run. Per SCHEMA-7 no schema lives in both
+      registries — the registry a schema belongs to is determined by which
+      topic its events flow through, which is determined by envelope.source
+      inside RoutingPublisher. When adding a new event, decide the target
+      topic first; the target registry then follows automatically.
+    cleanup-cadence: |
+      Cleanup actions are manual and deliberate — never automated without operator approval.
+
+      Monthly  (schema-prune.yml, schedule):
+        • Dry-run listing of orphaned schemas per registry (in Glue, no repo file).
+        • Operator reviews output → re-triggers with dry_run=false when ready.
+
+      Quarterly  (schema-health-quarterly.yml, schedule):
+        • Runs schema-gov lifecycle check across BOTH registries — surfaces
+          overdue deprecations, stale x-usage-override entries, missing
+          lifecycle annotations.
+        • Reports any schema whose Glue version exceeds
+          SCHEMA_VERSIONS_ALERT_THRESHOLD (default 10) as a compaction candidate.
+        • No mutations — purely a review prompt for the owning team.
+
+      Ad-hoc  (schema-prune.yml, workflow_dispatch):
+        • Operator-triggered execute mode deletes retired schemas and archives
+          all version definitions to docs/schema-archive/. Production pruning
+          is always manual; the schedule only targets staging.
+
+      Version accumulation trigger:
+        • SCHEMA_VERSIONS_ALERT_THRESHOLD exceeded  → SchemaVersionAccumulation CW alarm
+        • Three consecutive quarterly reviews with a schema above threshold → initiate
+          compaction-protocol above for that schema before the next review
+
+  x-usage-override:
+    summary: >-
+      Escape hatch for CloudWatch usage false negatives. When usage lifecycle
+      checks report NEVER_SEEN but the team knows the event IS active
+      (CW metric delay, namespace migration, missing dimension), add this
+      annotation to suppress NEVER_SEEN enforcement for a bounded window.
+    format: |
+      # In a components/messages entry:
+      x-usage-override:
+        status: active-override   # the only accepted value
+        reason: "CloudWatch namespace migration in progress — metrics will appear once
+                 the USAGE_METRIC_NAMESPACE env var is updated in the staging environment"
+        until:  YYYY-MM-DD        # remove the annotation on or after this date
+    lifecycle: >-
+      Lifecycle checks warn when x-usage-override.until is in the past so stale
+      overrides are noticed and cleaned up. The override MUST be removed once
+      CloudWatch data normalises — leaving it in place would permanently
+      suppress lifecycle enforcement for that event type.
+    when-to-use:
+      - CloudWatch namespace or dimension name changed and the old lookback window covers the gap
+      - Metrics are delayed due to a CloudWatch service event (check AWS Service Health)
+      - A new event type was just registered and has not yet accumulated lookback-window data
+    when-not-to-use:
+      - As a permanent workaround for missing metrics — fix the metric emission instead
+      - To defer a legitimate deprecation decision — the event should be marked deprecated
+
+  license:
+    name: Proprietary
+
+defaultContentType: application/json
+
+servers:
+  production:
+    host: "sns.ap-south-1.amazonaws.com"
+    protocol: sns
+    description: |
+      AWS SNS in ap-south-1. TWO topic ARNs are configured via env:
+        • SNS_TOPIC_MEMBERSHIP_ARN — iam-membership-events (11 event types)
+        • SNS_TOPIC_TENANT_ARN     — iam-tenant-events     (2  event types)
+      RoutingPublisher (platform-events v1.3.0) selects the destination
+      topic per message by inspecting Envelope.Source:
+        Source == "iam-org-membership.membership" → membership topic
+        Source == "iam-org-membership.tenant"     → tenant topic
+      Pod IAM role requires, on BOTH Glue registry ARNs
+      (GLUE_REGISTRY_MEMBERSHIP_ARN, GLUE_REGISTRY_TENANT_ARN):
+        glue:GetRegistry, glue:GetSchema, glue:GetSchemaVersion, glue:QuerySchemaVersionMetadata
+      Schema registration (glue:CreateSchema, glue:RegisterSchemaVersion) is CD-only.
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  # ── Fan-out: SQS consumer queues (LLD §7.3.2) ─────────────────────────────
+  # Each queue is created and owned by its consuming service (HLD §9.1).
+  # This service publishes to the SNS topics only; it does not manage these queues.
+  # Queue naming convention: <topic-short>-<consumer-short>-q  (HLD §9.1)
+
+  # ── Consumers of iam-membership-events ─────────────────────────────────────
+  sqsMembershipAudit:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Audit Log consumer.
+      Queue: membership-audit-q  |  DLQ: membership-audit-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Audit Log Service
+      SNS subscription filter: no filter (subscribes to all 11 membership event types)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsMembershipAuthZ:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the AuthZ Enrichment consumer.
+      Queue: membership-authz-q  |  DLQ: membership-authz-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: AuthZ Enrichment Service
+      SNS subscription filter: EventType IN [DepartmentMembershipGranted,
+        DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
+        TenantRoleGranted, TenantRoleRevoked]
+        (AuthZ evicts / refreshes the om:memberships cache — hot-path lookup I-8)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsMembershipRealm:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Realm Provisioner consumer.
+      Queue: membership-realm-q  |  DLQ: membership-realm-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Realm Provisioner Service
+      SNS subscription filter: EventType IN [DepartmentMembershipGranted,
+        DepartmentMembershipLevelChanged, TenantRoleGranted, TenantRoleRevoked]
+        (Realm Provisioner adds/drops the requires-mfa realm role on the user
+         per §6.5 — the only IAM-subsystem write path to Keycloak Admin API)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsMembershipNotification:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Notification consumer.
+      Queue: membership-notification-q  |  DLQ: membership-notification-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Notification Service
+      SNS subscription filter: EventType IN [DepartmentMembershipGranted,
+        DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
+        TenantRoleGranted, TenantRoleRevoked, DelegationStarted,
+        DelegationEnded, TenantSeatOverageStarted, TenantSeatOverageResolved]
+        (Notification drives user/admin emails + seat-overage banners)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsMembershipWorkflow:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Workflow Service consumer.
+      Queue: membership-workflow-q  |  DLQ: membership-workflow-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Workflow Service
+      SNS subscription filter: EventType IN [DelegationStarted, DelegationEnded,
+        TenderAssigneeOverridden, DepartmentMembershipGranted,
+        DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
+        TenantStateChanged]
+        (Workflow drives delegation routing, assignee reconciliation, and
+         tenant-state pause/resume/terminate/queue-routing via the §7.1 EVT-16
+         relay of tenant-lifecycle events onto iam-membership-events)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsMembershipBilling:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Billing consumer.
+      Queue: membership-billing-q  |  DLQ: membership-billing-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Billing Service
+      SNS subscription filter: EventType IN [TenantSeatOverageStarted, TenantSeatOverageResolved]
+        (Billing drives grace period / enforcement window — §16 A59, SEAT-3/SEAT-5)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  # ── Consumers of iam-tenant-events ─────────────────────────────────────────
+  sqsTenantAudit:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Audit Log consumer on the tenant lifecycle topic.
+      Queue: tenant-audit-q  |  DLQ: tenant-audit-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Audit Log Service
+      SNS subscription filter: no filter (subscribes to TenantCreated + TrialStarted
+        from this service and to all other tenant lifecycle events emitted onto
+        iam-tenant-events by other producers — Realm Provisioner, Billing)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsTenantNotification:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Notification consumer on the tenant lifecycle topic.
+      Queue: tenant-notification-q  |  DLQ: tenant-notification-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Notification Service
+      SNS subscription filter: EventType IN [TenantCreated, TrialStarted]
+        (Notification sends the welcome email + trial-start email)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+channels:
+  # ── Producer channels (topics owned by this service) ──────────────────────
+  iamMembershipEvents:
+    address: "iam-membership-events"
+    description: |
+      SNS topic for all membership-lifecycle events (11 event types).
+      Consumers subscribe with an SNS filter policy on the EventType MessageAttribute
+      to receive only the event types they care about. Full set of attributes emitted
+      per message: EventType, TenantID, Source, EventID, and Subject (all PascalCase,
+      set by platform-events v1.3.0 — see LLD §7.3).
+
+      Backing Glue registry: iam-membership-events (ap-south-1, JSON data format).
+
+      Ordering: standard SNS does not guarantee delivery order. Messages for the
+      same tenant / user may arrive out of sequence (e.g. DepartmentMembershipLevelChanged
+      before DepartmentMembershipGranted). Consumers must handle this explicitly:
+        • Use subject + id (RFC 4122 UUID v7, monotonically ordered by creation time)
+          to detect and discard stale events: if a stored id > incoming id for
+          the same subject, the incoming message is older and should be ignored.
+        • Use the time field as a secondary tiebreaker when comparing events of different types.
+        • Provision-on-demand: if DepartmentMembershipLevelChanged arrives for an
+          unknown (user, department) pair, backfill via the HTTP API rather than
+          dropping the event.
+
+      Throughput and burst behaviour:
+        SNS standard topics deliver messages concurrently without ordering guarantees
+        and without a per-subscription rate cap (subject to per-account SNS TPS limits).
+        During high-traffic bursts (e.g. bulk invitation acceptance, mass department
+        reorganisation) a consumer SQS queue may receive many messages simultaneously
+        for the same tenant_id.
+
+        Consumer scaling requirements:
+          • Scale horizontally: multiple consumer replicas can poll the same SQS queue
+            safely (SQS visibility timeout prevents double-processing). Scale replicas
+            based on queue depth (ApproximateNumberOfMessages) rather than a fixed count.
+          • Avoid per-tenant locking bottlenecks: do not hold a long-lived row-level lock
+            on a tenant record while processing. Use optimistic concurrency (record_version
+            column) or short-lived locks scoped to the critical section only.
+          • Partition-aware processing (advanced): if strict per-tenant serialisation is
+            required without FIFO topics, shard workers by hash(tenant_id) % N so all
+            events for a given tenant are routed to the same worker.
+
+      FIFO alternative: migrate to an SNS FIFO topic with MessageGroupId = tenant_id
+      to get strict per-tenant ordering with exactly-once delivery (10 msg/s per group
+      limit applies). This is not the current deployment.
+
+      Replayability: SNS standard topics do not retain messages. Events cannot be
+      replayed from the broker after delivery — a consumer that misses an event cannot
+      retrieve it by re-subscribing or seeking to an offset.
+
+      Four replay mechanisms are available, in order of preference:
+
+      1. SQS DLQ redrive (broker-level, recent failures only):
+           Messages that failed processing and landed in a DLQ can be moved back to
+           the source queue via SQS StartMessageMoveTask API (or console redrive).
+           Covers delivery/processing failures within the SQS retention window
+           (default 4 days). Does not replay successfully delivered events.
+
+      2. Outbox-based replay (within outbox retention window):
+           The platform-events outbox table retains event records for a configurable
+           period (default: 7 days after successful SNS delivery, mirroring the
+           processed_events 8-day retention window per PE-1). Within that window
+           the O&M team can re-enqueue targeted events by id, subject, or
+           event_type + time range. Contact the O&M team with the scope needed.
+           This does NOT result in duplicate ids — new outbox rows with new ids
+           are created so consumer idempotency keys are not bypassed.
+
+      3. State-based backfill (recommended for new consumers or full recovery):
+           Bootstrap from the REST API instead of replaying events:
+             GET /api/v1/internal/users/:id/memberships   — hot-path snapshot (I-8)
+             GET /api/v1/operator/tenants                 — operator tenant listing
+             GET /api/v1/tenants/:id/departments          — per-tenant departments
+           Apply the current state directly to your read model, then subscribe to
+           future events. Synthetic events are NOT published during a backfill.
+
+      4. No event store / time-travel:
+           This service uses the transactional outbox as a delivery mechanism, not
+           an event store. Arbitrary historical replay and point-in-time queries are
+           not supported. Consumers that require a durable event history should
+           archive received events in their own store (e.g. S3 + Athena, DynamoDB).
+
+      ── Fan-out queue registry (LLD §7.3.2) ─────────────────────────────────
+      Consumer          Queue                         DLQ                               Filter (EventType)
+      ──────────────────────────────────────────────────────────────────────────────
+      Audit Log         membership-audit-q            membership-audit-q-dlq            (all 11)
+      AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*
+      Realm Provisioner membership-realm-q            membership-realm-q-dlq            DepartmentMembership{Granted,LevelChanged}, TenantRole*
+      Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, Delegation*, TenantSeatOverage*
+      Workflow          membership-workflow-q         membership-workflow-q-dlq         Delegation*, TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged
+      Billing           membership-billing-q          membership-billing-q-dlq          TenantSeatOverage{Started,Resolved}
+
+      All queues: maxReceiveCount=5, standard (non-FIFO).
+
+      Queue security: every SQS queue that subscribes to this topic MUST enforce
+      a resource-based policy restricting delivery to this SNS topic ARN. Without
+      this, a misconfigured queue policy allows any AWS principal to inject forged
+      messages directly into the queue, bypassing SNS entirely.
+
+      Required SQS queue policy condition:
+        "Condition": {
+          "ArnEquals": { "aws:SourceArn": "<SNS_TOPIC_MEMBERSHIP_ARN>" }
+        }
+
+      Idempotency guards (id deduplication) do NOT protect against forgery —
+      an attacker can generate arbitrary UUID v7 values. The queue policy is the
+      only enforcement point for message authenticity in the SQS subscription model.
+
+      Schema note: the Glue schema version UUID in the wire-format header (bytes 2–17)
+      is authoritative for schema resolution; dataschema in the envelope JSON is
+      informational only. Schemas resolve against the iam-membership-events registry.
+    messages:
+      DepartmentMembershipGranted:
+        $ref: '#/components/messages/DepartmentMembershipGranted'
+      DepartmentMembershipRevoked:
+        $ref: '#/components/messages/DepartmentMembershipRevoked'
+      DepartmentMembershipLevelChanged:
+        $ref: '#/components/messages/DepartmentMembershipLevelChanged'
+      TenantRoleGranted:
+        $ref: '#/components/messages/TenantRoleGranted'
+      TenantRoleRevoked:
+        $ref: '#/components/messages/TenantRoleRevoked'
+      DelegationStarted:
+        $ref: '#/components/messages/DelegationStarted'
+      DelegationEnded:
+        $ref: '#/components/messages/DelegationEnded'
+      TenderAssigneeOverridden:
+        $ref: '#/components/messages/TenderAssigneeOverridden'
+      TenantSeatOverageStarted:
+        $ref: '#/components/messages/TenantSeatOverageStarted'
+      TenantSeatOverageResolved:
+        $ref: '#/components/messages/TenantSeatOverageResolved'
+      TenantStateChanged:
+        $ref: '#/components/messages/TenantStateChanged'
+
+  iamTenantEvents:
+    address: "iam-tenant-events"
+    description: |
+      SNS topic for tenant lifecycle creation events (2 event types from this
+      service: TenantCreated, TrialStarted). This service is a co-producer on
+      this topic alongside Realm Provisioner and Billing (per HLD §9.1.1
+      shared-producer arrangement); other services emit other event types onto
+      the same topic (e.g. TenantSuspended from Billing) — those are documented
+      in their own AsyncAPI specs.
+
+      Backing Glue registry: iam-tenant-events (ap-south-1, JSON data format).
+
+      Ordering: TenantCreated is emitted exactly once per tenant, and TrialStarted
+      follows within the same TrialTenantProvisioned business transaction — the
+      two events for a single tenant are effectively adjacent on the outbox but
+      SNS may deliver them out of order. Consumers should treat TrialStarted as
+      independently meaningful (it carries plan + trial_ends_at), not as a
+      strict successor to TenantCreated.
+
+      Fan-out queue registry (LLD §7.3.2):
+        Audit Log      tenant-audit-q          (all types)
+        Notification   tenant-notification-q   TenantCreated, TrialStarted
+
+      All queues: maxReceiveCount=5, standard (non-FIFO).
+
+      Queue security: as for iam-membership-events, every subscribing SQS queue
+      MUST enforce an aws:SourceArn ArnEquals condition on <SNS_TOPIC_TENANT_ARN>.
+    messages:
+      TenantCreated:
+        $ref: '#/components/messages/TenantCreated'
+      TrialStarted:
+        $ref: '#/components/messages/TrialStarted'
+
+  # ── SQS consumer queue channels (LLD §7.3.2 fan-out) ──────────────────────
+  # These channels document the downstream SQS queues that receive events from
+  # the two SNS topics. Each queue is owned by its consuming service; the
+  # bindings below are informational for consumers onboarding to either topic.
+
+  membershipAuditQueue:
+    address: "membership-audit-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipAudit'
+    description: |
+      SQS queue subscribed to all 11 membership event types. Audit Log
+      archives every membership event for 7-year compliance retention
+      (HLD §13.3).
+      SNS subscription filter policy: (no filter)
+    messages:
+      DepartmentMembershipGranted:
+        $ref: '#/components/messages/DepartmentMembershipGranted'
+      DepartmentMembershipRevoked:
+        $ref: '#/components/messages/DepartmentMembershipRevoked'
+      DepartmentMembershipLevelChanged:
+        $ref: '#/components/messages/DepartmentMembershipLevelChanged'
+      TenantRoleGranted:
+        $ref: '#/components/messages/TenantRoleGranted'
+      TenantRoleRevoked:
+        $ref: '#/components/messages/TenantRoleRevoked'
+      DelegationStarted:
+        $ref: '#/components/messages/DelegationStarted'
+      DelegationEnded:
+        $ref: '#/components/messages/DelegationEnded'
+      TenderAssigneeOverridden:
+        $ref: '#/components/messages/TenderAssigneeOverridden'
+      TenantSeatOverageStarted:
+        $ref: '#/components/messages/TenantSeatOverageStarted'
+      TenantSeatOverageResolved:
+        $ref: '#/components/messages/TenantSeatOverageResolved'
+      TenantStateChanged:
+        $ref: '#/components/messages/TenantStateChanged'
+    bindings:
+      sqs:
+        queue:
+          name: membership-audit-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600    # 4 days (seconds)
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-audit-q-dlq
+            maxReceiveCount: 5
+
+  membershipAuthZQueue:
+    address: "membership-authz-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipAuthZ'
+    description: |
+      SQS queue subscribed to department- and tenant-role events.
+      AuthZ Enrichment evicts / refreshes the om:memberships cache used
+      by the hot-path lookup at GET /internal/users/:id/memberships (I-8).
+      SNS subscription filter policy:
+        { "EventType": ["DepartmentMembershipGranted",
+                        "DepartmentMembershipRevoked",
+                        "DepartmentMembershipLevelChanged",
+                        "TenantRoleGranted",
+                        "TenantRoleRevoked"] }
+    messages:
+      DepartmentMembershipGranted:
+        $ref: '#/components/messages/DepartmentMembershipGranted'
+      DepartmentMembershipRevoked:
+        $ref: '#/components/messages/DepartmentMembershipRevoked'
+      DepartmentMembershipLevelChanged:
+        $ref: '#/components/messages/DepartmentMembershipLevelChanged'
+      TenantRoleGranted:
+        $ref: '#/components/messages/TenantRoleGranted'
+      TenantRoleRevoked:
+        $ref: '#/components/messages/TenantRoleRevoked'
+    bindings:
+      sqs:
+        queue:
+          name: membership-authz-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-authz-q-dlq
+            maxReceiveCount: 5
+
+  membershipRealmQueue:
+    address: "membership-realm-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipRealm'
+    description: |
+      SQS queue subscribed to the department/tenant-role events that gate
+      the requires-mfa realm role. Realm Provisioner adds the role when a
+      DepartmentMembershipGranted arrives at reviewer/approver level (or
+      when a DepartmentMembershipLevelChanged elevates to those levels) or
+      when any TenantRoleGranted arrives; it drops the role on
+      TenantRoleRevoked when the user no longer requires MFA per §6.5.
+      SNS subscription filter policy:
+        { "EventType": ["DepartmentMembershipGranted",
+                        "DepartmentMembershipLevelChanged",
+                        "TenantRoleGranted",
+                        "TenantRoleRevoked"] }
+    messages:
+      DepartmentMembershipGranted:
+        $ref: '#/components/messages/DepartmentMembershipGranted'
+      DepartmentMembershipLevelChanged:
+        $ref: '#/components/messages/DepartmentMembershipLevelChanged'
+      TenantRoleGranted:
+        $ref: '#/components/messages/TenantRoleGranted'
+      TenantRoleRevoked:
+        $ref: '#/components/messages/TenantRoleRevoked'
+    bindings:
+      sqs:
+        queue:
+          name: membership-realm-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-realm-q-dlq
+            maxReceiveCount: 5
+
+  membershipNotificationQueue:
+    address: "membership-notification-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipNotification'
+    description: |
+      SQS queue subscribed to the membership events that drive user- and
+      admin-facing emails plus the seat-overage banner surface.
+      SNS subscription filter policy:
+        { "EventType": ["DepartmentMembershipGranted",
+                        "DepartmentMembershipRevoked",
+                        "DepartmentMembershipLevelChanged",
+                        "TenantRoleGranted",
+                        "TenantRoleRevoked",
+                        "DelegationStarted",
+                        "DelegationEnded",
+                        "TenantSeatOverageStarted",
+                        "TenantSeatOverageResolved"] }
+    messages:
+      DepartmentMembershipGranted:
+        $ref: '#/components/messages/DepartmentMembershipGranted'
+      DepartmentMembershipRevoked:
+        $ref: '#/components/messages/DepartmentMembershipRevoked'
+      DepartmentMembershipLevelChanged:
+        $ref: '#/components/messages/DepartmentMembershipLevelChanged'
+      TenantRoleGranted:
+        $ref: '#/components/messages/TenantRoleGranted'
+      TenantRoleRevoked:
+        $ref: '#/components/messages/TenantRoleRevoked'
+      DelegationStarted:
+        $ref: '#/components/messages/DelegationStarted'
+      DelegationEnded:
+        $ref: '#/components/messages/DelegationEnded'
+      TenantSeatOverageStarted:
+        $ref: '#/components/messages/TenantSeatOverageStarted'
+      TenantSeatOverageResolved:
+        $ref: '#/components/messages/TenantSeatOverageResolved'
+    bindings:
+      sqs:
+        queue:
+          name: membership-notification-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-notification-q-dlq
+            maxReceiveCount: 5
+
+  membershipWorkflowQueue:
+    address: "membership-workflow-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipWorkflow'
+    description: |
+      SQS queue subscribed to the events Workflow uses for delegation
+      routing, tender-assignee reconciliation, and tenant-state driven
+      pause/resume/terminate. The TenantStateChanged relay (§7.1 EVT-16)
+      is what lets Workflow subscribe to a single topic instead of also
+      subscribing to iam-tenant-events and billing.events directly.
+      SNS subscription filter policy:
+        { "EventType": ["DelegationStarted",
+                        "DelegationEnded",
+                        "TenderAssigneeOverridden",
+                        "DepartmentMembershipGranted",
+                        "DepartmentMembershipRevoked",
+                        "DepartmentMembershipLevelChanged",
+                        "TenantStateChanged"] }
+    messages:
+      DelegationStarted:
+        $ref: '#/components/messages/DelegationStarted'
+      DelegationEnded:
+        $ref: '#/components/messages/DelegationEnded'
+      TenderAssigneeOverridden:
+        $ref: '#/components/messages/TenderAssigneeOverridden'
+      DepartmentMembershipGranted:
+        $ref: '#/components/messages/DepartmentMembershipGranted'
+      DepartmentMembershipRevoked:
+        $ref: '#/components/messages/DepartmentMembershipRevoked'
+      DepartmentMembershipLevelChanged:
+        $ref: '#/components/messages/DepartmentMembershipLevelChanged'
+      TenantStateChanged:
+        $ref: '#/components/messages/TenantStateChanged'
+    bindings:
+      sqs:
+        queue:
+          name: membership-workflow-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-workflow-q-dlq
+            maxReceiveCount: 5
+
+  membershipBillingQueue:
+    address: "membership-billing-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipBilling'
+    description: |
+      SQS queue subscribed only to the seat-overage lifecycle pair.
+      Billing uses these events to drive the grace period (§16 A59) and
+      the enforcement window (SEAT-3 / SEAT-5).
+      SNS subscription filter policy:
+        { "EventType": ["TenantSeatOverageStarted", "TenantSeatOverageResolved"] }
+    messages:
+      TenantSeatOverageStarted:
+        $ref: '#/components/messages/TenantSeatOverageStarted'
+      TenantSeatOverageResolved:
+        $ref: '#/components/messages/TenantSeatOverageResolved'
+    bindings:
+      sqs:
+        queue:
+          name: membership-billing-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-billing-q-dlq
+            maxReceiveCount: 5
+
+  tenantAuditQueue:
+    address: "tenant-audit-q"
+    servers:
+      - $ref: '#/servers/sqsTenantAudit'
+    description: |
+      SQS queue on iam-tenant-events with no SNS filter. Audit Log stores
+      every tenant lifecycle event (creation, trial-start, and events
+      emitted by other services on this topic) for 7-year retention.
+      SNS subscription filter policy: (no filter)
+    messages:
+      TenantCreated:
+        $ref: '#/components/messages/TenantCreated'
+      TrialStarted:
+        $ref: '#/components/messages/TrialStarted'
+    bindings:
+      sqs:
+        queue:
+          name: tenant-audit-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: tenant-audit-q-dlq
+            maxReceiveCount: 5
+
+  tenantNotificationQueue:
+    address: "tenant-notification-q"
+    servers:
+      - $ref: '#/servers/sqsTenantNotification'
+    description: |
+      SQS queue on iam-tenant-events used to fire the welcome email and
+      the trial-start email.
+      SNS subscription filter policy:
+        { "EventType": ["TenantCreated", "TrialStarted"] }
+    messages:
+      TenantCreated:
+        $ref: '#/components/messages/TenantCreated'
+      TrialStarted:
+        $ref: '#/components/messages/TrialStarted'
+    bindings:
+      sqs:
+        queue:
+          name: tenant-notification-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: tenant-notification-q-dlq
+            maxReceiveCount: 5
+
+operations:
+  publishMembershipEvents:
+    action: send
+    channel:
+      $ref: '#/channels/iamMembershipEvents'
+    summary: Publish membership lifecycle events (11 event types)
+    description: |
+      iam-org-membership publishes these 11 events atomically with the business
+      write via the transactional outbox (same pgx.Tx). The outbox runner polls
+      every 500 ms and delivers to the iam-membership-events SNS topic with
+      at-least-once semantics — duplicate delivery is possible and consumers
+      MUST be idempotent.
+
+      RoutingPublisher (platform-events v1.3.0) selects this topic per message
+      by inspecting Envelope.Source: values with the ".membership" suffix are
+      routed here. See internal/adapter/outbound/eventbus/publisher.go.
+
+      id is an RFC 4122 UUID v7 (time-ordered, 128-bit; monotonically ordered at
+      publish time). It is the canonical idempotency key: consumers should record
+      (id, consumer) in a unique index before committing side-effects and discard
+      re-deliveries silently. This service's own SQS consumer uses the
+      processed_events table for exactly this purpose (composite PK, 8-day
+      retention per PE-1) — the same pattern is recommended for downstream
+      consumers.
+
+      Partial failure guidance:
+        The hardest failure mode is a crash after side-effects are applied but
+        before the idempotency record is persisted (or before the SQS delete
+        succeeds). On redelivery the consumer sees a message it has already
+        partially processed. Two safe patterns:
+
+        a) Atomic commit (strongly preferred):
+             Wrap side-effects AND the idempotency INSERT in a single database
+             transaction. If either step fails the whole transaction rolls back —
+             the side-effect is never partially applied. On redelivery, the INSERT
+             succeeds and the side-effect is applied exactly once.
+
+             Example (PostgreSQL):
+               BEGIN;
+               INSERT INTO processed_events (id, consumer) VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING RETURNING id;
+               -- if the INSERT returned a row: apply side-effects here
+               -- if it returned nothing: message already processed, skip
+               COMMIT;
+
+        b) Idempotent side-effects (when atomic commit is not possible):
+             Design side-effects so that applying them twice produces the same
+             result as applying them once (upsert instead of insert, set instead
+             of increment, PUT instead of POST). Persist the idempotency record
+             AFTER committing side-effects. On redelivery, re-applying an
+             idempotent side-effect is safe; the record prevents any further
+             re-processing once it is persisted.
+
+        Anti-pattern to avoid: recording the idempotency key AFTER side-effects
+        in a non-transactional way. A crash between the two steps leaves no record
+        and the message will be re-delivered with the side-effect already applied.
+
+      Note: monotonic id reflects publish order within this service but SNS
+      does not preserve that order end-to-end — see channel description for the
+      consumer-side ordering strategy.
+
+      Clock skew caveat: UUID v7 embeds a millisecond-precision timestamp from
+      the publishing node's system clock. In a multi-replica deployment (HPA 2-8),
+      clock skew between nodes can cause slight ordering inversions — two events
+      generated on different pods within the same millisecond window may arrive with
+      ids that do not reflect true causal order. Same practical guidance applies
+      as for iam-user-events (see the sibling service's spec).
+
+      ── Retry & DLQ behavior ─────────────────────────────────────────────────
+      Outbox → SNS:
+        The platform-events outbox runner retries failed SNS publishes with
+        exponential backoff (initial 1 s, doubles each attempt, capped at 5 min).
+        Events that exhaust all retries are moved to the outbox_dead_letters table
+        and increment the outbox_dead_letters_total Prometheus counter (labelled
+        with the source topic). Alert on this counter per topic so dead-lettered
+        events are investigated promptly.
+
+      SNS → SQS subscriber:
+        SNS delivers with at-least-once semantics to each subscribed SQS queue.
+        SQS retries visibility-timeout-expired messages up to maxReceiveCount
+        before routing to the queue's Dead Letter Queue. Recommended:
+          visibilityTimeout : must exceed the consumer's max processing time
+          maxReceiveCount   : 5 (gives 5 attempts before DLQ routing)
+          DLQ alarm         : ApproximateNumberOfMessagesVisible > 0
+        Consumers MUST configure a DLQ. Without one, poison-pill messages loop
+        indefinitely and block healthy message processing on the same queue.
+
+      Consumer timeout contract:
+        Consumers MUST complete all processing (including side-effects and id
+        persistence) within the configured visibilityTimeout. A message that
+        is not deleted before the timeout expires becomes visible again and will
+        be re-delivered — even if processing was in progress.
+
+        Two strategies for long-running handlers:
+          a) Heartbeat: call SQS ChangeMessageVisibility to extend the timeout
+             while processing is still in progress. Extend by a fixed increment
+             (e.g. 30 s) on a timer shorter than the remaining timeout window.
+             Stop extending once side-effects are committed and the message is
+             about to be deleted.
+          b) Conservative timeout: set visibilityTimeout well above the p99
+             processing time. Simpler, but wastes redelivery capacity if the
+             consumer crashes after partial work.
+
+        Recommended: use the heartbeat approach for any handler that calls
+        external services (databases, HTTP APIs) where latency is unbounded.
+
+      Poison message SOP (DLQ investigation before redrive):
+        A message in a DLQ has failed maxReceiveCount delivery attempts. It MUST
+        be inspected before redriving — blindly redriving a poison pill causes an
+        infinite failure loop: source queue → DLQ → redrive → source queue → DLQ.
+
+        Investigation checklist:
+          1. Read the message body. Decode the 18-byte Glue header (if present) and
+             unmarshal the envelope JSON. Note id, type, and trace_id.
+          2. Correlate with traces: use trace_id in your distributed tracing system
+             (Jaeger / X-Ray) to find the full request span and downstream spans.
+             The producing handler span is identified by correlation_id.
+          3. Check consumer logs for the event id. A transient error is safe to
+             redrive after the root cause is fixed. A deterministic error will fail
+             again — fix the consumer first.
+          4. Check SQS ApproximateReceiveCount. If it equals maxReceiveCount, all
+             retries were exhausted. Otherwise the message was moved manually.
+
+        Redrive decision matrix:
+          Transient failure → fix root cause, redrive via StartMessageMoveTask. Safe.
+          Consumer bug → deploy the fix first, then redrive.
+          Payload malformed / schema version unrecognised → do NOT redrive; file a bug.
+          Unknown / cannot determine → do NOT redrive. Escalate.
+
+        Fan-out note: SNS delivers a separate copy to each subscription. A message
+        in one consumer's DLQ does not affect other consumers' queues — investigate
+        and redrive per-queue, not globally.
+
+      Fan-out note: SNS delivers a separate copy to each subscription. DLQ
+      configuration is per SQS queue — each downstream team owns their own DLQ.
+    messages:
+      - $ref: '#/channels/iamMembershipEvents/messages/DepartmentMembershipGranted'
+      - $ref: '#/channels/iamMembershipEvents/messages/DepartmentMembershipRevoked'
+      - $ref: '#/channels/iamMembershipEvents/messages/DepartmentMembershipLevelChanged'
+      - $ref: '#/channels/iamMembershipEvents/messages/TenantRoleGranted'
+      - $ref: '#/channels/iamMembershipEvents/messages/TenantRoleRevoked'
+      - $ref: '#/channels/iamMembershipEvents/messages/DelegationStarted'
+      - $ref: '#/channels/iamMembershipEvents/messages/DelegationEnded'
+      - $ref: '#/channels/iamMembershipEvents/messages/TenderAssigneeOverridden'
+      - $ref: '#/channels/iamMembershipEvents/messages/TenantSeatOverageStarted'
+      - $ref: '#/channels/iamMembershipEvents/messages/TenantSeatOverageResolved'
+      - $ref: '#/channels/iamMembershipEvents/messages/TenantStateChanged'
+
+  publishTenantEvents:
+    action: send
+    channel:
+      $ref: '#/channels/iamTenantEvents'
+    summary: Publish tenant creation events (TenantCreated, TrialStarted)
+    description: |
+      iam-org-membership co-produces onto iam-tenant-events alongside Realm
+      Provisioner and Billing (HLD §9.1.1). This service emits exactly two
+      event types on this topic: TenantCreated and TrialStarted, both from
+      the TrialTenantProvisioned consumer that provisions the initial tenant
+      row plus the 5 default system departments and the owner role grant.
+
+      RoutingPublisher selects this topic per message by inspecting
+      Envelope.Source: values with the ".tenant" suffix are routed here.
+
+      All retry / DLQ / poison-message / partial-failure guidance from
+      publishMembershipEvents also applies here — the only differences are
+      the topic ARN, the Glue registry, and the far smaller event catalogue.
+    messages:
+      - $ref: '#/channels/iamTenantEvents/messages/TenantCreated'
+      - $ref: '#/channels/iamTenantEvents/messages/TrialStarted'
+
+  # ── Receive operations (fan-out consumers) ─────────────────────────────────
+  # These operations document the downstream consumers of both topics. They
+  # are informational from this service's perspective — each consuming service
+  # owns its queue and implements its own idempotency and DLQ strategy.
+  # Included here so the full SNS→SQS topology is self-contained in this spec.
+
+  receiveMembershipAudit:
+    action: receive
+    channel:
+      $ref: '#/channels/membershipAuditQueue'
+    summary: Audit Log archives all membership events (7-year retention)
+    description: |
+      Consumer: Audit Log Service
+      Queue   : membership-audit-q  |  DLQ: membership-audit-q-dlq
+      Filter  : none — subscribes to all 11 membership event types
+      Purpose : Append-only compliance archival. Every membership event is
+                stored with strict tenant-scoped RLS isolation (HLD §5.7, §13.3).
+      Idempotency key: (id, consumer="audit-log") in processed_events.
+    messages:
+      - $ref: '#/channels/membershipAuditQueue/messages/DepartmentMembershipGranted'
+      - $ref: '#/channels/membershipAuditQueue/messages/DepartmentMembershipRevoked'
+      - $ref: '#/channels/membershipAuditQueue/messages/DepartmentMembershipLevelChanged'
+      - $ref: '#/channels/membershipAuditQueue/messages/TenantRoleGranted'
+      - $ref: '#/channels/membershipAuditQueue/messages/TenantRoleRevoked'
+      - $ref: '#/channels/membershipAuditQueue/messages/DelegationStarted'
+      - $ref: '#/channels/membershipAuditQueue/messages/DelegationEnded'
+      - $ref: '#/channels/membershipAuditQueue/messages/TenderAssigneeOverridden'
+      - $ref: '#/channels/membershipAuditQueue/messages/TenantSeatOverageStarted'
+      - $ref: '#/channels/membershipAuditQueue/messages/TenantSeatOverageResolved'
+      - $ref: '#/channels/membershipAuditQueue/messages/TenantStateChanged'
+
+  receiveMembershipAuthZ:
+    action: receive
+    channel:
+      $ref: '#/channels/membershipAuthZQueue'
+    summary: AuthZ Enrichment evicts / refreshes om:memberships cache on role and department changes
+    description: |
+      Consumer: AuthZ Enrichment Service
+      Queue   : membership-authz-q  |  DLQ: membership-authz-q-dlq
+      Filter  : EventType IN [DepartmentMembershipGranted, DepartmentMembershipRevoked,
+                              DepartmentMembershipLevelChanged, TenantRoleGranted,
+                              TenantRoleRevoked]
+
+      On any of the five events: AuthZ invalidates the Valkey om:memberships
+      cache entry for (tenant_id, user_id). The next hot-path lookup at
+      GET /internal/users/:id/memberships (I-8) will miss and repopulate.
+
+      Idempotency key: (id, consumer="authz-enrichment") in processed_events.
+    messages:
+      - $ref: '#/channels/membershipAuthZQueue/messages/DepartmentMembershipGranted'
+      - $ref: '#/channels/membershipAuthZQueue/messages/DepartmentMembershipRevoked'
+      - $ref: '#/channels/membershipAuthZQueue/messages/DepartmentMembershipLevelChanged'
+      - $ref: '#/channels/membershipAuthZQueue/messages/TenantRoleGranted'
+      - $ref: '#/channels/membershipAuthZQueue/messages/TenantRoleRevoked'
+
+  receiveMembershipRealm:
+    action: receive
+    channel:
+      $ref: '#/channels/membershipRealmQueue'
+    summary: Realm Provisioner adds/drops the requires-mfa realm role per §6.5
+    description: |
+      Consumer: Realm Provisioner Service
+      Queue   : membership-realm-q  |  DLQ: membership-realm-q-dlq
+      Filter  : EventType IN [DepartmentMembershipGranted,
+                              DepartmentMembershipLevelChanged,
+                              TenantRoleGranted, TenantRoleRevoked]
+
+      On DepartmentMembershipGranted at reviewer/approver level: add the
+        requires-mfa realm role to the user in Keycloak.
+      On DepartmentMembershipLevelChanged elevating to reviewer/approver:
+        add the requires-mfa realm role.
+      On TenantRoleGranted: add the requires-mfa realm role.
+      On TenantRoleRevoked: check whether the user still holds any other
+        role/level that requires MFA; drop the realm role if not.
+
+      This is the ONLY IAM-subsystem writer to Keycloak Admin API for MFA
+      role toggling — org-membership never calls Keycloak Admin API directly.
+
+      Idempotency key: (id, consumer="realm-provisioner") in processed_events.
+    messages:
+      - $ref: '#/channels/membershipRealmQueue/messages/DepartmentMembershipGranted'
+      - $ref: '#/channels/membershipRealmQueue/messages/DepartmentMembershipLevelChanged'
+      - $ref: '#/channels/membershipRealmQueue/messages/TenantRoleGranted'
+      - $ref: '#/channels/membershipRealmQueue/messages/TenantRoleRevoked'
+
+  receiveMembershipNotification:
+    action: receive
+    channel:
+      $ref: '#/channels/membershipNotificationQueue'
+    summary: Notification sends user/admin emails and drives seat-overage banners
+    description: |
+      Consumer: Notification Service
+      Queue   : membership-notification-q  |  DLQ: membership-notification-q-dlq
+      Filter  : EventType IN [DepartmentMembership*, TenantRole*, Delegation*, TenantSeatOverage*]
+
+      Membership events → per-user email ("you have been added to Department X
+        as a reviewer"). TenantRole events → admin email. Delegation events →
+        both delegator and delegate. TenantSeatOverage events → admin banner
+        and grace-period countdown email.
+
+      Idempotency key: (id, consumer="notification") in processed_events.
+    messages:
+      - $ref: '#/channels/membershipNotificationQueue/messages/DepartmentMembershipGranted'
+      - $ref: '#/channels/membershipNotificationQueue/messages/DepartmentMembershipRevoked'
+      - $ref: '#/channels/membershipNotificationQueue/messages/DepartmentMembershipLevelChanged'
+      - $ref: '#/channels/membershipNotificationQueue/messages/TenantRoleGranted'
+      - $ref: '#/channels/membershipNotificationQueue/messages/TenantRoleRevoked'
+      - $ref: '#/channels/membershipNotificationQueue/messages/DelegationStarted'
+      - $ref: '#/channels/membershipNotificationQueue/messages/DelegationEnded'
+      - $ref: '#/channels/membershipNotificationQueue/messages/TenantSeatOverageStarted'
+      - $ref: '#/channels/membershipNotificationQueue/messages/TenantSeatOverageResolved'
+
+  receiveMembershipWorkflow:
+    action: receive
+    channel:
+      $ref: '#/channels/membershipWorkflowQueue'
+    summary: Workflow reacts to delegation, assignee overrides, and tenant-state relay
+    description: |
+      Consumer: Workflow Service
+      Queue   : membership-workflow-q  |  DLQ: membership-workflow-q-dlq
+      Filter  : EventType IN [Delegation*, TenderAssigneeOverridden,
+                              DepartmentMembership*, TenantStateChanged]
+
+      On DelegationStarted / DelegationEnded: reroute task ownership for
+        instances scoped by the delegation.
+      On TenderAssigneeOverridden: reconcile Workflow's own assignee_overrides
+        state — Workflow is the sole writer of that state, org-membership only
+        validates + emits (§16 A32(d) / OVR-1).
+      On DepartmentMembership*: fold role-level changes into any assignee
+        selection surfaces (Workflow does not own the department model but
+        uses it for pick-lists).
+      On TenantStateChanged (EVT-16 relay of TenantSuspended / Cancelled /
+        Offboarded from Billing, and of TrialExpired etc.): pause / resume /
+        terminate workflow instances or route them onto per-tier queues.
+        The relay lets Workflow subscribe to a single topic instead of also
+        subscribing directly to iam-tenant-events and billing.events.
+
+      Idempotency key: (id, consumer="workflow-service") in processed_events.
+    messages:
+      - $ref: '#/channels/membershipWorkflowQueue/messages/DelegationStarted'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/DelegationEnded'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/TenderAssigneeOverridden'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/DepartmentMembershipGranted'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/DepartmentMembershipRevoked'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/DepartmentMembershipLevelChanged'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/TenantStateChanged'
+
+  receiveMembershipBilling:
+    action: receive
+    channel:
+      $ref: '#/channels/membershipBillingQueue'
+    summary: Billing drives seat-overage grace period and enforcement
+    description: |
+      Consumer: Billing Service
+      Queue   : membership-billing-q  |  DLQ: membership-billing-q-dlq
+      Filter  : EventType IN [TenantSeatOverageStarted, TenantSeatOverageResolved]
+
+      On TenantSeatOverageStarted: start the grace-period clock
+        (SEAT_OVERAGE_GRACE_DAYS, default 30) and issue a Billing notice.
+      On TenantSeatOverageResolved: cancel the grace-period clock. If the
+        clock had elapsed and enforcement was engaged, Billing lifts the
+        overage-status flag it published on billing.events.
+
+      See §16 A59, SEAT-3, SEAT-5.
+      Idempotency key: (id, consumer="billing") in processed_events.
+    messages:
+      - $ref: '#/channels/membershipBillingQueue/messages/TenantSeatOverageStarted'
+      - $ref: '#/channels/membershipBillingQueue/messages/TenantSeatOverageResolved'
+
+  receiveTenantAudit:
+    action: receive
+    channel:
+      $ref: '#/channels/tenantAuditQueue'
+    summary: Audit Log archives tenant lifecycle events
+    description: |
+      Consumer: Audit Log Service
+      Queue   : tenant-audit-q  |  DLQ: tenant-audit-q-dlq
+      Filter  : none — subscribes to all event types on iam-tenant-events
+      Purpose : Append-only compliance archival of tenant lifecycle across
+                the co-producer set (this service + Realm Provisioner + Billing).
+      Idempotency key: (id, consumer="audit-log") in processed_events.
+    messages:
+      - $ref: '#/channels/tenantAuditQueue/messages/TenantCreated'
+      - $ref: '#/channels/tenantAuditQueue/messages/TrialStarted'
+
+  receiveTenantNotification:
+    action: receive
+    channel:
+      $ref: '#/channels/tenantNotificationQueue'
+    summary: Notification sends welcome and trial-start emails
+    description: |
+      Consumer: Notification Service
+      Queue   : tenant-notification-q  |  DLQ: tenant-notification-q-dlq
+      Filter  : EventType IN [TenantCreated, TrialStarted]
+
+      On TenantCreated: send the tenant welcome email to the initial owner.
+      On TrialStarted: send the trial-onboarding email including trial_ends_at.
+
+      Idempotency key: (id, consumer="notification") in processed_events.
+    messages:
+      - $ref: '#/channels/tenantNotificationQueue/messages/TenantCreated'
+      - $ref: '#/channels/tenantNotificationQueue/messages/TrialStarted'
+
+components:
+  securitySchemes:
+    iamRole:
+      type: httpApiKey
+      name: Authorization
+      in: header
+      description: AWS IAM role attached to the pod via IRSA (IAM Roles for Service Accounts).
+
+  messageTraits:
+    glueWireFormat:
+      description: |
+        Message body is prefixed with the 18-byte Glue Schema Registry wire-format header:
+        [0x03][0x00][16-byte schema version UUID (big-endian)] followed by the JSON payload.
+        Consumers must strip this header before parsing the EventEnvelope JSON.
+
+  messages:
+    DepartmentMembershipGranted:
+      name: DepartmentMembershipGranted
+      title: Department Membership Granted
+      summary: Emitted when a user is added to a department at a specific role-level (preparator / reviewer / approver).
+      x-lifecycle:
+        status: active    # active | deprecated | retired
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/DepartmentMembershipGrantedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: DepartmentMembershipGranted
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type. Attribute name is PascalCase per LLD §7.3.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time. Enables per-tenant SNS filter policies without parsing the message body.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier. Set by platform-events v1.3.0 from envelope.source (with the topic-routing suffix stripped).
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id. Enables filter policies scoped to a specific event without parsing the body.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time. Enables per-subject SNS filter policies (v1.3.0 addition).
+
+    DepartmentMembershipRevoked:
+      name: DepartmentMembershipRevoked
+      title: Department Membership Revoked
+      summary: Emitted when a user is removed from a department (soft-delete; the row is retained with deleted_at set).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/DepartmentMembershipRevokedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: DepartmentMembershipRevoked
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    DepartmentMembershipLevelChanged:
+      name: DepartmentMembershipLevelChanged
+      title: Department Membership Level Changed
+      summary: Emitted when a user's role-level within a department changes (e.g. reviewer → approver).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/DepartmentMembershipLevelChangedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: DepartmentMembershipLevelChanged
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TenantRoleGranted:
+      name: TenantRoleGranted
+      title: Tenant Role Granted
+      summary: |
+        Emitted when a tenant-level role (tenant_owner, tenant_admin, tender_admin)
+        is granted. The "member" role is derived at read time and never persisted
+        (§16 A29 / TR-7), so no event is emitted for member.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantRoleGrantedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantRoleGranted
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TenantRoleRevoked:
+      name: TenantRoleRevoked
+      title: Tenant Role Revoked
+      summary: |
+        Emitted when a tenant-level role grant is removed. Under the multi-role
+        model (§16 A14) a user may hold multiple tenant roles; a revoke event
+        is emitted for each specific role_code revoked.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantRoleRevokedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantRoleRevoked
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    DelegationStarted:
+      name: DelegationStarted
+      title: Delegation Started
+      summary: |
+        Emitted after a delegation is committed. Emission is transactionally
+        coupled to the User Profile availability update (CONS-2): the outbox
+        row is only written after User Profile has confirmed the delegate
+        pointer update with a 200 response.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/DelegationStartedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: DelegationStarted
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    DelegationEnded:
+      name: DelegationEnded
+      title: Delegation Ended
+      summary: |
+        Emitted when a delegation ends by expiry, cancellation, or delegate
+        removal. The ended_reason field distinguishes the three paths so
+        consumers can differentiate normal expiry from operator action.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/DelegationEndedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: DelegationEnded
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TenderAssigneeOverridden:
+      name: TenderAssigneeOverridden
+      title: Tender Assignee Overridden
+      summary: |
+        Emitted when the tender-level assignee override is applied. Workflow
+        Service is the sole writer of assignee_overrides state; this service
+        validates the override against membership rules and emits — never
+        persists the assignment (§16 A32(d) / OVR-1).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenderAssigneeOverriddenEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenderAssigneeOverridden
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TenantSeatOverageStarted:
+      name: TenantSeatOverageStarted
+      title: Tenant Seat Overage Started
+      summary: |
+        Emitted when the seat-usage reconciler first observes
+        (active_users + pending_invitations) > licensed_seats for a tenant.
+        Payload carries the observation counts; Billing uses them to size the
+        grace-period countdown (SEAT_OVERAGE_GRACE_DAYS, default 30).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantSeatOverageStartedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantSeatOverageStarted
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TenantSeatOverageResolved:
+      name: TenantSeatOverageResolved
+      title: Tenant Seat Overage Resolved
+      summary: |
+        Emitted when the seat-usage reconciler observes that
+        (active_users + pending_invitations) has fallen back to ≤ licensed_seats.
+        Cancels the Billing grace-period clock.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantSeatOverageResolvedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantSeatOverageResolved
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TenantStateChanged:
+      name: TenantStateChanged
+      title: Tenant State Changed
+      summary: |
+        EVT-16 relay: re-emitted onto iam-membership-events (in the same tx as
+        the state mutation) whenever a consumed event from tenant-orgm-q /
+        billing-orgm-q changes tenants.status or tenants.plan. This spares
+        Workflow (and any other membership-topic subscriber) from having to
+        subscribe directly to iam-tenant-events and billing.events.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantStateChangedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantStateChanged
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TenantCreated:
+      name: TenantCreated
+      title: Tenant Created
+      summary: |
+        Emitted onto iam-tenant-events when a new tenant row is committed —
+        for this service, from within the TrialTenantProvisioned consumer that
+        runs the initial tenant + 5 default department + owner-grant provisioning
+        transaction (§8.1).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantCreatedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantCreated
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    TrialStarted:
+      name: TrialStarted
+      title: Trial Started
+      summary: |
+        Emitted onto iam-tenant-events immediately after TenantCreated when
+        the tenant begins its trial window (both events written in the same
+        outbox transaction). Consumers can treat this as an independently
+        meaningful signal (it carries plan + trial_ends_at).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TrialStartedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TrialStarted
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+  schemas:
+    # ── Shared envelope base ─────────────────────────────────────────────────
+    EventEnvelopeBase:
+      type: object
+      required:
+        - id
+        - type
+        - subject
+        - source
+        - tenant_id
+        - time
+        - specversion
+        - actor
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: |
+            RFC 4122 UUID v7 (time-ordered, 128-bit) — monotonically ordered at publish time.
+            Consumers MUST treat id as an idempotency key and enforce
+            exactly-once processing at the application layer. SNS delivers
+            with at-least-once semantics; duplicate ids will occur.
+            Recommended implementation: record processed ids in a
+            (id, consumer) unique index before committing side-effects,
+            and discard any message whose id is already present.
+          example: "018f4c3e-a1b2-7000-9d3e-4f8c1a2b3d4e"
+        type:
+          type: string
+          enum:
+            - DepartmentMembershipGranted
+            - DepartmentMembershipRevoked
+            - DepartmentMembershipLevelChanged
+            - TenantRoleGranted
+            - TenantRoleRevoked
+            - DelegationStarted
+            - DelegationEnded
+            - TenderAssigneeOverridden
+            - TenantSeatOverageStarted
+            - TenantSeatOverageResolved
+            - TenantStateChanged
+            - TenantCreated
+            - TrialStarted
+          x-enum-descriptions:
+            DepartmentMembershipGranted: >-
+              User was added to a department at a given role-level.
+            DepartmentMembershipRevoked: >-
+              User was removed from a department (soft-delete).
+            DepartmentMembershipLevelChanged: >-
+              User's role-level within a department changed
+              (previous_level → new_level).
+            TenantRoleGranted: >-
+              A tenant-level role (tenant_owner / tenant_admin / tender_admin)
+              was granted. The derived "member" role is never emitted.
+            TenantRoleRevoked: >-
+              A specific tenant-level role was revoked. Multi-role support
+              means a user may still hold other roles after this event.
+            DelegationStarted: >-
+              Delegation committed after User Profile availability update
+              was confirmed (CONS-2 ordering).
+            DelegationEnded: >-
+              Delegation ended — see ended_reason for the specific path
+              (expired / cancelled / delegate_removed).
+            TenderAssigneeOverridden: >-
+              Assignee override validated and emitted; Workflow Service
+              owns the underlying assignee_overrides state.
+            TenantSeatOverageStarted: >-
+              (active_users + pending_invitations) first observed to exceed
+              licensed_seats for this tenant.
+            TenantSeatOverageResolved: >-
+              (active_users + pending_invitations) fell back to ≤ licensed_seats.
+            TenantStateChanged: >-
+              EVT-16 relay of an upstream tenant-state mutation onto
+              iam-membership-events (see cause for the triggering event type).
+            TenantCreated: >-
+              New tenant row committed on iam-tenant-events (from this service,
+              via TrialTenantProvisioned).
+            TrialStarted: >-
+              Trial window begins — payload carries plan and trial_ends_at.
+        subject:
+          type: string
+          description: |
+            Canonical entity identifier this event is about. For membership
+            events (Department* / TenantRole*) this is the user_id. For
+            Delegation* it is the delegation_id. For TenderAssigneeOverridden
+            it is the tender_id. For TenantSeatOverage* / TenantStateChanged /
+            TenantCreated / TrialStarted it is the tenant_id.
+            Aligns with the CloudEvents subject attribute; simplifies consumer
+            routing and log indexing without parsing the payload.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        source:
+          type: string
+          description: |
+            Publishing-service identifier — the microservice that produced this
+            event. Always "iam-org-membership" for both topics on the wire.
+            The internal Envelope.Source value carries a topic-routing suffix
+            (".membership" or ".tenant") that RoutingPublisher strips before
+            setting the SNS Source MessageAttribute — external consumers see
+            only "iam-org-membership".
+          example: "iam-org-membership"
+        specversion:
+          type: string
+          description: |
+            Message format semantic version — always "1" for this service's
+            topics. Consumers can gate version-specific parsing logic on this
+            field without inspecting the Glue wire-format header.
+            Always present (NoopCodec and ValidatingCodec both set it).
+          example: "1"
+        dataschema:
+          type: string
+          format: uuid
+          description: |
+            Glue schema version UUID echoed from the 18-byte wire-format header
+            (bytes 2–17). Uniquely identifies the exact schema definition in
+            the appropriate Glue registry (iam-membership-events OR
+            iam-tenant-events) that was used to validate this payload.
+            Consumers can call glue:GetSchemaVersion with this UUID to retrieve
+            the full JSON Schema definition.
+            Absent when no Glue registry is configured (dev/test, NoopCodec).
+
+            NOTE: The Glue wire-format header UUID (bytes 2–17) is the
+            authoritative schema identifier for programmatic resolution — use
+            it with glue:GetSchemaVersion against the correct registry
+            (determined by the destination topic ARN). dataschema in the
+            envelope JSON is informational: it echoes the header value for
+            human readability and structured logging without requiring
+            consumers to re-parse the binary prefix.
+          example: "018f4c3e-a1b2-7000-9d3e-4f8c1a2b3d4e"
+        tenant_id:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        time:
+          type: string
+          format: date-time
+          description: |
+            UTC time at which the event envelope was created and enqueued into
+            the transactional outbox — effectively the event emission time.
+            Set automatically to time.Now().UTC() by platform-events/NewEnvelope;
+            consumers MUST use this field (not a data-level timestamp) for
+            event ordering, replay windowing, and audit trail construction.
+            Monotonic ordering within a single subject is guaranteed only when
+            combined with the RFC 4122 UUID v7 id field — use id as the primary
+            sort key and the time field as a human-readable tiebreaker for
+            cross-subject ordering.
+          example: "2026-06-13T10:30:00Z"
+        trace_id:
+          type: string
+          description: |
+            OTel W3C trace ID propagated from the originating HTTP request.
+            Use to correlate this event with spans in the distributed trace.
+            Absent for events emitted by background workers (seat overage
+            reconciler, delegation expiry, invitation expiry etc.) where no
+            inbound request context is available.
+          example: "4bf92f3577b34da6a3ce929d0e0e4736"
+        correlation_id:
+          type: string
+          description: |
+            OTel W3C span ID of the HTTP handler span that produced this event.
+            Use together with trace_id to locate the exact span in distributed
+            traces (trace_id identifies the request chain; correlation_id pins
+            the producing span within that chain). Consumers can use this to
+            correlate all events emitted in a single request without parsing
+            full traces.
+            Absent for background-worker events where no inbound HTTP span
+            context is available.
+          example: "a3ce929d0e0e4736"
+        actor:
+          type: string
+          description: |
+            Principal that triggered the event. For HTTP-triggered operations
+            this is the caller's user_id (UUID string) extracted from the
+            authenticated request context. For system-generated events
+            (background reconcilers such as seat-overage, delegation-expiry,
+            invitation-expiry, realm-config-sync) this is "iam-system".
+            Useful for audit trails: distinguishes "user X granted user Y a
+            role" from a reconciler applying the same state transition.
+            Propagated to the wire envelope via platform-events v1.3.0
+            events.WithActor.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        ip_address:
+          type: string
+          description: |
+            Client IP address at the time the event was triggered.
+            Sourced from the inbound request context (X-Forwarded-For, via
+            platform-gincommon middleware) and set on the envelope via
+            events.WithIPAddress at publish time.
+
+            Population rule (LLD §7.3):
+              • Present on events emitted from user-initiated endpoints
+                (all /api/v1/tenants/*, /api/v1/departments/*, etc.).
+              • Absent (null) on events emitted from /internal/* endpoints
+                and on events emitted by background reconcilers.
+        user_agent:
+          type: string
+          description: |
+            HTTP User-Agent header value from the request that triggered the event.
+            Sourced from the inbound request context (User-Agent header, via
+            platform-gincommon middleware) and set on the envelope via
+            events.WithUserAgent at publish time.
+
+            Population rule (LLD §7.3): same as ip_address —
+              • Present on events from user-initiated public endpoints.
+              • Absent (null) on events from /internal/* endpoints and
+                background reconcilers.
+
+    # ── Per-event envelopes (base + typed data) ──────────────────────────────
+    DepartmentMembershipGrantedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/DepartmentMembershipGrantedPayload'
+
+    DepartmentMembershipRevokedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/DepartmentMembershipRevokedPayload'
+
+    DepartmentMembershipLevelChangedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/DepartmentMembershipLevelChangedPayload'
+
+    TenantRoleGrantedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantRoleGrantedPayload'
+
+    TenantRoleRevokedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantRoleRevokedPayload'
+
+    DelegationStartedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/DelegationStartedPayload'
+
+    DelegationEndedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/DelegationEndedPayload'
+
+    TenderAssigneeOverriddenEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenderAssigneeOverriddenPayload'
+
+    TenantSeatOverageStartedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantSeatOverageStartedPayload'
+
+    TenantSeatOverageResolvedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantSeatOverageResolvedPayload'
+
+    TenantStateChangedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantStateChangedPayload'
+
+    TenantCreatedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantCreatedPayload'
+
+    TrialStartedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialStartedPayload'
+
+    # ── Event payload schemas (CLOSED — additionalProperties: false) ────────
+    # tenant_id IS repeated at the payload level for these events because the
+    # on-disk JSON Schemas at internal/adapter/outbound/eventbus/schemas/*.json
+    # require it — this reflects the ValidatingCodec's payload contract, which
+    # is independent of the CloudEvents envelope-level tenant_id.
+    DepartmentMembershipGrantedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - tenant_id
+        - department_id
+        - level
+        - actor_id
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: The user being added to the department.
+        tenant_id:
+          type: string
+          format: uuid
+        department_id:
+          type: string
+          format: uuid
+        level:
+          type: string
+          enum: [preparator, reviewer, approver]
+          description: Role-level within the department (§16 A25).
+        actor_id:
+          type: string
+          format: uuid
+          description: |
+            Principal that performed the grant. For system-driven grants
+            (e.g. group-mapping application) equals the system actor UUID.
+
+    DepartmentMembershipRevokedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - tenant_id
+        - department_id
+        - actor_id
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        department_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+          format: uuid
+
+    DepartmentMembershipLevelChangedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - tenant_id
+        - department_id
+        - previous_level
+        - new_level
+        - actor_id
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        department_id:
+          type: string
+          format: uuid
+        previous_level:
+          type: string
+          enum: [preparator, reviewer, approver]
+        new_level:
+          type: string
+          enum: [preparator, reviewer, approver]
+        actor_id:
+          type: string
+          format: uuid
+
+    TenantRoleGrantedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - tenant_id
+        - role_code
+        - actor_id
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        role_code:
+          type: string
+          enum: [tenant_owner, tenant_admin, tender_admin]
+          description: |
+            Tenant-level role granted. "member" is derived at read time and
+            never persisted (§16 A29 / TR-7); no event is emitted for it.
+        actor_id:
+          type: string
+          format: uuid
+
+    TenantRoleRevokedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - tenant_id
+        - role_code
+        - actor_id
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        role_code:
+          type: string
+          enum: [tenant_owner, tenant_admin, tender_admin]
+        actor_id:
+          type: string
+          format: uuid
+
+    DelegationStartedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - delegation_id
+        - tenant_id
+        - delegator_id
+        - delegate_id
+        - scope
+        - actor_id
+      properties:
+        delegation_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        delegator_id:
+          type: string
+          format: uuid
+          description: User going OOO / assigning the delegation.
+        delegate_id:
+          type: string
+          format: uuid
+          description: User receiving the delegation.
+        scope:
+          type: string
+          enum: [all, department, tender]
+          description: |
+            Delegation scope. When scope == all, scope_id is absent. When scope
+            is department or tender, scope_id references the corresponding entity.
+        scope_id:
+          type: string
+          format: uuid
+          description: |
+            Scoped-delegation target. Present when scope != all; absent when
+            scope == all. Consumers of scoped delegations MUST read this field.
+        ends_at:
+          type: string
+          format: date-time
+          description: |
+            Optional hard end-time (delegation-expiry reconciler enforces this).
+            Absent when the delegation is open-ended (e.g. delegated until
+            manually cancelled).
+        actor_id:
+          type: string
+          format: uuid
+
+    DelegationEndedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - delegation_id
+        - tenant_id
+        - delegator_id
+        - delegate_id
+        - scope
+        - ended_reason
+        - actor_id
+      properties:
+        delegation_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        delegator_id:
+          type: string
+          format: uuid
+        delegate_id:
+          type: string
+          format: uuid
+        scope:
+          type: string
+          enum: [all, department, tender]
+        scope_id:
+          type: string
+          format: uuid
+        ended_reason:
+          type: string
+          enum: [expired, cancelled, delegate_removed]
+          x-enum-descriptions:
+            expired: >-
+              ends_at passed and the delegation-expiry reconciler ended the
+              delegation (pointer-clear on User Profile first, then row end).
+            cancelled: >-
+              Delegator or an operator explicitly cancelled the delegation
+              before ends_at.
+            delegate_removed: >-
+              The delegate was removed from the tenant / department that
+              enabled the delegation, and the delegation was ended as part of
+              the removal cascade (§8.8.4).
+        actor_id:
+          type: string
+          format: uuid
+
+    TenderAssigneeOverriddenPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tender_id
+        - tenant_id
+        - user_id
+        - actor_id
+      properties:
+        tender_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+          description: The newly-assigned user (validated by this service against membership rules).
+        actor_id:
+          type: string
+          format: uuid
+
+    TenantSeatOverageStartedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - licensed_seats
+        - active_users
+        - pending_invitations
+        - overage_since
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        licensed_seats:
+          type: integer
+          minimum: 0
+          description: Number of paid user seats sold on the plan.
+        active_users:
+          type: integer
+          minimum: 0
+          description: Current count of active users (excludes pending invitations and deleted users).
+        pending_invitations:
+          type: integer
+          minimum: 0
+          description: Current count of unaccepted invitations that hold a seat.
+        overage_since:
+          type: string
+          format: date-time
+          description: |
+            UTC timestamp of the first observation that
+            (active_users + pending_invitations) > licensed_seats. This is
+            the anchor Billing uses to size the SEAT_OVERAGE_GRACE_DAYS
+            countdown (default 30).
+
+    TenantSeatOverageResolvedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - resolved_at
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        resolved_at:
+          type: string
+          format: date-time
+          description: |
+            UTC timestamp at which (active_users + pending_invitations)
+            was observed to have fallen back to ≤ licensed_seats.
+
+    TenantStateChangedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - status
+        - previous_status
+        - plan
+        - previous_plan
+        - changed_at
+        - cause
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - trial
+            - active
+            - past_due
+            - cancelled
+            - suspended
+            - trial_expired
+            - offboarded
+          description: New tenant status after the transition.
+        previous_status:
+          type: string
+          enum:
+            - trial
+            - active
+            - past_due
+            - cancelled
+            - suspended
+            - trial_expired
+            - offboarded
+          description: Prior tenant status.
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+        previous_plan:
+          type: string
+          enum: [starter, pro, enterprise]
+        changed_at:
+          type: string
+          format: date-time
+          description: UTC timestamp of the state mutation (in the same tx as the outbox row).
+        cause:
+          type: string
+          description: |
+            Source event type that triggered the transition — e.g. the string
+            "TenantSuspended", "TenantCancelled", "TenantOffboarded",
+            "TrialExpired", "PlanChanged". This is a wire-string, not a UUID —
+            consumers can switch on it to differentiate normal vs punitive
+            state transitions.
+
+    TenantCreatedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - slug
+        - plan
+        - status
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$"
+          description: |
+            Tenant slug (lowercase alphanumeric + hyphens, 4-64 chars,
+            hyphen-anchored). Immutable after creation
+            (trg_tenant_slug_immutable enforces this at the DB layer).
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+        status:
+          type: string
+          enum:
+            - trial
+            - active
+            - past_due
+            - cancelled
+            - suspended
+            - trial_expired
+            - offboarded
+
+    TrialStartedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - plan
+        - trial_ends_at
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+        trial_ends_at:
+          type: string
+          format: date-time
+          description: |
+            UTC end of the trial window (now + plans.trial_duration_days at
+            provisioning time). The trial-cleanup reconciler transitions the
+            tenant to trial_expired at this moment if no plan upgrade has
+            occurred.

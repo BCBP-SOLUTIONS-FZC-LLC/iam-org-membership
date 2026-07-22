@@ -1,0 +1,80 @@
+# Terraform snippet — attach the reference policy in deploy/iam/policy.json to
+# an IRSA role. This file is *illustrative*, not applied by the application.
+# Platform Terraform owns the authoritative version of this resource.
+
+# 1. Trust policy — the ServiceAccount `iam-org-membership` in namespace `iam`
+#    assumes this role via IRSA.
+data "aws_iam_policy_document" "iam_org_membership_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:iam:iam-org-membership"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "iam_org_membership" {
+  name               = "iam-org-membership"
+  assume_role_policy = data.aws_iam_policy_document.iam_org_membership_trust.json
+}
+
+# 2. Permission policy — templated from deploy/iam/policy.json.
+#
+# Two SNS topics + two SQS queues (+ DLQs) + two Glue registries — this
+# matches the RoutingPublisher topology (LLD §7.3) and the two-queue consumer
+# topology (LLD §7.1: tenant-orgm-q, billing-orgm-q).
+resource "aws_iam_policy" "iam_org_membership" {
+  name = "iam-org-membership"
+  policy = templatefile("${path.module}/policy.json", {
+    # Two SNS outbound topics.
+    membership_events_topic_arn = aws_sns_topic.iam_membership_events.arn
+    tenant_events_topic_arn     = aws_sns_topic.iam_tenant_events.arn
+
+    # Two SQS inbound queues + their DLQs.
+    tenant_orgm_queue_arn       = aws_sqs_queue.tenant_orgm.arn
+    tenant_orgm_queue_dlq_arn   = aws_sqs_queue.tenant_orgm_dlq.arn
+    billing_orgm_queue_arn      = aws_sqs_queue.billing_orgm.arn
+    billing_orgm_queue_dlq_arn  = aws_sqs_queue.billing_orgm_dlq.arn
+
+    # Two Glue Schema Registries — one per outbound topic (LLD §7.3.1).
+    membership_registry_arn        = aws_glue_registry.iam_membership_events.arn
+    tenant_registry_arn            = aws_glue_registry.iam_tenant_events.arn
+    # The schema:* ARN is a distinct AWS resource type from registry:*.
+    # Glue schemas live under schema/<registry-name>/<schema-name>, so we build
+    # a prefix. The trailing /* is added inside policy.json.
+    membership_schema_arn_prefix = "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:schema/${aws_glue_registry.iam_membership_events.registry_name}"
+    tenant_schema_arn_prefix     = "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:schema/${aws_glue_registry.iam_tenant_events.registry_name}"
+
+    aws_region     = data.aws_region.current.name
+    aws_account_id = data.aws_caller_identity.current.account_id
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "iam_org_membership" {
+  role       = aws_iam_role.iam_org_membership.name
+  policy_arn = aws_iam_policy.iam_org_membership.arn
+}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Schema-gov CI role (register step) — NOT attached to the pod role above.
+# The pod is a read-only Glue consumer. Schema registration + update happens
+# in the schema-registry GitHub Actions workflow, which assumes a separate
+# CI role. Represented here for completeness.
+#
+# CI-only actions (do NOT add to the pod policy):
+#   glue:CreateSchema
+#   glue:RegisterSchemaVersion
+#   glue:UpdateSchema
+#   glue:PutSchemaVersionMetadata
+# ─────────────────────────────────────────────────────────────────────────

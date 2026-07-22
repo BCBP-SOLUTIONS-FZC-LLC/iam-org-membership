@@ -1,0 +1,129 @@
+version: 3
+workdir: .
+
+allow:
+  depOnAnyVendor: true
+  # Deep-scan follows method calls through the composition root and flags every
+  # DI wire (e.g. cmd passing an outbound adapter to a service constructor) as
+  # a cross-layer dependency. That's how Clean Architecture is supposed to work
+  # in main.go — keep import-level checks only.
+  deepScan: false
+
+# Tests, dev scripts, and deploy manifests are not part of the runtime
+# architecture. Excluding them keeps the linter focused on production code.
+exclude:
+  - test
+  - scripts
+  - deploy
+
+excludeFiles:
+  - '.*_test\.go$'
+
+components:
+  domain:
+    in: internal/core/domain
+
+  port:
+    in: internal/core/port
+
+  service:
+    in: internal/core/service
+
+  requestctx:
+    in: pkg/requestctx
+
+  # Embedded JSON schemas for domain events (used by eventbus validating codec).
+  eventschema:
+    in: internal/adapter/outbound/eventbus/schemas
+
+  # Cross-cutting Prometheus counters/histograms. Imported by both inbound
+  # handlers and outbound adapters (SQS consumer, reconciler binary).
+  observability:
+    in: internal/adapter/outbound/metrics
+
+  adapters_inbound:
+    in:
+      - internal/adapter/inbound/http
+      - internal/adapter/inbound/consumer
+
+  adapters_outbound:
+    in:
+      - internal/adapter/outbound/postgres
+      - internal/adapter/outbound/valkey
+      - internal/adapter/outbound/eventbus
+      - internal/adapter/outbound/userprofile
+      - internal/adapter/outbound/workflow
+      - internal/adapter/outbound/realmprovisioner
+
+  # Generated Swagger docs — output of `make swag` (swaggo/swag). Declared as a
+  # component so arch-lint doesn't fail on the blank import in cmd/server/main.go.
+  docs_swagger:
+    in: docs/swagger
+
+  cmd:
+    in:
+      - cmd/server
+      - cmd/reconciler
+
+deps:
+  # domain: no internal imports at all — pure value types only.
+  domain:
+    anyVendorDeps: true
+
+  # port: only domain.
+  port:
+    mayDependOn:
+      - domain
+
+  # service: domain + port + requestctx.
+  service:
+    mayDependOn:
+      - domain
+      - port
+      - requestctx
+
+  # requestctx: no internal deps.
+  requestctx:
+    anyVendorDeps: true
+
+  # eventschema: pure embedded assets, no internal deps.
+  eventschema:
+    anyVendorDeps: true
+
+  # observability: instrumentation only.
+  observability:
+    anyVendorDeps: true
+
+  # inbound adapters: service + port + domain + requestctx + observability.
+  adapters_inbound:
+    mayDependOn:
+      - service
+      - port
+      - domain
+      - requestctx
+      - observability
+
+  # outbound adapters: port + domain + eventschema + observability.
+  adapters_outbound:
+    mayDependOn:
+      - port
+      - domain
+      - eventschema
+      - observability
+
+  # docs_swagger: pure generated assets, no internal deps.
+  docs_swagger:
+    anyVendorDeps: true
+
+  # composition root: wires everything.
+  cmd:
+    mayDependOn:
+      - domain
+      - port
+      - service
+      - requestctx
+      - eventschema
+      - observability
+      - adapters_inbound
+      - adapters_outbound
+      - docs_swagger

@@ -1,0 +1,142 @@
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - go_private_token
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: dev
+      APP_PORT: "8080"
+      APP_NAME: iam-org-membership
+      PG_HOST: pgbouncer
+      PG_PORT: "5432"
+      PG_USER: org_membership_app
+      PG_PASSWORD: devpassword
+      PG_DBNAME: org_membership
+      PG_SSLMODE: disable
+      PG_MAX_CONNS: "20"
+      PG_MIN_CONNS: "0"
+      PG_BOUNCER_MODE: "true"
+      MIGRATION_DATABASE_URL: postgres://org_membership_app:devpassword@postgres:5432/org_membership?sslmode=disable
+      VALKEY_URL: redis:6379
+      SNS_TOPIC_MEMBERSHIP_ARN: arn:aws:sns:ap-south-1:000000000000:iam-membership-events
+      SNS_TOPIC_TENANT_ARN: arn:aws:sns:ap-south-1:000000000000:iam-tenant-events
+      SQS_TENANT_ORGM_QUEUE_URL: http://localstack:4566/000000000000/tenant-orgm-q
+      SQS_BILLING_ORGM_QUEUE_URL: http://localstack:4566/000000000000/billing-orgm-q
+      AWS_REGION: ap-south-1
+      AWS_ACCESS_KEY_ID: localstack
+      AWS_SECRET_ACCESS_KEY: localstack
+      AWS_ENDPOINT_URL: http://localstack:4566
+      OUTBOX_POLL_INTERVAL: 500ms
+      OUTBOX_BATCH_SIZE: "50"
+      OUTBOX_MAX_ATTEMPTS: "5"
+      OUTBOX_DRAIN_TIMEOUT: 30s
+      OUTBOX_PUBLISH_CONCURRENCY: "4"
+      OUTBOX_PUBLISH_TIMEOUT: 10s
+      OUTBOX_STARTUP_JITTER: 2s
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: org_membership_app
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: org_membership
+    ports:
+      # Host 5534 → container 5432. 5434 is claimed by iam-user-profile2's
+      # postgres so both services can run side-by-side on the host.
+      - "5534:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U org_membership_app -d org_membership"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: valkey/valkey:8-alpine
+    ports:
+      # Host 6380 → container 6379. 6379 is claimed by iam-user-profile2's
+      # Valkey so both services can run side-by-side.
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    ports:
+      # Host 5533 → container 5432. 5433 is claimed by iam-user-profile2's
+      # PgBouncer so both services can run side-by-side.
+      - "5533:5432"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: org_membership_app
+      DB_PASSWORD: devpassword
+      DB_NAME: org_membership
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 5
+      AUTH_TYPE: scram-sha-256
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      SERVER_TLS_SSLMODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U org_membership_app || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    # Community edition — supports SNS + SQS (all this service needs at MVP).
+    # Glue Schema Registry and KMS are Pro-only; the service runs with the
+    # NoopCodec when GLUE_REGISTRY_NAME is unset (the default for local dev).
+    # Pro opt-in: `make docker-up-pro`
+    #   (docker compose -f docker-compose.yml -f docker-compose.pro.yml up)
+    image: localstack/localstack:4.4.0
+    ports:
+      # Host 4567 → container 4566. 4566 is claimed by iam-user-profile2's
+      # LocalStack so both services can run side-by-side.
+      - "4567:4566"
+    environment:
+      SERVICES: sns,sqs
+      DEBUG: 0
+      AWS_DEFAULT_REGION: ap-south-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - localstack_data:/var/lib/localstack
+      - ./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-localstack.sh
+    healthcheck:
+      test: ["CMD", "awslocal", "sns", "list-topics"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  localstack_data:
+
+secrets:
+  go_private_token:
+    file: .go_private_token

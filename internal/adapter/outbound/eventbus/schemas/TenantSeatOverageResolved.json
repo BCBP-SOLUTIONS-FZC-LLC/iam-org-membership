@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "TenantSeatOverageResolved",
+  "title": "TenantSeatOverageResolved",
+  "description": "SEAT-5 transition: overage_since NOT NULL → NULL. Emitted when active_users + pending_invitations falls back to or below licensed_seats (users removed, invitations lapsed, or seats increased).",
+  "type": "object",
+  "required": ["tenant_id", "resolved_at"],
+  "properties": {
+    "tenant_id":   { "type": "string", "format": "uuid" },
+    "resolved_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

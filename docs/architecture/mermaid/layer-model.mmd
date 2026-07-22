@@ -1,0 +1,79 @@
+graph TD
+    subgraph cmd["Composition Roots  —  cmd/"]
+        main["server/main.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6)\nrouter registration + gincommon.DefaultMiddlewares\n4 in-process metric exporters (ticker goroutines):\n  iam_tenant_ownerless · iam_realm_sync_pending\n  iam_seat_overage_active · iam_pending_invitations_stale\nRoutingPublisher (2 SNS topics) + outbox runner\ngraceful shutdown order: HTTP → outbox.Stop → cancelBg → SQS → cache"]
+        swagger_info["server/swagger_info.go\nSwaggo API metadata annotations"]
+        reconciler["reconciler/main.go\nsingle binary, Option A dispatch\n--job=<name> selects one of 8 CronJobs (§13.1):\n  invitation-expiry · invitation-kc-cleanup\n  realm-config-sync · seat-overage-reconcile\n  delegation-expiry · trial-cleanup\n  outbox-prune · processed-events-prune"]
+    end
+
+    subgraph adapters_in["Inbound Adapters  —  internal/adapter/inbound/"]
+        http_h["http/\nTenantHandler · DepartmentHandler\nMembershipHandler (DELETE pre-check; P-26 removal-resolution;\n  P-6/P-30/P-31 invite lifecycle; P-27 seat-usage)\nRoleHandler · GroupMappingHandler\nDelegationHandler · ACLHandler\ndto.go — DelegateImpact / RemovalResolution / SeatUsage / Invitation DTOs"]
+        consumer["consumer/\nMembershipEventConsumer\ntenant-orgm-q ← iam.tenant.events (RP lifecycle)\nbilling-orgm-q ← billing.events (Billing lifecycle)\nEVT-14 recency guard · EVT-15 future-time clamp\nEVT-16 TenantStateChanged relay (§16 A61)"]
+    end
+
+    subgraph adapters_out["Outbound Adapters  —  internal/adapter/outbound/"]
+        postgres["postgres/\nTenantRepository · DepartmentRepository\nMembershipRepository · RoleRepository\nGroupMappingRepository · DelegationRepository\nACLRepository · TxRunner\nOptimistic locking (record_version) on 14 tables (TRG-1)\nmigrations/ — additive-then-destructive (MIG-1)"]
+        valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only (CACHE-2/CACHE-9)\nom:memberships · om:tenant · om:members · om:dept_members\nom:locale · om:roles · om:grm · om:gdm\nom:seat_usage (30 s, CACHE-5) · om:plans"]
+        eventbus["eventbus/\nRoutingPublisher (events.NewRoutingPublisher)\n  routes by Envelope.Source →\n    iam.membership.events (11 events)\n    iam.tenant.events (2 events: TenantCreated, TrialStarted)\nOutbox runner · ValidatingCodec\nschemas/*.json embedded via //go:embed"]
+        userprofile["userprofile/\nport.UserProfileClient impl (HTTP)\nSetAvailability — delegation OOO coordination (§8.6 CONS-2)\ngincommon.PropagateHeaders · USER_PROFILE_TIMEOUT_MS=3000"]
+        workflow["workflow/\nport.WorkflowClient impl (HTTP, §8.8)\nGetDelegateImpact · ReassignDelegate · CancelByDelegate\nAll accept optional delegation_id *uuid.UUID (WFI-11)\nWORKFLOW_SERVICE_TIMEOUT_MS=3000"]
+        rp["realmprovisioner/\nport.RealmProvisionerClient impl (HTTP)\nCreateInvitedUser (§8.10) · DeleteUser (idempotent, PI-9)\nPatchRealmConfig (T-15) · RevokeUserSessions (AUTH-8 fail-open)\nREALM_PROVISIONER_TIMEOUT_MS=3000"]
+        metrics["metrics/\nCounters/histograms/gauges (all iam_-prefixed):\niam_membership_joins_total · iam_delegation_created_total\niam_membership_lookup_latency_seconds (SLO-1 source)\niam_delegate_removal_blocked_total{trigger}\niam_seat_limit_reached_total · iam_seat_overage_tenants\niam_stale_lifecycle_event_skipped_total (EVT-14)\niam_future_lifecycle_event_rejected_total (EVT-15)\niam_tenant_ownerless (gauge) · iam_realm_sync_pending\niam_pending_invitations · iam_lifecycle_consumer_lag_seconds"]
+    end
+
+    subgraph eventschema_grp["Embedded Schemas  —  eventbus/schemas/"]
+        eventschema["schemas/*.json\nJSON Schema Draft-07, one file per event type (13)\nDerived via schema-gov extract from api/asyncapi.yaml\n//go:embed → ValidatingCodec fail-closed on invalid payload"]
+    end
+
+    subgraph core["Core  —  internal/core/"]
+        service["service/\nTenantService · DepartmentService\nMembershipService (§8.8 RemoveUser + delegate-impact pre-check;\n  §8.10 Invite / AcceptInvitation; SEAT-1; TM-8/TM-12/TM-13)\nRoleService · GroupMappingService\nDelegationService (§8.6/§8.7 UP coordination CONS-2 / DEL-6)\nACLService"]
+        port["port/\nTenantRepository · DepartmentRepository\nMembershipRepository · RoleRepository\nGroupMappingRepository · DelegationRepository\nACLRepository · Cache · EventPublisher\nUserProfileClient · WorkflowClient · RealmProvisionerClient"]
+        domain["domain/\nTenant · Department · TenantMembership · DeptMembership\nTenantRole · GroupMapping · Delegation · TenderACLEntry\nDomainEvent payload types\nDomainError — ErrNotFound · ErrConflict\n  ErrWorkflowResolutionRequired · ErrSeatLimitReached\n  ErrInvitationAlreadyExists · ErrInvalidReplacement"]
+    end
+
+    subgraph pkg["Shared Packages  —  pkg/"]
+        requestctx["requestctx/\nRequestContext{UserID, TenantID, Roles, ClientIP, UserAgent}\nWithContext · FromContext · HasRole · IsAdmin"]
+    end
+
+    subgraph tests["Tests  —  test/"]
+        unit["unit/\nmembership_service (RemoveUser delegate-impact §8.8)\ndelegation_service (UP coordination CONS-2)\nvalidator · domain · port mocks (testify/mock)"]
+        postgres_t["postgres/\nRLS Case 5 (RLS-6 — pooled backend, no GUC leak)\nComposite FK enforcement · touch_row trigger\nEVT-14/EVT-15/EVT-16 · TM-12/TM-13 · T-15"]
+        integration["integration/\ncross-layer testcontainers (PG + Valkey + LocalStack SNS/SQS)"]
+        fixtures["fixtures/\nFakeWorkflowClient · FakeUserProfileClient\nFakeRealmProvisionerClient · MockCache · FakeTxRunner"]
+    end
+
+    main        --> http_h
+    main        --> consumer
+    main        --> postgres
+    main        --> valkey
+    main        --> eventbus
+    main        --> userprofile
+    main        --> workflow
+    main        --> rp
+    main        --> metrics
+    reconciler  --> postgres
+    reconciler  --> eventbus
+    reconciler  --> rp
+    reconciler  --> metrics
+    http_h      --> service
+    http_h      --> port
+    http_h      --> requestctx
+    http_h      --> metrics
+    consumer    --> service
+    service     --> port
+    service     --> domain
+    service     --> requestctx
+    postgres    --> port
+    postgres    --> domain
+    valkey      --> port
+    eventbus    --> port
+    eventbus    --> eventschema
+    userprofile --> port
+    workflow    --> port
+    rp          --> port
+    port        --> domain
+    unit        -.->|"imports"| service
+    unit        -.->|"imports"| domain
+    postgres_t  -.->|"imports"| postgres
+    integration -.->|"imports"| http_h
+    unit        -.-> fixtures
+    integration -.-> fixtures

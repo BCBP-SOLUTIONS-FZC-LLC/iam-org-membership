@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant User as Delegator
+    participant H as DelegationHandler
+    participant DelSVC as DelegationService
+    participant MemRepo as MembershipRepository
+    participant UPClient as UserProfileClient (HTTP)
+    participant UP as User Profile /internal/users/:id/availability
+    participant TX as pgcommon.RunInTx
+    participant DB as PostgreSQL (delegations)
+    participant OB as outbox_events
+    participant Cache as Valkey (om:memberships)
+
+    Note over User,H: P-19  POST /api/v1/delegations {delegate_id, scope, ends_at, ooo_note}<br/>SLO: p99 200 ms (includes UP call)
+
+    User ->>+ H: POST /delegations
+    H ->>+ DelSVC: CreateDelegation(ctx, tenantID, delegatorID, input)
+
+    DelSVC ->>+ MemRepo: FindActiveMembership(tenantID, delegateID)
+    Note over MemRepo: Pre-flight: delegate is active member of same tenant (DEL-1)
+    alt delegate not found / inactive / different tenant
+        MemRepo -->> DelSVC: nil
+        DelSVC -->> H: ErrInvalidDelegate
+        H -->> User: 422 invalid_delegate
+    else delegate valid
+        MemRepo -->>- DelSVC: *domain.TenantMembership (active)
+
+        DelSVC ->>+ UPClient: SetAvailability(ctx, delegatorID, tenantID,<br/>{status:'ooo', delegate_id, ooo_note, ends_at})
+        Note over UPClient,UP: HTTP PUT /api/v1/internal/users/{delegator_id}/availability<br/>gincommon.PropagateHeaders — carries W3C traceparent<br/>USER_PROFILE_TIMEOUT_MS = 3000
+
+        UPClient ->>+ UP: PUT /internal/users/:id/availability
+        Note over UP: UP owns user_availability (presentation layer).<br/>Validates window (ends_at > now, ≤ 180 days), re-checks delegate active.
+
+        alt UP 4xx (delegate raced to inactive OR window invalid)
+            UP -->> UPClient: 422
+            UPClient -->> DelSVC: ErrInvalidDelegate
+            DelSVC -->> H: 422 invalid_delegate
+            H -->> User: 422 invalid_delegate (mid-request race)
+        else UP 5xx / timeout
+            UP -->> UPClient: error
+            UPClient -->> DelSVC: ErrUserProfileUnavailable
+            DelSVC -->> H: 503 user_profile_unavailable
+            Note over DelSVC,H: fail-closed — no DB write, no outbox row (§20.7).<br/>Client retries. Consistency preserved.
+        else UP 200 (availability committed on UP side first)
+            UP -->>- UPClient: 200 AvailabilityResponse
+            UPClient -->>- DelSVC: nil
+
+            Note over DelSVC,TX: Ordering guarantee (CONS-2, §8.6):<br/>delegations row + DelegationStarted outbox NEVER inserted<br/>until UP has returned 200. No DelegationStarted without matching availability.
+
+            DelSVC ->>+ TX: RunInTx(ctx, func(txCtx))
+            TX ->>+ DB: INSERT delegations (<br/>  id, tenant_id, delegator_id, delegate_id,<br/>  scope, scope_id, ends_at, status='active',<br/>  record_version=1<br/>)
+            DB -->>- TX: inserted
+            TX ->>+ OB: outbox.Enqueue(DelegationStarted<br/>{delegation_id, tenant_id, delegator_id, delegate_id, scope, scope_id, ends_at, actor_id})<br/>source = iam.membership.events
+            OB -->>- TX: inserted
+            TX ->>+ DB: COMMIT
+            DB -->>- TX: committed (delegation + event atomic, EVT-10)
+            TX -->>- DelSVC: nil
+
+            DelSVC ->>+ Cache: DEL om:memberships:{tenant}:{delegator_id}
+            Note over Cache: Post-commit invalidation (CACHE-6). I-8 next read repopulates<br/>with active_delegations[] including new row.
+            Cache -->>- DelSVC: ok
+
+            DelSVC -->>- H: *domain.Delegation
+            H -->>- User: 201 DelegationResponse
+        end
+    end
+
+    Note over DB,OB: Outbox runner publishes DelegationStarted → SNS iam.membership.events →<br/>membership-workflow-q → Workflow Service reroutes pending tickets.<br/>End-to-end SLO 5 s p99 (SLO-2 joint budget, consume half is Workflow-owned).
+
+    Note over UP,DelSVC: Expiry (§8.7 CronJob every 5 min, delegation-expiry):<br/>SELECT ... WHERE ends_at <= now() AND status='active' LIMIT 50<br/>1. UP.SetAvailability({delegate_id: null})  — POINTER CLEAR ONLY, not {status:'available'} (DEL-6, §16 A49/J2)<br/>2. On UP 200: RunInTx UPDATE delegations SET status='ended', deleted_at=now() + outbox DelegationEnded<br/>3. On UP 5xx: leave status='active', retry next run (iam_delegation_expiry_deferred_total++)<br/>4. Cache DEL om:memberships:{tenant}:{delegator} post-commit<br/>Rationale: ending delegation ≠ delegator returning. 'ooo→available' is UP-owned only (its own sweep).

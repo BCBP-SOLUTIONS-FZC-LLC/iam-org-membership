@@ -1,0 +1,400 @@
+//go:build integration
+
+// Package postgres_test is the canonical Phase 1 test suite: spins up a
+// fresh Postgres 17 container via testcontainers-go, applies every domain
+// migration, and asserts the RLS/trigger/check invariants named in LLD §14.5.
+//
+// Requires Docker on the runner. Tag: integration.
+package postgres_test
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
+)
+
+const (
+	appRolePassword    = "apppassword-testonly"
+	migratorPassword   = "migratorpassword-testonly"
+)
+
+// setupTestDB spins up a Postgres 17 container, applies every migration
+// (as superuser so DDL and CREATE ROLE succeed), creates the two runtime
+// roles the LLD calls out (org_membership_app without BYPASSRLS,
+// org_membership_migrator with BYPASSRLS), and returns:
+//
+//	appPool     — pgcommon.Pool bound as org_membership_app, RLS enforced,
+//	              GUC-provider wired so `SET LOCAL app.tenant_id` fires on
+//	              every checkout (mirrors production).
+//	rawPool     — raw pgxpool bound as postgres superuser, used only to
+//	              seed rows (bypasses RLS naturally).
+func setupTestDB(t *testing.T) (*pgcommon.Pool, *pgxpool.Pool) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping postgres integration test in short mode")
+	}
+	ctx := context.Background()
+
+	pgContainer, err := tcpostgres.Run(ctx,
+		"postgres:17-alpine",
+		tcpostgres.WithDatabase("org_membership"),
+		tcpostgres.WithUsername("postgres"),
+		tcpostgres.WithPassword("testpassword"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(60*time.Second),
+		),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
+
+	superDSN, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	rawPool, err := pgxpool.New(ctx, superDSN)
+	require.NoError(t, err)
+	t.Cleanup(rawPool.Close)
+
+	// Create the two runtime roles BEFORE running migrations. Migration
+	// 000005_roles reasserts BYPASSRLS on the migrator and strips BYPASSRLS
+	// from the app role if somehow acquired.
+	_, err = rawPool.Exec(ctx, fmt.Sprintf(
+		`CREATE ROLE org_membership_app LOGIN PASSWORD '%s' NOBYPASSRLS`, appRolePassword))
+	require.NoError(t, err)
+	_, err = rawPool.Exec(ctx, fmt.Sprintf(
+		`CREATE ROLE org_membership_migrator LOGIN PASSWORD '%s' BYPASSRLS`, migratorPassword))
+	require.NoError(t, err)
+
+	// Apply migrations as superuser (needs CREATE EXTENSION, CREATE TYPE, etc).
+	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))
+
+	// Grant table + function privileges to org_membership_app so the
+	// RLS-enforced pool can actually read/write. RLS still gates rows.
+	grants := []string{
+		`GRANT CONNECT ON DATABASE org_membership TO org_membership_app`,
+		`GRANT USAGE ON SCHEMA public TO org_membership_app`,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO org_membership_app`,
+		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO org_membership_app`,
+		`GRANT EXECUTE ON FUNCTION app_tenant_id()                    TO org_membership_app`,
+		`GRANT EXECUTE ON FUNCTION log_rls_violation(text, uuid, text) TO org_membership_app`,
+		`GRANT EXECUTE ON FUNCTION rls_check_tenant(uuid, text)       TO org_membership_app`,
+	}
+	for _, stmt := range grants {
+		_, err = rawPool.Exec(ctx, stmt)
+		require.NoError(t, err, stmt)
+	}
+
+	// pgcommon pool as org_membership_app — RLS is fully enforced here.
+	// GUCProvider wires the same transaction-local `SET LOCAL app.tenant_id`
+	// binding used in production (RLS-6).
+	appDSN := strings.Replace(superDSN, "postgres:testpassword@", "org_membership_app:"+appRolePassword+"@", 1)
+	appPool, err := pgcommon.NewPool(ctx, pgcommon.Config{
+		DSN:           appDSN,
+		PGBouncerMode: false, // testcontainer talks to Postgres directly
+		GUCProvider:   pgcommon.GUCSetFromContext,
+	})
+	require.NoError(t, err)
+	t.Cleanup(appPool.Close)
+
+	return appPool, rawPool
+}
+
+// withTenant returns a context carrying a pgcommon GUCSet so the pool's
+// GUCProvider emits `SET LOCAL app.tenant_id = <uuid>` on every checkout.
+func withTenant(ctx context.Context, tenantID uuid.UUID) context.Context {
+	g, _ := pgcommon.GUCSetFromContext(ctx)
+	g.TenantID = tenantID.String()
+	return pgcommon.WithGUCSet(ctx, g)
+}
+
+// seedTenant inserts a tenants row via the superuser pool. Bypasses RLS.
+// Returns the tenant id.
+func seedTenant(t *testing.T, ctx context.Context, rawPool *pgxpool.Pool, slug string) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	_, err := rawPool.Exec(ctx, `
+		INSERT INTO tenants (id, slug, name, plan, status, trial_ends_at)
+		VALUES ($1, $2, $3, 'starter', 'trial', now() + interval '30 days')`,
+		id, slug, slug)
+	require.NoError(t, err)
+	return id
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Case 1 (RLS-1): every tenant-scoped table has ENABLE + FORCE RLS.
+// ─────────────────────────────────────────────────────────────────────────
+func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
+	_, rawPool := setupTestDB(t)
+	ctx := context.Background()
+
+	// The 12 tenant-scoped tables per LLD §4.3.
+	expected := []string{
+		"tenants", "tenant_departments", "tenant_memberships", "tenant_roles",
+		"dept_memberships", "dept_role_labels",
+		"group_dept_role_mappings", "group_tenant_role_mappings", "group_dept_mappings",
+		"delegations", "tender_acl_entries", "pending_invitations",
+	}
+	rows, err := rawPool.Query(ctx, `
+		SELECT c.relname
+		FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+		WHERE n.nspname = 'public'
+		  AND c.relkind = 'r'
+		  AND c.relrowsecurity = true
+		  AND c.relforcerowsecurity = true`)
+	require.NoError(t, err)
+	defer rows.Close()
+	got := map[string]bool{}
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		got[name] = true
+	}
+	for _, e := range expected {
+		assert.True(t, got[e], "expected %s to have ENABLE + FORCE ROW LEVEL SECURITY", e)
+	}
+	assert.Len(t, got, len(expected), "unexpected extra RLS tables: %v", got)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Case 2 (RLS-2): missing/malformed GUC → 0 rows, no writes.
+// ─────────────────────────────────────────────────────────────────────────
+func TestRLS_Case2_FailClosedOnMissingGUC(t *testing.T) {
+	appPool, rawPool := setupTestDB(t)
+	ctx := context.Background()
+	_ = seedTenant(t, ctx, rawPool, "acme")
+
+	// No GUC in context → pool checkout binds no app.tenant_id → policy
+	// returns false for every row → SELECT returns 0.
+	var count int
+	err := pgcommon.RunInTx(ctx, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM tenants`).Scan(&count)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "RLS-2: missing GUC must return 0 rows")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Case 3 (RLS-3): cross-tenant INSERT rejected by WITH CHECK.
+// ─────────────────────────────────────────────────────────────────────────
+func TestRLS_Case3_CrossTenantInsertRejectedByWithCheck(t *testing.T) {
+	appPool, rawPool := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "acme")
+	tenantB := uuid.New()
+
+	ctxA := withTenant(ctx, tenantA)
+	// Under tenantA GUC, attempt to insert a tenant_membership row whose
+	// tenant_id = tenantB → WITH CHECK compares row's tenant_id to
+	// app.tenant_id → false → new row for relation violates policy.
+	err := pgcommon.RunInTx(ctxA, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO tenant_memberships (id, tenant_id, user_id)
+			VALUES (gen_random_uuid(), $1, gen_random_uuid())`,
+			tenantB)
+		return err
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "row-level security", "RLS-3: WITH CHECK must reject cross-tenant insert")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Case 5 (RLS-6): no cross-tenant leak across a pooled connection.
+// Canonical PgBouncer safety test — tenant A executes a tx, its
+// connection returns to the pool, tenant B executes on (potentially) the
+// same backend, and B must NOT see A's rows. Because pgcommon uses SET
+// LOCAL app.tenant_id, the GUC auto-resets at COMMIT.
+// ─────────────────────────────────────────────────────────────────────────
+func TestRLS_Case5_NoCrossTenantLeakAcrossPool(t *testing.T) {
+	appPool, rawPool := setupTestDB(t)
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, ctx, rawPool, "acme")
+	tenantB := seedTenant(t, ctx, rawPool, "beta")
+
+	// Force a single connection so B pins the same backend A used.
+	// (pgcommon.NewPool default is >1 conns; single-conn stress focuses the test.)
+	// We accomplish this by running the two ops serially — with a small pool
+	// or a fresh pool this deterministically reuses the same backend.
+
+	// Tenant A: read own tenant row (should see it).
+	ctxA := withTenant(ctx, tenantA)
+	var seenA string
+	err := pgcommon.RunInTx(ctxA, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx, `SELECT slug FROM tenants WHERE id = $1`, tenantA).Scan(&seenA)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "acme", seenA)
+
+	// Tenant B: read own tenant row + attempt to read A's row.
+	ctxB := withTenant(ctx, tenantB)
+	var seenB string
+	err = pgcommon.RunInTx(ctxB, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx, `SELECT slug FROM tenants WHERE id = $1`, tenantB).Scan(&seenB)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "beta", seenB)
+
+	// Tenant B tries to see tenant A's row → 0 rows (no leak).
+	var count int
+	err = pgcommon.RunInTx(ctxB, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM tenants WHERE id = $1`, tenantA).Scan(&count)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "RLS-6: tenant B must not see any of tenant A's rows on a pooled backend")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// T-1: slug UPDATE raises exception (trg_tenant_slug_immutable).
+// ─────────────────────────────────────────────────────────────────────────
+func TestT1_SlugIsImmutable(t *testing.T) {
+	appPool, rawPool := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "acme")
+
+	ctxA := withTenant(ctx, tenantA)
+	err := pgcommon.RunInTx(ctxA, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		_, err := tx.Exec(ctx, `UPDATE tenants SET slug = 'renamed' WHERE id = $1`, tenantA)
+		return err
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tenant slug is immutable")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TRG-3: no-op UPDATE does NOT bump record_version.
+// ─────────────────────────────────────────────────────────────────────────
+func TestTRG3_NoOpUpdateDoesNotBumpVersion(t *testing.T) {
+	appPool, rawPool := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "acme")
+
+	ctxA := withTenant(ctx, tenantA)
+	// status is already 'trial' after seed; setting it again is a no-op row.
+	var before, after int64
+	err := pgcommon.RunInTx(ctxA, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		if err := tx.QueryRow(ctx, `SELECT record_version FROM tenants WHERE id = $1`, tenantA).Scan(&before); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE tenants SET status = 'trial' WHERE id = $1`, tenantA); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT record_version FROM tenants WHERE id = $1`, tenantA).Scan(&after)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "TRG-3: no-op UPDATE must not bump record_version")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TR-7 / chk_tr_no_member: INSERT with role_code='member' rejected.
+// ─────────────────────────────────────────────────────────────────────────
+func TestTR7_MemberRoleRejected(t *testing.T) {
+	appPool, rawPool := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "acme")
+
+	ctxA := withTenant(ctx, tenantA)
+	err := pgcommon.RunInTx(ctxA, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		userID := uuid.New()
+		membershipID := uuid.New()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO tenant_memberships (id, tenant_id, user_id) VALUES ($1, $2, $3)`,
+			membershipID, tenantA, userID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO tenant_roles (tenant_id, user_id, tenant_membership_id, role_code, granted_by)
+			 VALUES ($1, $2, $3, 'member', $2)`,
+			tenantA, userID, membershipID)
+		return err
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "chk_tr_no_member")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// D-4 / OP-3: DELETE on departments raises via trg_prevent_department_delete.
+// ─────────────────────────────────────────────────────────────────────────
+func TestD4_DepartmentDeleteBlocked(t *testing.T) {
+	_, rawPool := setupTestDB(t)
+	ctx := context.Background()
+
+	// Try to delete a system dept as superuser (RLS bypassed, so only the
+	// trigger stands between us and destruction).
+	_, err := rawPool.Exec(ctx, `DELETE FROM departments WHERE code = 'LEGAL'`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "departments cannot be deleted")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Composite FK (§16 A15/A28, DM-4): dept_memberships INSERT with a
+// (id, tenant_id, user_id) triple that does not match a real
+// tenant_memberships row is rejected by fk_dm_tenant_membership.
+// ─────────────────────────────────────────────────────────────────────────
+func TestCompositeFK_DeptMembershipRejectsWrongUser(t *testing.T) {
+	appPool, rawPool := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "acme")
+
+	ctxA := withTenant(ctx, tenantA)
+	err := pgcommon.RunInTx(ctxA, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		userID := uuid.New()
+		membershipID := uuid.New()
+		wrongUserID := uuid.New()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO tenant_memberships (id, tenant_id, user_id) VALUES ($1, $2, $3)`,
+			membershipID, tenantA, userID); err != nil {
+			return err
+		}
+		// Activate a dept for the tenant so fk_dm_tenant_dept doesn't fail first.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO tenant_departments (tenant_id, department_id)
+			 SELECT $1, id FROM departments WHERE code='ENGINEERING'`, tenantA); err != nil {
+			return err
+		}
+		// Composite FK targets (id, tenant_id, user_id) — passing wrongUserID must fail.
+		_, err := tx.Exec(ctx, `
+			INSERT INTO dept_memberships (tenant_id, user_id, tenant_membership_id, department_id, role_level, granted_by)
+			SELECT $1, $2, $3, id, 'preparator', $2
+			FROM departments WHERE code='ENGINEERING'`,
+			tenantA, wrongUserID, membershipID)
+		return err
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fk_dm_tenant_membership")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Seeds: 3 plans + 5 system departments present.
+// ─────────────────────────────────────────────────────────────────────────
+func TestSeeds_PlansAndSystemDepartments(t *testing.T) {
+	_, rawPool := setupTestDB(t)
+	ctx := context.Background()
+
+	var planCount, deptCount int
+	require.NoError(t, rawPool.QueryRow(ctx, `SELECT count(*) FROM plans`).Scan(&planCount))
+	assert.Equal(t, 3, planCount, "3 plan tiers must be seeded (starter/pro/enterprise)")
+
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT count(*) FROM departments WHERE is_system = true`).Scan(&deptCount))
+	assert.Equal(t, 5, deptCount, "5 system departments must be seeded (Engineering, Design, Procurement, Finance, Legal)")
+
+	// Enterprise plan has NULL limits (unlimited per §19.3).
+	var wf, tender *int
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT workflow_template_limit, tender_limit FROM plans WHERE code='enterprise'`).Scan(&wf, &tender))
+	assert.Nil(t, wf, "enterprise workflow_template_limit must be NULL (unlimited)")
+	assert.Nil(t, tender, "enterprise tender_limit must be NULL (unlimited)")
+}

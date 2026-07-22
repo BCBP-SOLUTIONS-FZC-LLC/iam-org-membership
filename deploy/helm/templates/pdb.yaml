@@ -1,0 +1,15 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+spec:
+  # With minReplicas: 2 (LLD §13.1) keep minAvailable=1 so a single node drain
+  # cannot take the service to zero. Bump to 2 if scaling minReplicas to >=3.
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "iam-org-membership.selectorLabels" . | nindent 6 }}
+{{- end }}

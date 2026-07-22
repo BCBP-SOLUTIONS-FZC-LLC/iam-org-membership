@@ -1,0 +1,146 @@
+# SLO recording + burn-rate alerts for iam-org-membership (§11.1).
+#
+# Three SLOs are declared:
+#
+#  SLO-1  I-8 hot-path latency
+#         Target: 99% of /internal/users/:id/memberships requests complete
+#         within 30 ms (cache miss); 95% within 15 ms (cache hit).
+#
+#  SLO-2  Write-path error rate
+#         Target: 99.9% of mutating requests on /api/v1/tenants/* return a
+#         non-5xx status (excludes intentional 4xx like optimistic-lock 409).
+#
+#  SLO-3  Reconciler convergence
+#         Target: durable markers (realm_sync_pending, kc_cleanup_pending,
+#         overage_since) clear within 2 CronJob cycles (default 20 min).
+#
+# Recording rules pre-compute the SLI numerator/denominator so alert rules
+# can key off a scalar. Alerts follow the multi-window multi-burn-rate
+# pattern (SRE book Ch. 5): a slow burn signals an ongoing degradation,
+# a fast burn signals an outage worth paging on.
+
+groups:
+  # ── SLI recording ───────────────────────────────────────────────────────
+  - name: iam-org-membership.slo.records
+    interval: 30s
+    rules:
+      # I-8 latency histogram → error budget window.
+      # Assumes the gincommon middleware exposes http_request_duration_seconds
+      # bucketed histogram with a "path" label.
+      - record: iam:i8_latency_sli:ratio_rate_5m
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{
+            service="iam-org-membership",
+            path="/api/v1/internal/users/:id/memberships",
+            le="0.030"
+          }[5m]))
+          /
+          sum(rate(http_request_duration_seconds_count{
+            service="iam-org-membership",
+            path="/api/v1/internal/users/:id/memberships"
+          }[5m]))
+
+      - record: iam:i8_latency_sli:ratio_rate_1h
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{
+            service="iam-org-membership",
+            path="/api/v1/internal/users/:id/memberships",
+            le="0.030"
+          }[1h]))
+          /
+          sum(rate(http_request_duration_seconds_count{
+            service="iam-org-membership",
+            path="/api/v1/internal/users/:id/memberships"
+          }[1h]))
+
+      # Write-path error rate (5xx only — 4xx are intentional).
+      - record: iam:write_error_rate:ratio_rate_5m
+        expr: |
+          sum(rate(http_requests_total{
+            service="iam-org-membership",
+            method=~"POST|PUT|PATCH|DELETE",
+            status_code=~"5.."
+          }[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total{
+            service="iam-org-membership",
+            method=~"POST|PUT|PATCH|DELETE"
+          }[5m])), 0.001)
+
+      # Reconciler convergence — durable marker persistence.
+      # If a marker gauge is non-zero for longer than one CronJob cycle
+      # (10 min for our shortest schedule), the SLO is at risk.
+      - record: iam:reconciler_markers:sum
+        expr: |
+          iam_realm_sync_pending
+          + iam_pending_invitations_stale
+          + (iam_tenant_ownerless * 5)  # weighted: ownerless is more serious
+
+  # ── SLO burn-rate alerts (multi-window) ─────────────────────────────────
+  - name: iam-org-membership.slo.burn
+    interval: 1m
+    rules:
+      # SLO-1: fast burn on I-8 latency (2% budget in 1h → page).
+      - alert: IAMSLO1_I8LatencyFastBurn
+        expr: |
+          (1 - iam:i8_latency_sli:ratio_rate_5m) > (14.4 * (1 - 0.99))
+          and
+          (1 - iam:i8_latency_sli:ratio_rate_1h) > (14.4 * (1 - 0.99))
+        for: 2m
+        labels:
+          severity: page
+          slo: SLO-1
+          service: iam-org-membership
+        annotations:
+          summary: "SLO-1 fast-burn: I-8 P99 latency degraded"
+          description: |
+            I-8 /internal/users/:id/memberships is missing the 30 ms target
+            for {{ $value | humanizePercentage }} of requests over the last
+            5m + 1h windows. Cache miss rate elevated OR the joined
+            projection query is slow. Check om:memberships cache health
+            and Postgres query planner for tenant_memberships.
+
+      # SLO-1: slow burn (5% budget in 24h → ticket).
+      - alert: IAMSLO1_I8LatencySlowBurn
+        expr: |
+          (1 - iam:i8_latency_sli:ratio_rate_1h) > (6 * (1 - 0.99))
+        for: 15m
+        labels:
+          severity: ticket
+          slo: SLO-1
+          service: iam-org-membership
+        annotations:
+          summary: "SLO-1 slow-burn: I-8 latency below target for 15m+"
+
+      # SLO-2: write-path 5xx spike.
+      - alert: IAMSLO2_WriteErrorRateFastBurn
+        expr: iam:write_error_rate:ratio_rate_5m > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          slo: SLO-2
+          service: iam-org-membership
+        annotations:
+          summary: "SLO-2 fast-burn: write-path 5xx rate above target"
+          description: |
+            {{ $value | humanizePercentage }} of mutating requests are
+            returning 5xx. Likely Postgres or an outbound service (RP/UP)
+            failure — cross-reference iam_session_revoke_failed_total and
+            /readyz.
+
+      # SLO-3: reconciler markers accumulating.
+      - alert: IAMSLO3_ReconcilerMarkersElevated
+        expr: iam:reconciler_markers:sum > 5
+        for: 20m
+        labels:
+          severity: ticket
+          slo: SLO-3
+          service: iam-org-membership
+        annotations:
+          summary: "SLO-3: durable markers accumulating (reconciler convergence)"
+          description: |
+            Combined durable-marker gauge = {{ $value }} for 20m+. Check
+            each CronJob's last successful run:
+              - realm-config-sync (T-15)
+              - invitation-expiry
+              - operator O-7 reassign-owner (T-13)

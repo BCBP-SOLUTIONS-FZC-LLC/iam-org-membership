@@ -1,0 +1,15 @@
+apiVersion: v2
+name: iam-org-membership
+description: IAM Org & Membership Service — organizational layer (tenants, memberships, roles, delegations)
+type: application
+version: 0.1.0-phase0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0"
+keywords:
+  - iam
+  - tenant
+  - membership
+  - rbac
+maintainers:
+  - name: BCBP Solutions
+    email: platform@bcbpsolutions.com

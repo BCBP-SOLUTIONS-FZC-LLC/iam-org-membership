@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "TenderAssigneeOverridden",
+  "title": "TenderAssigneeOverridden",
+  "description": "I-13 validate-and-emit — O&M persists nothing (OVR-1). Emitted after O&M confirms the actor holds tender_admin and the new assignee is an active member at the required level in the department.",
+  "type": "object",
+  "required": ["tender_id", "tenant_id", "user_id", "actor_id"],
+  "properties": {
+    "tender_id": { "type": "string", "format": "uuid" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "user_id":   { "type": "string", "format": "uuid" },
+    "actor_id":  { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": false
+}

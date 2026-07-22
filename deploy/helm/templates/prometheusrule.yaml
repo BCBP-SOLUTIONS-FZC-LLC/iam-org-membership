@@ -1,0 +1,294 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: iam_org_membership_availability
+      rules:
+        - alert: IAMOrgMembershipDown
+          expr: |
+            absent(up{job={{ include "iam-org-membership.fullname" . | quote }}} == 1)
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: iam-org-membership has no healthy instances
+            description: >-
+              No iam-org-membership pods have been scraped as healthy for 2 minutes.
+              Check pod readiness: kubectl get pods -l app.kubernetes.io/name=iam-org-membership
+
+        - alert: IAMOrgMembershipReplicasMissing
+          expr: |
+            sum(up{job={{ include "iam-org-membership.fullname" . | quote }}}) < 2
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: iam-org-membership running below minimum replica count
+            description: >-
+              Fewer than 2 replicas are healthy. HPA minReplicas is 2 (LLD §13.1);
+              a further disruption will block node drains.
+              Current healthy count: {{ "{{ $value }}" }}.
+
+    - name: iam_org_membership_errors
+      rules:
+        - alert: IAMOrgMembershipHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{job={{ include "iam-org-membership.fullname" . | quote }}, status=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{job={{ include "iam-org-membership.fullname" . | quote }}}[5m]))
+            > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: iam-org-membership 5xx error rate above 5%
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of requests are returning 5xx errors
+              over the last 5 minutes. Investigate recent deployments, dependency
+              health (Postgres, Valkey, SNS/SQS, Workflow/UP/RP), and application logs.
+
+        - alert: IAMOrgMembershipCriticalErrorRate
+          expr: |
+            sum(rate(http_requests_total{job={{ include "iam-org-membership.fullname" . | quote }}, status=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{job={{ include "iam-org-membership.fullname" . | quote }}}[5m]))
+            > 0.20
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: iam-org-membership 5xx error rate above 20%
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of requests are returning 5xx errors.
+              This exceeds the critical threshold. Escalate immediately — the service
+              is severely degraded.
+
+    - name: iam_org_membership_latency
+      rules:
+        # SLO-2 per LLD §11.1 — I-8 hot-path p95 must stay <= 30 ms (cache miss).
+        - alert: IAMOrgMembershipI8HotPathLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (
+                rate(http_request_duration_seconds_bucket{
+                  job={{ include "iam-org-membership.fullname" . | quote }},
+                  path="/api/v1/internal/users/:id/memberships"
+                }[5m])
+              )
+            ) > 0.030
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+            slo: SLO-2
+          annotations:
+            summary: I-8 memberships hot-path p95 above 30 ms
+            description: >-
+              GET /internal/users/:id/memberships p95 is {{ "{{ $value | humanizeDuration }}" }},
+              exceeding the 30 ms SLO. This endpoint is hit on every authenticated
+              request — check Valkey cache hit rate (om:memberships) and Postgres
+              planner for tenant_memberships/dept_memberships joins.
+
+        - alert: IAMOrgMembershipHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le) (
+                rate(http_request_duration_seconds_bucket{job={{ include "iam-org-membership.fullname" . | quote }}}[5m])
+              )
+            ) > 2.0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: iam-org-membership p99 latency above 2s
+            description: >-
+              The p99 request duration is {{ "{{ $value | humanizeDuration }}" }}, exceeding
+              the 2s SLO threshold. Check slow-query logs (PG_SLOW_QUERY_THRESHOLD)
+              and Valkey response times.
+
+    - name: iam_org_membership_outbox
+      rules:
+        - alert: IAMOrgMembershipOutboxDeadLetters
+          # Any outbox event moved to the dead-letter state is a hard signal —
+          # SNS is unreachable or a schema violation is persistent.
+          expr: |
+            increase(outbox_dead_letters_total[30m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: iam-org-membership outbox events moved to dead-letter
+            description: >-
+              One or more outbox events have exceeded max retries (OUTBOX_MAX_ATTEMPTS).
+              Check the outbox runner logs for SNS publish errors and verify
+              SNS_TOPIC_MEMBERSHIP_ARN / SNS_TOPIC_TENANT_ARN connectivity.
+
+    # LLD §11.2 — org-membership specific gauges/counters emitted by the 4
+    # in-process exporter goroutines (started alongside the outbox runner in
+    # cmd/server/main.go per our Option A decision) and the consumer/reconciler
+    # counters.
+    - name: iam_org_membership_business
+      rules:
+        - alert: IAMTenantOwnerless
+          # TM-12 identity-layer escalation — ownerless_since IS NOT NULL means
+          # a tenant has zero active tenant_owner and cannot self-recover.
+          # Operator O-7 reassign-owner is the recovery path.
+          expr: |
+            max(iam_tenant_ownerless) > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: one or more tenants have no active tenant_owner (TM-12)
+            description: >-
+              iam_tenant_ownerless = {{ "{{ $value | humanize }}" }} for 5m+. Recover via
+              O-7 POST /operator/tenants/:id/reassign-owner with an existing
+              active member as the new owner. Runbook: iam-org-membership/tenant-ownerless.
+
+        - alert: IAMRealmSyncPending
+          # T-15 realm-sync-pending marker: the local write happened but Realm
+          # Provisioner PatchRealmConfig has not yet acknowledged.
+          expr: |
+            max(iam_realm_sync_pending) > 0
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: realm-config-sync CronJob not draining pending markers
+            description: >-
+              iam_realm_sync_pending has stayed non-zero for 15 minutes.
+              Either the realm-config-sync CronJob isn't running or Realm Provisioner
+              is returning non-2xx. Check RP health then the cron's last run.
+
+        - alert: IAMSeatOverageActiveApproachingGrace
+          # SEAT-4: overage_since past (SEAT_OVERAGE_GRACE_DAYS - 5) days.
+          # Fires 5 days before grace window closes, giving ops a warning to
+          # coordinate with Billing before enforcement kicks in.
+          expr: |
+            max(iam_seat_overage_active) > 0
+          for: 25d
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: tenants in seat overage approaching grace-window expiry
+            description: >-
+              {{ "{{ $value | humanize }}" }} tenants have been in seat overage for
+              25+ days. Default SEAT_OVERAGE_GRACE_DAYS is 30 — Billing enforcement
+              triggers when the window closes. Coordinate outreach now.
+
+        - alert: IAMPendingInvitationsStale
+          # Pending invitations past expires_at that invitation-expiry hasn't
+          # flipped to 'expired'. Non-zero for >24h means the CronJob has stopped.
+          expr: |
+            max(iam_pending_invitations_stale) > 0
+          for: 24h
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: invitation-expiry CronJob may have stopped
+            description: >-
+              {{ "{{ $value | humanize }}" }} pending invitations are past expires_at.
+              Check the invitation-expiry CronJob's last successful run and pod logs.
+
+        - alert: IAMStaleLifecycleEventSkipped
+          # EVT-14 recency guard — normal at low rates (producer reordering),
+          # but a sustained non-zero rate suggests consumer lag.
+          expr: |
+            rate(iam_stale_lifecycle_event_skipped_total[10m]) > 0
+          for: 10m
+          labels:
+            severity: info
+            team: platform
+          annotations:
+            summary: EVT-14 stale-skip rate elevated
+            description: >-
+              {{ "{{ $value | humanize }}" }}/s events are being dropped by EVT-14
+              (event.time <= tenants.last_event_at). Normal under producer reordering,
+              but sustained rate suggests consumer lag on the source topic.
+
+        - alert: IAMFutureLifecycleEventRejected
+          # EVT-15 future-time clamp — a producer's clock is skewed OR they
+          # emitted an event >MAX_LIFECYCLE_EVENT_SKEW_SECONDS in the future.
+          # Any occurrence pages.
+          expr: |
+            increase(iam_future_lifecycle_event_rejected_total[5m]) > 0
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: EVT-15 clamp firing — a producer's clock is skewed
+            description: >-
+              iam-org-membership rejected lifecycle events via the EVT-15 future-time
+              clamp. A producer emitted events whose .time exceeds
+              now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS. Investigate the producing
+              service's clock (NTP), then flush its DLQ.
+
+        - alert: IAMDelegationExpiryLag
+          # Delegation-expiry CronJob is falling behind — active delegations
+          # past ends_at that haven't been closed out yet.
+          expr: |
+            max(iam_delegation_expiry_lag_seconds) > 300
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: delegation-expiry CronJob lagging by >5m
+            description: >-
+              iam_delegation_expiry_lag_seconds = {{ "{{ $value | humanizeDuration }}" }}.
+              Active delegations past ends_at are not being closed promptly.
+              Check the delegation-expiry CronJob and User Profile availability API health.
+
+    - name: iam_org_membership_compliance
+      rules:
+        - alert: IAMOrgMembershipRLSCrossTenantAccess
+          # cross_tenant_access means a valid GUC pointed at a different
+          # tenant than the target row — this is either a real attack or a
+          # serious application bug. Page immediately.
+          expr: |
+            increase(iam_rls_violations_total{violation_type="cross_tenant_access"}[5m]) > 0
+          labels:
+            severity: critical
+            team: platform
+            compliance: tenant-isolation
+          annotations:
+            summary: RLS blocked a cross-tenant access attempt
+            description: >-
+              A caller with a valid tenant GUC attempted to read/write a row
+              belonging to a different tenant. Investigate the last 5 minutes
+              of rls_violation_log for user_id, session_role, client_addr,
+              and query_text. This alert has no `for` clause — one occurrence
+              is enough to page.
+
+        - alert: IAMOrgMembershipRLSMissingGUC
+          expr: |
+            rate(iam_rls_violations_total{violation_type="missing_or_invalid_guc"}[5m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: RLS violations from missing or invalid tenant GUC
+            description: >-
+              Sustained rate of missing_or_invalid_guc violations over 10m.
+              A caller service is not setting app.tenant_id correctly.
+              Check platform-pgcommon GUC middleware wiring.
+{{- end }}

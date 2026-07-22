@@ -1,0 +1,272 @@
+# Contributing
+
+This is an internal IAM microservice for the XpertPMS platform. This guide covers development setup, how to extend the service, test requirements, and the PR process for `iam-org-membership`.
+
+## Prerequisites
+
+- Go 1.26.5+ (matches `go.mod`)
+- Docker (required for PostgreSQL + PgBouncer + Valkey + LocalStack integration tests via `testcontainers-go`)
+- `golangci-lint` is managed as a Go tool (`go tool golangci-lint`) — no separate install needed
+- `GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/*` (private module access; also `GONOSUMDB` for the same prefix)
+- SSH key registered with the BCBP org so `go mod download` can fetch `platform-events`, `platform-gincommon`, `platform-pgcommon`
+
+## Development setup
+
+```bash
+git clone https://github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership
+cd iam-org-membership
+make setup      # copies .env-example → .env and installs .githooks/pre-commit
+make tidy       # go mod tidy
+make docker-up  # start PostgreSQL + PgBouncer + Valkey + LocalStack (community edition)
+make lint       # verify linter passes
+make test       # run all tests (requires Docker)
+make run        # start the server on :8080
+```
+
+To run only unit tests (no Docker required):
+
+```bash
+make test-unit
+```
+
+`make setup` installs `.githooks/pre-commit`, which runs `make tidy`, `fmt-check`, and `lint` before every commit. Re-run `make install-hooks` any time `.githooks/pre-commit` changes.
+
+Host ports for the local stack are deliberately offset from the sibling `iam-user-profile2` service so both can run side-by-side: PgBouncer `5533`, direct Postgres `5534`, Valkey `6380`, LocalStack `4567`. Container-internal ports remain unchanged.
+
+## Project layout
+
+```
+cmd/
+  server/            ← Composition root — wiring, pool setup, middleware, exporter goroutines, graceful shutdown
+  reconciler/        ← Single binary dispatched via --job=<name>; drives 8 K8s CronJobs
+internal/
+  core/domain/       ← Entities, value objects, DomainError catalogue (no external deps)
+  core/port/         ← Interfaces required by the core (repositories, cache, event publisher,
+                       WorkflowClient, UserProfileClient, RealmProvisionerClient)
+  core/service/      ← Use cases + pure input validators
+  adapter/inbound/
+    http/            ← Gin handlers, DTOs, middleware
+    consumer/        ← SQS consumer for tenant-orgm-q and billing-orgm-q
+  adapter/outbound/
+    postgres/        ← Repository implementations + golang-migrate SQL migrations
+    valkey/          ← Cache adapter (go-redis/v9) — advisory-only per CACHE-2/9
+    eventbus/        ← RoutingPublisher (two SNS topics) + ValidatingCodec + outbox runner
+    userprofile/     ← HTTP client for User Profile (delegation coordination §8.6)
+    workflow/        ← HTTP client for Workflow Service (§8.8 delegate-impact)
+    realmprovisioner/← HTTP client for Realm Provisioner (invite, session revoke, realm config)
+    metrics/         ← Custom Prometheus counters/histograms (`iam_*`)
+pkg/requestctx/      ← Typed RequestContext (UserID, TenantID, Roles, ClientIP, UserAgent)
+api/asyncapi.yaml    ← AsyncAPI 3.0 — two channels (iam.membership.events + iam.tenant.events)
+api/openapi.yaml     ← OpenAPI 3.0 — full REST contract (P-1..P-31, I-1..I-13, O-1..O-7)
+internal/adapter/outbound/eventbus/schemas/
+                     ← Embedded JSON Schema Draft-07 files (one per event type); source of truth
+                       for `schema-gov validate`
+test/                ← All tests live here, not beside production code
+```
+
+**Dependency rule:** `domain` ← `port` ← `service` ← `adapter` ← `cmd`. Nothing in `core/` may import `adapter/`. `core/service` may also import `pkg/requestctx`. Enforced in CI by `go-arch-lint` (config in `.go-arch-lint.yml`).
+
+For full layout details see [`.claude/architecture.md`](.claude/architecture.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Extending the service
+
+### Adding a new domain entity or value object
+
+1. Add the type to `internal/core/domain/` — no external imports allowed.
+2. Add a `New*` constructor and any `Validate*` helpers to `internal/core/service/validator.go`.
+3. Add unit tests in `test/unit/domain/` and `test/unit/validator/`.
+
+### Adding a new use case (service method)
+
+1. Add the method signature to the relevant interface in `internal/core/port/` if it introduces a new repository or outbound capability.
+2. Implement the method in `internal/core/service/`. All writes must run through `pgcommon.RunInTx` — business row plus outbox row plus every affected side effect share a single transaction (CONS-1, EVT-10).
+3. Add the handler in `internal/adapter/inbound/http/` — wire it in `cmd/server/main.go`.
+4. Add unit tests in `test/unit/<service_name>/`; add integration coverage in `test/integration/` if it involves cross-layer behaviour.
+
+### Adding a new HTTP endpoint
+
+1. Update `api/openapi.yaml` first (contract-first design); every P-*/I-*/O-* endpoint has a stable identifier documented in the LLD §5.3.
+2. Add the handler and wire the route in `cmd/server/main.go`. Register on the correct route group — `/api/v1/*` (public tenant), `/api/v1/internal/*` (in-mesh only, NetworkPolicy-enforced), or `/api/v1/operator/*` (operator ingress only, AUTH-7).
+3. Confirm the authZ check runs **before** any DB access (AUTH-6 for operator routes).
+4. Update the API overview table in `README.md`.
+
+### Adding a new repository migration
+
+1. Add `NNNN_description.up.sql` and `NNNN_description.down.sql` to `internal/adapter/outbound/postgres/migrations/`. **Numbering is monotonic** — never reuse a number or re-order existing ones (some environments have already applied them).
+2. The embedded FS is recompiled on next build — no code changes needed.
+3. Verify: `make docker-up && make run` (migrations run automatically at startup via `pgcommon.migrate.Runner`).
+4. Add or update RLS policy tests in `test/postgres/rls_test.go` if the migration touches tenant-scoped tables. Case 5 (§14.5, RLS-6) must still pass — no cross-tenant leak across a pooled PgBouncer backend.
+5. **`record_version` columns** — any new table participating in optimistic locking must have `record_version bigint NOT NULL DEFAULT 1`, the `touch_row()` BEFORE-UPDATE trigger, and never allow client code to set the column (TRG-1).
+6. **New indexes on tenant tables MUST use `CREATE INDEX CONCURRENTLY`** (§13.3 rolling-deploy safety). Plain `CREATE INDEX` takes an `AccessExclusiveLock` and will stall writes on large tables. `CONCURRENTLY` requires the statement to run **outside a transaction**, so the migration must not be wrapped in `BEGIN/COMMIT` (golang-migrate handles this when the SQL file contains no explicit transaction).
+7. **New `UNIQUE`** — ship as `CREATE UNIQUE INDEX CONCURRENTLY` in one release, then `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX` in the next (MIG-8). Never combine.
+8. **New FK / CHECK on populated tables** — ship as `ADD CONSTRAINT ... NOT VALID` first, `VALIDATE CONSTRAINT` in a later release (MIG-9b).
+9. **Destructive changes** (column drops, type narrowing) always ship in a **separate, later release** than the last read/write of the affected object (MIG-1 additive-then-destructive split).
+10. **CI verifies** every tenant-scoped table retains `rowsecurity = true AND forcerls = true` (MIG-4), and that only `org_membership_migrator` (never `org_membership_app`) has `BYPASSRLS` (MIG-3 / MIG-5).
+
+### Adding a new domain event type
+
+1. Add the payload struct to `internal/core/domain/events.go`.
+2. Build the event in the relevant service method and pass it to `port.EventPublisher.Publish`. The `RoutingPublisher` selects the topic (`iam.membership.events` vs `iam.tenant.events`) from `Envelope.Source`.
+3. Add the message and payload schema to `api/asyncapi.yaml`, then run `make extract-schemas` (invokes `schema-gov extract` in Docker) to derive the JSON Schema files under `internal/adapter/outbound/eventbus/schemas/`. Commit both. The `ValidatingCodec` embeds those schemas via `//go:embed` and is fail-closed — an unknown event type at publish time returns an error and never touches SNS.
+4. Register both sides of the `event_type` (dot-lowercase on the wire) ↔ Glue schema name (PascalCase) mapping.
+5. Update the event catalogue in `README.md § Subscribing to SNS events` and the `.claude/api-caching-events.md § 7.3` table.
+6. If the event's data must not leak `tenant_id` inside `data`, verify the payload struct explicitly omits it — `envelope.tenant_id` is authoritative (matches `iam-user-profile` convention).
+
+### Adding a new environment variable
+
+1. Add it to `.env-example` with an inline comment explaining purpose and accepted values.
+2. Add a `validateRequiredEnv` entry in `cmd/server/main.go` if it is required at startup.
+3. Update the Environment variables table in `README.md`.
+4. Update `.claude/operations.md § 12` if it materially changes deployment behaviour.
+
+## Testing requirements
+
+| Layer | Location | Docker | Notes |
+|-------|----------|--------|-------|
+| Unit | `test/unit/` | No | Fully isolated; mock `port.WorkflowClient`, `UserProfileClient`, `RealmProvisionerClient` via `testify/mock` |
+| PostgreSQL / RLS | `test/postgres/` | Yes | Real Postgres via testcontainers; covers RLS policy enforcement, `touch_row`, composite FKs |
+| Integration | `test/integration/` | Yes | Cross-layer tests (handler → service → repository); LocalStack for SNS/SQS |
+| E2E | `test/e2e/` | Yes | Full request flows against a live stack |
+| Smoke | `make test-smoke` | — | Staging smoke path: provision → member add → dept assign → delegation → expiry |
+
+All unit tests must pass without Docker (`make test-unit`). PostgreSQL, LocalStack, and reconciler tests spin up real containers automatically.
+
+Run the race detector before submitting a PR (`make ci` does this automatically via `test-ci`):
+
+```bash
+make race
+```
+
+### Canonical test cases
+
+Certain tests are load-bearing for the service's security and correctness posture — do not break them without a design conversation:
+
+- **`test/postgres/rls_test.go` Case 5** — verifies RLS-6 (no cross-tenant GUC leak across a pooled PgBouncer backend). Pool pinned to `MaxConns=1`; tenant A tx → return connection → tenant B tx on the same backend → B must see 0 of A's rows. CI additionally greps for non-`LOCAL` `SET app.tenant_id` as a forbidden pattern.
+- **`test/unit/membership_service/TestRemoveUserDelegateImpact`** — pre-check calls `WorkflowClient.GetDelegateImpact` synchronously; `409 workflow_resolution_required` on `active_workflows > 0`; no DB write; body carries `allowed_actions: [replace_delegate, stop_workflows]` (WFI-3).
+- **`test/postgres/TestOptimisticLockConflict`** — `UPDATE ... WHERE id=$1 AND record_version=$2` returning 0 rows maps to `409 optimistic_lock_conflict` echoing current `record_version` + `updated_at` (CONC-3/4).
+- **EVT-14 / EVT-15 / EVT-16 tests** — recency guard silently skips stale events (still records `processed_events`), future-time clamp DLQs poison-pill events without recording, tenant-state relay emits `TenantStateChanged` in the same tx as the projection UPDATE.
+
+Run a single test:
+
+```bash
+go test ./test/unit/membership_service/... -run TestRemoveUserDelegateImpact -v
+go test ./test/postgres/... -run TestRLSPolicyEnforcement -v
+```
+
+### Coverage gate
+
+CI enforces a single global statement-coverage gate on the merged `coverage.out` (from the unit + postgres + integration suites). The gate lives under `.github/scripts/` and runs as part of the `validate-test` workflow. Coverage is measured over `./internal/...` and `./pkg/...` only (see `COVER_PKG_LIST` in the Makefile).
+
+```bash
+make cover-func   # per-function summary in terminal
+make cover        # HTML report
+```
+
+Aim for meaningful coverage where it matters (validators, RLS-guarded repositories, publisher paths, delegate-impact resolution branches) rather than chasing 100 % on trivial code.
+
+### Testcontainers note
+
+Postgres, Valkey, and LocalStack integration tests spin up real containers. Docker must be running. Pass `-short` to skip them without Docker:
+
+```bash
+go test -short ./...
+```
+
+### PgBouncer protocol note
+
+`test/fixtures/db.go` runs against the direct Postgres container (extended protocol), while production runs behind PgBouncer in transaction pooling mode (`PG_BOUNCER_MODE=true`, simple protocol). When adding repository tests that write JSONB columns (e.g. `feature_flags`, `initial_dept_mappings`), pre-serialise the value via `json.Marshal` before passing to pgx — matching what the production repository implementations do.
+
+## Linting
+
+```bash
+make lint
+```
+
+The lint config (`.golangci.yml`) enforces `unparam`, `revive`, `gocritic`, and other rules. All exported symbols in `pkg/` must have godoc comments. Add a package doc comment to every new package.
+
+## Guardrails and forbidden patterns
+
+- **Do not commit `.env` or `.go_private_token`.** Both are in `.gitignore`.
+- **Never write `SET app.tenant_id` in code.** The pool's `GUCProvider = pgcommon.GUCSetFromContext` binds `app.tenant_id` transaction-locally on every checkout. A session-scoped `SET` breaks RLS-6 under PgBouncer transaction pooling — the last tenant's GUC persists on the pooled backend and leaks to the next request. **CI greps for the pattern.**
+- **Never write session-scoped GUCs in general.** Always `SET LOCAL` via `set_config(..., is_local => true)`.
+- **Never call the Keycloak Admin API directly.** That is Realm Provisioner's exclusive responsibility (HLD §4.2 / §5.2). O&M calls RP via `POST /internal/tenants/:id/users`, `POST /internal/tenants/:id/users/:kc_user_id/logout`, `PATCH /internal/tenants/:id/realm-config`, etc.
+- **Never persist the derived `member` role.** It is injected at read time by I-8 (TR-7 / §16 A29). CI enforces the `chk_tr_no_member` CHECK on `tenant_roles` and `chk_gtrm_no_member` on `group_tenant_role_mappings` (GTRM-6).
+- **Optimistic locking:** every `record_version`-carrying UPDATE must include `WHERE id=$1 AND record_version=$2` (CONC-1..4). Never SET `record_version` from client code — the `touch_row()` trigger owns it (TRG-1).
+- **Every state change and its event share one `RunInTx`** (EVT-10, CONS-1..4). No dual writes; no "publish first, commit later."
+
+## Documentation update checklist
+
+When your change touches a public contract or internal data flow, update the following:
+
+| What changed | Documents to update |
+|---|---|
+| New HTTP endpoint | `api/openapi.yaml` · `README.md` API overview table · `.claude/api-caching-events.md § 5.3` |
+| New domain event type | `api/asyncapi.yaml` · run `make extract-schemas` and commit `internal/adapter/outbound/eventbus/schemas/` · `README.md` event table · `.claude/api-caching-events.md § 7.3` |
+| New environment variable | `.env-example` (inline comment) · `README.md` Environment variables table · `.claude/operations.md § 12` |
+| New repository migration | `CHANGELOG.md` `[Unreleased]` with short schema change description; `.claude/database-schema.md` table catalogue if a new table is added |
+| Changed request/write flow | `ARCHITECTURE.md` sequence diagram + `.claude/request-flows.md` if the invariant catalogue changes |
+| New port interface or outbound service client | `ARCHITECTURE.md` port layer section + `.claude/operations.md § 18` integration points |
+| New CronJob or metric exporter | `.claude/operations.md § 13.1` and § 11.2 · `deploy/helm/templates/` if a new K8s workload is added |
+
+## Branch naming
+
+Feature branches follow one of these forms:
+
+- `feat/<short-topic>` — new capability
+- `fix/<short-topic>` — bug fix
+- `docs/<short-topic>` — documentation-only change
+- `chore/<short-topic>` — dependencies, tooling, CI, refactors with no behavioural change
+
+Base new branches off the latest `main`. Long-running integration branches are used only for coordinated multi-service work — check with the maintainers before targeting anything other than `main`.
+
+## Pull request checklist
+
+- [ ] `make ci` passes locally — runs `tidy` + `fmt-check` + `vet` + `lint` + `test-ci` (which includes `-race`) + `build`, mirroring CI exactly
+- [ ] **`make race` passes with zero data races detected** — CI blocks merging if any race is found
+- [ ] New exported symbols have godoc comments
+- [ ] New behaviour is covered by tests in the appropriate layer (`test/unit/`, `test/postgres/`, `test/integration/`)
+- [ ] Schema changes: `make extract-schemas` run, `internal/adapter/outbound/eventbus/schemas/` committed alongside the AsyncAPI change (CI runs `schema-gov extract --check` for drift)
+- [ ] `CHANGELOG.md` `[Unreleased]` section updated (`.github/workflows/changelog-check.yml` fails PRs that touch `internal/`, `api/`, `deploy/`, or `cmd/` without a corresponding entry)
+- [ ] Documentation update checklist above reviewed — relevant docs updated
+- [ ] No new cross-tenant data paths — RLS policy tests added or updated in `test/postgres/rls_test.go` if applicable, and Case 5 still passes
+- [ ] No session-scoped `SET app.tenant_id` introduced (CI grep will block otherwise)
+
+## Commit style
+
+Keep messages concise; describe the *why*. Reference the LLD section or invariant ID when it clarifies the change:
+
+```
+Add SEAT-1 transactional cap enforcement to invite handler
+
+Prevents two concurrent invites from both landing at the licensed_seats
+boundary. Wraps the count + insert in a single tx under FOR UPDATE on the
+tenants row. (LLD §5.3 P-6 + §8 SEAT-1.)
+```
+
+Use a short imperative subject line (≤ 72 chars). Reference the area:
+
+```
+fix(delegation): return 503 on User Profile 5xx instead of committing row
+feat(membership): add P-26 removal-resolution endpoint (§8.8.3, WFI-4)
+feat(consumer): add EVT-14 recency guard on tenants projection
+docs: update Environment variables table for MAX_LIFECYCLE_EVENT_SKEW_SECONDS
+test(rls): add Case 5 cross-tenant GUC leak assertion
+fix(eventbus): pre-serialise JSONB payload for PgBouncer simple protocol
+```
+
+## Deployment
+
+This service is deployed as a containerised microservice (HPA 2–8 replicas on CPU + `iam_memberships_cache_hit_ratio`). Releases are handled via the CI/CD pipeline:
+
+**On push to `main`:**
+1. `validate-test` (race detector + coverage gate) and `validate-quality` (fmt/tidy/vet/lint/vuln/mod-verify) run in parallel.
+2. `go-arch-lint` enforces Clean Architecture dependency rules.
+3. `schema-gov extract --check` verifies schema drift; `schema-gov validate` runs the 4-pass check on `api/asyncapi.yaml` + `internal/adapter/outbound/eventbus/schemas/*.json`.
+4. Docker image is built (`linux/amd64`, distroless static-debian12:nonroot) with layers cached in GHA + GHCR registry cache.
+5. Trivy CVE scan and smoke tests run in parallel, gated on `validate-test` + `build-image`.
+6. On success the image is pushed to GHCR and signed with Cosign keyless signing (Sigstore OIDC).
+7. The Helm chart in `deploy/helm/` is applied by the platform CD pipeline (single Deployment + 8 CronJobs, all dispatched by the same image with a `command: ["/reconciler", "--job=<name>"]` override).
+
+**On `v*` tag (release):** validate → build binary → docker (CVE scan + SBOM + Cosign sign) → GitHub Release with `checksums.txt`, CycloneDX SBOM, and SLSA provenance. Schema registry jobs register event schemas to AWS Glue via `schema-gov register`.
+
+The image tag for push events is the Git SHA; release images are also tagged with semver (`vMAJOR.MINOR.PATCH`, `vMAJOR.MINOR`, `vMAJOR`, and `latest` for stable releases). Notify the platform team on Slack if a migration or breaking env-var change requires coordinated rollout — especially anything that touches `INVITATION_EXPIRY_DAYS` (must equal Keycloak invite action-token lifespan) or `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` (EVT-15 threshold).

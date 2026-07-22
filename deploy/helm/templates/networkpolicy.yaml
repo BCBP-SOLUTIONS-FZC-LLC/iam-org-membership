@@ -1,0 +1,111 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "iam-org-membership.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow API traffic from the ingress controller / gateway namespace.
+    # For Envoy Gateway the data-plane pods run in the same namespace as the
+    # Gateway resource; set ingressControllerNamespaceSelector to that namespace
+    # label and ingressControllerPodSelector to the Envoy pod labels.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressControllerNamespaceSelector | nindent 14 }}
+          {{- with .Values.networkPolicy.ingressControllerPodSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+
+    # Allow internal service-to-service traffic within the same namespace.
+    # Required so AuthZ Enrichment, User Profile, Workflow, and Realm Provisioner
+    # can call I-8 /internal/users/:id/memberships and the other internal routes.
+    - from:
+        - podSelector: {}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+
+    # Allow Prometheus to scrape /metrics — restricted to the monitoring namespace.
+    {{- if .Values.networkPolicy.metricsIngress.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.metricsIngress.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.metricsIngress.podSelector | nindent 14 }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    {{- end }}
+
+    {{- with .Values.networkPolicy.additionalIngressRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+
+  egress:
+    # Allow DNS resolution (required for all outbound connections, including
+    # cluster-DNS lookups of the three outbound services).
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # Allow HTTPS to AWS regional endpoints (SNS, SQS, Glue Schema Registry,
+    # CloudWatch, STS). No S3 — org-membership does not use S3.
+    - ports:
+        - port: 443
+          protocol: TCP
+
+    # Allow PostgreSQL / PgBouncer connections. Container-internal port 5432;
+    # 5433 permitted for stacks that publish PgBouncer on the sidecar port.
+    - ports:
+        - port: 5432
+          protocol: TCP
+        - port: 5433
+          protocol: TCP
+
+    # Allow Valkey (Redis-protocol) connections (advisory cache, CACHE-2/9).
+    - ports:
+        - port: 6379
+          protocol: TCP
+
+    # Allow OTel OTLP gRPC to the collector.
+    - ports:
+        - port: 4317
+          protocol: TCP
+
+    # Allow HTTP to the three outbound services (Workflow, User Profile,
+    # Realm Provisioner) via cluster DNS. Restrict to their default 8080 port;
+    # the containing namespaceSelector is unconstrained so this works across
+    # the iam namespace and the workflow namespace.
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8081
+          protocol: TCP
+        - port: 8082
+          protocol: TCP
+        - port: 8083
+          protocol: TCP
+
+    {{- with .Values.networkPolicy.additionalEgressRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

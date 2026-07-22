@@ -26,7 +26,26 @@ go.work.sum
 
 # env file
 .env
+.go_private_token
+
+# Build outputs
+bin/
+.coverage/
+
+# macOS
+.DS_Store
 
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Claude Code agent worktrees (temporary, not project code)
+.claude/worktrees/
+
+# Temporary LLD extract (used by some scripts to feed the model)
+.tmp-lld.md
+
+# Local LLD reference — authoritative copy lives outside the repo at
+# /Users/sharmila/bcbp-solutions/Documents/LLD/Org-Membership/Documents/
+# The .claude/CLAUDE.md pointer references that external path.
+iam-lld-org-membership-Final.md

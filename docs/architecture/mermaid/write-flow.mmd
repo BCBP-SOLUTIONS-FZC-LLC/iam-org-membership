@@ -1,0 +1,65 @@
+sequenceDiagram
+    participant H as MembershipHandler
+    participant SVC as MembershipService
+    participant TX as pgcommon.RunInTx
+    participant DB as PostgreSQL (dept_memberships)
+    participant Codec as ValidatingCodec → GlueCodec (prod) / NoopCodec (dev)
+    participant OB as outbox_events
+    participant Cache as Valkey
+    participant Runner as Outbox Runner
+    participant Router as RoutingPublisher
+    participant SNS as SNS (iam.membership.events)
+
+    Note over H,SVC: Example — PUT /tenants/:id/departments/:dept_id/members/:user_id (P-10)<br/>Assign user to department at role_level (§8.4)
+
+    H ->>+ SVC: AssignDeptMembership(ctx, tenantID, deptID, userID, level, expectedVersion)
+    Note over SVC: Validate: active tenant_membership (DM-2) + dept active for tenant (D-5/TD-6)<br/>Load current row (incl. soft-deleted) to decide event
+
+    SVC ->>+ TX: RunInTx(ctx, func(txCtx))
+
+    TX ->>+ DB: BEGIN (SET LOCAL app.tenant_id = $1 injected by GUCProvider, RLS-6)
+    DB -->> TX: tx started
+
+    TX ->>+ DB: UPSERT dept_memberships<br/>SET role_level = $1, deleted_at = NULL<br/>WHERE id = $2 AND record_version = $3
+    alt record_version mismatch (0 rows affected)
+        DB -->> TX: 0 rows
+        TX -->> SVC: ErrConflict
+        SVC -->> H: 409 optimistic_lock_conflict (echoes current record_version, API-3)
+    else upsert succeeds
+        DB -->>- TX: 1 row affected, new record_version returned (touch_row trigger, TRG-1)
+
+        Note over SVC: Event selection (state-dependent, §8.4):<br/>  new / reactivated → DepartmentMembershipGranted<br/>  active + level changed → DepartmentMembershipLevelChanged<br/>  active + level unchanged → NO EVENT (TRG-3 no-op)
+
+        TX ->>+ Codec: Encode(ctx, event.Type, jsonPayload)
+        Note over Codec: ValidatingCodec runs schema-gov Draft-07 validation<br/>against embedded schemas/*.json (fail-closed).<br/>On invalid/unknown type → error → TX rolls back (nothing persisted).<br/>GlueCodec prepends 18-byte header from Glue registry version ID.<br/>NoopCodec pass-through in dev (GLUE_REGISTRY_NAME_* unset).
+        Codec -->>- TX: (encoded bytes, schemaVersionID)
+
+        TX ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type, payload JSONB envelope,<br/>  source ('iam.membership.events' for RoutingPublisher key),<br/>  tenant_id, trace_id, created_at, scheduled_at<br/>)
+        Note over OB: Business row + outbox row commit atomically (EVT-10, CONS-1)<br/>No event without state; no state without event.
+        OB -->>- TX: inserted
+
+        TX ->>+ DB: COMMIT
+        DB -->>- TX: committed
+    end
+
+    TX -->>- SVC: nil (success)
+
+    SVC ->>+ Cache: DEL om:memberships:{tenant}:{user},<br/>DEL om:dept_members:{tenant}:{dept}
+    Note over Cache: post-commit invalidation (CACHE-6)<br/>best-effort — TTL self-heals on failure (CACHE-9, FAIL-2)
+    Cache -->>- SVC: ok
+
+    SVC -->>- H: updated *domain.DeptMembership
+
+    Note over Runner: Outbox runner polls every OUTBOX_POLL_INTERVAL_MS (500 ms)
+    Runner ->>+ OB: SELECT ... WHERE published_at IS NULL<br/>LIMIT OUTBOX_BATCH_SIZE (50) FOR UPDATE SKIP LOCKED
+    OB -->>- Runner: unpublished events batch
+
+    Runner ->>+ Router: Route(envelope)
+    Note over Router: events.NewRoutingPublisher inspects Envelope.Source →<br/>selects TopicARNs["iam.membership.events"] or ["iam.tenant.events"]
+    Router ->>+ SNS: Publish(TopicArn=iam.membership.events, MessageAttributes{EventType, TenantID, Source, EventID})
+    SNS -->>- Router: MessageID
+    Router -->>- Runner: published
+
+    Runner ->>+ OB: UPDATE outbox_events SET published_at = now() WHERE id = $1
+    OB -->>- Runner: marked published
+    Note over Runner: retry up to OUTBOX_MAX_ATTEMPTS (5) with backoff; DLQ on exceed (EVT-5, outbox_dead_letters_total pages)

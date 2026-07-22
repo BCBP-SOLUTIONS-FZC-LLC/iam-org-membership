@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "TenantSeatOverageStarted",
+  "title": "TenantSeatOverageStarted",
+  "description": "SEAT-5 transition: overage_since NULL → set. Emitted inline by SEAT-1-triple mutators AND by the seat-overage-reconcile cron backstop.",
+  "type": "object",
+  "required": ["tenant_id", "licensed_seats", "active_users", "pending_invitations", "overage_since"],
+  "properties": {
+    "tenant_id":           { "type": "string", "format": "uuid" },
+    "licensed_seats":      { "type": "integer", "minimum": 0 },
+    "active_users":        { "type": "integer", "minimum": 0 },
+    "pending_invitations": { "type": "integer", "minimum": 0 },
+    "overage_since":       { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

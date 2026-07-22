@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "TenantRoleGranted",
+  "title": "TenantRoleGranted",
+  "type": "object",
+  "required": ["user_id", "tenant_id", "role_code", "actor_id"],
+  "properties": {
+    "user_id":   { "type": "string", "format": "uuid" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "role_code": { "type": "string", "enum": ["tenant_owner","tenant_admin","tender_admin"] },
+    "actor_id":  { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,93 @@
+graph LR
+    main(["cmd/server/main.go"])
+    reconciler(["cmd/reconciler/main.go\n--job=<name> dispatcher (8 CronJobs)"])
+
+    http_h(["adapter/inbound/http"])
+    consumer(["adapter/inbound/consumer"])
+
+    postgres(["adapter/outbound/postgres"])
+    valkey(["adapter/outbound/valkey"])
+    eventbus(["adapter/outbound/eventbus\n(RoutingPublisher — 2 topics)"])
+    userprofile(["adapter/outbound/userprofile"])
+    workflow(["adapter/outbound/workflow"])
+    realmprovisioner(["adapter/outbound/realmprovisioner"])
+    metrics(["adapter/outbound/metrics\n(observability)"])
+
+    tenant_svc(["core/service — TenantService"])
+    dept_svc(["core/service — DepartmentService"])
+    mem_svc(["core/service — MembershipService\n(§8.8 RemoveUser, §8.10 Invite/Accept, SEAT-1)"])
+    role_svc(["core/service — RoleService"])
+    gm_svc(["core/service — GroupMappingService"])
+    del_svc(["core/service — DelegationService\n(§8.6/§8.7 UP coordination)"])
+    acl_svc(["core/service — ACLService"])
+
+    port(["core/port"])
+    domain(["core/domain"])
+    eventschema(["adapter/outbound/eventbus/schemas\n(embedded JSON Schema)"])
+    requestctx(["pkg/requestctx"])
+
+    main        --> http_h
+    main        --> consumer
+    main        --> postgres
+    main        --> valkey
+    main        --> eventbus
+    main        --> userprofile
+    main        --> workflow
+    main        --> realmprovisioner
+    main        --> metrics
+    main        --> tenant_svc
+    main        --> dept_svc
+    main        --> mem_svc
+    main        --> role_svc
+    main        --> gm_svc
+    main        --> del_svc
+    main        --> acl_svc
+
+    http_h      --> tenant_svc
+    http_h      --> dept_svc
+    http_h      --> mem_svc
+    http_h      --> role_svc
+    http_h      --> gm_svc
+    http_h      --> del_svc
+    http_h      --> acl_svc
+    http_h      --> port
+    http_h      --> domain
+    http_h      --> requestctx
+    http_h      --> metrics
+
+    consumer    --> tenant_svc
+    consumer    --> mem_svc
+
+    reconciler  --> postgres
+    reconciler  --> eventbus
+    reconciler  --> realmprovisioner
+    reconciler  --> metrics
+
+    tenant_svc  --> port
+    tenant_svc  --> domain
+    tenant_svc  --> requestctx
+    dept_svc    --> port
+    dept_svc    --> domain
+    mem_svc     --> port
+    mem_svc     --> domain
+    mem_svc     --> requestctx
+    role_svc    --> port
+    role_svc    --> domain
+    gm_svc      --> port
+    gm_svc      --> domain
+    del_svc     --> port
+    del_svc     --> domain
+    del_svc     --> requestctx
+    acl_svc     --> port
+    acl_svc     --> domain
+
+    postgres    --> port
+    postgres    --> domain
+    valkey      --> port
+    eventbus    --> port
+    eventbus    --> eventschema
+    userprofile --> port
+    workflow    --> port
+    realmprovisioner --> port
+
+    port        --> domain

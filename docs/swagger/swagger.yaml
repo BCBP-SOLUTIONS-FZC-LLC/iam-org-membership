@@ -1,0 +1,2709 @@
+basePath: /api/v1
+definitions:
+  domain.DeptRole:
+    enum:
+    - preparator
+    - reviewer
+    - approver
+    type: string
+    x-enum-varnames:
+    - DeptPreparator
+    - DeptReviewer
+    - DeptApprover
+  domain.InvitationDeptMapping:
+    properties:
+      department_id:
+        type: string
+      level:
+        $ref: '#/definitions/domain.DeptRole'
+    type: object
+  domain.RealmType:
+    enum:
+    - shared
+    - dedicated
+    type: string
+    x-enum-varnames:
+    - RealmShared
+    - RealmDedicated
+  domain.SubscriptionStatus:
+    enum:
+    - trial
+    - active
+    - past_due
+    - cancelled
+    - suspended
+    - trial_expired
+    - offboarded
+    type: string
+    x-enum-varnames:
+    - StatusTrial
+    - StatusActive
+    - StatusPastDue
+    - StatusCancelled
+    - StatusSuspended
+    - StatusTrialExpired
+    - StatusOffboarded
+  domain.TenantPlan:
+    enum:
+    - starter
+    - pro
+    - enterprise
+    type: string
+    x-enum-varnames:
+    - PlanStarter
+    - PlanPro
+    - PlanEnterprise
+  http.AssigneeOverrideRequest:
+    properties:
+      actor_id:
+        format: uuid
+        type: string
+      department_id:
+        format: uuid
+        type: string
+      new_user_id:
+        format: uuid
+        type: string
+      required_level:
+        enum:
+        - preparator
+        - reviewer
+        - approver
+        type: string
+    type: object
+  http.AssigneeOverrideResponse:
+    properties:
+      tenant_id:
+        format: uuid
+        type: string
+      tender_id:
+        format: uuid
+        type: string
+      user_id:
+        format: uuid
+        type: string
+      validated:
+        example: true
+        type: boolean
+    type: object
+  http.DelegationCreateRequest:
+    properties:
+      delegate_id:
+        type: string
+      ends_at:
+        type: string
+      reason:
+        type: string
+      scope:
+        type: string
+      scope_id:
+        type: string
+      starts_at:
+        type: string
+    type: object
+  http.DelegationListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.DelegationResponse'
+        type: array
+    type: object
+  http.DelegationResponse:
+    properties:
+      delegate_id:
+        type: string
+      delegator_id:
+        type: string
+      ends_at:
+        type: string
+      id:
+        type: string
+      reason:
+        type: string
+      record_version:
+        type: integer
+      scope:
+        type: string
+      scope_id:
+        type: string
+      starts_at:
+        type: string
+      status:
+        type: string
+    type: object
+  http.DepartmentListResponse:
+    properties:
+      items:
+        description: Items is the collection of active departments for the tenant.
+        items:
+          $ref: '#/definitions/http.DepartmentResponse'
+        type: array
+    type: object
+  http.DepartmentResponse:
+    properties:
+      code:
+        type: string
+      department_id:
+        type: string
+      is_active:
+        type: boolean
+      is_system:
+        type: boolean
+      name:
+        type: string
+      record_version:
+        type: integer
+    type: object
+  http.DeptMemberListItem:
+    properties:
+      level:
+        enum:
+        - preparator
+        - reviewer
+        - approver
+        type: string
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.DeptMemberListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.DeptMemberListItem'
+        type: array
+    type: object
+  http.DeptMemberView:
+    properties:
+      department_id:
+        type: string
+      level:
+        type: string
+    type: object
+  http.DeptMembershipAssignResponse:
+    properties:
+      department_id:
+        format: uuid
+        type: string
+      level:
+        enum:
+        - preparator
+        - reviewer
+        - approver
+        type: string
+      record_version:
+        example: 1
+        type: integer
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.DeptMembershipPutRequest:
+    properties:
+      level:
+        type: string
+    type: object
+  http.DeptMembershipRemoveResponse:
+    properties:
+      department_id:
+        format: uuid
+        type: string
+      removed:
+        example: true
+        type: boolean
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.ErrorResponse:
+    properties:
+      active_workflows:
+        description: |-
+          ActiveWorkflows is populated on 409 workflow_resolution_required
+          responses (§8.8). Count of open workflows blocking the mutation.
+        example: 3
+        type: integer
+      allowed_actions:
+        description: AllowedActions lists the P-26 resolution actions the caller may
+          invoke.
+        example:
+        - replace_delegate
+        - stop_workflows
+        items:
+          type: string
+        type: array
+      code:
+        description: Code is a legacy alias for Error kept for backwards compatibility.
+        example: not_found
+        type: string
+      details:
+        description: Details is populated with per-field errors for 422 validation
+          failures.
+        items:
+          $ref: '#/definitions/http.ValidationError'
+        type: array
+      error:
+        description: Error is the machine-readable error code (LLD §17 error taxonomy).
+        example: not_found
+        type: string
+      message:
+        description: Message is a human-readable explanation of the error.
+        example: resource not found
+        type: string
+      record_version:
+        description: |-
+          RecordVersion is populated on 409 optimistic_lock_conflict responses
+          so the client can re-read and retry (CONC-4).
+        example: 5
+        type: integer
+      request_id:
+        description: RequestID is the per-request UUID injected by platform-gincommon.
+        example: 01H8XYZ0000000000000000000
+        type: string
+      status:
+        description: Status is the HTTP status code echoed in the body.
+        example: 404
+        type: integer
+      trace_id:
+        description: TraceID is the OTel W3C trace ID for cross-service correlation.
+        example: a3f1b2c8d4e5f60718293a4b5c6d7e8f
+        type: string
+      workflow_ids:
+        description: WorkflowIDs is populated on 409 workflow_resolution_required
+          responses.
+        items:
+          type: string
+        type: array
+    type: object
+  http.GroupDeptMappingWire:
+    properties:
+      department_id:
+        type: string
+      keycloak_group_name:
+        type: string
+    type: object
+  http.GroupDeptMappingsRequest:
+    properties:
+      mappings:
+        items:
+          $ref: '#/definitions/http.GroupDeptMappingWire'
+        type: array
+    type: object
+  http.GroupDeptMappingsResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.GroupDeptMappingWire'
+        type: array
+    type: object
+  http.GroupDeptRoleMappingWire:
+    properties:
+      keycloak_group_name:
+        type: string
+      role_code:
+        type: string
+    type: object
+  http.GroupDeptRoleMappingsRequest:
+    properties:
+      mappings:
+        items:
+          $ref: '#/definitions/http.GroupDeptRoleMappingWire'
+        type: array
+    type: object
+  http.GroupDeptRoleMappingsResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.GroupDeptRoleMappingWire'
+        type: array
+    type: object
+  http.GroupTenantRoleMappingWire:
+    properties:
+      keycloak_group_name:
+        type: string
+      role_code:
+        type: string
+    type: object
+  http.GroupTenantRoleMappingsRequest:
+    properties:
+      mappings:
+        items:
+          $ref: '#/definitions/http.GroupTenantRoleMappingWire'
+        type: array
+    type: object
+  http.GroupTenantRoleMappingsResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.GroupTenantRoleMappingWire'
+        type: array
+    type: object
+  http.InternalLocaleResponse:
+    properties:
+      default_locale:
+        example: en-US
+        type: string
+      tenant_id:
+        format: uuid
+        type: string
+    type: object
+  http.InternalMemberDeleteResponse:
+    properties:
+      removed:
+        example: true
+        type: boolean
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.InternalMembershipPatchRequest:
+    properties:
+      record_version:
+        example: 1
+        type: integer
+      status:
+        enum:
+        - active
+        - suspended
+        type: string
+    type: object
+  http.InternalMembershipPatchResponse:
+    properties:
+      record_version:
+        example: 2
+        type: integer
+      status:
+        enum:
+        - active
+        - suspended
+        type: string
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.InternalProvisionRequest:
+    properties:
+      default_locale:
+        description: DefaultLocale is an optional BCP-47 locale (e.g. "en-US").
+        example: en-US
+        type: string
+      name:
+        description: Name is the display name.
+        example: Acme Corp
+        type: string
+      owner_user_id:
+        description: OwnerUserID is the initial tenant_owner.
+        format: uuid
+        type: string
+      plan:
+        description: Plan is the entitlement tier.
+        enum:
+        - starter
+        - pro
+        - enterprise
+        type: string
+      slug:
+        description: Slug is the tenant slug (immutable once set).
+        example: acme
+        type: string
+      tenant_id:
+        description: TenantID is the pre-allocated tenant UUID.
+        format: uuid
+        type: string
+    type: object
+  http.InternalRealmPatchRequest:
+    properties:
+      keycloak_shard:
+        example: shard-1
+        type: string
+      realm_id:
+        example: acme
+        type: string
+      realm_type:
+        enum:
+        - shared
+        - dedicated
+        type: string
+    type: object
+  http.InternalTenantRealmResponse:
+    properties:
+      realm_id:
+        type: string
+      realm_type:
+        enum:
+        - shared
+        - dedicated
+        type: string
+      tenant_id:
+        format: uuid
+        type: string
+    type: object
+  http.InternalTenderACLCheckResponse:
+    properties:
+      access_level:
+        enum:
+        - view
+        - edit
+        - approve
+        type: string
+      has_access:
+        example: true
+        type: boolean
+    type: object
+  http.InvitationCreateRequest:
+    properties:
+      email:
+        type: string
+      full_name:
+        type: string
+      initial_dept_mappings:
+        items:
+          $ref: '#/definitions/domain.InvitationDeptMapping'
+        type: array
+      initial_tenant_roles:
+        items:
+          type: string
+        type: array
+    type: object
+  http.InvitationListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.InvitationResponse'
+        type: array
+    type: object
+  http.InvitationResponse:
+    properties:
+      email:
+        type: string
+      expires_at:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: string
+      record_version:
+        type: integer
+      status:
+        type: string
+    type: object
+  http.MemberItemResponse:
+    properties:
+      departments:
+        items:
+          $ref: '#/definitions/http.DeptMemberView'
+        type: array
+      record_version:
+        type: integer
+      status:
+        type: string
+      tenant_roles:
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  http.MembershipListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.MemberItemResponse'
+        type: array
+      next_cursor:
+        type: string
+    type: object
+  http.MembershipPatchRequest:
+    properties:
+      record_version:
+        type: integer
+      status:
+        type: string
+    type: object
+  http.MembershipPatchResponse:
+    properties:
+      record_version:
+        example: 2
+        type: integer
+      status:
+        enum:
+        - active
+        - suspended
+        type: string
+      updated_at:
+        format: date-time
+        type: string
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.OperatorDepartmentCreateRequest:
+    properties:
+      code:
+        type: string
+      is_system:
+        type: boolean
+      name:
+        type: string
+    type: object
+  http.OperatorDepartmentPatchRequest:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+      record_version:
+        type: integer
+    type: object
+  http.OperatorDepartmentResponse:
+    properties:
+      code:
+        example: engineering
+        type: string
+      id:
+        format: uuid
+        type: string
+      is_active:
+        type: boolean
+      is_system:
+        type: boolean
+      name:
+        example: Engineering
+        type: string
+      record_version:
+        example: 1
+        type: integer
+    type: object
+  http.OperatorFeatureFlagsRequest:
+    properties:
+      feature_flags:
+        additionalProperties: {}
+        type: object
+    type: object
+  http.OperatorPlanPatchRequest:
+    properties:
+      custom_branding:
+        enum:
+        - none
+        - logo
+        - full
+        type: string
+      display_name:
+        type: string
+      feature_set:
+        additionalProperties: {}
+        type: object
+      record_version:
+        example: 1
+        type: integer
+      sso_enabled:
+        type: boolean
+      tender_limit:
+        type: integer
+      trial_duration_days:
+        type: integer
+      workflow_template_limit:
+        type: integer
+    type: object
+  http.OperatorPlanResponse:
+    properties:
+      code:
+        enum:
+        - starter
+        - pro
+        - enterprise
+        type: string
+      custom_branding:
+        enum:
+        - none
+        - logo
+        - full
+        type: string
+      display_name:
+        type: string
+      feature_set:
+        additionalProperties: {}
+        type: object
+      record_version:
+        example: 1
+        type: integer
+      sso_enabled:
+        example: false
+        type: boolean
+      tender_limit:
+        type: integer
+      trial_duration_days:
+        example: 14
+        type: integer
+      workflow_template_limit:
+        type: integer
+    type: object
+  http.OperatorPlansListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.OperatorPlanResponse'
+        type: array
+    type: object
+  http.OperatorReassignOwnerRequest:
+    properties:
+      new_owner_user_id:
+        type: string
+    type: object
+  http.OperatorReassignOwnerResponse:
+    properties:
+      role_code:
+        example: tenant_owner
+        type: string
+      tenant_id:
+        format: uuid
+        type: string
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.RoleLabelListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.RoleLabelResponse'
+        type: array
+    type: object
+  http.RoleLabelPatchRequest:
+    properties:
+      display_name:
+        type: string
+      record_version:
+        type: integer
+    type: object
+  http.RoleLabelResponse:
+    properties:
+      display_name:
+        type: string
+      record_version:
+        type: integer
+      role_code:
+        type: string
+    type: object
+  http.RolesPutRequest:
+    properties:
+      roles:
+        items:
+          type: string
+        type: array
+    type: object
+  http.RolesReconcileResponse:
+    properties:
+      granted:
+        example:
+        - tenant_admin
+        items:
+          type: string
+        type: array
+      revoked:
+        example:
+        - tender_admin
+        items:
+          type: string
+        type: array
+    type: object
+  http.SeatUsageResponse:
+    properties:
+      active_users:
+        example: 12
+        type: integer
+      grace_ends_at:
+        format: date-time
+        type: string
+      licensed_seats:
+        example: 25
+        type: integer
+      over_cap:
+        example: false
+        type: boolean
+      overage_since:
+        format: date-time
+        type: string
+      pending_invitations:
+        example: 3
+        type: integer
+    type: object
+  http.TenantDepartmentActivatedResponse:
+    properties:
+      department_id:
+        format: uuid
+        type: string
+      is_active:
+        type: boolean
+      record_version:
+        example: 1
+        type: integer
+    type: object
+  http.TenantDepartmentPatchRequest:
+    properties:
+      is_active:
+        type: boolean
+      record_version:
+        type: integer
+    type: object
+  http.TenantPatchRequest:
+    properties:
+      default_locale:
+        type: string
+      local_accounts_enabled:
+        type: boolean
+      mfa_freshness_seconds:
+        type: integer
+      name:
+        type: string
+      record_version:
+        type: integer
+    type: object
+  http.TenantResponse:
+    properties:
+      default_locale:
+        type: string
+      id:
+        type: string
+      licensed_seats:
+        type: integer
+      local_accounts_enabled:
+        type: boolean
+      mfa_freshness_seconds:
+        type: integer
+      name:
+        type: string
+      overage_since:
+        type: string
+      ownerless_since:
+        type: string
+      plan:
+        $ref: '#/definitions/domain.TenantPlan'
+      realm_id:
+        type: string
+      realm_sync_pending:
+        type: boolean
+      realm_type:
+        $ref: '#/definitions/domain.RealmType'
+      record_version:
+        type: integer
+      slug:
+        type: string
+      status:
+        $ref: '#/definitions/domain.SubscriptionStatus'
+      subscription_started_at:
+        type: string
+      trial_ends_at:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  http.TenderACLGrantRequest:
+    properties:
+      access_level:
+        type: string
+      expires_at:
+        type: string
+      reason:
+        type: string
+      user_id:
+        type: string
+    type: object
+  http.TenderACLListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/http.TenderACLResponse'
+        type: array
+    type: object
+  http.TenderACLResponse:
+    properties:
+      access_level:
+        type: string
+      expires_at:
+        type: string
+      granted_by:
+        type: string
+      reason:
+        type: string
+      user_id:
+        type: string
+    type: object
+  http.TenderACLRevokeResponse:
+    properties:
+      revoked:
+        example: true
+        type: boolean
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.ValidationError:
+    properties:
+      code:
+        description: Code is the machine-readable violation code.
+        example: out_of_range
+        type: string
+      field:
+        description: Field is the JSON path of the failing field.
+        example: mfa_freshness_seconds
+        type: string
+      message:
+        description: Message is a human-readable explanation of the field violation.
+        example: must be between 60 and 900
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: sharmila.dayalan@bcbpsolutions.com
+    name: BCBP Solutions
+  description: |-
+    Organizational layer of the IAM subsystem — owns tenants, departments, memberships, tenant-level roles, delegations, invitations, ACL overlays, and group→role mappings.
+
+    **Tenant isolation.** Every resource is scoped by `x-tenant-id`; cross-tenant reads are blocked by row-level security (RLS-1..RLS-6). The hot path `GET /internal/users/:id/memberships` is the enrichment source for AuthZ (SLO 15 ms cache-hit / 30 ms cache-miss).
+
+    **Route prefixes.**  `/api/v1/*` — authenticated tenant users (JWT via gateway).  `/api/v1/internal/*` — in-mesh services (mTLS, `iam-system` role).  `/api/v1/operator/*` — platform operators (`platform_operator` role).
+
+    Every mutation echoes `record_version` for optimistic-locking round-trip (CONC-4).
+  license:
+    name: Proprietary
+  title: IAM Org & Membership API
+  version: "1.0"
+paths:
+  /delegations:
+    get:
+      description: Returns active delegations for the caller's tenant (RLS-scoped).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DelegationListResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-18 — List active delegations
+      tags:
+      - delegations
+    post:
+      consumes:
+      - application/json
+      description: §8.6 availability-first — calls UP SetAvailability BEFORE inserting
+        delegations row. On UP failure returns 422 invalid_delegate.
+      parameters:
+      - description: Delegation payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.DelegationCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.DelegationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: invalid_delegate | self_delegation | delegation_window_inverted
+            | scope_id_required
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-19 — Create OOO delegation (self-service, AUTH-4)
+      tags:
+      - delegations
+  /delegations/{id}:
+    delete:
+      description: '§8.7 pointer-clear: calls UP with {delegate_id: null} first, then
+        flips status to ''cancelled''. Self-service; admin can cancel any.'
+      parameters:
+      - description: Delegation UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Optimistic-lock version
+        in: query
+        name: record_version
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DelegationResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-20 — Cancel delegation
+      tags:
+      - delegations
+  /internal/tenants:
+    post:
+      consumes:
+      - application/json
+      description: Activates the 5 default system departments, creates 3 dept-role
+        labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one
+        transaction. Called by the TrialTenantProvisioned consumer (not by external
+        clients).
+      parameters:
+      - description: Provisioning payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.InternalProvisionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.TenantResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: slug_conflict OR tenant_already_provisioned
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-1 — Provision tenant (trial signup)
+      tags:
+      - internal
+  /internal/tenants/{id}:
+    patch:
+      consumes:
+      - application/json
+      description: Called by Realm Provisioner after Keycloak realm creation. Sets
+        the tenant's realm identity in a single UPDATE.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Realm identity payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.InternalRealmPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InternalTenantRealmResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-2 — RP sets realm_id + realm_type + keycloak_shard atomically
+      tags:
+      - internal
+  /internal/tenants/{id}/locale:
+    get:
+      description: Returns the tenant's default_locale for LLM-facing consumers.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InternalLocaleResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-9 — Tenant default_locale (LLM Service)
+      tags:
+      - internal
+  /internal/tenants/{id}/members/{user_id}:
+    delete:
+      description: Removes the user from the tenant, cascading dept memberships and
+        role grants. Sets tenants.ownerless_since when the last owner is deleted (TM-12).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InternalMemberDeleteResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-5 — Delete member (full cascade + TM-12 ownerless_since)
+      tags:
+      - internal
+    patch:
+      consumes:
+      - application/json
+      description: Called by Realm Provisioner to relay KC user state (enabled/disabled)
+        into tenant_memberships.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: Lifecycle payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.InternalMembershipPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InternalMembershipPatchResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-4 — Keycloak lifecycle status update
+      tags:
+      - internal
+  /internal/tenants/{id}/seat-usage:
+    get:
+      description: Same projection as P-27 but service-to-service (Billing pre-checks
+        before charging for a new seat).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.SeatUsageResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-11 — Seat-usage S2S (Billing pre-check)
+      tags:
+      - internal
+  /internal/tenants/{id}/tenders/{tender_id}/acl/{user_id}:
+    get:
+      description: Returns `{has_access, access_level}` — access_level is populated
+        only when has_access is true.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tender UUID
+        format: uuid
+        in: path
+        name: tender_id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InternalTenderACLCheckResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-12 — Tender ACL check (active grant, TAE-3)
+      tags:
+      - internal
+  /internal/tenants/{id}/tenders/{tender_id}/assignee-override:
+    post:
+      consumes:
+      - application/json
+      description: 422 assignee_ineligible per §16 A62 (NOT 409). Validates the new
+        assignee is an active member at the required level in the department, then
+        emits the event; persists nothing (OVR-1).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tender UUID
+        format: uuid
+        in: path
+        name: tender_id
+        required: true
+        type: string
+      - description: Override payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.AssigneeOverrideRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.AssigneeOverrideResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: assignee_ineligible
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: I-13 — Validate-and-emit TenderAssigneeOverridden (OVR-1 no persistence)
+      tags:
+      - internal
+  /internal/users/{id}/memberships:
+    get:
+      description: SLO 15 ms cache-hit / 30 ms miss (§21). Derived `member` role injected
+        (TR-7). effective_feature_flags = planDefaults(plan) ⊕ tenants.feature_flags.
+        Cache TTL 300s ± 30s jitter.
+      parameters:
+      - description: User UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tenant UUID
+        format: uuid
+        in: query
+        name: tenant_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: no active membership
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: 'I-8 — HOT PATH: full membership projection (AuthZ Enrichment)'
+      tags:
+      - internal
+  /operator/departments:
+    post:
+      consumes:
+      - application/json
+      description: Creates a department in the global operator catalog. is_system
+        and code are immutable after creation.
+      parameters:
+      - description: Department payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.OperatorDepartmentCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.OperatorDepartmentResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: duplicate_code
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: O-1 — Add global-catalog department
+      tags:
+      - operator
+  /operator/departments/{id}:
+    delete:
+      description: Departments cannot be physically deleted — always returns 405 with
+        cannot_delete_system_department.
+      parameters:
+      - description: Department UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "405":
+          description: Method not allowed
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: O-3 — Blocked (405); retire via O-2 is_active=false
+      tags:
+      - operator
+    patch:
+      consumes:
+      - application/json
+      description: System-department deactivation is blocked by chk_system_department_active
+        (422 system_department_cannot_be_retired). Applies optimistic locking (CONC-4).
+      parameters:
+      - description: Department UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Patch payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.OperatorDepartmentPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.OperatorDepartmentResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: field_immutable | system_department_cannot_be_retired
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: O-2 — Update name or is_active (code + is_system immutable)
+      tags:
+      - operator
+  /operator/plans:
+    get:
+      description: Returns all rows from the global `plans` table (§16 A19).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.OperatorPlansListResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: O-5 — List plan entitlement catalog
+      tags:
+      - operator
+  /operator/plans/{code}:
+    patch:
+      consumes:
+      - application/json
+      description: 'PLAN-4: plans may not be deleted, only updated. Applies optimistic
+        locking (CONC-4).'
+      parameters:
+      - description: Plan code
+        enum:
+        - starter
+        - pro
+        - enterprise
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: Plan patch
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.OperatorPlanPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.OperatorPlanResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: O-6 — Edit plan entitlements (PATCH-only, PLAN-4)
+      tags:
+      - operator
+  /operator/tenants/{id}/feature-flags:
+    patch:
+      consumes:
+      - application/json
+      description: 'PLAN-6(d): non-scalar values → 400 invalid_feature_value. Unknown
+        keys → 400 unknown_feature_flag.'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Feature-flags map
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.OperatorFeatureFlagsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TenantResponse'
+        "400":
+          description: unknown_feature_flag | invalid_feature_value
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: O-4 — Full-replacement feature-flag override (allow-list, scalars only)
+      tags:
+      - operator
+  /operator/tenants/{id}/reassign-owner:
+    post:
+      consumes:
+      - application/json
+      description: Only path to resolve TM-12 escalation. 422 invalid_owner_candidate
+        if the new owner is not an active member. 409 tenant_offboarded if the tenant
+        is no longer eligible.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New owner payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.OperatorReassignOwnerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.OperatorReassignOwnerResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: tenant_offboarded
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: invalid_owner_candidate
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: O-7 — Recover ownerless tenant (grants tenant_owner, clears ownerless_since)
+      tags:
+      - operator
+  /tenants/{id}:
+    get:
+      description: 'AUTH-1: any active member of the target tenant.'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TenantResponse'
+        "403":
+          description: AUTH-1..8 gate failed
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Row not visible (RLS returns 0 rows OR row absent)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-1 — Read tenant
+      tags:
+      - tenant
+    patch:
+      consumes:
+      - application/json
+      description: 'AUTH-1: tenant_owner only. Applies optimistic-locking (CONC-1..4).
+        T-10 range: mfa_freshness_seconds in [60, 900]. T-15: on local_accounts_enabled
+        change, calls RP synchronously — if RP errors, sets realm_sync_pending=true
+        and returns 202.'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Patch payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.TenantPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TenantResponse'
+        "202":
+          description: Accepted (T-15 deferred realm sync)
+          schema:
+            $ref: '#/definitions/http.TenantResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: AUTH-1..8 gate failed
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-2 — Update tenant (name, locale, local_accounts_enabled, mfa_freshness)
+      tags:
+      - tenant
+  /tenants/{id}/departments:
+    get:
+      description: Returns the tenant_departments rows joined with the global departments
+        catalog. Any active tenant member may read.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DepartmentListResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-3 — List active departments
+      tags:
+      - departments
+    post:
+      consumes:
+      - application/json
+      description: AUTH-2 tenant_admin/owner. Idempotent — repeated activation of
+        the same department_id succeeds without mutation.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Catalog department UUID
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            department_id:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.TenantDepartmentActivatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: AUTH-1..8 gate failed
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-24 — Activate a catalog department for the tenant
+      tags:
+      - departments
+  /tenants/{id}/departments/{dept_id}:
+    patch:
+      consumes:
+      - application/json
+      description: AUTH-2. System-department deactivation is blocked by chk_system_department_active
+        (422 system_department_cannot_be_retired). Applies optimistic locking (CONC-4).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Department UUID
+        format: uuid
+        in: path
+        name: dept_id
+        required: true
+        type: string
+      - description: Toggle payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.TenantDepartmentPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TenantDepartmentActivatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: system_department_cannot_be_retired
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-25 — Toggle is_active (deactivate/reactivate)
+      tags:
+      - departments
+  /tenants/{id}/departments/{dept_id}/members:
+    get:
+      description: Returns preparator/reviewer/approver assignments for the given
+        department.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Department UUID
+        format: uuid
+        in: path
+        name: dept_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DeptMemberListResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-9 — List department members by level
+      tags:
+      - departments
+  /tenants/{id}/departments/{dept_id}/members/{user_id}:
+    delete:
+      description: AUTH-2. §8.8.4 delegate-impact gated (WFI-11) — returns 409 workflow_resolution_required
+        when the user is an active delegate for open workflows scoped to this department.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Department UUID
+        format: uuid
+        in: path
+        name: dept_id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DeptMembershipRemoveResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: workflow_resolution_required (§8.8.4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-11 — Remove user from department
+      tags:
+      - departments
+    put:
+      consumes:
+      - application/json
+      description: AUTH-2. Fresh grant → DepartmentMembershipGranted; level change
+        → DepartmentMembershipLevelChanged with previous_level.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Department UUID
+        format: uuid
+        in: path
+        name: dept_id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: Level payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.DeptMembershipPutRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DeptMembershipAssignResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: department_not_active_for_tenant
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-10 — Assign user to department at level
+      tags:
+      - departments
+  /tenants/{id}/group-mappings/departments:
+    get:
+      description: Any active tenant member may read.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.GroupDeptMappingsResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-16 — List Keycloak-group → department mappings
+      tags:
+      - groups
+    put:
+      consumes:
+      - application/json
+      description: AUTH-2. Full replacement — anything not in the payload is deleted.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Desired mappings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.GroupDeptMappingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.GroupDeptMappingsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-17 — Full-replacement of Keycloak-group → department mappings
+      tags:
+      - groups
+  /tenants/{id}/group-mappings/roles:
+    get:
+      description: Any active tenant member may read.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-14 — List Keycloak-group → dept-role mappings
+      tags:
+      - groups
+    put:
+      consumes:
+      - application/json
+      description: AUTH-2. Full replacement — anything not in the payload is deleted.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Desired mappings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.GroupDeptRoleMappingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-15 — Full-replacement of Keycloak-group → dept-role mappings
+      tags:
+      - groups
+  /tenants/{id}/group-mappings/tenant-roles:
+    put:
+      consumes:
+      - application/json
+      description: 'AUTH-2. GTRM-6: ''member'' barred at both service and DB layer.'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Desired mappings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.GroupTenantRoleMappingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.GroupTenantRoleMappingsResponse'
+        "400":
+          description: invalid_role (member barred)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-29 — Full-replacement of Keycloak-group → tenant-role mappings (§16
+        A25)
+      tags:
+      - groups
+  /tenants/{id}/invitations:
+    get:
+      description: AUTH-2. Returns pending_invitations rows for the tenant (invite→accept
+        staging).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InvitationListResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-30 — List pending invitations
+      tags:
+      - invitations
+  /tenants/{id}/invitations/{invitation_id}:
+    delete:
+      description: AUTH-2. Marks the invitation as revoked and sets kc_cleanup_pending
+        for durable RP compensation.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Invitation UUID
+        format: uuid
+        in: path
+        name: invitation_id
+        required: true
+        type: string
+      - description: Optimistic-lock version
+        in: query
+        name: record_version
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InvitationResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-31 — Revoke pending invitation (sets kc_cleanup_pending, PI-9)
+      tags:
+      - invitations
+  /tenants/{id}/members:
+    get:
+      description: Keyset paginate on idx_tm_tenant_created. Response includes `next_cursor`
+        when more pages exist.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size (1..200, default 50)
+        in: query
+        name: limit
+        type: integer
+      - description: Base64-encoded opaque cursor from previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.MembershipListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-4 — List members (cursor-paginated)
+      tags:
+      - members
+    post:
+      consumes:
+      - application/json
+      description: 'AUTH-2 tenant_admin/owner. SEAT-1 transactional cap: `active +
+        pending <= licensed_seats`. Two-step invite→accept. Returns 409 seat_limit_reached
+        at/above cap; 409 invitation_already_exists on duplicate; 429 reinvite_too_soon
+        (PI-11) or invite_rate_limited (PI-12).'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Invite payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.InvitationCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Pending row created + RP CreateInvitedUser dispatched
+          schema:
+            $ref: '#/definitions/http.InvitationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: seat_limit_reached OR invitation_already_exists
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "429":
+          description: reinvite_too_soon OR invite_rate_limited
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-6 — Invite user (staged pending_invitation)
+      tags:
+      - invitations
+  /tenants/{id}/members/{user_id}:
+    get:
+      description: Returns the tenant_memberships row joined with tenant_roles and
+        dept_memberships views.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.MemberItemResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-5 — Read a single member (with roles + departments)
+      tags:
+      - members
+    patch:
+      consumes:
+      - application/json
+      description: 'AUTH-2. On suspend: AUTH-8 best-effort RP RevokeUserSessions (fail-open).
+        Applies optimistic locking (CONC-4).'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: Status payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.MembershipPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.MembershipPatchResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-7 — Suspend/reactivate member (status only)
+      tags:
+      - members
+  /tenants/{id}/members/{user_id}/roles:
+    put:
+      consumes:
+      - application/json
+      description: 'AUTH-2. §16 A14: one TenantRoleGranted/TenantRoleRevoked event
+        per role delta. TM-8 last-owner guard → 422 last_owner_removal. `member` is
+        barred (TR-7) — returns 400 invalid_role.'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: Desired roles
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.RolesPutRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.RolesReconcileResponse'
+        "400":
+          description: invalid_role (TR-7)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: last_owner_removal
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-28 — Full-replacement multi-role reconcile
+      tags:
+      - members
+  /tenants/{id}/roles:
+    get:
+      description: Returns the tenant's customized display labels for the three department
+        role levels.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.RoleLabelListResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-12 — List dept-role labels (preparator/reviewer/approver)
+      tags:
+      - roles
+  /tenants/{id}/roles/{role_code}:
+    patch:
+      consumes:
+      - application/json
+      description: AUTH-2. Applies optimistic locking (CONC-4). Only display_name
+        is mutable; role_code is immutable.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Role level
+        enum:
+        - preparator
+        - reviewer
+        - approver
+        in: path
+        name: role_code
+        required: true
+        type: string
+      - description: Rename payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.RoleLabelPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.RoleLabelResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: record_version mismatch (CONC-4)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-13 — Rename a dept-role label (display_name only)
+      tags:
+      - roles
+  /tenants/{id}/seat-usage:
+    get:
+      description: AUTH-2. Returns `{active_users, pending_invitations, licensed_seats,
+        over_cap, overage_since, grace_ends_at}` (SEAT-1..5).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.SeatUsageResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-27 — Seat-usage projection
+      tags:
+      - members
+  /tenants/{id}/tenders/{tender_id}/acl:
+    get:
+      description: AUTH-3 tender_admin/tenant_admin/owner. Returns view/edit/approve
+        grants that have not expired.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tender UUID
+        format: uuid
+        in: path
+        name: tender_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TenderACLListResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-21 — List active ACL entries for a tender
+      tags:
+      - acl
+    post:
+      consumes:
+      - application/json
+      description: AUTH-3 tender_admin/tenant_admin/owner. Optional expires_at (future-only).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tender UUID
+        format: uuid
+        in: path
+        name: tender_id
+        required: true
+        type: string
+      - description: Grant payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.TenderACLGrantRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.TenderACLResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: invalid_expires_at | invalid_access_level
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-22 — Grant tender ACL (view/edit/approve)
+      tags:
+      - acl
+  /tenants/{id}/tenders/{tender_id}/acl/{user_id}:
+    delete:
+      description: AUTH-3 tender_admin/tenant_admin/owner. Soft-deletes the ACL row.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tender UUID
+        format: uuid
+        in: path
+        name: tender_id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.TenderACLRevokeResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      summary: P-23 — Revoke tender ACL
+      tags:
+      - acl
+securityDefinitions:
+  TenantID:
+    description: Tenant UUID injected by the API gateway. Establishes the RLS scope
+      for the request (RLS-6).
+    in: header
+    name: x-tenant-id
+    type: apiKey
+  TenantRoles:
+    description: Comma-separated tenant-role list injected by the API gateway. Operator
+      routes require `platform_operator`; internal routes require `iam-system`.
+    in: header
+    name: x-tenant-roles
+    type: apiKey
+  UserID:
+    description: Authenticated user UUID injected by the API gateway. Use `iam-system`
+      for in-mesh service calls hitting `/api/v1/internal/*`.
+    in: header
+    name: x-user-id
+    type: apiKey
+swagger: "2.0"
