@@ -338,6 +338,46 @@ definitions:
           $ref: '#/definitions/http.GroupTenantRoleMappingWire'
         type: array
     type: object
+  http.InternalAddMemberRequest:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      keycloak_user_id:
+        format: uuid
+        type: string
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.InternalJITRequest:
+    properties:
+      groups:
+        example:
+        - engineering-team
+        - platform-admins
+        items:
+          type: string
+        type: array
+      user_id:
+        format: uuid
+        type: string
+    type: object
+  http.InternalJITResponse:
+    properties:
+      assigned_departments:
+        items:
+          format: uuid
+          type: string
+        type: array
+      granted_tenant_roles:
+        example:
+        - tender_admin
+        - tenant_admin
+        items:
+          type: string
+        type: array
+    type: object
   http.InternalLocaleResponse:
     properties:
       default_locale:
@@ -481,11 +521,22 @@ definitions:
       full_name:
         type: string
       id:
+        description: |-
+          LLD §5.4 P-6 spec key is `invitation_id`. `id` is the legacy alias,
+          carried for one release so downstream clients can migrate; will be
+          removed once tooling ships the rev-1.51-compat build.
+        type: string
+      invitation_id:
         type: string
       record_version:
         type: integer
       status:
         type: string
+    type: object
+  http.InvitationRevokeRequest:
+    properties:
+      record_version:
+        type: integer
     type: object
   http.MemberItemResponse:
     properties:
@@ -504,6 +555,24 @@ definitions:
       updated_at:
         type: string
       user_id:
+        type: string
+    type: object
+  http.MembershipItemResponse:
+    properties:
+      record_version:
+        example: 1
+        type: integer
+      status:
+        enum:
+        - active
+        - suspended
+        - left
+        type: string
+      tenant_id:
+        format: uuid
+        type: string
+      user_id:
+        format: uuid
         type: string
     type: object
   http.MembershipListResponse:
@@ -650,6 +719,9 @@ definitions:
   http.OperatorReassignOwnerRequest:
     properties:
       new_owner_user_id:
+        description: deprecated alias
+        type: string
+      user_id:
         type: string
     type: object
   http.OperatorReassignOwnerResponse:
@@ -663,6 +735,21 @@ definitions:
       user_id:
         format: uuid
         type: string
+    type: object
+  http.RemovalResolutionRequest:
+    properties:
+      action:
+        description: Action is "replace_delegate" or "stop_workflows".
+        example: replace_delegate
+        type: string
+      replacement_user_id:
+        description: |-
+          ReplacementUserID is required when action=replace_delegate. Must be an
+          active member of the same tenant (WFI-5).
+        format: uuid
+        type: string
+    required:
+    - action
     type: object
   http.RoleLabelListResponse:
     properties:
@@ -890,6 +977,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-18 — List active delegations
       tags:
       - delegations
@@ -928,6 +1016,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-19 — Create OOO delegation (self-service, AUTH-4)
       tags:
       - delegations
@@ -968,6 +1057,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-20 — Cancel delegation
       tags:
       - delegations
@@ -1008,6 +1098,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-1 — Provision tenant (trial signup)
       tags:
       - internal
@@ -1052,7 +1143,52 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-2 — RP sets realm_id + realm_type + keycloak_shard atomically
+      tags:
+      - internal
+  /internal/tenants/{id}/dept-memberships:
+    post:
+      consumes:
+      - application/json
+      description: §8.5 JIT dept + tenant-role assignment. Called by the Event Consumer
+        on Keycloak login for federated (SAML) users. Additive only — never revokes
+        a role a group set no longer implies. Emits DepartmentMembershipGranted /
+        DepartmentMembershipLevelChanged per resolved (dept, role_level) touch per
+        TRG-3.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: JIT payload — user_id + Keycloak group list
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.InternalJITRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InternalJITResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: I-10 — SAML JIT provisioning (additive-only, GTRM-4)
       tags:
       - internal
   /internal/tenants/{id}/locale:
@@ -1083,7 +1219,51 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-9 — Tenant default_locale (LLM Service)
+      tags:
+      - internal
+  /internal/tenants/{id}/members:
+    post:
+      consumes:
+      - application/json
+      description: §8.10 acceptance leg. If a matching pending_invitations row exists
+        (by keycloak_user_id or email), flip to accepted and materialise tenant_membership
+        + queued initial_tenant_roles/initial_dept_mappings in one tx (PI-4). Otherwise
+        plain add. PI-10 idempotent via uq_tm_active_user.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Register payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.InternalAddMemberRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.MembershipItemResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: I-3 — Accept invitation / plain add (Realm Provisioner webhook)
       tags:
       - internal
   /internal/tenants/{id}/members/{user_id}:
@@ -1121,6 +1301,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-5 — Delete member (full cascade + TM-12 ownerless_since)
       tags:
       - internal
@@ -1174,6 +1355,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-4 — Keycloak lifecycle status update
       tags:
       - internal
@@ -1206,6 +1388,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-11 — Seat-usage S2S (Billing pre-check)
       tags:
       - internal
@@ -1250,6 +1433,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-12 — Tender ACL check (active grant, TAE-3)
       tags:
       - internal
@@ -1301,6 +1485,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: I-13 — Validate-and-emit TenderAssigneeOverridden (OVR-1 no persistence)
       tags:
       - internal
@@ -1345,6 +1530,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: 'I-8 — HOT PATH: full membership projection (AuthZ Enrichment)'
       tags:
       - internal
@@ -1383,6 +1569,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: O-1 — Add global-catalog department
       tags:
       - operator
@@ -1407,6 +1594,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: O-3 — Blocked (405); retire via O-2 is_active=false
       tags:
       - operator
@@ -1458,6 +1646,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: O-2 — Update name or is_active (code + is_system immutable)
       tags:
       - operator
@@ -1478,6 +1667,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: O-5 — List plan entitlement catalog
       tags:
       - operator
@@ -1529,6 +1719,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: O-6 — Edit plan entitlements (PATCH-only, PLAN-4)
       tags:
       - operator
@@ -1573,6 +1764,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: O-4 — Full-replacement feature-flag override (allow-list, scalars only)
       tags:
       - operator
@@ -1622,6 +1814,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: O-7 — Recover ownerless tenant (grants tenant_owner, clears ownerless_since)
       tags:
       - operator
@@ -1653,6 +1846,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-1 — Read tenant
       tags:
       - tenant
@@ -1702,6 +1896,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-2 — Update tenant (name, locale, local_accounts_enabled, mfa_freshness)
       tags:
       - tenant
@@ -1734,6 +1929,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-3 — List active departments
       tags:
       - departments
@@ -1780,6 +1976,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-24 — Activate a catalog department for the tenant
       tags:
       - departments
@@ -1834,6 +2031,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-25 — Toggle is_active (deactivate/reactivate)
       tags:
       - departments
@@ -1872,6 +2070,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-9 — List department members by level
       tags:
       - departments
@@ -1920,6 +2119,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-11 — Remove user from department
       tags:
       - departments
@@ -1975,6 +2175,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-10 — Assign user to department at level
       tags:
       - departments
@@ -2002,6 +2203,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-16 — List Keycloak-group → department mappings
       tags:
       - groups
@@ -2040,6 +2242,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-17 — Full-replacement of Keycloak-group → department mappings
       tags:
       - groups
@@ -2067,6 +2270,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-14 — List Keycloak-group → dept-role mappings
       tags:
       - groups
@@ -2105,6 +2309,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-15 — Full-replacement of Keycloak-group → dept-role mappings
       tags:
       - groups
@@ -2144,6 +2349,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-29 — Full-replacement of Keycloak-group → tenant-role mappings (§16
         A25)
       tags:
@@ -2173,6 +2379,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-30 — List pending invitations
       tags:
       - invitations
@@ -2193,17 +2400,21 @@ paths:
         name: invitation_id
         required: true
         type: string
-      - description: Optimistic-lock version
-        in: query
-        name: record_version
-        type: integer
+      - description: Revoke payload (PI-8 optimistic-lock version)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.InvitationRevokeRequest'
       produces:
       - application/json
       responses:
-        "200":
-          description: OK
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
           schema:
-            $ref: '#/definitions/http.InvitationResponse'
+            $ref: '#/definitions/http.ErrorResponse'
         "403":
           description: Forbidden
           schema:
@@ -2219,6 +2430,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-31 — Revoke pending invitation (sets kc_cleanup_pending, PI-9)
       tags:
       - invitations
@@ -2259,6 +2471,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-4 — List members (cursor-paginated)
       tags:
       - members
@@ -2308,10 +2521,47 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-6 — Invite user (staged pending_invitation)
       tags:
       - invitations
   /tenants/{id}/members/{user_id}:
+    delete:
+      description: Gated by delegate-impact pre-check (§8.8, WFI-1). Returns 409 workflow_resolution_required
+        with active_workflows/workflow_ids/allowed_actions if the user is a delegate.
+        TM-8 last-owner refusal returns 422 last_owner_removal. AUTH-8 best-effort
+        session revoke.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "409":
+          description: workflow_resolution_required
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: last_owner_removal
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-8 — Remove tenant member
+      tags:
+      - members
     get:
       description: Returns the tenant_memberships row joined with tenant_roles and
         dept_memberships views.
@@ -2346,6 +2596,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-5 — Read a single member (with roles + departments)
       tags:
       - members
@@ -2395,6 +2646,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-7 — Suspend/reactivate member (status only)
       tags:
       - members
@@ -2446,6 +2698,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-28 — Full-replacement multi-role reconcile
       tags:
       - members
@@ -2474,6 +2727,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-12 — List dept-role labels (preparator/reviewer/approver)
       tags:
       - roles
@@ -2527,6 +2781,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-13 — Rename a dept-role label (display_name only)
       tags:
       - roles
@@ -2559,6 +2814,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-27 — Seat-usage projection
       tags:
       - members
@@ -2593,6 +2849,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-21 — List active ACL entries for a tender
       tags:
       - acl
@@ -2641,6 +2898,7 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-22 — Grant tender ACL (view/edit/approve)
       tags:
       - acl
@@ -2684,9 +2942,78 @@ paths:
       security:
       - UserID: []
       - TenantID: []
+      - TenantRoles: []
       summary: P-23 — Revoke tender ACL
       tags:
       - acl
+  /tenants/{id}/users/{user_id}/removal-resolution:
+    post:
+      consumes:
+      - application/json
+      description: Reassigns or cancels workflows the target user is delegate on so
+        P-8 can proceed (§8.8.3, WFI-6).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: action + replacement
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.RemovalResolutionRequest'
+      responses:
+        "204":
+          description: No Content
+        "422":
+          description: invalid_action | invalid_replacement
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "503":
+          description: workflow_service_unavailable
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-26 — Resolve blocked user removal
+      tags:
+      - members
+tags:
+- description: In-mesh service-to-service (I-1..I-13)
+  name: internal
+- description: Platform operator (O-1..O-7)
+  name: operator
+- description: Tenant CRUD (P-1, P-2)
+  name: tenant
+- description: Department activation (P-3, P-9, P-10, P-11, P-24, P-25)
+  name: departments
+- description: Membership management (P-4..P-8, P-27, P-28)
+  name: members
+- description: Dept-role labels (P-12, P-13)
+  name: roles
+- description: SAML group mappings (P-14..P-17, P-29)
+  name: groups
+- description: OOO delegations (P-18, P-19, P-20)
+  name: delegations
+- description: Tender ACL overlays (P-21, P-22, P-23)
+  name: acl
+- description: Two-step invite→accept (P-6, P-30, P-31)
+  name: invitations
+- description: Removal-resolution (P-26)
+  name: resolution
+- description: "Health & metrics (unauthenticated)"
+  name: infra
 securityDefinitions:
   TenantID:
     description: Tenant UUID injected by the API gateway. Establishes the RLS scope

@@ -24,8 +24,14 @@ TEST_E2E_PKGS      := ./test/e2e/...
 
 # White-box (package-internal) tests included in unit runs.
 TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
+                      ./internal/adapter/inbound/consumer/... \
                       ./internal/adapter/outbound/eventbus/... \
                       ./internal/adapter/outbound/postgres/... \
+                      ./internal/adapter/outbound/userprofile/... \
+                      ./internal/adapter/outbound/workflow/... \
+                      ./internal/adapter/outbound/realmprovisioner/... \
+                      ./internal/adapter/outbound/metrics/... \
+                      ./internal/adapter/outbound/valkey/... \
                       ./internal/core/service/...
 
 COVER_PKG_LIST := $(shell $(GO) list ./internal/... ./pkg/... 2>/dev/null | tr '\n' ',' | sed 's/,$$//')
@@ -87,7 +93,8 @@ help:
 	@echo "  make test-unit       - unit tests only (no Docker required)"
 	@echo "  make test-postgres   - Postgres + RLS integration tests (requires Docker)"
 	@echo "  make test-integration- cross-layer integration tests (SNS/SQS via LocalStack)"
-	@echo "  make test-e2e        - end-to-end tests (requires Docker)"
+	@echo "  make test-e2e        - end-to-en
+	d tests (requires Docker)"
 	@echo "  make test-smoke      - smoke tests against a running APP_URL"
 	@echo "  make race            - all tests with -race flag"
 	@echo "  make run             - run the server locally (go run)"
@@ -413,6 +420,7 @@ swag:
 	  --output docs/swagger \
 	  --parseDependency \
 	  --parseInternal
+	@python3 scripts/patch-swagger-extensions.py
 	@echo "Swagger docs written to docs/swagger/"
 
 .PHONY: swag-check
