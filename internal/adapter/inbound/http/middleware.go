@@ -15,6 +15,51 @@ import (
 	"github.com/google/uuid"
 )
 
+// bridgedIdentity is the primitive-typed view of the gateway-injected
+// identity used by the bridge helper. Keeping this decoupled from the
+// gincommon.RequestContext type lets the parsing/validation logic be
+// unit-tested without depending on gincommon's internal-package type.
+type bridgedIdentity struct {
+	UserIDStr   string
+	TenantIDStr string
+	Roles       []string
+	ClientIP    string
+	UserAgent   string
+}
+
+// parseBridgedIdentity turns primitive gateway header values into a typed
+// requestctx.RequestContext. Returns a non-nil ErrorResponse (and empty
+// rc) if either identity header is malformed — the caller writes the 401.
+// "iam-system" user id is honored specially per RLS-5/IAPI-2.
+func parseBridgedIdentity(in bridgedIdentity) (*requestctx.RequestContext, *ErrorResponse) {
+	var userID uuid.UUID
+	if in.UserIDStr == "iam-system" {
+		userID = uuid.Nil
+	} else {
+		id, err := uuid.Parse(in.UserIDStr)
+		if err != nil {
+			return nil, &ErrorResponse{
+				Error: "missing_identity_headers", Code: "missing_identity_headers",
+				Message: "x-user-id header is not a valid UUID",
+				Status:  http.StatusUnauthorized,
+			}
+		}
+		userID = id
+	}
+	tenantID, err := uuid.Parse(in.TenantIDStr)
+	if err != nil {
+		return nil, &ErrorResponse{
+			Error: "missing_identity_headers", Code: "missing_identity_headers",
+			Message: "x-tenant-id header is not a valid UUID",
+			Status:  http.StatusUnauthorized,
+		}
+	}
+	return &requestctx.RequestContext{
+		UserID: userID, TenantID: tenantID,
+		Roles: in.Roles, ClientIP: in.ClientIP, UserAgent: in.UserAgent,
+	}, nil
+}
+
 // GUCBridgeMiddleware runs after gincommon.ProtectedMiddlewares. It parses
 // the gateway-injected identity into typed uuid.UUID values, stores a
 // requestctx.RequestContext for handlers, and writes pgcommon.GUCSet so
@@ -28,41 +73,19 @@ func GUCBridgeMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-
-		// "iam-system" is the reserved system principal used by internal
-		// callers (Realm Provisioner, Event Consumer). It is intentionally
-		// not a UUID; the typed RequestContext stores uuid.Nil and handlers
-		// check HasRole("iam-system"). Any other non-UUID user ID is a
-		// misconfigured gateway → 401.
-		var userID uuid.UUID
-		if platformRc.UserID == "iam-system" {
-			userID = uuid.Nil
-		} else {
-			id, err := uuid.Parse(platformRc.UserID)
-			if err != nil {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-					"code":    "missing_identity_headers",
-					"message": "x-user-id header is not a valid UUID",
-				})
-				return
-			}
-			userID = id
-		}
-		tenantID, err := uuid.Parse(platformRc.TenantID)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    "missing_identity_headers",
-				"message": "x-tenant-id header is not a valid UUID",
-			})
+		rc, errResp := parseBridgedIdentity(bridgedIdentity{
+			UserIDStr:   platformRc.UserID,
+			TenantIDStr: platformRc.TenantID,
+			Roles:       platformRc.Roles,
+			ClientIP:    platformRc.ClientIP,
+			UserAgent:   c.Request.Header.Get("User-Agent"),
+		})
+		if errResp != nil {
+			// Enrich with trace/request IDs then abort.
+			er := newErrorResponse(c, errResp.Code, errResp.Message, nil)
+			er.Status = errResp.Status
+			c.AbortWithStatusJSON(errResp.Status, er)
 			return
-		}
-
-		rc := &requestctx.RequestContext{
-			UserID:    userID,
-			TenantID:  tenantID,
-			Roles:     platformRc.Roles,
-			ClientIP:  platformRc.ClientIP,
-			UserAgent: c.Request.Header.Get("User-Agent"),
 		}
 		ctx := requestctx.WithContext(c.Request.Context(), rc)
 
@@ -99,10 +122,9 @@ func RequireJSONContentType() gin.HandlerFunc {
 			return
 		}
 		if c.ContentType() != "application/json" {
-			c.AbortWithStatusJSON(http.StatusUnsupportedMediaType, gin.H{
-				"code":    "unsupported_media_type",
-				"message": "Content-Type must be application/json",
-			})
+			er := newErrorResponse(c, "unsupported_media_type", "Content-Type must be application/json", nil)
+			er.Status = http.StatusUnsupportedMediaType
+			c.AbortWithStatusJSON(http.StatusUnsupportedMediaType, er)
 			return
 		}
 		c.Next()
@@ -116,10 +138,9 @@ func RequireSystemRole() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc, ok := requestctx.FromContext(c.Request.Context())
 		if !ok || !rc.HasRole("iam-system") {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code":    "insufficient_role",
-				"message": "internal route requires iam-system role",
-			})
+			er := newErrorResponse(c, "insufficient_role", "internal route requires iam-system role", nil)
+			er.Status = http.StatusForbidden
+			c.AbortWithStatusJSON(http.StatusForbidden, er)
 			return
 		}
 		c.Next()
@@ -133,51 +154,87 @@ func RequireOperatorRole() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc, ok := requestctx.FromContext(c.Request.Context())
 		if !ok || !rc.IsOperator() {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code":    "insufficient_role",
-				"message": "operator route requires platform_operator role",
-			})
+			er := newErrorResponse(c, "insufficient_role", "operator route requires platform_operator role", nil)
+			er.Status = http.StatusForbidden
+			c.AbortWithStatusJSON(http.StatusForbidden, er)
 			return
 		}
 		c.Next()
 	}
 }
 
+// validatorsRegistered records whether RegisterValidators has been called.
+// Idempotency guard so re-invocation (e.g. tests calling into main's setup
+// twice) is a safe no-op.
+var validatorsRegistered bool
+
 // RegisterValidators wires custom Gin validators (slug regex, keycloak
 // group name, BCP-47 locale, mfa_freshness range). Phase 0 leaves the set
 // empty — Phase 2 populates it alongside the first DTOs. Called from
-// main.go before router construction.
+// main.go before router construction. Safe to call multiple times.
 func RegisterValidators() {
-	// Phase 2 lands validators via github.com/go-playground/validator/v10.
+	validatorsRegistered = true
 }
 
 // HandleError writes a JSON error response derived from err. Recognises
-// *domain.DomainError and maps its Code to an HTTP status per §17.
+// *domain.DomainError and maps its Code to an HTTP status per §17. The
+// response body follows the flat ErrorResponse shape (§17, matches
+// platform-gincommon.ErrorResponse and the sibling iam-user-profile2
+// service) — populates `request_id`/`trace_id` for cross-service
+// correlation.
 func HandleError(c *gin.Context, err error) {
 	var de *domain.DomainError
 	if errors.As(err, &de) {
 		status := domainErrorStatus(de)
-		body := gin.H{"code": de.Code, "message": de.Message}
-		for k, v := range de.Details {
-			body[k] = v
-		}
-		c.AbortWithStatusJSON(status, body)
+		body := newErrorResponse(c, de.Code, de.Message, nil)
+		body.Status = status
+		// Merge domain-error details into the flat envelope so 409/422
+		// contract fields (record_version, active_workflows, workflow_ids,
+		// allowed_actions, licensed_seats, ...) surface at the top level
+		// as the DTO declares (dto.go:245).
+		mergedBody := errorResponseWithDetails(body, de.Details)
+		c.AbortWithStatusJSON(status, mergedBody)
 		return
 	}
-	c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-		"code":    "internal_error",
-		"message": "an unexpected error occurred",
-	})
+	er := newErrorResponse(c, "internal_error", "an unexpected error occurred", nil)
+	er.Status = http.StatusInternalServerError
+	c.AbortWithStatusJSON(http.StatusInternalServerError, er)
+}
+
+// errorResponseWithDetails renders the flat ErrorResponse envelope with
+// any DomainError.Details merged as top-level fields on a marshalable map.
+// Using a map preserves the DTO's flat shape while allowing arbitrary
+// per-code extras (record_version, active_workflows, ...) without
+// enumerating every field on the struct.
+func errorResponseWithDetails(er ErrorResponse, details map[string]any) map[string]any {
+	out := map[string]any{
+		"error":   er.Error,
+		"code":    er.Code,
+		"status":  er.Status,
+		"message": er.Message,
+	}
+	if er.TraceID != "" {
+		out["trace_id"] = er.TraceID
+	}
+	if er.RequestID != "" {
+		out["request_id"] = er.RequestID
+	}
+	for k, v := range details {
+		out[k] = v
+	}
+	return out
 }
 
 // domainErrorStatus maps a DomainError to its HTTP status per LLD §17.
 func domainErrorStatus(de *domain.DomainError) int {
 	switch {
-	case errors.Is(de.Cause, domain.ErrValidation):
+	case errors.Is(de.Cause, domain.ErrValidation),
+		errors.Is(de.Cause, domain.ErrNoMutableField):
 		return http.StatusBadRequest
 	case errors.Is(de.Cause, domain.ErrMissingIdentity):
 		return http.StatusUnauthorized
-	case errors.Is(de.Cause, domain.ErrInsufficientRole):
+	case errors.Is(de.Cause, domain.ErrInsufficientRole),
+		errors.Is(de.Cause, domain.ErrCannotRemoveOwner):
 		return http.StatusForbidden
 	case errors.Is(de.Cause, domain.ErrTenantNotFound),
 		errors.Is(de.Cause, domain.ErrMemberNotFound),
@@ -193,7 +250,9 @@ func domainErrorStatus(de *domain.DomainError) int {
 		errors.Is(de.Cause, domain.ErrWorkflowResolutionRequired),
 		errors.Is(de.Cause, domain.ErrSeatLimitReached),
 		errors.Is(de.Cause, domain.ErrInvitationAlreadyExists),
-		errors.Is(de.Cause, domain.ErrTenantOffboarded):
+		errors.Is(de.Cause, domain.ErrTenantOffboarded),
+		errors.Is(de.Cause, domain.ErrDepartmentAlreadyActivated),
+		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted):
 		return http.StatusConflict
 	case errors.Is(de.Cause, domain.ErrReinviteTooSoon),
 		errors.Is(de.Cause, domain.ErrInviteRateLimited):

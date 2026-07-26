@@ -9,7 +9,6 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // OperatorService owns O-1..O-7. Every method assumes handler-layer AUTH-6
@@ -29,6 +28,7 @@ type OperatorService struct {
 	tenRoles port.TenantRoleRepository
 	memBs    port.MembershipRepository
 	cache    port.Cache
+	txRunner port.TxRunner
 }
 
 func NewOperatorService(
@@ -36,8 +36,12 @@ func NewOperatorService(
 	plans port.PlanRepository, depts port.DepartmentRepository,
 	tenants port.TenantRepository, roles port.TenantRoleRepository,
 	memberships port.MembershipRepository, cache port.Cache,
+	txRunner port.TxRunner,
 ) *OperatorService {
-	return &OperatorService{pool: pool, plans: plans, depts: depts, tenants: tenants, tenRoles: roles, memBs: memberships, cache: cache}
+	return &OperatorService{
+		pool: pool, plans: plans, depts: depts, tenants: tenants,
+		tenRoles: roles, memBs: memberships, cache: cache, txRunner: txRunner,
+	}
 }
 
 // ── O-1..O-3 Departments (global catalog) ───────────────────────────────
@@ -55,6 +59,10 @@ func (s *OperatorService) CreateDepartment(ctx context.Context, code, name strin
 }
 
 func (s *OperatorService) PatchDepartment(ctx context.Context, id uuid.UUID, name *string, isActive *bool, expectedVersion int64) (*domain.Department, error) {
+	if name == nil && isActive == nil {
+		return nil, domain.NewError(domain.ErrNoMutableField, "at least one of name or is_active must be provided").
+			WithDetails(map[string]any{"code": "no_mutable_field"})
+	}
 	// D-9/D-11 (system dept retirement) is blocked at the DB level by
 	// chk_system_department_active — surfaces as a CHECK violation which
 	// bubbles up as a raw error. Map it explicitly here for a clean 422.
@@ -93,9 +101,16 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 
 	// Direct SQL — the tenant repository doesn't expose SetFeatureFlags,
 	// and operator writes deliberately bypass the app-scoped patch path.
+	// Routed through the shared TxRunner (rather than pgcommon.RunInTx
+	// directly on the pool) so unit tests can substitute a passthrough
+	// TxRunner + fake tx without hitting a real DB.
 	var updated *domain.Tenant
-	err := pgcommon.RunInTx(ctx, s.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1 AND deleted_at IS NULL`, tenantID, string(flagsJSON))
+	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		tx, ok := pgadapterTxFromContext(txCtx)
+		if !ok {
+			return domain.NewError(domain.ErrConflict, "tx unavailable")
+		}
+		_, err := tx.Exec(txCtx, `UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1 AND deleted_at IS NULL`, tenantID, string(flagsJSON))
 		return err
 	})
 	if err != nil {
@@ -143,21 +158,48 @@ func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerU
 	if err != nil || mem.Status != domain.MembershipActive {
 		return nil, domain.NewError(domain.ErrInvalidOwnerCandidate, "new owner is not an active member")
 	}
-	// Grant tenant_owner (idempotent via uq_tenant_roles_active partial unique).
-	tr, err := s.tenRoles.Grant(ctx, &domain.TenantRole{
-		TenantID: tenantID, UserID: newOwnerUserID,
-		TenantMembershipID: mem.ID, RoleCode: domain.RoleTenantOwner, GrantedBy: actorID,
+	// Grant tenant_owner, clear ownerless_since, and emit TenantRoleGranted
+	// in one tx via the TxRunner (which injects an EventPublisher into ctx
+	// so outbox events land atomically per CONS-1). LLD §5.4 O-7 step 5
+	// requires the event so AuthZ/Audit/Notification see the reassignment.
+	var tr *domain.TenantRole
+	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		tx, ok := pgadapterTxFromContext(txCtx)
+		if !ok {
+			return domain.NewError(domain.ErrConflict, "tx unavailable")
+		}
+		granted, gerr := s.tenRoles.Grant(txCtx, &domain.TenantRole{
+			TenantID: tenantID, UserID: newOwnerUserID,
+			TenantMembershipID: mem.ID, RoleCode: domain.RoleTenantOwner, GrantedBy: actorID,
+		})
+		if gerr != nil {
+			return gerr
+		}
+		tr = granted
+		if _, uerr := tx.Exec(txCtx, `UPDATE tenants SET ownerless_since = NULL WHERE id = $1`, tenantID); uerr != nil {
+			return uerr
+		}
+		pub, _ := port.EventPublisherFromContext(txCtx)
+		if pub != nil {
+			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				Type: domain.EventTenantRoleGranted, TenantID: tenantID,
+				Subject: newOwnerUserID.String(), Actor: actorID.String(),
+				Data: domain.TenantRoleGrantedPayload{
+					UserID: newOwnerUserID, TenantID: tenantID,
+					RoleCode: domain.RoleTenantOwner, ActorID: actorID,
+				},
+			})
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	// Clear ownerless_since via bypass path.
-	_ = pgcommon.RunInTx(ctx, s.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE tenants SET ownerless_since = NULL WHERE id = $1`, tenantID)
-		return err
-	})
+	// Evict the affected user's membership cache so AuthZ Enrichment's next
+	// I-8 lookup sees the new owner grant (LLD §5.4 O-7 step 6).
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeyTenant(tenantID))
+		_ = s.cache.Delete(ctx, cacheKeyMemberships(tenantID, newOwnerUserID))
 	}
 	return tr, nil
 }

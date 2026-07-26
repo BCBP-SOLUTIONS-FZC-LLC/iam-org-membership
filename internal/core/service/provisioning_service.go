@@ -2,13 +2,14 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // ProvisioningService owns I-1 (tenant creation), I-2 (RP realm patch),
@@ -113,12 +114,25 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 
 		// 2) Activate 5 system departments (§8.1). Use ListActive from
 		// catalog — filter is_system=true, is_active=true.
+		// §8.1 fixes the trial-activation set to exactly these 5 codes.
+		// If the global catalog ever grows a 6th is_system dept, it's opt-in
+		// per-tenant via P-24; trial signup never auto-activates it.
+		trialCodes := map[string]struct{}{
+			"ENGINEERING": {},
+			"DESIGN":      {},
+			"PROCUREMENT": {},
+			"FINANCE":     {},
+			"LEGAL":       {},
+		}
 		catalog, err := s.depts.List(txCtx, true)
 		if err != nil {
 			return err
 		}
 		for _, d := range catalog {
 			if !d.IsSystem {
+				continue
+			}
+			if _, ok := trialCodes[d.Code]; !ok {
 				continue
 			}
 			if _, err := s.tenantDepts.Activate(txCtx, req.TenantID, d.ID); err != nil {
@@ -190,12 +204,17 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 
 // SetRealmFields is I-2: RP updates realm_id/realm_type/keycloak_shard
 // atomically after dedicated-realm provisioning (TenantConverted flow).
+// Routed through the shared TxRunner so unit tests can inject a fake tx.
 func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.UUID, realmID string, realmType domain.RealmType, shard string) error {
 	g, _ := pgcommon.GUCSetFromContext(ctx)
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-	return pgcommon.RunInTx(gucCtx, s.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
+	return s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+		tx, ok := pgadapterTxFromContext(txCtx)
+		if !ok {
+			return domain.NewError(domain.ErrConflict, "tx unavailable")
+		}
 		_, err := tx.Exec(txCtx,
 			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND deleted_at IS NULL`,
 			tenantID, realmID, string(realmType), shard)
@@ -311,6 +330,9 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 
 		// TM-12: if we just removed the last active owner, set
 		// ownerless_since. Uses TxFromContext to hit the running tx.
+		// LLD §11.4 / TM-12 line 3807: fire an event-time counter + ERROR
+		// log so on-call is paged the moment escalation triggers, without
+		// waiting for the periodic ownerless-scanner gauge.
 		if wasOwner {
 			ownerRemaining, err := s.roles.CountActiveOwners(txCtx, tenantID)
 			if err != nil {
@@ -318,8 +340,21 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 			}
 			if ownerRemaining == 0 {
 				if tx, ok := pgadapterTxFromContext(txCtx); ok {
-					if _, err := tx.Exec(txCtx, `UPDATE tenants SET ownerless_since = now() WHERE id = $1 AND ownerless_since IS NULL`, tenantID); err != nil {
+					cmd, err := tx.Exec(txCtx, `UPDATE tenants SET ownerless_since = now() WHERE id = $1 AND ownerless_since IS NULL`, tenantID)
+					if err != nil {
 						return err
+					}
+					// Only page if this call actually flipped the flag (idempotent
+					// re-removals during retries must not double-alert).
+					if cmd.RowsAffected() > 0 {
+						if metrics.TenantOwnerlessEscalated != nil {
+							metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
+						}
+						slog.ErrorContext(txCtx, "tenant_ownerless_escalation",
+							"tenant_id", tenantID.String(),
+							"removed_user_id", userID.String(),
+							"reason", "last_active_owner_removed",
+						)
 					}
 				}
 			}
