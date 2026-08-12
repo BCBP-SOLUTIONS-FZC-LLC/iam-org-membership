@@ -31,6 +31,8 @@ go.work.sum
 # Build outputs
 bin/
 .coverage/
+mockwf
+server
 
 # macOS
 .DS_Store
