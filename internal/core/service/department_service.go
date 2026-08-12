@@ -30,8 +30,10 @@ func NewDepartmentService(catalog port.DepartmentRepository, tenantDepts port.Te
 
 // ListForTenant returns ALL tenant_departments (active and inactive) joined
 // with their catalog department. UI filters by is_active; P-3 LLD §5.4.
+// BUG FIX: was calling ListActive (only is_active=true) — changed to List
+// so deactivated depts still appear; is_active flag is advisory for the UI.
 func (s *DepartmentService) ListForTenant(ctx context.Context, tenantID uuid.UUID) ([]TenantDepartmentView, error) {
-	tds, err := s.tenantDepts.ListActive(ctx, tenantID)
+	tds, err := s.tenantDepts.List(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
