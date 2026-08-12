@@ -27,12 +27,24 @@ func NewAuthZService(pool *pgcommon.Pool, plans port.PlanRepository, cache port.
 }
 
 // MembershipProjection is the I-8 response envelope.
+//
+// LLD rev 1.50 (§16 A53): field `subscription_status` is the authoritative
+// name (matches billing/subscription vocabulary). Legacy `tenant_status`
+// alias kept for one release so downstream consumers can migrate without
+// a lock-step deploy; it will be removed once AuthZ Enrichment ships
+// rev 1.50-compat.
+//
+// `read_only` is DERIVED at read time from subscription_status so AuthZ
+// Enrichment can rebuild the `x-feature-flags` `read_only` claim on a
+// cold cache-miss without additional round-trips (§16 A53 CACHE-9).
 type MembershipProjection struct {
 	UserID                uuid.UUID                   `json:"user_id"`
 	TenantID              uuid.UUID                   `json:"tenant_id"`
 	Status                domain.MembershipStatus     `json:"status"`
 	Plan                  domain.TenantPlan           `json:"plan"`
-	TenantStatus          domain.SubscriptionStatus   `json:"tenant_status"`
+	TenantStatus          domain.SubscriptionStatus   `json:"tenant_status"` // deprecated alias — see subscription_status
+	SubscriptionStatus    domain.SubscriptionStatus   `json:"subscription_status"`
+	ReadOnly              bool                        `json:"read_only"`
 	Locale                string                      `json:"default_locale"`
 	MFAFreshnessSeconds   int                         `json:"mfa_freshness_seconds"`
 	LocalAccountsEnabled  bool                        `json:"local_accounts_enabled"`
@@ -40,6 +52,17 @@ type MembershipProjection struct {
 	Departments           []domain.DeptMembershipView `json:"departments"`
 	ActiveDelegations     []DelegationView            `json:"active_delegations"`
 	EffectiveFeatureFlags map[string]any              `json:"effective_feature_flags"`
+}
+
+// readOnlyForStatus returns true for subscription states that must render
+// the tenant as read-only in the UI. LLD §16 A53 (line 2394+2418):
+// `read_only = true iff subscription_status='cancelled'`. Suspended and
+// offboarded tenants are blocked at earlier gates (Keycloak returns 403
+// on login; the tenant row is soft-deleted respectively), so they never
+// reach this projection with a live user session — narrowing the check
+// to match the spec literally.
+func readOnlyForStatus(status domain.SubscriptionStatus) bool {
+	return status == domain.StatusCancelled
 }
 
 // DelegationView is the compact projection embedded in the I-8 response.
@@ -53,7 +76,7 @@ type DelegationView struct {
 
 // GetMembership implements I-8. Cache-through with 300 s ± 30 s jitter
 // (CACHE-4). Miss/timeout/outage falls through to Postgres (CACHE-9 /
-// I8-2). 404 when the caller has no active membership in the tenant.
+// I8-2). 404 when the caller has no membership (active or suspended) in the tenant.
 func (s *AuthZService) GetMembership(ctx context.Context, tenantID, userID uuid.UUID) (*MembershipProjection, error) {
 	if cached := s.getCached(ctx, tenantID, userID); cached != nil {
 		return cached, nil
@@ -88,7 +111,7 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 			       t.local_accounts_enabled, t.feature_flags
 			FROM tenant_memberships tm
 			JOIN tenants t ON t.id = tm.tenant_id
-			WHERE tm.tenant_id = $1 AND tm.user_id = $2 AND tm.deleted_at IS NULL AND tm.status = 'active'`,
+			WHERE tm.tenant_id = $1 AND tm.user_id = $2 AND tm.deleted_at IS NULL`,
 			tenantID, userID,
 		).Scan(&mStatus, &tStatus, &tPlan, &tLocale, &mfaFresh, &localAccountsEnabled, &tenantFeatureFlagsJSON)
 		if err != nil {
@@ -98,8 +121,10 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 			return err
 		}
 
-		// Elevated roles.
-		roles := []domain.TenantRoleCode{domain.RoleMember} // TR-7 derived injection
+		// TR-7: "member" is derived at read time (never persisted in tenant_roles).
+		// LLD §6.2 requires it to be injected first in the effective role set
+		// so the gateway's x-tenant-roles header always carries it.
+		roles := []domain.TenantRoleCode{domain.RoleMember}
 		rows, err := tx.Query(txCtx, `
 			SELECT role_code FROM tenant_roles
 			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL
@@ -176,12 +201,15 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 			effective[k] = v
 		}
 
+		subStatus := domain.SubscriptionStatus(tStatus)
 		proj = &MembershipProjection{
 			UserID:                userID,
 			TenantID:              tenantID,
 			Status:                domain.MembershipStatus(mStatus),
 			Plan:                  domain.TenantPlan(tPlan),
-			TenantStatus:          domain.SubscriptionStatus(tStatus),
+			TenantStatus:          subStatus, // deprecated alias
+			SubscriptionStatus:    subStatus,
+			ReadOnly:              readOnlyForStatus(subStatus),
 			Locale:                tLocale,
 			MFAFreshnessSeconds:   mfaFresh,
 			LocalAccountsEnabled:  localAccountsEnabled,

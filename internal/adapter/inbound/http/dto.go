@@ -12,66 +12,76 @@ import (
 // TenantResponse is the P-1 response body and the shape mutations echo
 // (P-2 with the updated record_version + updated_at for CONC-4).
 type TenantResponse struct {
-	ID                    uuid.UUID                 `json:"id"`
-	Slug                  string                    `json:"slug"`
-	Name                  string                    `json:"name"`
-	Plan                  domain.TenantPlan         `json:"plan"`
-	Status                domain.SubscriptionStatus `json:"status"`
-	TrialEndsAt           *time.Time                `json:"trial_ends_at,omitempty"`
-	SubscriptionStartedAt *time.Time                `json:"subscription_started_at,omitempty"`
-	RealmID               string                    `json:"realm_id"`
-	RealmType             domain.RealmType          `json:"realm_type"`
-	MFAFreshnessSeconds   int                       `json:"mfa_freshness_seconds"`
-	LocalAccountsEnabled  bool                      `json:"local_accounts_enabled"`
-	RealmSyncPending      bool                      `json:"realm_sync_pending"`
-	DefaultLocale         string                    `json:"default_locale"`
-	LicensedSeats         int                       `json:"licensed_seats"`
-	OwnerlessSince        *time.Time                `json:"ownerless_since,omitempty"`
-	OverageSince          *time.Time                `json:"overage_since,omitempty"`
-	RecordVersion         int64                     `json:"record_version"`
-	UpdatedAt             time.Time                 `json:"updated_at"`
+	ID                         uuid.UUID                 `json:"id"`
+	Slug                       string                    `json:"slug"`
+	Name                       string                    `json:"name"`
+	Plan                       domain.TenantPlan         `json:"plan"`
+	Status                     domain.SubscriptionStatus `json:"status"`
+	TrialEndsAt                *time.Time                `json:"trial_ends_at,omitempty"`
+	SubscriptionStartedAt      *time.Time                `json:"subscription_started_at,omitempty"`
+	RealmID                    string                    `json:"realm_id"`
+	RealmType                  domain.RealmType          `json:"realm_type"`
+	MFAFreshnessSeconds        int                       `json:"mfa_freshness_seconds"`
+	LocalAccountsEnabled       bool                      `json:"local_accounts_enabled"`
+	RealmSyncPending           bool                      `json:"realm_sync_pending"`
+	DefaultLocale              string                    `json:"default_locale"`
+	LicensedSeats              int                       `json:"licensed_seats"`
+	OwnerlessSince             *time.Time                `json:"ownerless_since,omitempty"`
+	OverageSince               *time.Time                `json:"overage_since,omitempty"`
+	DelegationMaxDurationDays  int                       `json:"delegation_max_duration_days"`
+	DelegationReviewWindowDays int                       `json:"delegation_review_window_days"`
+	FeatureFlags               map[string]any            `json:"feature_flags"`
+	RecordVersion              int64                     `json:"record_version"`
+	UpdatedAt                  time.Time                 `json:"updated_at"`
 }
 
 func TenantToResponse(t *domain.Tenant) TenantResponse {
 	return TenantResponse{
-		ID:                    t.ID,
-		Slug:                  t.Slug,
-		Name:                  t.Name,
-		Plan:                  t.Plan,
-		Status:                t.Status,
-		TrialEndsAt:           t.TrialEndsAt,
-		SubscriptionStartedAt: t.SubscriptionStartedAt,
-		RealmID:               t.RealmID,
-		RealmType:             t.RealmType,
-		MFAFreshnessSeconds:   t.MFAFreshnessSeconds,
-		LocalAccountsEnabled:  t.LocalAccountsEnabled,
-		RealmSyncPending:      t.RealmSyncPending,
-		DefaultLocale:         t.DefaultLocale,
-		LicensedSeats:         t.LicensedSeats,
-		OwnerlessSince:        t.OwnerlessSince,
-		OverageSince:          t.OverageSince,
-		RecordVersion:         t.RecordVersion,
-		UpdatedAt:             t.UpdatedAt,
+		ID:                         t.ID,
+		Slug:                       t.Slug,
+		Name:                       t.Name,
+		Plan:                       t.Plan,
+		Status:                     t.Status,
+		TrialEndsAt:                t.TrialEndsAt,
+		SubscriptionStartedAt:      t.SubscriptionStartedAt,
+		RealmID:                    t.RealmID,
+		RealmType:                  t.RealmType,
+		MFAFreshnessSeconds:        t.MFAFreshnessSeconds,
+		LocalAccountsEnabled:       t.LocalAccountsEnabled,
+		RealmSyncPending:           t.RealmSyncPending,
+		DefaultLocale:              t.DefaultLocale,
+		LicensedSeats:              t.LicensedSeats,
+		OwnerlessSince:             t.OwnerlessSince,
+		OverageSince:               t.OverageSince,
+		DelegationMaxDurationDays:  t.DelegationMaxDurationDays,
+		DelegationReviewWindowDays: t.DelegationReviewWindowDays,
+		FeatureFlags:               t.FeatureFlags,
+		RecordVersion:              t.RecordVersion,
+		UpdatedAt:                  t.UpdatedAt,
 	}
 }
 
 // TenantPatchRequest is P-2. All fields optional; record_version is required
 // for CONC-1..4.
 type TenantPatchRequest struct {
-	Name                 *string `json:"name,omitempty"`
-	DefaultLocale        *string `json:"default_locale,omitempty"`
-	LocalAccountsEnabled *bool   `json:"local_accounts_enabled,omitempty"`
-	MFAFreshnessSeconds  *int    `json:"mfa_freshness_seconds,omitempty"`
-	RecordVersion        int64   `json:"record_version"`
+	Name                       *string `json:"name,omitempty"`
+	DefaultLocale              *string `json:"default_locale,omitempty"`
+	LocalAccountsEnabled       *bool   `json:"local_accounts_enabled,omitempty"`
+	MFAFreshnessSeconds        *int    `json:"mfa_freshness_seconds,omitempty"`
+	DelegationMaxDurationDays  *int    `json:"delegation_max_duration_days,omitempty"`  // §16 A71, DEL-14: 1..180
+	DelegationReviewWindowDays *int    `json:"delegation_review_window_days,omitempty"` // §16 A71, DEL-14: 1..180
+	RecordVersion              int64   `json:"record_version"`
 }
 
 func (r *TenantPatchRequest) ToDomain() *domain.TenantPatch {
 	return &domain.TenantPatch{
-		Name:                 r.Name,
-		DefaultLocale:        r.DefaultLocale,
-		LocalAccountsEnabled: r.LocalAccountsEnabled,
-		MFAFreshnessSeconds:  r.MFAFreshnessSeconds,
-		RecordVersion:        r.RecordVersion,
+		Name:                       r.Name,
+		DefaultLocale:              r.DefaultLocale,
+		LocalAccountsEnabled:       r.LocalAccountsEnabled,
+		MFAFreshnessSeconds:        r.MFAFreshnessSeconds,
+		DelegationMaxDurationDays:  r.DelegationMaxDurationDays,
+		DelegationReviewWindowDays: r.DelegationReviewWindowDays,
+		RecordVersion:              r.RecordVersion,
 	}
 }
 
@@ -120,6 +130,16 @@ type RolesPutRequest struct {
 	Roles []string `json:"roles"`
 }
 
+// RemovalResolutionRequest is the body of P-26
+// POST /tenants/:id/users/:user_id/removal-resolution (§8.8.3).
+type RemovalResolutionRequest struct {
+	// Action is "replace_delegate" or "stop_workflows".
+	Action string `json:"action" binding:"required" example:"replace_delegate"`
+	// ReplacementUserID is required when action=replace_delegate. Must be an
+	// active member of the same tenant (WFI-5).
+	ReplacementUserID *uuid.UUID `json:"replacement_user_id,omitempty" swaggertype:"string" format:"uuid"`
+}
+
 // ── Dept memberships ───────────────────────────────────────────────────
 
 type DeptMembershipPutRequest struct {
@@ -162,22 +182,38 @@ type DelegationCreateRequest struct {
 	DelegateID uuid.UUID  `json:"delegate_id"`
 	Scope      string     `json:"scope"`
 	ScopeID    *uuid.UUID `json:"scope_id,omitempty"`
-	Reason     string     `json:"reason,omitempty"`
+	Reason     string     `json:"reason,omitempty"` // DEL-10: stored in delegations.reason AND sent to UP as note
 	StartsAt   *time.Time `json:"starts_at,omitempty"`
 	EndsAt     *time.Time `json:"ends_at,omitempty"`
 }
 
 type DelegationResponse struct {
-	ID            uuid.UUID  `json:"id"`
-	DelegatorID   uuid.UUID  `json:"delegator_id"`
-	DelegateID    uuid.UUID  `json:"delegate_id"`
-	Scope         string     `json:"scope"`
-	ScopeID       *uuid.UUID `json:"scope_id,omitempty"`
-	Reason        string     `json:"reason,omitempty"`
-	StartsAt      time.Time  `json:"starts_at"`
-	EndsAt        *time.Time `json:"ends_at,omitempty"`
-	Status        string     `json:"status"`
-	RecordVersion int64      `json:"record_version"`
+	ID               uuid.UUID  `json:"id"`
+	DelegatorID      uuid.UUID  `json:"delegator_id"`
+	DelegateID       uuid.UUID  `json:"delegate_id"`
+	Scope            string     `json:"scope"`
+	ScopeID          *uuid.UUID `json:"scope_id,omitempty"`
+	Reason           string     `json:"reason,omitempty"`
+	StartsAt         time.Time  `json:"starts_at"`
+	EndsAt           *time.Time `json:"ends_at,omitempty"`
+	Status           string     `json:"status"`
+	RecordVersion    int64      `json:"record_version"`
+	ReviewDueAt      *time.Time `json:"review_due_at,omitempty"`
+	ReviewWindowDays *int       `json:"review_window_days,omitempty"`
+}
+
+// DelegationReassignRequest is the P-33 body.
+type DelegationReassignRequest struct {
+	DelegateID    uuid.UUID `json:"delegate_id"`
+	RecordVersion int64     `json:"record_version"`
+}
+
+// DelegationExtendRequest is the P-32 body. extend_days is optional; when
+// omitted the service uses the tenant's delegation_review_window_days default.
+// Must be in [1, 180] if provided (§16 A71, DEL-14, ErrExtendDaysOutOfRange).
+type DelegationExtendRequest struct {
+	ExtendDays    *int  `json:"extend_days,omitempty"`
+	RecordVersion int64 `json:"record_version"`
 }
 
 // ── Tender ACL ─────────────────────────────────────────────────────────
@@ -207,12 +243,21 @@ type InvitationCreateRequest struct {
 }
 
 type InvitationResponse struct {
+	// LLD §5.4 P-6 spec key is `invitation_id`. `id` is the legacy alias,
+	// carried for one release so downstream clients can migrate; will be
+	// removed once tooling ships the rev-1.51-compat build.
 	ID            uuid.UUID `json:"id"`
+	InvitationID  uuid.UUID `json:"invitation_id"`
 	Email         string    `json:"email"`
 	FullName      string    `json:"full_name"`
 	Status        string    `json:"status"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	RecordVersion int64     `json:"record_version"`
+}
+
+// InvitationRevokeRequest is the P-31 body. PI-8 optimistic-lock version.
+type InvitationRevokeRequest struct {
+	RecordVersion int64 `json:"record_version"`
 }
 
 // ── Operator ───────────────────────────────────────────────────────────
@@ -230,11 +275,28 @@ type OperatorDepartmentPatchRequest struct {
 }
 
 type OperatorFeatureFlagsRequest struct {
-	FeatureFlags map[string]any `json:"feature_flags"`
+	// RecordVersion is the current tenants.record_version obtained from
+	// GET /api/v1/tenants/:id — required optimistic-lock contract per LLD
+	// O-4 (§4.5, CONC-1). WHERE record_version = $N mismatch → 409.
+	RecordVersion int64          `json:"record_version"`
+	FeatureFlags  map[string]any `json:"feature_flags"`
 }
 
+// OperatorReassignOwnerRequest is the O-7 body. LLD §5.4 O-7 spec key is
+// `user_id`; `new_owner_user_id` is kept as a fallback alias for callers
+// built against the pre-rev-1.51 shape. `user_id` wins if both are set.
 type OperatorReassignOwnerRequest struct {
-	NewOwnerUserID uuid.UUID `json:"new_owner_user_id"`
+	UserID         uuid.UUID `json:"user_id"`
+	NewOwnerUserID uuid.UUID `json:"new_owner_user_id,omitempty"` // deprecated alias
+}
+
+// EffectiveUserID returns the resolved new-owner user ID, preferring the
+// LLD-canonical `user_id` and falling back to the legacy alias.
+func (r OperatorReassignOwnerRequest) EffectiveUserID() uuid.UUID {
+	if r.UserID != uuid.Nil {
+		return r.UserID
+	}
+	return r.NewOwnerUserID
 }
 
 // ── Error envelope (§17) ───────────────────────────────────────────────
@@ -464,10 +526,46 @@ type InternalLocaleResponse struct {
 	DefaultLocale string    `json:"default_locale" example:"en-US"`
 }
 
+// InternalMFAFreshnessResponse is the I-14 success shape (§16 A72).
+type InternalMFAFreshnessResponse struct {
+	TenantID            uuid.UUID `json:"tenant_id" format:"uuid"`
+	MFAFreshnessSeconds int       `json:"mfa_freshness_seconds" example:"300"`
+}
+
 // InternalTenderACLCheckResponse is the I-12 success shape.
 type InternalTenderACLCheckResponse struct {
 	HasAccess   bool   `json:"has_access" example:"true"`
 	AccessLevel string `json:"access_level,omitempty" enums:"view,edit,approve"`
+}
+
+// InternalAddMemberRequest is the I-3 body. Realm Provisioner passes the
+// KC-fabricated user_id + email/keycloak_user_id (either resolves the
+// candidate pending_invitations row; no explicit invitation_id per PI-4).
+type InternalAddMemberRequest struct {
+	UserID         uuid.UUID `json:"user_id" format:"uuid"`
+	KeycloakUserID uuid.UUID `json:"keycloak_user_id,omitempty" format:"uuid"`
+	Email          string    `json:"email,omitempty" example:"user@example.com"`
+}
+
+// MembershipItemResponse is the I-3 / I-4 success shape.
+type MembershipItemResponse struct {
+	TenantID      uuid.UUID `json:"tenant_id" format:"uuid"`
+	UserID        uuid.UUID `json:"user_id" format:"uuid"`
+	Status        string    `json:"status" enums:"active,suspended,left"`
+	RecordVersion int64     `json:"record_version" example:"1"`
+}
+
+// InternalJITRequest is the I-10 body.
+type InternalJITRequest struct {
+	UserID uuid.UUID `json:"user_id" format:"uuid"`
+	Groups []string  `json:"groups" example:"engineering-team,platform-admins"`
+}
+
+// InternalJITResponse is the I-10 success shape — echoes what the JIT
+// step actually applied (dept assignments + additive tenant-role grants).
+type InternalJITResponse struct {
+	AssignedDepts      []uuid.UUID `json:"assigned_departments" swaggertype:"array,string" format:"uuid"`
+	GrantedTenantRoles []string    `json:"granted_tenant_roles" example:"tender_admin,tenant_admin"`
 }
 
 // AssigneeOverrideRequest is the I-13 body.

@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -66,14 +68,44 @@ type TrialSignupInput struct {
 // TenantCreated + TrialStarted in one RunInTx (§8.1). Runs under GUCSet
 // (target tenant + iam-system principal, RLS-5) so the RLS WITH CHECK
 // passes on inserts into tenant-scoped tables.
-func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupInput) (*domain.Tenant, error) {
-	if req.Plan == "" {
-		req.Plan = domain.PlanStarter
+//
+// Returns (tenant, wasCreated, err). wasCreated=false means the tenant row
+// already existed (LLD I-1 idempotent replay via ON CONFLICT (id)); we skip
+// all seeding + event emission and return the existing row so the handler
+// serves 200 rather than 201.
+func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupInput) (*domain.Tenant, bool, error) {
+	// LLD line 2460: plan is required. The handler enforces this + the
+	// {starter, pro, enterprise} whitelist, so an empty/unknown plan should
+	// never reach here — but the belt-and-suspenders check protects direct
+	// service callers (tests, future BFF) from producing a raw pgconn.PgError
+	// on the DB-enum cast.
+	switch req.Plan {
+	case domain.PlanStarter, domain.PlanPro, domain.PlanEnterprise:
+	default:
+		return nil, false, domain.NewError(domain.ErrInvalidPlan,
+			"plan must be one of starter, pro, enterprise").
+			WithDetails(map[string]any{"received": string(req.Plan)})
+	}
+	// GAP-I1-3: slug format — lowercase alphanumeric and hyphens only,
+	// no leading/trailing hyphens, 3–63 chars (DNS label convention).
+	if !isValidSlug(req.Slug) {
+		return nil, false, domain.NewError(domain.ErrValidation,
+			"slug must be 3–63 lowercase alphanumeric characters or hyphens, "+
+				"and must not start or end with a hyphen")
+	}
+	// GAP-I1-4: name max length 255 chars.
+	if len(req.Name) > 255 {
+		return nil, false, domain.NewError(domain.ErrValidation, "name must not exceed 255 characters")
+	}
+	// GAP-I1-5: default_locale basic BCP-47 format (e.g. "en-US", "fr", "zh-Hant").
+	if req.DefaultLocale != "" && !isValidLocale(req.DefaultLocale) {
+		return nil, false, domain.NewError(domain.ErrValidation,
+			"default_locale must be a valid BCP-47 language tag (e.g. en-US, fr, zh-Hant)")
 	}
 	// Look up plan for trial_duration_days.
 	plan, err := s.plans.FindByCode(ctx, req.Plan)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	trialEnds := time.Now().UTC().Add(time.Duration(plan.TrialDurationDays) * 24 * time.Hour)
 
@@ -90,9 +122,13 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	}
 
 	var created *domain.Tenant
+	var wasCreated bool
 	err = s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
-		// 1) Create the tenant row.
-		t, err := s.tenants.Insert(txCtx, &domain.Tenant{
+		// 1) Create the tenant row. LLD I-1 ON CONFLICT (id) DO NOTHING —
+		// if the row already exists (idempotent replay), skip the whole
+		// seeding + event storm and return the existing row so the handler
+		// serves 200 instead of 201.
+		t, freshInsert, err := s.tenants.Insert(txCtx, &domain.Tenant{
 			ID:                   req.TenantID,
 			Slug:                 req.Slug,
 			Name:                 req.Name,
@@ -111,6 +147,12 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			return err
 		}
 		created = t
+		wasCreated = freshInsert
+		if !freshInsert {
+			// Idempotent replay: the tenant already exists. Per LLD I-1
+			// "no re-seed", so short-circuit the tx here.
+			return nil
+		}
 
 		// 2) Activate 5 system departments (§8.1). Use ListActive from
 		// catalog — filter is_system=true, is_active=true.
@@ -185,50 +227,101 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 				},
 			})
 			// Also emit TenantRoleGranted for the owner (§16 A14).
+			// LLD I-1: granted_by = owner_user_id itself, since no other
+			// admin exists yet — mirror that in the event payload so the
+			// ActorID matches tenant_roles.granted_by written above.
 			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
 				Type: domain.EventTenantRoleGranted, TenantID: req.TenantID,
 				Subject: req.OwnerUserID.String(), Actor: "iam-system",
 				Data: domain.TenantRoleGrantedPayload{
 					UserID: req.OwnerUserID, TenantID: req.TenantID,
-					RoleCode: domain.RoleTenantOwner, ActorID: uuid.Nil,
+					RoleCode: domain.RoleTenantOwner, ActorID: req.OwnerUserID,
 				},
 			})
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return created, nil
+	return created, wasCreated, nil
 }
 
 // SetRealmFields is I-2: RP updates realm_id/realm_type/keycloak_shard
 // atomically after dedicated-realm provisioning (TenantConverted flow).
 // Routed through the shared TxRunner so unit tests can inject a fake tx.
-func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.UUID, realmID string, realmType domain.RealmType, shard string) error {
+// Returns ErrTenantNotFound (→ 404) when the id has no tenant row at all.
+// Intentionally includes offboarded (deleted_at IS NOT NULL) tenants — RP
+// must be able to write realm fields during KC realm cleanup even after O&M
+// has soft-deleted the tenant row (§15.5 offboarding sequence).
+func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) error {
 	g, _ := pgcommon.GUCSetFromContext(ctx)
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-	return s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+	if err := s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
 		tx, ok := pgadapterTxFromContext(txCtx)
 		if !ok {
 			return domain.NewError(domain.ErrConflict, "tx unavailable")
 		}
-		_, err := tx.Exec(txCtx,
-			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND deleted_at IS NULL`,
-			tenantID, realmID, string(realmType), shard)
+		// CONC-4: include record_version in WHERE clause so concurrent I-2
+		// calls fail with 409 optimistic_lock_conflict (BUG-I2-2).
+		cmd, err := tx.Exec(txCtx,
+			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND record_version = $5`,
+			tenantID, realmID, string(realmType), shard, recordVersion)
+		if err != nil {
+			return err
+		}
+		if cmd.RowsAffected() == 0 {
+			// Probe to distinguish tenant_not_found from optimistic_lock_conflict.
+			// No deleted_at filter — RP must be able to act on offboarded tenants.
+			var current int64
+			probe := tx.QueryRow(txCtx, `SELECT record_version FROM tenants WHERE id = $1`, tenantID)
+			if perr := probe.Scan(&current); perr != nil {
+				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+			}
+			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
+				WithDetails(map[string]any{"record_version": current})
+		}
+		return nil
+	}); err != nil {
 		return err
-	})
+	}
+	// BUG-I2-1: evict cached tenant so I-8 hot-path reads updated realm fields (CACHE-6).
+	if s.cache != nil {
+		_ = s.cache.Delete(gucCtx, cacheKeyTenant(tenantID), cacheKeyLocale(tenantID))
+	}
+	return nil
 }
 
 // SetMembershipStatus is I-4: Event Consumer updates lifecycle status.
 func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, expectedVersion int64) (*domain.TenantMembership, error) {
+	// GAP-AUTH-2: validate status against the allowed set before hitting DB.
+	// Without this, an invalid value like "unknown" returns a raw pgconn 500
+	// instead of a clean 400 validation_error.
+	switch status {
+	case domain.MembershipActive, domain.MembershipSuspended, domain.MembershipLeft:
+	default:
+		return nil, domain.NewError(domain.ErrValidation, "status must be one of active, suspended, left")
+	}
 	g, _ := pgcommon.GUCSetFromContext(ctx)
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-	return s.memberships.SetStatus(gucCtx, tenantID, userID, status, expectedVersion)
+	mem, err := s.memberships.SetStatus(gucCtx, tenantID, userID, status, expectedVersion)
+	if err != nil {
+		return nil, err
+	}
+	// CACHE-7: evict per-user and list caches so I-8 hot path does not serve
+	// stale membership status after a KC lifecycle event (e.g. suspended user
+	// still appearing active to AuthZ Enrichment).
+	if s.cache != nil {
+		_ = s.cache.Delete(gucCtx,
+			cacheKeyMemberships(tenantID, userID),
+			cacheKeyMembers(tenantID, 50),
+		)
+	}
+	return mem, nil
 }
 
 // DeleteMember is I-5: full cascade on Keycloak USER_DELETE. Soft-deletes
@@ -246,6 +339,12 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		// Look up membership (need expected version for soft delete).
 		mem, err := s.memberships.FindByUserID(txCtx, tenantID, userID)
 		if err != nil {
+			// TM-12 idempotency: member already deleted (deleted_at IS NOT NULL
+			// makes FindByUserID return ErrMemberNotFound). Return success so
+			// KC webhook retries are safe no-ops.
+			if errors.Is(err, domain.ErrMemberNotFound) {
+				return nil
+			}
 			return err
 		}
 		// Check whether this user is the last active tenant_owner BEFORE
@@ -304,18 +403,27 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 			return err
 		}
 		for _, d := range endedDelegations {
-			if pub != nil {
-				_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
-					Type: domain.EventDelegationEnded, TenantID: tenantID,
-					Subject: d.ID.String(), Actor: "iam-system",
-					Data: domain.DelegationEndedPayload{
-						DelegationID: d.ID, TenantID: tenantID,
-						DelegatorID: d.DelegatorID, DelegateID: d.DelegateID,
-						Scope: d.Scope, ScopeID: d.ScopeID,
-						EndedReason: domain.EndReasonDelegateRemoved,
-					},
-				})
+			if pub == nil {
+				continue
 			}
+			// DEL-7: DelegationEnded(ended_reason=delegate_removed) is only
+			// emitted when the deleted user is the DELEGATE. Delegations where
+			// the user is the delegator are soft-deleted silently — the delegate
+			// keeps their availability state; UP is not called here.
+			if d.DelegateID != userID {
+				continue
+			}
+			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				Type: domain.EventDelegationEnded, TenantID: tenantID,
+				Subject: d.ID.String(), Actor: "iam-system",
+				Data: domain.DelegationEndedPayload{
+					DelegationID: d.ID, TenantID: tenantID,
+					DelegatorID: d.DelegatorID, DelegateID: d.DelegateID,
+					Scope: d.Scope, ScopeID: d.ScopeID,
+					EndedReason: domain.EndReasonDelegateRemoved,
+					ActorID:     domain.SystemActorID,
+				},
+			})
 		}
 
 		// Cascade 4: soft-delete ACL grants for the user.
@@ -361,4 +469,21 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		}
 		return nil
 	})
+}
+
+// ── validation helpers (GAP-I1-3/I1-4/I1-5) ──────────────────────────────
+
+var slugRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$`)
+
+// isValidSlug enforces DNS-label rules: lowercase alphanumeric + hyphens,
+// 3–63 chars, no leading/trailing hyphens.
+func isValidSlug(s string) bool {
+	return len(s) >= 3 && len(s) <= 63 && slugRe.MatchString(s)
+}
+
+var localeRe = regexp.MustCompile(`^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$`)
+
+// isValidLocale does a lightweight BCP-47 structural check.
+func isValidLocale(s string) bool {
+	return localeRe.MatchString(s)
 }

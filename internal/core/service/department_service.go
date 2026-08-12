@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -14,9 +15,9 @@ import (
 // a catalog dept for the tenant), and P-25 (toggle is_active).
 //
 // AUTH-2 (tenant_admin / tenant_owner) is checked at the handler layer.
-// System-department retirement (D-9/D-11) is enforced at the DB level by
-// chk_system_department_active — a P-25 attempt to deactivate a system
-// dept will surface as a check violation.
+// System-department retirement is enforced at the SERVICE layer (not DB) —
+// the chk_system_department_active constraint was never migrated, so the
+// is_system guard in SetActive is the sole enforcement point.
 type DepartmentService struct {
 	catalog     port.DepartmentRepository
 	tenantDepts port.TenantDepartmentRepository
@@ -27,9 +28,8 @@ func NewDepartmentService(catalog port.DepartmentRepository, tenantDepts port.Te
 	return &DepartmentService{catalog: catalog, tenantDepts: tenantDepts, cache: cache}
 }
 
-// ListForTenant returns active tenant_departments joined with their catalog
-// department. Result is small (5 rows in a fresh tenant) so no cache TTL
-// jitter; §6.1 om:tenant scoped cache is 600 s.
+// ListForTenant returns ALL tenant_departments (active and inactive) joined
+// with their catalog department. UI filters by is_active; P-3 LLD §5.4.
 func (s *DepartmentService) ListForTenant(ctx context.Context, tenantID uuid.UUID) ([]TenantDepartmentView, error) {
 	tds, err := s.tenantDepts.ListActive(ctx, tenantID)
 	if err != nil {
@@ -60,24 +60,47 @@ func (s *DepartmentService) ListForTenant(ctx context.Context, tenantID uuid.UUI
 }
 
 // Activate implements P-24. Idempotent: if already active, returns the
-// existing row.
-func (s *DepartmentService) Activate(ctx context.Context, tenantID, departmentID uuid.UUID) (*domain.TenantDepartment, error) {
-	// Ensure the department exists in the global catalog first (otherwise the
-	// FK error message is opaque).
-	if _, err := s.catalog.FindByID(ctx, departmentID); err != nil {
-		return nil, err
+// existing row with wasCreated=false (→ 200). Fresh insert: wasCreated=true (→ 201).
+func (s *DepartmentService) Activate(ctx context.Context, tenantID, departmentID uuid.UUID) (*domain.TenantDepartment, bool, error) {
+	// D-5 / TD-1: catalog entry must exist AND be globally active.
+	dept, err := s.catalog.FindByID(ctx, departmentID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !dept.IsActive {
+		return nil, false, domain.NewError(domain.ErrDepartmentRetired,
+			"cannot activate a globally retired department")
 	}
 	td, err := s.tenantDepts.Activate(ctx, tenantID, departmentID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, domain.ErrDepartmentAlreadyActivated) {
+			// P-24 is idempotent (LLD §5.4): return existing row with wasCreated=false → 200.
+			existing, findErr := s.tenantDepts.Find(ctx, tenantID, departmentID)
+			return existing, false, findErr
+		}
+		return nil, false, err
 	}
 	s.invalidateCache(ctx, tenantID)
-	return td, nil
+	return td, true, nil
 }
 
-// SetActive implements P-25. `false` for a system dept is blocked by
-// chk_system_department_active at the DB level.
+// SetActive implements P-25. Two pre-flight checks run before the UPDATE:
+//   - is_active=false: blocks system depts (is_system=true → 422)
+//   - is_active=true: blocks globally retired depts (is_active=false → 422, TD-1/D-5)
 func (s *DepartmentService) SetActive(ctx context.Context, tenantID, departmentID uuid.UUID, isActive bool, expectedVersion int64) (*domain.TenantDepartment, error) {
+	dept, err := s.catalog.FindByID(ctx, departmentID)
+	if err != nil {
+		return nil, err
+	}
+	if !isActive && dept.IsSystem {
+		return nil, domain.NewError(domain.ErrSystemDepartmentCannotBeRetired,
+			"system departments cannot be deactivated")
+	}
+	if isActive && !dept.IsActive {
+		// TD-1/D-5: re-activation is blocked if the catalog entry is globally retired.
+		return nil, domain.NewError(domain.ErrDepartmentRetired,
+			"cannot reactivate a globally retired department")
+	}
 	td, err := s.tenantDepts.SetActive(ctx, tenantID, departmentID, isActive, expectedVersion)
 	if err != nil {
 		return nil, err

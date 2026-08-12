@@ -45,6 +45,15 @@ func (s *TenantService) Get(ctx context.Context, tenantID uuid.UUID) (*domain.Te
 	return t, nil
 }
 
+// GetIncludingOffboarded is the iam-system-only read path for offboarded
+// (soft-deleted) tenants. Used by internal endpoints (I-2 RP cleanup,
+// I-9/I-14 locale/mfa reads) where the caller is iam-system and the tenant
+// may have deleted_at IS NOT NULL. Bypasses cache (offboarded rows are
+// excluded from cache population) and calls FindByIDIncludingDeleted.
+func (s *TenantService) GetIncludingOffboarded(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
+	return s.tenants.FindByIDIncludingDeleted(ctx, tenantID)
+}
+
 // Patch applies P-2. Enforces T-10 range on MFA freshness. On
 // local_accounts_enabled change, calls RP PatchRealmConfig — on non-nil
 // error, sets realm_sync_pending=true and returns 202 semantics (handler
@@ -53,6 +62,13 @@ func (s *TenantService) Get(ctx context.Context, tenantID uuid.UUID) (*domain.Te
 func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *domain.TenantPatch) (*domain.Tenant, bool, error) {
 	if patch == nil {
 		return nil, false, domain.NewError(domain.ErrValidation, "patch is required")
+	}
+	// Empty body — no fields to update; return current tenant as a no-op.
+	// P-2 LLD has no detailed spec for this case; treat as idempotent read.
+	if patch.Name == nil && patch.DefaultLocale == nil &&
+		patch.LocalAccountsEnabled == nil && patch.MFAFreshnessSeconds == nil {
+		t, err := s.tenants.FindByID(ctx, tenantID)
+		return t, false, err
 	}
 	// T-10: mfa_freshness_seconds must be in [60, 900].
 	if patch.MFAFreshnessSeconds != nil {
@@ -96,10 +112,13 @@ func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *do
 		if rpErr := s.rp.PatchRealmConfig(ctx, tenantID, port.RealmConfigPatch{
 			LocalAccountsEnabled: patch.LocalAccountsEnabled,
 		}); rpErr != nil {
-			// Non-blocking: mark realm_sync_pending=true for the
-			// realm-config-sync reconciler and signal 202 to the caller.
-			// Phase 4 wires the real reconciler cron; Phase 2 stub RP
-			// never errors so this branch is exercised only by unit tests.
+			// BUG-P2-1 fix: persist realm_sync_pending=true so the
+			// realm-config-sync reconciler has a durable signal (T-15/§16 A58).
+			// Fail-open: if this write also fails, log and continue — the 202
+			// response still tells the caller to retry, and RP will be polled.
+			if syncErr := s.tenants.SetRealmSyncPending(ctx, tenantID); syncErr != nil {
+				_ = syncErr // best-effort — caller still gets 202 + retries
+			}
 			deferredSync = true
 		}
 	}

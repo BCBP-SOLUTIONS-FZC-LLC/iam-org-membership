@@ -93,6 +93,7 @@ definitions:
       ends_at:
         type: string
       reason:
+        description: 'DEL-10: stored in delegations.reason AND sent to UP as note'
         type: string
       scope:
         type: string
@@ -101,12 +102,26 @@ definitions:
       starts_at:
         type: string
     type: object
+  http.DelegationExtendRequest:
+    properties:
+      extend_days:
+        type: integer
+      record_version:
+        type: integer
+    type: object
   http.DelegationListResponse:
     properties:
       items:
         items:
           $ref: '#/definitions/http.DelegationResponse'
         type: array
+    type: object
+  http.DelegationReassignRequest:
+    properties:
+      delegate_id:
+        type: string
+      record_version:
+        type: integer
     type: object
   http.DelegationResponse:
     properties:
@@ -121,6 +136,10 @@ definitions:
       reason:
         type: string
       record_version:
+        type: integer
+      review_due_at:
+        type: string
+      review_window_days:
         type: integer
       scope:
         type: string
@@ -383,6 +402,15 @@ definitions:
       default_locale:
         example: en-US
         type: string
+      tenant_id:
+        format: uuid
+        type: string
+    type: object
+  http.InternalMFAFreshnessResponse:
+    properties:
+      mfa_freshness_seconds:
+        example: 300
+        type: integer
       tenant_id:
         format: uuid
         type: string
@@ -650,6 +678,12 @@ definitions:
       feature_flags:
         additionalProperties: {}
         type: object
+      record_version:
+        description: |-
+          RecordVersion is the current tenants.record_version obtained from
+          GET /api/v1/tenants/:id — required optimistic-lock contract per LLD
+          O-4 (§4.5, CONC-1). WHERE record_version = $N mismatch → 409.
+        type: integer
     type: object
   http.OperatorPlanPatchRequest:
     properties:
@@ -839,6 +873,12 @@ definitions:
     properties:
       default_locale:
         type: string
+      delegation_max_duration_days:
+        description: '§16 A71, DEL-14: 1..180'
+        type: integer
+      delegation_review_window_days:
+        description: '§16 A71, DEL-14: 1..180'
+        type: integer
       local_accounts_enabled:
         type: boolean
       mfa_freshness_seconds:
@@ -852,6 +892,13 @@ definitions:
     properties:
       default_locale:
         type: string
+      delegation_max_duration_days:
+        type: integer
+      delegation_review_window_days:
+        type: integer
+      feature_flags:
+        additionalProperties: {}
+        type: object
       id:
         type: string
       licensed_seats:
@@ -1009,8 +1056,8 @@ paths:
           schema:
             $ref: '#/definitions/http.ErrorResponse'
         "422":
-          description: invalid_delegate | self_delegation | delegation_window_inverted
-            | scope_id_required
+          description: invalid_delegate | delegate_unavailable | self_delegation |
+            delegation_window_inverted | scope_id_required | delegation_start_in_past
           schema:
             $ref: '#/definitions/http.ErrorResponse'
       security:
@@ -1061,6 +1108,104 @@ paths:
       summary: P-20 — Cancel delegation
       tags:
       - delegations
+  /delegations/{id}/extend:
+    post:
+      consumes:
+      - application/json
+      description: Pushes review_due_at forward by extend_days (1..180, §16 A71).
+        Defaults to tenant's delegation_review_window_days when omitted. Only valid
+        for open-ended delegations (DEL-13).
+      parameters:
+      - description: Delegation UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: extend_days + record_version
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/http.DelegationExtendRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DelegationResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "409":
+          description: optimistic_lock_conflict
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: delegation_not_open_ended | extend_days_out_of_range
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-32 — Extend delegation review window
+      tags:
+      - delegations
+  /delegations/{id}/reassign:
+    post:
+      consumes:
+      - application/json
+      description: Ends the current delegation and creates a new one with the same
+        scope but a different delegate.
+      parameters:
+      - description: Delegation UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New delegate
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.DelegationReassignRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/http.DelegationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: invalid_delegate | delegate_unavailable
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-33 — Reassign delegation to a new delegate
+      tags:
+      - delegations
   /internal/tenants:
     post:
       consumes:
@@ -1079,20 +1224,32 @@ paths:
       produces:
       - application/json
       responses:
+        "200":
+          description: 'Idempotent replay (LLD I1-1: same id already provisioned)'
+          schema:
+            $ref: '#/definitions/http.TenantResponse'
         "201":
-          description: Created
+          description: Fresh create
           schema:
             $ref: '#/definitions/http.TenantResponse'
         "400":
-          description: Bad Request
+          description: validation_error (missing/malformed required fields)
           schema:
             $ref: '#/definitions/http.ErrorResponse'
         "403":
-          description: Forbidden
+          description: insufficient_role (non iam-system caller)
           schema:
             $ref: '#/definitions/http.ErrorResponse'
         "409":
-          description: slug_conflict OR tenant_already_provisioned
+          description: slug_already_taken (LLD I1-2)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: invalid_plan (plan not in {starter,pro,enterprise})
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "500":
+          description: internal_error
           schema:
             $ref: '#/definitions/http.ErrorResponse'
       security:
@@ -1107,7 +1264,8 @@ paths:
       consumes:
       - application/json
       description: Called by Realm Provisioner after Keycloak realm creation. Sets
-        the tenant's realm identity in a single UPDATE.
+        the tenant's realm identity in a single UPDATE. All three fields (realm_id,
+        realm_type, keycloak_shard) are required per LLD §5.4 I-2.
       parameters:
       - description: Tenant UUID
         format: uuid
@@ -1129,15 +1287,23 @@ paths:
           schema:
             $ref: '#/definitions/http.InternalTenantRealmResponse'
         "400":
-          description: Bad Request
+          description: validation_error (missing required field)
           schema:
             $ref: '#/definitions/http.ErrorResponse'
         "403":
-          description: Forbidden
+          description: insufficient_role (non iam-system caller)
           schema:
             $ref: '#/definitions/http.ErrorResponse'
         "404":
-          description: Not Found
+          description: tenant_not_found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: invalid_realm_type (realm_type not in {shared, dedicated})
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "500":
+          description: internal_error
           schema:
             $ref: '#/definitions/http.ErrorResponse'
       security:
@@ -1357,6 +1523,40 @@ paths:
       - TenantID: []
       - TenantRoles: []
       summary: I-4 — Keycloak lifecycle status update
+      tags:
+      - internal
+  /internal/tenants/{id}/mfa-freshness:
+    get:
+      description: Returns mfa_freshness_seconds from the om:tenant cache (same key
+        P-2 evicts). Authoritative read path for the Approver step-up gate — preferred
+        over the I-8 per-user snapshot (CACHE-9, §16 A72).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.InternalMFAFreshnessResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: I-14 — Tenant mfa_freshness_seconds (AuthZ Enrichment)
       tags:
       - internal
   /internal/tenants/{id}/seat-usage:
@@ -1936,8 +2136,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: AUTH-2 tenant_admin/owner. Idempotent — repeated activation of
-        the same department_id succeeds without mutation.
+      description: AUTH-2 tenant_admin/owner. Returns 409 department_already_activated
+        if already present (TD-7). Returns 422 department_retired if catalog entry
+        is globally inactive (D-5/TD-1).
       parameters:
       - description: Tenant UUID
         format: uuid
@@ -2179,6 +2380,73 @@ paths:
       summary: P-10 — Assign user to department at level
       tags:
       - departments
+  /tenants/{id}/group-mappings/department-roles:
+    get:
+      description: Any active tenant member may read.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-14 — List Keycloak-group → dept-role mappings
+      tags:
+      - groups
+    put:
+      consumes:
+      - application/json
+      description: AUTH-2. Full replacement — anything not in the payload is deleted.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Desired mappings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.GroupDeptRoleMappingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-15 — Full-replacement of Keycloak-group → dept-role mappings
+      tags:
+      - groups
   /tenants/{id}/group-mappings/departments:
     get:
       description: Any active tenant member may read.
@@ -2244,73 +2512,6 @@ paths:
       - TenantID: []
       - TenantRoles: []
       summary: P-17 — Full-replacement of Keycloak-group → department mappings
-      tags:
-      - groups
-  /tenants/{id}/group-mappings/roles:
-    get:
-      description: Any active tenant member may read.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-14 — List Keycloak-group → dept-role mappings
-      tags:
-      - groups
-    put:
-      consumes:
-      - application/json
-      description: AUTH-2. Full replacement — anything not in the payload is deleted.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Desired mappings
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/http.GroupDeptRoleMappingsRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-15 — Full-replacement of Keycloak-group → dept-role mappings
       tags:
       - groups
   /tenants/{id}/group-mappings/tenant-roles:
@@ -2820,8 +3021,10 @@ paths:
       - members
   /tenants/{id}/tenders/{tender_id}/acl:
     get:
-      description: AUTH-3 tender_admin/tenant_admin/owner. Returns view/edit/approve
-        grants that have not expired.
+      description: 'AUTH-3 tender_admin/tenant_admin/owner. Returns all non-revoked
+        grants (TAE-7): active AND passively expired (expires_at in past but not explicitly
+        revoked). Expired entries are visible so admins can explicitly revoke them
+        via P-23. Check expires_at in response to distinguish active vs expired.'
       parameters:
       - description: Tenant UUID
         format: uuid
@@ -2850,7 +3053,7 @@ paths:
       - UserID: []
       - TenantID: []
       - TenantRoles: []
-      summary: P-21 — List active ACL entries for a tender
+      summary: P-21 — List ACL entries for a tender (active + passively expired)
       tags:
       - acl
     post:
@@ -2884,7 +3087,7 @@ paths:
           schema:
             $ref: '#/definitions/http.TenderACLResponse'
         "400":
-          description: Bad Request
+          description: invalid_access_level (bad enum value)
           schema:
             $ref: '#/definitions/http.ErrorResponse'
         "403":
@@ -2892,7 +3095,7 @@ paths:
           schema:
             $ref: '#/definitions/http.ErrorResponse'
         "422":
-          description: invalid_expires_at | invalid_access_level
+          description: invalid_expires_at (past timestamp)
           schema:
             $ref: '#/definitions/http.ErrorResponse'
       security:

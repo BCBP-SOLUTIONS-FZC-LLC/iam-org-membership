@@ -33,7 +33,8 @@ func (r *ffPassthroughTxRunner) RunInTx(ctx context.Context, fn func(ctx context
 
 type ffTx struct {
 	pgx.Tx
-	execFn func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	execFn     func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	queryRowFn func(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 func (f *ffTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
@@ -43,6 +44,19 @@ func (f *ffTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	return pgconn.CommandTag{}, nil
 }
 
+func (f *ffTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if f.queryRowFn != nil {
+		return f.queryRowFn(ctx, sql, args...)
+	}
+	// Default: simulate not-found (no row) for the OL probe query.
+	return &ffNoRow{}
+}
+
+// ffNoRow is a pgx.Row that always returns ErrNoRows on Scan.
+type ffNoRow struct{}
+
+func (r *ffNoRow) Scan(dest ...any) error { return pgx.ErrNoRows }
+
 type ffTenantRepo struct {
 	findByIDFn func(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
 }
@@ -50,11 +64,15 @@ type ffTenantRepo struct {
 func (r *ffTenantRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	return r.findByIDFn(ctx, id)
 }
+func (r *ffTenantRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	return r.FindByID(ctx, id)
+}
 func (r *ffTenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
 	return nil, nil
 }
-func (r *ffTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, error) {
-	return nil, nil
+func (r *ffTenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
+func (r *ffTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
+	return nil, false, nil
 }
 
 type ffCache struct {
@@ -91,24 +109,41 @@ func buildOperatorWithPool(tenants port.TenantRepository, tr port.TxRunner, cach
 
 func TestOperator_SetFeatureFlags_NestedObjectRejected(t *testing.T) {
 	svc := buildOperatorWithPool(nil, nil, nil)
+	// Use an allow-listed key so the scalar-value check is what fires, not
+	// the allow-list check (which runs first).
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(),
-		map[string]any{"nested": map[string]string{"k": "v"}})
+		map[string]any{"custom_branding": map[string]string{"k": "v"}}, 1)
 
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, "validation_error", de.Code)
 	assert.Equal(t, "invalid_feature_value", de.Details["code"])
-	assert.Equal(t, "nested", de.Details["key"])
+	assert.Equal(t, "custom_branding", de.Details["key"])
 }
 
 func TestOperator_SetFeatureFlags_ArrayRejected(t *testing.T) {
 	svc := buildOperatorWithPool(nil, nil, nil)
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(),
-		map[string]any{"list": []int{1, 2, 3}})
+		map[string]any{"sso_enabled": []int{1, 2, 3}}, 1)
 
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, "invalid_feature_value", de.Details["code"])
+}
+
+func TestOperator_SetFeatureFlags_UnknownKeyRejected(t *testing.T) {
+	svc := buildOperatorWithPool(nil, nil, nil)
+	// LLD O-4: keys must be in the allow-list; a typo like "sso_enable"
+	// (missing 'd') is rejected with 400 unknown_feature_flag rather than
+	// silently stored as a dead override.
+	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(),
+		map[string]any{"sso_enable": true}, 1)
+
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, "validation_error", de.Code)
+	assert.Equal(t, "unknown_feature_flag", de.Details["code"])
+	assert.Equal(t, "sso_enable", de.Details["key"])
 }
 
 func TestOperator_SetFeatureFlags_AllScalarTypesAccepted(t *testing.T) {
@@ -118,17 +153,19 @@ func TestOperator_SetFeatureFlags_AllScalarTypesAccepted(t *testing.T) {
 			return &domain.Tenant{ID: id}, nil
 		},
 	}
-	tr := &ffPassthroughTxRunner{tx: &ffTx{}}
+	// Exec must report 1 row affected so the optimistic-lock branch does
+	// not misfire in the mocked path.
+	tx := &ffTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	}}
+	tr := &ffPassthroughTxRunner{tx: tx}
 	svc := buildOperatorWithPool(tenants, tr, nil)
 
 	_, err := svc.SetFeatureFlags(context.Background(), tenantID, map[string]any{
-		"s":    "text",
-		"b":    true,
-		"f":    float64(3.14),
-		"i":    42,
-		"i64":  int64(100),
-		"null": nil,
-	})
+		"sso_enabled":           true,
+		"custom_branding":       "logo",
+		"require_mfa_all_users": true,
+	}, 1)
 	require.NoError(t, err)
 }
 
@@ -151,10 +188,11 @@ func TestOperator_SetFeatureFlags_HappyPathUpdatesTenant(t *testing.T) {
 	cache := &ffCache{}
 	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: tx}, cache)
 
-	got, err := svc.SetFeatureFlags(context.Background(), tenantID, map[string]any{"beta": true})
+	got, err := svc.SetFeatureFlags(context.Background(), tenantID, map[string]any{"sso_enabled": true}, 2)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Contains(t, gotSQL, "UPDATE tenants SET feature_flags")
+	assert.Contains(t, gotSQL, "record_version = $3")
 	assert.Contains(t, gotSQL, "deleted_at IS NULL")
 	assert.EqualValues(t, 2, got.RecordVersion)
 	// Cache eviction on success — the tenant row was mutated.
@@ -169,8 +207,11 @@ func TestOperator_SetFeatureFlags_NilMapDefaultsToEmpty(t *testing.T) {
 			return &domain.Tenant{ID: id}, nil
 		},
 	}
-	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: &ffTx{}}, nil)
-	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), nil)
+	tx := &ffTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	}}
+	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: tx}, nil)
+	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), nil, 1)
 	require.NoError(t, err, "nil flags map must be treated as empty, not rejected")
 }
 
@@ -181,7 +222,7 @@ func TestOperator_SetFeatureFlags_TxUnavailableSurfaces(t *testing.T) {
 	// finds nothing → conflict error.
 	tr := &noInjectTxRunner{}
 	svc := buildOperatorWithPool(nil, tr, nil)
-	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{})
+	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{}, 1)
 	assert.ErrorIs(t, err, domain.ErrConflict)
 }
 
@@ -195,7 +236,7 @@ func TestOperator_SetFeatureFlags_ExecErrorPropagates(t *testing.T) {
 		},
 	}
 	svc := buildOperatorWithPool(nil, &ffPassthroughTxRunner{tx: tx}, nil)
-	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{})
+	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{}, 1)
 	assert.ErrorIs(t, err, execErr)
 }
 
@@ -207,8 +248,11 @@ func TestOperator_SetFeatureFlags_TenantReadErrorAfterUpdateSurfaces(t *testing.
 			return nil, errors.New("tenant gone")
 		},
 	}
-	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: &ffTx{}}, nil)
-	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{"x": true})
+	tx := &ffTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	}}
+	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: tx}, nil)
+	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{"sso_enabled": true}, 1)
 	assert.ErrorContains(t, err, "tenant gone")
 }
 

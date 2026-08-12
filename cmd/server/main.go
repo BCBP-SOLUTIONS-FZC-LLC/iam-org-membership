@@ -132,11 +132,13 @@ func main() {
 	ctx, cancelBackground := context.WithCancel(context.Background())
 	defer cancelBackground()
 
-	if err := pgadapter.RunMigrations(ctx, migrationDSN); err != nil {
-		panic(fmt.Sprintf("domain migrations: %v", err))
-	}
+	// outbox.ApplySchema must run first so platform-events creates outbox_events
+	// (with JSONB payload) before domain migration 10 converts it to TEXT.
 	if err := outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: migrationDSN}); err != nil {
 		panic(fmt.Sprintf("outbox schema: %v", err))
+	}
+	if err := pgadapter.RunMigrations(ctx, migrationDSN); err != nil {
+		panic(fmt.Sprintf("domain migrations: %v", err))
 	}
 
 	// ── 4. Cache ──────────────────────────────────────────────────────────
@@ -170,16 +172,17 @@ func main() {
 	_ = glue.NewFromConfig(awsCfg, glueOpts...)
 
 	// ── 6. Event codec + outbox publisher ─────────────────────────────────
-	// Phase 0 wires NoopCodec (no Glue) and NoopPublisher (no SNS) so the
-	// outbox row-insert path works end-to-end in dev without any AWS. Phase
-	// 3 swaps in the Glue codec and real SNS publishers behind the same
-	// interface.
-	rawCodec := eventbusadapter.Codec(eventbusadapter.NoopCodec{})
-	codec, err := eventbusadapter.NewValidatingCodec(rawCodec)
+	// Two-codec architecture (new flow):
+	//   enqueueCodec — schema validation only (wraps NoopCodec); outbox stores plain JSON.
+	//   snsCodec     — wire encoding (Glue) at SNS publish time via WithCodec.
+	//
+	// Phase 0: both are NoopCodec — dev works end-to-end without AWS/Glue.
+	// Phase 3: replace snsCodec with a real GlueCodec; enqueueCodec stays NoopCodec.
+	enqueueCodec, err := eventbusadapter.NewValidatingCodec(eventbusadapter.NoopCodec{})
 	if err != nil {
 		panic(fmt.Sprintf("init validating codec: %v", err))
 	}
-	outboxPublisher := eventbusadapter.New(cfg.ServiceName, codec)
+	outboxPublisher := eventbusadapter.New(cfg.ServiceName, enqueueCodec)
 	// txRunner injects a tx-bound ContextEventPublisher into the ctx so
 	// services can call port.EventPublisherFromContext(ctx).EnqueueCtx
 	// inside a RunInTx block — state write + event insert commit together
@@ -188,6 +191,7 @@ func main() {
 
 	// Two-topic RoutingPublisher — wraps SNS publishers per topic. In dev
 	// (no SNS_TOPIC_*_ARN set) both lanes fall back to the noop publisher.
+	// Phase 3: wire GlueCodec via events.WithCodec once platform-events exposes it.
 	membershipPub, err := buildTopicPublisher(os.Getenv("SNS_TOPIC_MEMBERSHIP_ARN"))
 	if err != nil {
 		panic(fmt.Sprintf("build membership publisher: %v", err))
@@ -271,6 +275,10 @@ func main() {
 
 	// ── 8. Router ─────────────────────────────────────────────────────────
 	r := gin.New()
+	// Return 405 Method Not Allowed (with Allow header) when a path exists
+	// but the HTTP method is not registered, instead of the default 404.
+	// Clients get a precise signal ("wrong method") rather than "not found".
+	r.HandleMethodNotAllowed = true
 
 	// 1 MB body cap to prevent memory exhaustion via oversized JSON payloads.
 	r.Use(func(c *gin.Context) {
@@ -281,6 +289,8 @@ func main() {
 	r.Use(gincommon.TimeoutMiddleware(30 * time.Second))
 	// Panic recovery, request-ID, tracing, correlation, metrics, logging.
 	r.Use(gincommon.ObservabilityMiddlewares(cfg)...)
+	// G-13: normalize platform-gincommon 401 responses to include code field.
+	r.Use(httpadapter.NormalizeAuthErrors())
 
 	// Public infra endpoints (registered before RequireAuth so LB probes
 	// with no headers still get 200).
@@ -394,19 +404,24 @@ func main() {
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	invitationExpiryDays := envInt("INVITATION_EXPIRY_DAYS", 7)
+	reinviteCooldownMin := envInt("INVITE_REINVITE_COOLDOWN_MINUTES", 60) // PI-11
+	inviteMaxPerHour := envInt("INVITE_MAX_PER_TENANT_PER_HOUR", 200)     // PI-12
 
 	authzSvc := service.NewAuthZService(pool, planRepo, cache)
 	provisioningSvc := service.NewProvisioningService(pool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, deptRepo, delegationRepo, aclRepo, planRepo, txRunner, cache, rpClient)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
 	deptSvc := service.NewDepartmentService(deptRepo, tenantDeptRepo, cache)
-	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, txRunner, seatOverageDays)
-	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, wfClient, cache, txRunner)
+	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, delegationRepo, aclRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, nil, seatOverageDays)
+	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, deptRepo, delegationRepo, wfClient, cache, txRunner)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, cache)
-	groupMappingSvc := service.NewGroupMappingService(groupMappingRepo, cache)
-	delegationSvc := service.NewDelegationService(delegationRepo, membershipRepo, upClient, txRunner)
+	groupMappingSvc := service.NewGroupMappingService(groupMappingRepo, membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache)
+	reviewWindowDays := envInt("DELEGATION_REVIEW_WINDOW_DAYS", 90) // superseded by tenants.delegation_review_window_days (§16 A71); kept as fallback
+	delegationSvc := service.NewDelegationService(delegationRepo, membershipRepo, upClient, tenantRepo, txRunner, reviewWindowDays)
 	aclSvc := service.NewTenderACLService(aclRepo, membershipRepo)
-	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRepo, rpClient, cache, invitationExpiryDays)
-	operatorSvc := service.NewOperatorService(pool, planRepo, deptRepo, tenantRepo, tenantRoleRepo, membershipRepo, cache)
+	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, nil, invitationExpiryDays).
+		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
+		WithMaxInvitesPerHour(inviteMaxPerHour)
+	operatorSvc := service.NewOperatorService(pool, planRepo, deptRepo, tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 
 	tenantH := httpadapter.NewTenantHandler(tenantSvc)
 	deptH := httpadapter.NewDepartmentHandler(deptSvc)
@@ -418,7 +433,7 @@ func main() {
 	aclH := httpadapter.NewACLHandler(aclSvc)
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, aclSvc, tenantSvc)
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, aclSvc, tenantSvc)
 
 	// Protected API group — GUCBridge writes the tx-local RLS GUC on every
 	// checkout (RLS-6). Order: ProtectedMiddlewares (auth + context) →
@@ -430,7 +445,14 @@ func main() {
 	)
 	v1 := r.Group("/api/v1", protected...)
 	{
-		tenants := v1.Group("/tenants")
+		// TRIAL-4 / §16 A53 defense-in-depth: block API access to tenants in
+		// terminal-ish lifecycle states (trial_expired/suspended/offboarded)
+		// and enforce read-only on cancelled. Applied ONLY to public routes;
+		// operator + internal groups below bypass this by design so O-7
+		// reassign, TrialReactivated consumer, etc. can restore a tenant.
+		activeTenantGate := httpadapter.RequireActiveTenant(tenantRepo)
+		activeMemberGate := httpadapter.RequireActiveMembership(membershipRepo)
+		tenants := v1.Group("/tenants", activeTenantGate, activeMemberGate)
 		// Tenant — P-1, P-2
 		tenants.GET("/:id", tenantH.Get)
 		tenants.PATCH("/:id", tenantH.Patch)
@@ -440,11 +462,13 @@ func main() {
 		tenants.POST("/:id/departments", deptH.Activate)
 		tenants.PATCH("/:id/departments/:dept_id", deptH.Patch)
 
-		// Members — P-4, P-5, P-7, P-27, P-28
+		// Members — P-4, P-5, P-6, P-7, P-8, P-26, P-27, P-28
 		tenants.GET("/:id/members", membershipH.List)
 		tenants.GET("/:id/members/:user_id", membershipH.Get)
-		tenants.POST("/:id/members", invitationH.Invite)          // P-6 (invite)
-		tenants.PATCH("/:id/members/:user_id", membershipH.Patch) // P-7
+		tenants.POST("/:id/members", invitationH.Invite)                                      // P-6 (invite)
+		tenants.PATCH("/:id/members/:user_id", membershipH.Patch)                             // P-7
+		tenants.DELETE("/:id/members/:user_id", membershipH.Remove)                           // P-8 (§8.8)
+		tenants.POST("/:id/users/:user_id/removal-resolution", membershipH.RemovalResolution) // P-26 (§8.8.3)
 		tenants.PUT("/:id/members/:user_id/roles", membershipH.ReconcileRoles)
 		tenants.GET("/:id/seat-usage", membershipH.SeatUsage)
 
@@ -458,8 +482,8 @@ func main() {
 		tenants.PATCH("/:id/roles/:role_code", roleLabelH.Patch)
 
 		// Group mappings — P-14, P-15, P-16, P-17, P-29
-		tenants.GET("/:id/group-mappings/roles", groupMappingH.ListDeptRole)
-		tenants.PUT("/:id/group-mappings/roles", groupMappingH.PutDeptRole)
+		tenants.GET("/:id/group-mappings/department-roles", groupMappingH.ListDeptRole)
+		tenants.PUT("/:id/group-mappings/department-roles", groupMappingH.PutDeptRole)
 		tenants.GET("/:id/group-mappings/departments", groupMappingH.ListDept)
 		tenants.PUT("/:id/group-mappings/departments", groupMappingH.PutDept)
 		tenants.PUT("/:id/group-mappings/tenant-roles", groupMappingH.PutTenantRole)
@@ -473,10 +497,14 @@ func main() {
 		tenants.GET("/:id/invitations", invitationH.List)
 		tenants.DELETE("/:id/invitations/:invitation_id", invitationH.Revoke)
 
-		// Delegations — P-18, P-19, P-20 (tenant-scoped via requestctx)
-		v1.GET("/delegations", delegationH.List)
-		v1.POST("/delegations", delegationH.Create)
-		v1.DELETE("/delegations/:id", delegationH.Cancel)
+		// Delegations — P-18, P-19, P-20, P-32, P-33 (tenant-scoped via requestctx).
+		// Same TRIAL-4 gate as /tenants — a trial_expired tenant cannot
+		// create or list delegations.
+		v1.GET("/delegations", activeTenantGate, activeMemberGate, delegationH.List)
+		v1.POST("/delegations", activeTenantGate, activeMemberGate, delegationH.Create)
+		v1.DELETE("/delegations/:id", activeTenantGate, activeMemberGate, delegationH.Cancel)
+		v1.POST("/delegations/:id/extend", activeTenantGate, activeMemberGate, delegationH.Extend)
+		v1.POST("/delegations/:id/reassign", activeTenantGate, activeMemberGate, delegationH.Reassign)
 
 		// Operator routes — AUTH-6 defense-in-depth (RequireOperatorRole
 		// middleware + handler re-check inside each operator handler).
@@ -495,10 +523,13 @@ func main() {
 		internal := v1.Group("/internal", httpadapter.RequireSystemRole())
 		internal.POST("/tenants", internalH.ProvisionTenant)                                           // I-1
 		internal.PATCH("/tenants/:id", internalH.PatchTenantRealm)                                     // I-2
+		internal.POST("/tenants/:id/members", internalH.AddMember)                                     // I-3 (§8.10 accept + JIT add)
+		internal.POST("/tenants/:id/dept-memberships", internalH.AssignFromGroups)                     // I-10 (§8.5 SAML JIT)
 		internal.PATCH("/tenants/:id/members/:user_id", internalH.PatchMemberLifecycle)                // I-4
 		internal.DELETE("/tenants/:id/members/:user_id", internalH.DeleteMember)                       // I-5
 		internal.GET("/users/:id/memberships", internalH.GetMemberships)                               // I-8 HOT PATH
 		internal.GET("/tenants/:id/locale", internalH.GetLocale)                                       // I-9
+		internal.GET("/tenants/:id/mfa-freshness", internalH.GetMFAFreshness)                          // I-14 (§16 A72)
 		internal.GET("/tenants/:id/seat-usage", internalH.GetSeatUsage)                                // I-11
 		internal.GET("/tenants/:id/tenders/:tender_id/acl/:user_id", internalH.CheckTenderAccess)      // I-12
 		internal.POST("/tenants/:id/tenders/:tender_id/assignee-override", internalH.AssigneeOverride) // I-13
@@ -560,7 +591,7 @@ func main() {
 // ── helpers ────────────────────────────────────────────────────────────
 
 // buildTopicPublisher returns an SNS publisher for topicARN, or a noop
-// publisher when the ARN is empty (dev/test with no broker).
+// publisher when the ARN is empty (dev/test). Phase 3: add GlueCodec option.
 func buildTopicPublisher(topicARN string) (events.Publisher, error) {
 	if topicARN == "" {
 		return eventbusadapter.NoopPublisher{}, nil

@@ -22,6 +22,7 @@ var (
 	ErrInsufficientRole       = errors.New("insufficient_role")
 	ErrOptimisticLockConflict = errors.New("optimistic_lock_conflict")
 	ErrDependencyUnavailable  = errors.New("dependency_unavailable")
+	ErrNoMutableField         = errors.New("no_mutable_field")
 
 	// Not-found (§17 404 family)
 	ErrTenantNotFound     = errors.New("tenant_not_found")
@@ -29,6 +30,7 @@ var (
 	ErrDepartmentNotFound = errors.New("department_not_found")
 	ErrDelegationNotFound = errors.New("delegation_not_found")
 	ErrInvitationNotFound = errors.New("invitation_not_found")
+	ErrPlanNotFound       = errors.New("plan_not_found")
 
 	// Conflict (§17 409 family)
 	ErrConflict                    = errors.New("conflict")
@@ -39,22 +41,48 @@ var (
 	ErrSeatLimitReached            = errors.New("seat_limit_reached")
 	ErrInvitationAlreadyExists     = errors.New("invitation_already_exists")
 	ErrTenantOffboarded            = errors.New("tenant_offboarded")
+	// Lifecycle gates (TRIAL-4, §16 A53). Surfaced by RequireActiveTenant
+	// middleware as defense-in-depth for the upstream Keycloak session
+	// disable — if RP's session-revoke fails or a long-lived JWT slips
+	// through, the service still refuses API access on these states.
+	ErrTenantTrialExpired         = errors.New("tenant_trial_expired")
+	ErrTenantSuspended            = errors.New("tenant_suspended")
+	ErrTenantReadOnly             = errors.New("tenant_read_only")
+	ErrDepartmentAlreadyActivated = errors.New("department_already_activated")
+	ErrRoleAlreadyGranted         = errors.New("role_already_granted")
+	ErrACLAlreadyExists           = errors.New("acl_already_exists")
+	ErrMemberNotActive            = errors.New("member_not_active")
 
 	// Domain-rule (§17 422 family)
 	ErrSelfDelegation                  = errors.New("self_delegation")
+	ErrDelegationStartInPast           = errors.New("delegation_start_in_past")
+	ErrDelegationStartTooFarFuture     = errors.New("delegation_start_too_far_future") // §16 A71, DEL-14
+	ErrDelegationWindowTooLong         = errors.New("delegation_window_too_long")      // §16 A71, DEL-14: span > delegation_max_duration_days
+	ErrExtendDaysOutOfRange            = errors.New("extend_days_out_of_range")        // §16 A71: extend_days outside [1, 180]
+	ErrDelegateUnavailable             = errors.New("delegate_unavailable")
+	ErrDelegationNotOpenEnded          = errors.New("delegation_not_open_ended") // P-32: extend only applies to open-ended delegations
 	ErrInvalidDelegate                 = errors.New("invalid_delegate")
 	ErrDelegationWindowInverted        = errors.New("delegation_window_inverted")
 	ErrScopeIDRequired                 = errors.New("scope_id_required")
 	ErrCannotDeleteSystemDepartment    = errors.New("cannot_delete_system_department")
 	ErrDepartmentNotActiveForTenant    = errors.New("department_not_active_for_tenant")
+	ErrDepartmentRetired               = errors.New("department_retired")
+	ErrDepartmentDeactivated           = errors.New("department_deactivated")
+	ErrInvalidAction                   = errors.New("invalid_action")
 	ErrInvalidReplacement              = errors.New("invalid_replacement")
 	ErrInvalidOwnerCandidate           = errors.New("invalid_owner_candidate")
 	ErrInvalidExpiresAt                = errors.New("invalid_expires_at")
+	ErrInvalidRole                     = errors.New("invalid_role")
+	ErrInvalidPlan                     = errors.New("invalid_plan")
+	ErrInvalidRealmType                = errors.New("invalid_realm_type")
 	ErrAssigneeIneligible              = errors.New("assignee_ineligible")
 	ErrFieldImmutable                  = errors.New("field_immutable")
 	ErrSystemNameImmutable             = errors.New("system_name_immutable")
 	ErrSystemDepartmentCannotBeRetired = errors.New("system_department_cannot_be_retired")
 	ErrLastOwnerRemoval                = errors.New("last_owner_removal")
+
+	// Forbidden (§17 403 family — distinct from insufficient_role)
+	ErrCannotRemoveOwner = errors.New("cannot_remove_owner")
 
 	// Rate-limit (§17 429 family, §16 A41)
 	ErrReinviteTooSoon   = errors.New("reinvite_too_soon")

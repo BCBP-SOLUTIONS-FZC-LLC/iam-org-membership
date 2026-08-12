@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -47,7 +48,7 @@ func NewOperatorService(
 // ── O-1..O-3 Departments (global catalog) ───────────────────────────────
 
 func (s *OperatorService) CreateDepartment(ctx context.Context, code, name string, isSystem bool) (*domain.Department, error) {
-	if code == "" || name == "" {
+	if strings.TrimSpace(code) == "" || strings.TrimSpace(name) == "" {
 		return nil, domain.NewError(domain.ErrValidation, "code and name are required")
 	}
 	return s.depts.Insert(ctx, &domain.Department{
@@ -63,6 +64,9 @@ func (s *OperatorService) PatchDepartment(ctx context.Context, id uuid.UUID, nam
 		return nil, domain.NewError(domain.ErrNoMutableField, "at least one of name or is_active must be provided").
 			WithDetails(map[string]any{"code": "no_mutable_field"})
 	}
+	if name != nil && *name == "" {
+		return nil, domain.NewError(domain.ErrValidation, "name must not be empty")
+	}
 	// D-9/D-11 (system dept retirement) is blocked at the DB level by
 	// chk_system_department_active — surfaces as a CHECK violation which
 	// bubbles up as a raw error. Map it explicitly here for a clean 422.
@@ -70,6 +74,10 @@ func (s *OperatorService) PatchDepartment(ctx context.Context, id uuid.UUID, nam
 	if err != nil {
 		if isCheckViolation(err, "chk_system_department_active") {
 			return nil, domain.NewError(domain.ErrSystemDepartmentCannotBeRetired, "system department cannot be retired")
+		}
+		if isCheckViolation(err, "system department name is immutable") {
+			return nil, domain.NewError(domain.ErrFieldImmutable, "system department name is immutable").
+				WithDetails(map[string]any{"code": "field_immutable", "field": "name"})
 		}
 		return nil, err
 	}
@@ -84,9 +92,28 @@ func (s *OperatorService) DeleteDepartmentBlocked() error {
 
 // ── O-4 Feature flags on a tenant ──────────────────────────────────────
 
-func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUID, flags map[string]any) (*domain.Tenant, error) {
+// featureFlagAllowlist is the closed set of tenant-level feature-flag keys
+// operators may override via O-4. LLD §16 A18 requires an allow-list so a
+// typo like "sso_enable" is rejected up front rather than stored as a dead
+// override that looks configured but is never read. Kept in sync with the
+// service-layer plan-defaults map (LLD O-4 spec, line 2029).
+var featureFlagAllowlist = map[string]struct{}{
+	"sso_enabled":           {},
+	"custom_branding":       {},
+	"require_mfa_all_users": {},
+}
+
+func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUID, flags map[string]any, expectedVersion int64) (*domain.Tenant, error) {
 	if flags == nil {
 		flags = map[string]any{}
+	}
+	// LLD O-4: keys validated against a fixed allow-list (400 unknown_feature_flag)
+	// before the scalar-value check so a typo lands on the more specific error.
+	for k := range flags {
+		if _, ok := featureFlagAllowlist[k]; !ok {
+			return nil, domain.NewError(domain.ErrValidation, "unknown feature flag key").
+				WithDetails(map[string]any{"code": "unknown_feature_flag", "key": k})
+		}
 	}
 	// PLAN-6(d): scalars only (defense — no nested objects/arrays).
 	for k, v := range flags {
@@ -101,17 +128,33 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 
 	// Direct SQL — the tenant repository doesn't expose SetFeatureFlags,
 	// and operator writes deliberately bypass the app-scoped patch path.
-	// Routed through the shared TxRunner (rather than pgcommon.RunInTx
-	// directly on the pool) so unit tests can substitute a passthrough
-	// TxRunner + fake tx without hitting a real DB.
+	// LLD O-4 optimistic-lock contract (CONC-1): UPDATE ... WHERE id AND
+	// record_version = $N — zero rows affected → 409 optimistic_lock_conflict.
 	var updated *domain.Tenant
 	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
 		tx, ok := pgadapterTxFromContext(txCtx)
 		if !ok {
 			return domain.NewError(domain.ErrConflict, "tx unavailable")
 		}
-		_, err := tx.Exec(txCtx, `UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1 AND deleted_at IS NULL`, tenantID, string(flagsJSON))
-		return err
+		tag, err := tx.Exec(txCtx,
+			`UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1 AND record_version = $3 AND deleted_at IS NULL`,
+			tenantID, string(flagsJSON), expectedVersion)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			// Distinguish 404 (no such tenant) from 409 (version mismatch).
+			var current int64
+			probeErr := tx.QueryRow(txCtx,
+				`SELECT record_version FROM tenants WHERE id = $1 AND deleted_at IS NULL`,
+				tenantID).Scan(&current)
+			if probeErr != nil {
+				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+			}
+			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
+				WithDetails(map[string]any{"record_version": current})
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -133,6 +176,39 @@ func (s *OperatorService) ListPlans(ctx context.Context) ([]domain.Plan, error) 
 }
 
 func (s *OperatorService) PatchPlan(ctx context.Context, code domain.TenantPlan, patch *domain.PlanPatch) (*domain.Plan, error) {
+	switch code {
+	case domain.PlanStarter, domain.PlanPro, domain.PlanEnterprise:
+	default:
+		return nil, domain.NewError(domain.ErrPlanNotFound, "plan not found")
+	}
+	if patch.DisplayName == nil &&
+		patch.WorkflowTemplateLimit == nil &&
+		patch.TenderLimit == nil &&
+		patch.TrialDurationDays == nil &&
+		patch.SSOEnabled == nil &&
+		patch.CustomBranding == nil &&
+		patch.FeatureSet == nil {
+		return nil, domain.NewError(domain.ErrNoMutableField, "at least one field must be provided").
+			WithDetails(map[string]any{"code": "no_mutable_field"})
+	}
+	// Mirror DB CHECK constraints at the service layer so invalid values
+	// surface as 400 validation_error rather than a 500 pgconn CHECK violation.
+	if patch.WorkflowTemplateLimit != nil && *patch.WorkflowTemplateLimit != nil && **patch.WorkflowTemplateLimit < 0 {
+		return nil, domain.NewError(domain.ErrValidation, "workflow_template_limit must be >= 0")
+	}
+	if patch.TenderLimit != nil && *patch.TenderLimit != nil && **patch.TenderLimit < 0 {
+		return nil, domain.NewError(domain.ErrValidation, "tender_limit must be >= 0")
+	}
+	if patch.TrialDurationDays != nil && *patch.TrialDurationDays < 0 {
+		return nil, domain.NewError(domain.ErrValidation, "trial_duration_days must be >= 0")
+	}
+	if patch.CustomBranding != nil {
+		switch *patch.CustomBranding {
+		case domain.BrandingNone, domain.BrandingLogo:
+		default:
+			return nil, domain.NewError(domain.ErrValidation, "custom_branding must be one of: none, logo")
+		}
+	}
 	p, err := s.plans.Update(ctx, code, patch)
 	if err != nil {
 		return nil, err

@@ -4,15 +4,21 @@
 package http
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // bridgedIdentity is the primitive-typed view of the gateway-injected
@@ -147,6 +153,178 @@ func RequireSystemRole() gin.HandlerFunc {
 	}
 }
 
+// RequireActiveTenant is the TRIAL-4 / §16 A53 defense-in-depth gate on the
+// public tenant-facing API. The workflow docs
+// (trial-subscription-end-to-end-workflow §106, trial-expiry-cleanup-workflow
+// §26) are unambiguous: a `trial_expired` tenant has "no session, no read,
+// no export, no API access" — enforcement is nominally at Keycloak (RP sets
+// enabled=false on every user when TrialExpired lands), but this middleware
+// makes the guarantee independent of that upstream: if a JWT slips through
+// (long TTL, RP session-revoke failure, misconfigured realm), the service
+// still refuses.
+//
+// Applies ONLY to public routes (/api/v1/tenants/*, /api/v1/delegations/*).
+// Skipped for iam-system (internal/consumer/reconciler paths that need to
+// mutate a trial_expired tenant to restore it) and platform_operator (O-7
+// reassign-owner, O-4 feature-flags, etc — operators must retain access to
+// recover a tenant in any lifecycle state).
+//
+// Status → verdict:
+//   - trial_expired   → 403 tenant_trial_expired   (TRIAL-4, all methods)
+//   - suspended       → 403 tenant_suspended       (all methods)
+//   - offboarded      → 404 tenant_not_found       (row is soft-deleted anyway)
+//   - cancelled       → 403 tenant_read_only       (writes only; reads pass, §16 A53)
+//   - trial/active/past_due → proceed
+func RequireActiveTenant(tenants port.TenantRepository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rc, ok := requestctx.FromContext(c.Request.Context())
+		if !ok {
+			c.Next() // no identity — let GUCBridge / auth middleware surface the 401
+			return
+		}
+		// Bypass system + operator principals. Both are internal control
+		// paths that must reach a trial_expired tenant to restore it.
+		if rc.HasRole("iam-system") || rc.IsOperator() {
+			c.Next()
+			return
+		}
+		t, err := tenants.FindByID(c.Request.Context(), rc.TenantID)
+		if err != nil {
+			if errors.Is(err, domain.ErrTenantNotFound) {
+				HandleError(c, domain.NewError(domain.ErrTenantNotFound, "tenant not found"))
+				return
+			}
+			c.Next() // real DB error — let downstream surface it
+			return
+		}
+		method := c.Request.Method
+		isWrite := method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+
+		switch t.Status {
+		case domain.StatusTrialExpired:
+			HandleError(c, domain.NewError(domain.ErrTenantTrialExpired,
+				"tenant trial has expired — no API access; reactivate via the emailed link (TRIAL-4)"))
+			return
+		case domain.StatusSuspended:
+			HandleError(c, domain.NewError(domain.ErrTenantSuspended, "tenant is suspended"))
+			return
+		case domain.StatusOffboarded:
+			HandleError(c, domain.NewError(domain.ErrTenantNotFound, "tenant not found"))
+			return
+		case domain.StatusCancelled:
+			if isWrite {
+				HandleError(c, domain.NewError(domain.ErrTenantReadOnly,
+					"cancelled tenant is read-only (§16 A53)"))
+				return
+			}
+		case domain.StatusTrial, domain.StatusActive, domain.StatusPastDue:
+			// active lifecycle states — allow through
+		}
+		c.Next()
+	}
+}
+
+// RequireActiveMembership blocks callers whose tenant_membership status is
+// suspended. The gateway header only carries the caller's roles — it does not
+// carry the DB-level membership status — so a suspended member can still send
+// a matching x-tenant-id and reach the handler. This middleware closes that
+// gap by doing a direct membership lookup for public routes.
+//
+// Bypass: iam-system and platform_operator callers are never membership-checked
+// (they have no tenant_memberships row to look up and must retain access to
+// recover tenants in any state). Applied after RequireActiveTenant on the
+// same /api/v1/tenants/* and /api/v1/delegations/* route groups.
+func RequireActiveMembership(memberships port.MembershipRepository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rc, ok := requestctx.FromContext(c.Request.Context())
+		if !ok {
+			c.Next()
+			return
+		}
+		if rc.HasRole("iam-system") || rc.IsOperator() {
+			c.Next()
+			return
+		}
+		m, err := memberships.FindByUserID(c.Request.Context(), rc.TenantID, rc.UserID)
+		if err != nil {
+			if errors.Is(err, domain.ErrMemberNotFound) {
+				// No active membership row (left/never joined) → not an active member
+				er := newErrorResponse(c, "insufficient_role",
+					"caller is not an active member of this tenant", nil)
+				er.Status = http.StatusForbidden
+				c.AbortWithStatusJSON(http.StatusForbidden, er)
+				return
+			}
+			// Real DB error — let the handler surface it naturally
+			c.Next()
+			return
+		}
+		if m.Status == domain.MembershipSuspended {
+			er := newErrorResponse(c, "insufficient_role",
+				"suspended members cannot access tenant APIs", nil)
+			er.Status = http.StatusForbidden
+			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			return
+		}
+		c.Next()
+	}
+}
+
+// NormalizeAuthErrors intercepts 401 responses from platform-gincommon's auth
+// middleware and rewrites them to match our standard error envelope (LLD §17,
+// G-13). The library writes {"error":"missing or invalid...","status":401}
+// without a "code" field; this middleware adds code=missing_identity_headers
+// so all 401s have a consistent shape.
+func NormalizeAuthErrors() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		buf := &bufferedWriter{ResponseWriter: c.Writer, buf: &bytes.Buffer{}}
+		c.Writer = buf
+		c.Next()
+		if buf.status == http.StatusUnauthorized {
+			var raw map[string]any
+			if err := json.Unmarshal(buf.buf.Bytes(), &raw); err == nil {
+				if _, hasCode := raw["code"]; !hasCode {
+					raw["code"] = "missing_identity_headers"
+					raw["error"] = "missing_identity_headers"
+					rewritten, _ := json.Marshal(raw)
+					buf.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
+					buf.ResponseWriter.WriteHeader(http.StatusUnauthorized)
+					_, _ = buf.ResponseWriter.Write(rewritten)
+					return
+				}
+			}
+		}
+		if buf.status != 0 {
+			buf.ResponseWriter.WriteHeader(buf.status)
+		}
+		_, _ = buf.ResponseWriter.Write(buf.buf.Bytes())
+	}
+}
+
+type bufferedWriter struct {
+	gin.ResponseWriter
+	buf    *bytes.Buffer
+	status int
+}
+
+func (w *bufferedWriter) WriteHeader(code int) { w.status = code }
+func (w *bufferedWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.buf.Write(b)
+}
+func (w *bufferedWriter) Status() int {
+	if w.status == 0 {
+		return w.ResponseWriter.Status()
+	}
+	return w.status
+}
+func (w *bufferedWriter) Written() bool { return w.buf.Len() > 0 || w.status != 0 }
+func (w *bufferedWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
 // RequireOperatorRole gates /api/v1/operator/* (AUTH-6). Every operator
 // route re-checks this before any DB access — the header is hardened by
 // gateway hygiene (AUTH-7).
@@ -196,9 +374,45 @@ func HandleError(c *gin.Context, err error) {
 		c.AbortWithStatusJSON(status, mergedBody)
 		return
 	}
+	// Raw pgconn.PgError that was not caught and translated by the service
+	// layer. SQLSTATE class 08 (connection exception) and 53 (insufficient
+	// resources) are genuine DB-availability failures → 503 db_unavailable
+	// per LLD §17 (line 2544). All other classes (constraint violations,
+	// syntax errors, etc.) are surfaced as a plain 500 — those should
+	// have been translated to DomainErrors by the repository layer before
+	// reaching here.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if isDBUnavailableSQLState(pgErr.Code) {
+			er := newErrorResponse(c, domain.ErrDBUnavailable.Error(), "database unavailable", nil)
+			er.Status = http.StatusServiceUnavailable
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
+			return
+		}
+	}
+	log.Printf("[DEBUG] unhandled 500 error type=%T value=%v", err, err)
 	er := newErrorResponse(c, "internal_error", "an unexpected error occurred", nil)
 	er.Status = http.StatusInternalServerError
 	c.AbortWithStatusJSON(http.StatusInternalServerError, er)
+}
+
+// isDBUnavailableSQLState returns true for SQLSTATE classes that indicate
+// a connectivity or resource-exhaustion failure rather than a logic error.
+// See https://www.postgresql.org/docs/current/errcodes-appendix.html.
+//
+//	Class 08 — connection_exception (connection lost, server gone)
+//	Class 53 — insufficient_resources (too many connections, out of memory)
+//	Class 57 — operator_intervention (admin forced disconnect)
+//	Class 58 — system_error (I/O or undefined error at the OS level)
+func isDBUnavailableSQLState(code string) bool {
+	if len(code) < 2 {
+		return false
+	}
+	switch strings.ToUpper(code[:2]) {
+	case "08", "53", "57", "58":
+		return true
+	}
+	return false
 }
 
 // errorResponseWithDetails renders the flat ErrorResponse envelope with
@@ -234,13 +448,17 @@ func domainErrorStatus(de *domain.DomainError) int {
 	case errors.Is(de.Cause, domain.ErrMissingIdentity):
 		return http.StatusUnauthorized
 	case errors.Is(de.Cause, domain.ErrInsufficientRole),
-		errors.Is(de.Cause, domain.ErrCannotRemoveOwner):
+		errors.Is(de.Cause, domain.ErrCannotRemoveOwner),
+		errors.Is(de.Cause, domain.ErrTenantTrialExpired),
+		errors.Is(de.Cause, domain.ErrTenantSuspended),
+		errors.Is(de.Cause, domain.ErrTenantReadOnly):
 		return http.StatusForbidden
 	case errors.Is(de.Cause, domain.ErrTenantNotFound),
 		errors.Is(de.Cause, domain.ErrMemberNotFound),
 		errors.Is(de.Cause, domain.ErrDepartmentNotFound),
 		errors.Is(de.Cause, domain.ErrDelegationNotFound),
-		errors.Is(de.Cause, domain.ErrInvitationNotFound):
+		errors.Is(de.Cause, domain.ErrInvitationNotFound),
+		errors.Is(de.Cause, domain.ErrPlanNotFound):
 		return http.StatusNotFound
 	case errors.Is(de.Cause, domain.ErrOptimisticLockConflict),
 		errors.Is(de.Cause, domain.ErrConflict),
@@ -252,7 +470,8 @@ func domainErrorStatus(de *domain.DomainError) int {
 		errors.Is(de.Cause, domain.ErrInvitationAlreadyExists),
 		errors.Is(de.Cause, domain.ErrTenantOffboarded),
 		errors.Is(de.Cause, domain.ErrDepartmentAlreadyActivated),
-		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted):
+		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted),
+		errors.Is(de.Cause, domain.ErrACLAlreadyExists):
 		return http.StatusConflict
 	case errors.Is(de.Cause, domain.ErrReinviteTooSoon),
 		errors.Is(de.Cause, domain.ErrInviteRateLimited):

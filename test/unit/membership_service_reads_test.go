@@ -55,11 +55,17 @@ type fakeTenantRepo struct {
 func (f *fakeTenantRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	return f.findByIDFn(ctx, id)
 }
+
+func (f *fakeTenantRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	return f.FindByID(ctx, id)
+}
+
 func (f *fakeTenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
 	return nil, nil
 }
-func (f *fakeTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, error) {
-	return nil, nil
+func (f *fakeTenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
+func (f *fakeTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
+	return nil, false, nil
 }
 
 var _ port.TenantRepository = (*fakeTenantRepo)(nil)
@@ -114,6 +120,9 @@ func (f *fakeDeptMemListByUser) Remove(context.Context, uuid.UUID, uuid.UUID, uu
 func (f *fakeDeptMemListByUser) SoftDeleteAllForUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
+func (f *fakeDeptMemListByUser) SoftDeleteAllForDept(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 
 var _ port.DeptMembershipRepository = (*fakeDeptMemListByUser)(nil)
 
@@ -153,7 +162,10 @@ func TestMembership_List_HydratesTenantRolesWithDerivedMember(t *testing.T) {
 			return nil, nil
 		},
 	}
-	svc := buildMembershipSvc(m, r, nil, nil, nil, nil)
+	dm := &fakeDeptMemListByUser{
+		listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil },
+	}
+	svc := buildMembershipSvc(m, r, dm, nil, nil, nil)
 
 	got, err := svc.List(context.Background(), tenantID, nil, 50)
 	require.NoError(t, err)
@@ -314,8 +326,8 @@ func TestMembership_SeatUsage_UnderCap(t *testing.T) {
 	assert.Nil(t, got.GraceEndsAt)
 }
 
-func TestMembership_SeatUsage_AtCapExactBoundaryNotOver(t *testing.T) {
-	// OverCap := active + pending > licensed. At equality, not over.
+func TestMembership_SeatUsage_AtCapExactBoundaryIsOver(t *testing.T) {
+	// SEAT-3: OverCap := active + pending >= licensed_seats. At equality, IS overage.
 	tenants := &fakeTenantRepo{
 		findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
 			return &domain.Tenant{LicensedSeats: 5}, nil
@@ -327,7 +339,7 @@ func TestMembership_SeatUsage_AtCapExactBoundaryNotOver(t *testing.T) {
 
 	got, err := svc.SeatUsage(context.Background(), uuid.New())
 	require.NoError(t, err)
-	assert.False(t, got.OverCap, "exact-cap boundary is not over")
+	assert.True(t, got.OverCap, "SEAT-3: at-cap (active+pending==licensed) is overage")
 }
 
 func TestMembership_SeatUsage_OverCapComputesGraceEndsAt(t *testing.T) {

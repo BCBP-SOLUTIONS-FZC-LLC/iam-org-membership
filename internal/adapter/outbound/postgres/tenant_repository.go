@@ -36,12 +36,35 @@ const tenantSelectColumns = `
 	realm_id, realm_type, keycloak_shard, mfa_freshness_seconds,
 	local_accounts_enabled, realm_sync_pending, default_locale,
 	licensed_seats, ownerless_since, overage_since,
+	delegation_max_duration_days, delegation_review_window_days,
 	record_version, created_at, updated_at, deleted_at`
 
 func (r *TenantRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	var t *domain.Tenant
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `SELECT `+tenantSelectColumns+` FROM tenants WHERE id = $1 AND deleted_at IS NULL`, id)
+		found, scanErr := scanTenant(row)
+		if scanErr != nil {
+			if errors.Is(scanErr, pgx.ErrNoRows) {
+				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+			}
+			return scanErr
+		}
+		t = found
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// FindByIDIncludingDeleted returns the tenant row regardless of deleted_at.
+// Used only by iam-system internal paths (I-2 RP cleanup, reconcilers).
+func (r *TenantRepository) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	var t *domain.Tenant
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `SELECT `+tenantSelectColumns+` FROM tenants WHERE id = $1`, id)
 		found, scanErr := scanTenant(row)
 		if scanErr != nil {
 			if errors.Is(scanErr, pgx.ErrNoRows) {
@@ -88,6 +111,12 @@ func (r *TenantRepository) Update(ctx context.Context, id uuid.UUID, patch *doma
 	if patch.MFAFreshnessSeconds != nil {
 		sets = append(sets, "mfa_freshness_seconds = "+next(*patch.MFAFreshnessSeconds))
 	}
+	if patch.DelegationMaxDurationDays != nil {
+		sets = append(sets, "delegation_max_duration_days = "+next(*patch.DelegationMaxDurationDays))
+	}
+	if patch.DelegationReviewWindowDays != nil {
+		sets = append(sets, "delegation_review_window_days = "+next(*patch.DelegationReviewWindowDays))
+	}
 	if len(sets) == 0 {
 		// Nothing to update — return the current row (idempotent PATCH).
 		return r.FindByID(ctx, id)
@@ -118,13 +147,37 @@ func (r *TenantRepository) Update(ctx context.Context, id uuid.UUID, patch *doma
 	return out, nil
 }
 
-func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domain.Tenant, error) {
+// SetRealmSyncPending marks realm_sync_pending=true for the realm-config-sync
+// reconciler (T-15/§16 A58). Called when RP.PatchRealmConfig fails post-commit.
+func (r *TenantRepository) SetRealmSyncPending(ctx context.Context, tenantID uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		cmd, err := tx.Exec(ctx,
+			`UPDATE tenants SET realm_sync_pending = true WHERE id = $1 AND deleted_at IS NULL`,
+			tenantID)
+		if err != nil {
+			return err
+		}
+		if cmd.RowsAffected() == 0 {
+			return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+		}
+		return nil
+	})
+}
+
+// Insert honours LLD I-1 idempotency: INSERT ... ON CONFLICT (id) DO NOTHING
+// RETURNING. If a row with the given id already exists the RETURNING is empty
+// (no row scanned); we then fetch and return the existing row with
+// wasCreated=false so the handler can respond 200 (idempotent replay) instead
+// of 201 (fresh create). A slug collision on a different id still lands on
+// uq_tenants_slug (23505) — mapped to ErrSlugAlreadyTaken so the caller sees
+// 409 rather than a raw PgError.
+func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domain.Tenant, bool, error) {
 	if t == nil {
-		return nil, domain.NewError(domain.ErrValidation, "tenant is required")
+		return nil, false, domain.NewError(domain.ErrValidation, "tenant is required")
 	}
 	featureFlagsJSON, err := json.Marshal(t.FeatureFlags)
 	if err != nil {
-		return nil, fmt.Errorf("marshal feature_flags: %w", err)
+		return nil, false, fmt.Errorf("marshal feature_flags: %w", err)
 	}
 	if len(t.FeatureFlags) == 0 {
 		featureFlagsJSON = []byte(`{}`)
@@ -134,6 +187,7 @@ func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domai
 	}
 
 	var out *domain.Tenant
+	var wasCreated bool
 	err = withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
 			INSERT INTO tenants (
@@ -143,7 +197,8 @@ func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domai
 				local_accounts_enabled, default_locale, licensed_seats
 			) VALUES (
 				$1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
-			) RETURNING `+tenantSelectColumns,
+			) ON CONFLICT (id) DO NOTHING
+			RETURNING `+tenantSelectColumns,
 			t.ID, t.Slug, t.Name, string(t.Plan), string(featureFlagsJSON), string(t.Status),
 			t.TrialEndsAt, t.SubscriptionStartedAt, t.CancelledAt,
 			t.RealmID, string(t.RealmType), t.KeycloakShard, t.MFAFreshnessSeconds,
@@ -154,15 +209,27 @@ func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domai
 			if errors.As(scanErr, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "slug") {
 				return domain.NewError(domain.ErrSlugAlreadyTaken, "slug already taken")
 			}
+			if errors.Is(scanErr, pgx.ErrNoRows) {
+				// ON CONFLICT (id) DO NOTHING — row already exists. Load it and
+				// return with wasCreated=false so the handler serves 200.
+				existing, existingErr := scanTenant(tx.QueryRow(ctx, `SELECT `+tenantSelectColumns+` FROM tenants WHERE id = $1 AND deleted_at IS NULL`, t.ID))
+				if existingErr != nil {
+					return existingErr
+				}
+				out = existing
+				wasCreated = false
+				return nil
+			}
 			return scanErr
 		}
 		out = found
+		wasCreated = true
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return out, nil
+	return out, wasCreated, nil
 }
 
 // optimisticConflictOrNotFound probes the row without a version predicate

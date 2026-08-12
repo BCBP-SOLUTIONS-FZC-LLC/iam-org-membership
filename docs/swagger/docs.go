@@ -162,7 +162,7 @@ const docTemplate = `{
                         }
                     },
                     "422": {
-                        "description": "invalid_delegate | self_delegation | delegation_window_inverted | scope_id_required",
+                        "description": "invalid_delegate | delegate_unavailable | self_delegation | delegation_window_inverted | scope_id_required | delegation_start_in_past",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -235,6 +235,159 @@ const docTemplate = `{
                 }
             }
         },
+        "/delegations/{id}/extend": {
+            "post": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "Pushes review_due_at forward by extend_days (1..180, §16 A71). Defaults to tenant's delegation_review_window_days when omitted. Only valid for open-ended delegations (DEL-13).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "delegations"
+                ],
+                "summary": "P-32 — Extend delegation review window",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Delegation UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "extend_days + record_version",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/http.DelegationExtendRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.DelegationResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "optimistic_lock_conflict",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "delegation_not_open_ended | extend_days_out_of_range",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/delegations/{id}/reassign": {
+            "post": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "Ends the current delegation and creates a new one with the same scope but a different delegate.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "delegations"
+                ],
+                "summary": "P-33 — Reassign delegation to a new delegate",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Delegation UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New delegate",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.DelegationReassignRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/http.DelegationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "invalid_delegate | delegate_unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/internal/tenants": {
             "post": {
                 "security": [
@@ -271,26 +424,44 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
+                    "200": {
+                        "description": "Idempotent replay (LLD I1-1: same id already provisioned)",
+                        "schema": {
+                            "$ref": "#/definitions/http.TenantResponse"
+                        }
+                    },
                     "201": {
-                        "description": "Created",
+                        "description": "Fresh create",
                         "schema": {
                             "$ref": "#/definitions/http.TenantResponse"
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "validation_error (missing/malformed required fields)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "insufficient_role (non iam-system caller)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     },
                     "409": {
-                        "description": "slug_conflict OR tenant_already_provisioned",
+                        "description": "slug_already_taken (LLD I1-2)",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "invalid_plan (plan not in {starter,pro,enterprise})",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "internal_error",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -311,7 +482,7 @@ const docTemplate = `{
                         "TenantRoles": []
                     }
                 ],
-                "description": "Called by Realm Provisioner after Keycloak realm creation. Sets the tenant's realm identity in a single UPDATE.",
+                "description": "Called by Realm Provisioner after Keycloak realm creation. Sets the tenant's realm identity in a single UPDATE. All three fields (realm_id, realm_type, keycloak_shard) are required per LLD §5.4 I-2.",
                 "consumes": [
                     "application/json"
                 ],
@@ -349,19 +520,31 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "validation_error (missing required field)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "insufficient_role (non iam-system caller)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     },
                     "404": {
-                        "description": "Not Found",
+                        "description": "tenant_not_found",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "invalid_realm_type (realm_type not in {shared, dedicated})",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "internal_error",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -689,6 +872,59 @@ const docTemplate = `{
                     },
                     "409": {
                         "description": "record_version mismatch (CONC-4)",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/tenants/{id}/mfa-freshness": {
+            "get": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "Returns mfa_freshness_seconds from the om:tenant cache (same key P-2 evicts). Authoritative read path for the Approver step-up gate — preferred over the I-8 per-user snapshot (CACHE-9, §16 A72).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "I-14 — Tenant mfa_freshness_seconds (AuthZ Enrichment)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.InternalMFAFreshnessResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -1608,7 +1844,7 @@ const docTemplate = `{
                         "TenantRoles": []
                     }
                 ],
-                "description": "AUTH-2 tenant_admin/owner. Idempotent — repeated activation of the same department_id succeeds without mutation.",
+                "description": "AUTH-2 tenant_admin/owner. Returns 409 department_already_activated if already present (TD-7). Returns 422 department_retired if catalog entry is globally inactive (D-5/TD-1).",
                 "consumes": [
                     "application/json"
                 ],
@@ -1977,6 +2213,116 @@ const docTemplate = `{
                 }
             }
         },
+        "/tenants/{id}/group-mappings/department-roles": {
+            "get": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "Any active tenant member may read.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "groups"
+                ],
+                "summary": "P-14 — List Keycloak-group → dept-role mappings",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.GroupDeptRoleMappingsResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "AUTH-2. Full replacement — anything not in the payload is deleted.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "groups"
+                ],
+                "summary": "P-15 — Full-replacement of Keycloak-group → dept-role mappings",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Desired mappings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.GroupDeptRoleMappingsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.GroupDeptRoleMappingsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/tenants/{id}/group-mappings/departments": {
             "get": {
                 "security": [
@@ -2070,116 +2416,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/http.GroupDeptMappingsResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/tenants/{id}/group-mappings/roles": {
-            "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "Any active tenant member may read.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "groups"
-                ],
-                "summary": "P-14 — List Keycloak-group → dept-role mappings",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptRoleMappingsResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "put": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "AUTH-2. Full replacement — anything not in the payload is deleted.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "groups"
-                ],
-                "summary": "P-15 — Full-replacement of Keycloak-group → dept-role mappings",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Desired mappings",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptRoleMappingsRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptRoleMappingsResponse"
                         }
                     },
                     "400": {
@@ -2994,14 +3230,14 @@ const docTemplate = `{
                         "TenantRoles": []
                     }
                 ],
-                "description": "AUTH-3 tender_admin/tenant_admin/owner. Returns view/edit/approve grants that have not expired.",
+                "description": "AUTH-3 tender_admin/tenant_admin/owner. Returns all non-revoked grants (TAE-7): active AND passively expired (expires_at in past but not explicitly revoked). Expired entries are visible so admins can explicitly revoke them via P-23. Check expires_at in response to distinguish active vs expired.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "acl"
                 ],
-                "summary": "P-21 — List active ACL entries for a tender",
+                "summary": "P-21 — List ACL entries for a tender (active + passively expired)",
                 "parameters": [
                     {
                         "type": "string",
@@ -3093,7 +3329,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "invalid_access_level (bad enum value)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -3105,7 +3341,7 @@ const docTemplate = `{
                         }
                     },
                     "422": {
-                        "description": "invalid_expires_at | invalid_access_level",
+                        "description": "invalid_expires_at (past timestamp)",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -3376,6 +3612,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "reason": {
+                    "description": "DEL-10: stored in delegations.reason AND sent to UP as note",
                     "type": "string"
                 },
                 "scope": {
@@ -3389,6 +3626,17 @@ const docTemplate = `{
                 }
             }
         },
+        "http.DelegationExtendRequest": {
+            "type": "object",
+            "properties": {
+                "extend_days": {
+                    "type": "integer"
+                },
+                "record_version": {
+                    "type": "integer"
+                }
+            }
+        },
         "http.DelegationListResponse": {
             "type": "object",
             "properties": {
@@ -3397,6 +3645,17 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/http.DelegationResponse"
                     }
+                }
+            }
+        },
+        "http.DelegationReassignRequest": {
+            "type": "object",
+            "properties": {
+                "delegate_id": {
+                    "type": "string"
+                },
+                "record_version": {
+                    "type": "integer"
                 }
             }
         },
@@ -3419,6 +3678,12 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "record_version": {
+                    "type": "integer"
+                },
+                "review_due_at": {
+                    "type": "string"
+                },
+                "review_window_days": {
                     "type": "integer"
                 },
                 "scope": {
@@ -3792,6 +4057,19 @@ const docTemplate = `{
                 "default_locale": {
                     "type": "string",
                     "example": "en-US"
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "http.InternalMFAFreshnessResponse": {
+            "type": "object",
+            "properties": {
+                "mfa_freshness_seconds": {
+                    "type": "integer",
+                    "example": 300
                 },
                 "tenant_id": {
                     "type": "string",
@@ -4176,6 +4454,10 @@ const docTemplate = `{
                 "feature_flags": {
                     "type": "object",
                     "additionalProperties": {}
+                },
+                "record_version": {
+                    "description": "RecordVersion is the current tenants.record_version obtained from\nGET /api/v1/tenants/:id — required optimistic-lock contract per LLD\nO-4 (§4.5, CONC-1). WHERE record_version = $N mismatch → 409.",
+                    "type": "integer"
                 }
             }
         },
@@ -4451,6 +4733,14 @@ const docTemplate = `{
                 "default_locale": {
                     "type": "string"
                 },
+                "delegation_max_duration_days": {
+                    "description": "§16 A71, DEL-14: 1..180",
+                    "type": "integer"
+                },
+                "delegation_review_window_days": {
+                    "description": "§16 A71, DEL-14: 1..180",
+                    "type": "integer"
+                },
                 "local_accounts_enabled": {
                     "type": "boolean"
                 },
@@ -4470,6 +4760,16 @@ const docTemplate = `{
             "properties": {
                 "default_locale": {
                     "type": "string"
+                },
+                "delegation_max_duration_days": {
+                    "type": "integer"
+                },
+                "delegation_review_window_days": {
+                    "type": "integer"
+                },
+                "feature_flags": {
+                    "type": "object",
+                    "additionalProperties": {}
                 },
                 "id": {
                     "type": "string"

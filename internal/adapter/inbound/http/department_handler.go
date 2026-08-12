@@ -32,6 +32,7 @@ func NewDepartmentHandler(svc *service.DepartmentService) *DepartmentHandler {
 // @Failure      404  {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/departments [get]
 func (h *DepartmentHandler) List(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -72,7 +73,7 @@ func (h *DepartmentHandler) List(c *gin.Context) {
 // URL: POST /tenants/:id/departments with body { department_id }.
 //
 // @Summary      P-24 — Activate a catalog department for the tenant
-// @Description  AUTH-2 tenant_admin/owner. Idempotent — repeated activation of the same department_id succeeds without mutation.
+// @Description  AUTH-2 tenant_admin/owner. Returns 409 department_already_activated if already present (TD-7). Returns 422 department_retired if catalog entry is globally inactive (D-5/TD-1).
 // @Tags         departments
 // @Accept       json
 // @Produce      json
@@ -84,6 +85,7 @@ func (h *DepartmentHandler) List(c *gin.Context) {
 // @Failure      404      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/departments [post]
 func (h *DepartmentHandler) Activate(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -112,12 +114,17 @@ func (h *DepartmentHandler) Activate(c *gin.Context) {
 			WithDetails(map[string]any{"code": "invalid_uuid"}))
 		return
 	}
-	td, err := h.svc.Activate(c.Request.Context(), tenantID, body.DepartmentID)
+	td, wasCreated, err := h.svc.Activate(c.Request.Context(), tenantID, body.DepartmentID)
 	if err != nil {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{
+	// P-24 idempotent: 201 on fresh create, 200 on replay (LLD §5.4).
+	status := http.StatusOK
+	if wasCreated {
+		status = http.StatusCreated
+	}
+	c.JSON(status, gin.H{
 		"department_id":  td.DepartmentID,
 		"is_active":      td.IsActive,
 		"record_version": td.RecordVersion,
@@ -142,6 +149,7 @@ func (h *DepartmentHandler) Activate(c *gin.Context) {
 // @Failure      422      {object}  ErrorResponse  "system_department_cannot_be_retired"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/departments/{dept_id} [patch]
 func (h *DepartmentHandler) Patch(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
