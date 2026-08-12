@@ -34,9 +34,18 @@ func (s *TenderACLService) Grant(ctx context.Context, tenantID, tenderID, userID
 	if expiresAt != nil && !expiresAt.After(time.Now().UTC()) {
 		return nil, domain.NewError(domain.ErrInvalidExpiresAt, "expires_at must be in the future")
 	}
+	// B-TAE-02: reason capped at 500 chars (§16 A27, same cap as DEL-10).
+	if len(reason) > 500 {
+		return nil, domain.NewError(domain.ErrValidation, "reason must not exceed 500 characters").
+			WithDetails(map[string]any{"code": "reason_too_long"})
+	}
 	m, err := s.memberships.FindByUserID(ctx, tenantID, userID)
 	if err != nil {
 		return nil, err
+	}
+	// TAE-5: grantee must hold an active tenant membership (not suspended/left).
+	if m.Status != domain.MembershipActive {
+		return nil, domain.NewError(domain.ErrMemberNotActive, "grantee must be an active tenant member")
 	}
 	return s.acls.Grant(ctx, &domain.TenderACLEntry{
 		TenantID:           tenantID,

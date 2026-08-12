@@ -244,7 +244,8 @@ func TestOperator_ListPlans_PropagatesRepoError(t *testing.T) {
 
 func TestOperator_PatchPlan_DelegatesAndInvalidatesCache(t *testing.T) {
 	code := domain.TenantPlan("pro")
-	patch := &domain.PlanPatch{}
+	name := "Pro v2"
+	patch := &domain.PlanPatch{DisplayName: &name} // at least one mutable field required
 	repo := &fakePlanRepo{
 		updateFn: func(_ context.Context, c domain.TenantPlan, p *domain.PlanPatch) (*domain.Plan, error) {
 			assert.Equal(t, code, c)
@@ -272,7 +273,8 @@ func TestOperator_PatchPlan_RepoErrorSkipsCacheInvalidation(t *testing.T) {
 	cache := &spyCache{}
 	svc := buildOperator(repo, nil, cache)
 
-	_, err := svc.PatchPlan(context.Background(), domain.TenantPlan("pro"), &domain.PlanPatch{})
+	name := "Pro"
+	_, err := svc.PatchPlan(context.Background(), domain.TenantPlan("pro"), &domain.PlanPatch{DisplayName: &name})
 	assert.ErrorIs(t, err, repoErr)
 	assert.Empty(t, cache.deleteCalls, "no cache invalidation when repo write failed")
 }
@@ -285,7 +287,7 @@ func TestOperator_PatchPlan_NilCacheIsSafe(t *testing.T) {
 	}
 	svc := buildOperator(repo, nil, nil)
 
-	got, err := svc.PatchPlan(context.Background(), domain.TenantPlan("free"), &domain.PlanPatch{})
-	require.NoError(t, err)
-	assert.NotNil(t, got)
+	// "free" is not a valid plan code → ErrPlanNotFound before mutable-field check
+	_, err := svc.PatchPlan(context.Background(), domain.TenantPlan("free"), &domain.PlanPatch{})
+	assert.ErrorIs(t, err, domain.ErrPlanNotFound, "unknown plan code rejected before reaching repo")
 }

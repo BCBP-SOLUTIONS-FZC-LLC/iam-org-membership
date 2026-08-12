@@ -35,6 +35,7 @@ func NewMembershipHandler(svc *service.MembershipService) *MembershipHandler {
 // @Failure      403     {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/members [get]
 func (h *MembershipHandler) List(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -47,14 +48,14 @@ func (h *MembershipHandler) List(c *gin.Context) {
 		return
 	}
 	limit := 50
-	if s := c.Query("limit"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 200 {
-			limit = n
-		} else {
+	if s, exists := c.GetQuery("limit"); exists {
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 || n > 200 {
 			HandleError(c, domain.NewError(domain.ErrValidation, "invalid limit").
 				WithDetails(map[string]any{"code": "invalid_limit"}))
 			return
 		}
+		limit = n
 	}
 	var cursor *domain.MembershipListCursor
 	if raw := c.Query("cursor"); raw != "" {
@@ -97,6 +98,7 @@ func (h *MembershipHandler) List(c *gin.Context) {
 // @Failure      404      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/members/{user_id} [get]
 func (h *MembershipHandler) Get(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -137,6 +139,7 @@ func (h *MembershipHandler) Get(c *gin.Context) {
 // @Failure      409      {object}  ErrorResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/members/{user_id} [patch]
 func (h *MembershipHandler) Patch(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -167,17 +170,24 @@ func (h *MembershipHandler) Patch(c *gin.Context) {
 		HandleError(c, domain.NewError(domain.ErrValidation, "status must be 'active' or 'suspended'"))
 		return
 	}
-	m, err := h.svc.SetStatus(c.Request.Context(), tenantID, userID, status, req.RecordVersion)
+	res, err := h.svc.SetStatus(c.Request.Context(), tenantID, userID, status, req.RecordVersion)
 	if err != nil {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"user_id":        m.UserID,
-		"status":         m.Status,
-		"record_version": m.RecordVersion,
-		"updated_at":     m.UpdatedAt,
-	})
+	body := gin.H{
+		"user_id":        res.Membership.UserID,
+		"status":         res.Membership.Status,
+		"record_version": res.Membership.RecordVersion,
+		"updated_at":     res.Membership.UpdatedAt,
+	}
+	// WFI-13 advisory (§8.8.5) — attached to 200 on suspend when the user
+	// is a delegate on active workflows, OR when the Workflow Service is
+	// unavailable (checked=false). Absent on reactivate.
+	if res.DelegateImpact != nil {
+		body["delegate_impact"] = res.DelegateImpact
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // ReconcileRoles is P-28 — full-replacement multi-role reconcile with
@@ -197,6 +207,7 @@ func (h *MembershipHandler) Patch(c *gin.Context) {
 // @Failure      422      {object}  ErrorResponse  "last_owner_removal"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/members/{user_id}/roles [put]
 func (h *MembershipHandler) ReconcileRoles(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -246,6 +257,7 @@ func (h *MembershipHandler) ReconcileRoles(c *gin.Context) {
 // @Failure      404  {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/seat-usage [get]
 func (h *MembershipHandler) SeatUsage(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -275,6 +287,92 @@ func (h *MembershipHandler) SeatUsage(c *gin.Context) {
 		resp["grace_ends_at"] = usage.GraceEndsAt
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// Remove is P-8 (§8.8) — DELETE /tenants/:id/members/:user_id. Gated by
+// WFI-1 delegate-impact pre-check: 409 workflow_resolution_required if
+// the user is delegate on active workflows.
+//
+// @Summary      P-8 — Remove tenant member
+// @Description  Gated by delegate-impact pre-check (§8.8, WFI-1). Returns 409 workflow_resolution_required with active_workflows/workflow_ids/allowed_actions if the user is a delegate. TM-8 last-owner refusal returns 422 last_owner_removal. AUTH-8 best-effort session revoke.
+// @Tags         members
+// @Param        id       path  string  true  "Tenant UUID"   format(uuid)
+// @Param        user_id  path  string  true  "User UUID"     format(uuid)
+// @Success      204
+// @Failure      409      {object}  ErrorResponse  "workflow_resolution_required"
+// @Failure      422      {object}  ErrorResponse  "last_owner_removal"
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /tenants/{id}/members/{user_id} [delete]
+func (h *MembershipHandler) Remove(c *gin.Context) {
+	tenantID, err := parseTenantIDParam(c)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	userID, err := parseUUIDParam(c, "user_id")
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	if err := requireTenantAdmin(c, tenantID); err != nil {
+		HandleError(c, err)
+		return
+	}
+	rc, _ := requestctx.FromContext(c.Request.Context())
+	if err := h.svc.RemoveUser(c.Request.Context(), tenantID, userID, rc.UserID); err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// RemovalResolution is P-26 (§8.8.3) — POST .../removal-resolution.
+// Body: {action: "replace_delegate"|"stop_workflows", replacement_user_id?: uuid}
+// On success the caller may retry P-8; a subsequent 409 means another
+// delegation appeared and the caller resubmits (WFI-6 race-safety).
+//
+// @Summary      P-26 — Resolve blocked user removal
+// @Description  Reassigns or cancels workflows the target user is delegate on so P-8 can proceed (§8.8.3, WFI-6).
+// @Tags         members
+// @Accept       json
+// @Param        id       path  string                       true  "Tenant UUID"   format(uuid)
+// @Param        user_id  path  string                       true  "User UUID"     format(uuid)
+// @Param        body     body  RemovalResolutionRequest     true  "action + replacement"
+// @Success      204
+// @Failure      422      {object}  ErrorResponse  "invalid_action | invalid_replacement"
+// @Failure      503      {object}  ErrorResponse  "workflow_service_unavailable"
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /tenants/{id}/users/{user_id}/removal-resolution [post]
+func (h *MembershipHandler) RemovalResolution(c *gin.Context) {
+	tenantID, err := parseTenantIDParam(c)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	userID, err := parseUUIDParam(c, "user_id")
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	if err := requireTenantAdmin(c, tenantID); err != nil {
+		HandleError(c, err)
+		return
+	}
+	var req RemovalResolutionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+		return
+	}
+	rc, _ := requestctx.FromContext(c.Request.Context())
+	if err := h.svc.RemovalResolution(c.Request.Context(), tenantID, userID, service.RemovalAction(req.Action), req.ReplacementUserID, rc.UserID); err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // ── shared helpers ─────────────────────────────────────────────────────

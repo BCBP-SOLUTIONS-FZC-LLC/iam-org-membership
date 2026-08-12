@@ -29,6 +29,7 @@ func NewInvitationHandler(svc *service.InvitationService) *InvitationHandler {
 // @Failure      403  {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/invitations [get]
 func (h *InvitationHandler) List(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -68,6 +69,7 @@ func (h *InvitationHandler) List(c *gin.Context) {
 // @Failure      429      {object}  ErrorResponse  "reinvite_too_soon OR invite_rate_limited"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/members [post]
 func (h *InvitationHandler) Invite(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -110,13 +112,15 @@ func (h *InvitationHandler) Invite(c *gin.Context) {
 // @Produce      json
 // @Param        id              path      string              true   "Tenant UUID"       format(uuid)
 // @Param        invitation_id   path      string              true   "Invitation UUID"   format(uuid)
-// @Param        record_version  query     integer             false  "Optimistic-lock version"
-// @Success      200             {object}  InvitationResponse
+// @Param        request         body      InvitationRevokeRequest  true  "Revoke payload (PI-8 optimistic-lock version)"
+// @Success      204
+// @Failure      400             {object}  ErrorResponse
 // @Failure      403             {object}  ErrorResponse
 // @Failure      404             {object}  ErrorResponse
 // @Failure      409             {object}  ErrorResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/invitations/{invitation_id} [delete]
 func (h *InvitationHandler) Revoke(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -133,19 +137,38 @@ func (h *InvitationHandler) Revoke(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	verStr := c.Query("record_version")
-	v, _ := strconv.ParseInt(verStr, 10, 64)
-	inv, err := h.svc.Revoke(c.Request.Context(), tenantID, invID, v)
-	if err != nil {
+	// LLD §5.4 P-31 spec: record_version in JSON body. Legacy callers may
+	// still send it as ?record_version=N — accept both for one release.
+	// Empty body is legal (Content-Length: 0 with no JSON) — we fall
+	// through to the query string in that case.
+	var req InvitationRevokeRequest
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+			return
+		}
+	}
+	if req.RecordVersion == 0 {
+		if verStr := c.Query("record_version"); verStr != "" {
+			v, perr := strconv.ParseInt(verStr, 10, 64)
+			if perr != nil {
+				HandleError(c, domain.NewError(domain.ErrValidation, "record_version query param must be a positive integer"))
+				return
+			}
+			req.RecordVersion = v
+		}
+	}
+	if _, err := h.svc.Revoke(c.Request.Context(), tenantID, invID, req.RecordVersion); err != nil {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, invitationToResponse(*inv))
+	c.Status(http.StatusNoContent)
 }
 
 func invitationToResponse(inv domain.PendingInvitation) InvitationResponse {
 	return InvitationResponse{
-		ID:            inv.ID,
+		ID:            inv.ID, // deprecated alias
+		InvitationID:  inv.ID,
 		Email:         inv.Email,
 		FullName:      inv.FullName,
 		Status:        string(inv.Status),

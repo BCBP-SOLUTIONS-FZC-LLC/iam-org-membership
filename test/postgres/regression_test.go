@@ -31,7 +31,7 @@ import (
 //     back to `active` by a repeat Insert.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB3_MembershipInsert_Idempotent(t *testing.T) {
+func TestMembershipInsert_Idempotent(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-b3")
@@ -57,7 +57,7 @@ func TestB3_MembershipInsert_Idempotent(t *testing.T) {
 		"touch_row no-op suppression: version unchanged on identical write")
 }
 
-func TestB14_MembershipInsert_PreservesSuspendedStatus(t *testing.T) {
+func TestMembershipInsert_PreservesSuspendedStatus(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-b14")
@@ -94,7 +94,7 @@ func TestB14_MembershipInsert_PreservesSuspendedStatus(t *testing.T) {
 //   - Level change soft-deletes old + inserts new.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB4_DeptMembershipAssign_SameLevelNoOp(t *testing.T) {
+func TestDeptMembershipAssign_SameLevelNoOp(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "acme-b4a")
@@ -110,7 +110,7 @@ func TestB4_DeptMembershipAssign_SameLevelNoOp(t *testing.T) {
 	assert.Equal(t, first.RecordVersion, second.RecordVersion, "no version bump on no-op")
 }
 
-func TestB4_DeptMembershipAssign_LevelChange(t *testing.T) {
+func TestDeptMembershipAssign_LevelChange(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "acme-b4b")
@@ -127,7 +127,7 @@ func TestB4_DeptMembershipAssign_LevelChange(t *testing.T) {
 	assert.Equal(t, domain.DeptApprover, second.RoleLevel)
 }
 
-func TestB4_DeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) {
+func TestDeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "acme-b4c")
@@ -165,7 +165,7 @@ func TestB4_DeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.
 // B2: TenantRoleRepository.Grant is ON CONFLICT DO NOTHING + fallback SELECT.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB2_TenantRoleGrant_Idempotent(t *testing.T) {
+func TestTenantRoleGrant_Idempotent(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-b2")
@@ -238,7 +238,7 @@ func TestG5_PendingInvitationExpiryGuard_AllowsFutureTimestamp(t *testing.T) {
 // reads/writes fire iam_rls_violations_total (via log_rls_violation()).
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB16_TenantsRLSPolicy_UsesHelperFunction(t *testing.T) {
+func TestTenantsRLSPolicy_UsesHelperFunction(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 

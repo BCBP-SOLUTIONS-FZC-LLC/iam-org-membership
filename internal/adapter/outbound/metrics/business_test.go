@@ -27,9 +27,9 @@ func ensureRegistered(t testing.TB) {
 	registerOnce.Do(func() { Register() })
 }
 
-// TestP18_METRICS_001_RegisterSucceedsAndPopulatesAllVars — Register()
+// TestRegisterSucceedsAndPopulatesAllVars — Register()
 // must not panic and every exported metric var must be non-nil after.
-func TestP18_METRICS_001_RegisterSucceedsAndPopulatesAllVars(t *testing.T) {
+func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	ensureRegistered(t)
 
 	// Every exported var in business.go must be non-nil post-Register.
@@ -55,13 +55,13 @@ func TestP18_METRICS_001_RegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	assert.NotNil(t, PendingInvitationsStale, "PendingInvitationsStale must be initialised")
 }
 
-// TestP18_METRICS_002_MetricNamesStable — the `iam_*` names dashboards
+// TestMetricNamesStable — the `iam_*` names dashboards
 // and alerts rely on must not silently change. Rename = downstream break.
 //
 // Prometheus's Gather() only surfaces label-bearing metrics that have had
 // at least one label combination observed — so we Inc/Observe each with a
 // throwaway label first, then Gather.
-func TestP18_METRICS_002_MetricNamesStable(t *testing.T) {
+func TestMetricNamesStable(t *testing.T) {
 	ensureRegistered(t)
 
 	// Force every label-bearing metric to emit at least one sample so
@@ -116,11 +116,11 @@ func TestP18_METRICS_002_MetricNamesStable(t *testing.T) {
 	}
 }
 
-// TestP18_METRICS_003_CounterIncrementsAndScrapes — pick a counter,
+// TestCounterIncrementsAndScrapes — pick a counter,
 // increment it, verify testutil.ToFloat64 reads back the increment.
 // Guards against a subtle regression where a rename silently disconnects
 // the code that increments from the metric object being scraped.
-func TestP18_METRICS_003_CounterIncrementsAndScrapes(t *testing.T) {
+func TestCounterIncrementsAndScrapes(t *testing.T) {
 	ensureRegistered(t)
 
 	before := testutil.ToFloat64(SeatLimitReached.WithLabelValues("starter"))
@@ -132,9 +132,9 @@ func TestP18_METRICS_003_CounterIncrementsAndScrapes(t *testing.T) {
 	assert.Equal(t, before+3, after, "counter must have advanced by 3")
 }
 
-// TestP18_METRICS_004_GaugeSetAndScrape — same shape as -003 but for a
+// TestGaugeSetAndScrape — same shape as -003 but for a
 // gauge (exporter goroutines write these; scrape reads back).
-func TestP18_METRICS_004_GaugeSetAndScrape(t *testing.T) {
+func TestGaugeSetAndScrape(t *testing.T) {
 	ensureRegistered(t)
 
 	TenantOwnerless.Set(7)
@@ -145,9 +145,9 @@ func TestP18_METRICS_004_GaugeSetAndScrape(t *testing.T) {
 	TenantOwnerless.Set(0)
 }
 
-// TestP18_METRICS_005_HistogramObserveDoesNotPanic — histograms need a
+// TestHistogramObserveDoesNotPanic — histograms need a
 // bucket list; a mis-sized bucket slice would panic on first Observe.
-func TestP18_METRICS_005_HistogramObserveDoesNotPanic(t *testing.T) {
+func TestHistogramObserveDoesNotPanic(t *testing.T) {
 	ensureRegistered(t)
 
 	require.NotPanics(t, func() {
@@ -157,10 +157,10 @@ func TestP18_METRICS_005_HistogramObserveDoesNotPanic(t *testing.T) {
 	})
 }
 
-// TestP18_METRICS_006_PreseededLabelsPresent — the pre-init at the bottom
+// TestPreseededLabelsPresent — the pre-init at the bottom
 // of Register() calls WithLabelValues so dashboards show 0 instead of "no
 // data" until the first real event fires.
-func TestP18_METRICS_006_PreseededLabelsPresent(t *testing.T) {
+func TestPreseededLabelsPresent(t *testing.T) {
 	ensureRegistered(t)
 
 	gathered, err := prometheus.DefaultGatherer.Gather()
@@ -189,10 +189,10 @@ func TestP18_METRICS_006_PreseededLabelsPresent(t *testing.T) {
 		"pre-seeded label 'cross_tenant_access' must be present so dashboards render zeros")
 }
 
-// TestP18_METRICS_007_HelpTextsMentionInvariantIDs — sanity guard so a
+// TestHelpTextsMentionInvariantIDs — sanity guard so a
 // future rename or trim doesn't strip the LLD invariant IDs from the
 // Help texts. Ops rely on those IDs to page the right runbook.
-func TestP18_METRICS_007_HelpTextsMentionInvariantIDs(t *testing.T) {
+func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 	ensureRegistered(t)
 
 	gathered, err := prometheus.DefaultGatherer.Gather()

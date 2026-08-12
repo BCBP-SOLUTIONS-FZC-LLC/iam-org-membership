@@ -50,7 +50,7 @@ func TestG1_TrialSignup_ActivatesExactly5NamedDepartments(t *testing.T) {
 	ownerID := uuid.New()
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	_, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+	_, _, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
 		TenantID:      tenantID,
 		Slug:          "acme-g1",
 		Name:          "Acme G1",
@@ -94,7 +94,7 @@ func TestG1_TrialSignup_EmitsExpectedEvents(t *testing.T) {
 	ownerID := uuid.New()
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	_, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+	_, _, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
 		TenantID:      tenantID,
 		Slug:          "acme-g1e",
 		Name:          "Acme G1E",
@@ -115,7 +115,7 @@ func TestG1_TrialSignup_EmitsExpectedEvents(t *testing.T) {
 // state — Granted, LevelChanged, or no-event (TRG-3 no-op).
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB5_JIT_FirstTimeAssignment_EmitsGranted(t *testing.T) {
+func TestJIT_FirstTimeAssignment_EmitsGranted(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5a")
@@ -137,7 +137,7 @@ func TestB5_JIT_FirstTimeAssignment_EmitsGranted(t *testing.T) {
 	assert.NotContains(t, types, domain.EventDepartmentMembershipLevelChanged)
 }
 
-func TestB5_JIT_SameLevelReplay_EmitsNothing(t *testing.T) {
+func TestJIT_SameLevelReplay_EmitsNothing(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5b")
@@ -160,7 +160,7 @@ func TestB5_JIT_SameLevelReplay_EmitsNothing(t *testing.T) {
 		"B5/TRG-3: identical JIT re-login must emit nothing")
 }
 
-func TestB5_JIT_LevelChange_EmitsLevelChanged(t *testing.T) {
+func TestJIT_LevelChange_EmitsLevelChanged(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5c")
@@ -192,7 +192,7 @@ func TestB5_JIT_LevelChange_EmitsLevelChanged(t *testing.T) {
 // misclassify Granted vs LevelChanged.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB15_ConcurrentAssign_NoMisclassification(t *testing.T) {
+func TestConcurrentAssign_NoMisclassification(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, userID := seedTenantWithOwner(t, ctx, fx, "acme-b15")
@@ -237,7 +237,7 @@ func TestB15_ConcurrentAssign_NoMisclassification(t *testing.T) {
 // B1: O-7 ReassignOwner emits TenantRoleGranted via TxRunner.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB1_ReassignOwner_EmitsTenantRoleGranted(t *testing.T) {
+func TestReassignOwner_EmitsTenantRoleGranted(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, currentOwner := seedTenantWithOwner(t, ctx, fx, "acme-b1")
@@ -286,7 +286,7 @@ func TestB1_ReassignOwner_EmitsTenantRoleGranted(t *testing.T) {
 // active tenant_owner is removed.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB13_TM12Escalation_IncrementsCounter(t *testing.T) {
+func TestTM12Escalation_IncrementsCounter(t *testing.T) {
 	// Register metrics once per test process. Register() uses
 	// prometheus.MustRegister which panics on duplicate — guard with a
 	// package-level sync.Once (see phase4TestMetricsInit at file bottom).

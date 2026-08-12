@@ -73,6 +73,10 @@ type DeptMembershipRepository interface {
 
 	// SoftDeleteAllForUser is called on membership removal (§8.8 cascade).
 	SoftDeleteAllForUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.DeptMembership, error)
+
+	// SoftDeleteAllForDept soft-deletes every active dept_membership row for
+	// the given (tenant, department) pair. Used by admin tooling / future flows.
+	SoftDeleteAllForDept(ctx context.Context, tenantID, departmentID uuid.UUID) ([]domain.DeptMembership, error)
 }
 
 // DeptRoleLabelRepository owns per-tenant display labels for dept_role.

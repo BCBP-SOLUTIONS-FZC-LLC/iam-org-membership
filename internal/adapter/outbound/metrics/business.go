@@ -40,6 +40,54 @@ var (
 	// non-2xx or errored (AUTH-8 fail-open).
 	SessionRevokeFailed *prometheus.CounterVec
 
+	// DelegateSuspendImpact counts P-7 suspensions where the user was a
+	// delegate on active workflows and the WFI-13 advisory `delegate_impact`
+	// warning fired (§16 C3, §8.8.5). Distinct from delegate_removal_blocked
+	// — this is a non-fatal advisory, never a 409.
+	DelegateSuspendImpact *prometheus.CounterVec
+
+	// TenantOwnerlessEscalated counts the moment a removal drops the last
+	// active tenant_owner. Event-time signal (distinct from the periodic
+	// TenantOwnerless gauge, which is a scan). LLD §11.4 / TM-12 line 3807.
+	TenantOwnerlessEscalated *prometheus.CounterVec
+
+	// ── LLD §11.2 counters — every alert documented in the LLD needs a
+	//    corresponding counter. Labels held to low cardinality per §16 A48.
+
+	// SeatOverageStarted counts transitions from under-cap to over-cap
+	// (SEAT-5). Distinct from the SeatOverageActive gauge (a scan).
+	SeatOverageStarted *prometheus.CounterVec
+
+	// SeatLimitReached counts P-6 invites blocked by SEAT-1 hitting cap.
+	SeatLimitReached *prometheus.CounterVec
+
+	// InviteThrottled counts P-6 invites rate-limited (§16 A41).
+	InviteThrottled *prometheus.CounterVec
+
+	// RealmSyncFailed counts realm-config-sync reconciler failures (T-15).
+	RealmSyncFailed *prometheus.CounterVec
+
+	// DelegationExpiryDeferred counts delegation-expiry ticks that skipped
+	// a row because UP.SetAvailability failed (DEL-6 fail-open defer).
+	DelegationExpiryDeferred *prometheus.CounterVec
+
+	// DelegateRemovalBlocked counts P-7 removals that returned 409
+	// workflow_resolution_required (§8.8.1 WFI-3).
+	DelegateRemovalBlocked *prometheus.CounterVec
+
+	// DelegateReassignment counts P-26 successful `replace_delegate`
+	// removals (§8.8, RemovalReplaceDelegate).
+	DelegateReassignment *prometheus.CounterVec
+
+	// ProcessedEventsDuplicates counts SQS redeliveries filtered by the
+	// processed_events composite PK (IDEMP-4 / PE-1).
+	ProcessedEventsDuplicates *prometheus.CounterVec
+
+	// LifecycleConsumerLagSeconds is a histogram of (now - event.time) when
+	// the consumer picks up a lifecycle event. Sustained high P99 flags
+	// an SQS backlog or slow downstream apply.
+	LifecycleConsumerLagSeconds *prometheus.HistogramVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -83,6 +131,62 @@ func Register() {
 		Help: "RP RevokeUserSessions calls that returned non-2xx or errored (AUTH-8 fail-open).",
 	}, []string{"reason"})
 
+	DelegateSuspendImpact = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_delegate_suspend_impact_total",
+		Help: "P-7 suspensions where the user was a delegate on active workflows and the WFI-13 advisory fired (advisory, never a block).",
+	}, []string{"checked"})
+
+	TenantOwnerlessEscalated = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_tenant_ownerless_escalated_total",
+		Help: "Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page.",
+	}, []string{"reason"})
+
+	SeatOverageStarted = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_seat_overage_started_total",
+		Help: "Transitions from under-cap to over-cap on tenant seat consumption (SEAT-5).",
+	}, []string{"cause"})
+
+	SeatLimitReached = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_seat_limit_reached_total",
+		Help: "P-6 invite attempts blocked by SEAT-1 cap.",
+	}, []string{"plan"})
+
+	InviteThrottled = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_invite_throttled_total",
+		Help: "P-6 invites rate-limited (§16 A41).",
+	}, []string{"reason"})
+
+	RealmSyncFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_realm_sync_failed_total",
+		Help: "realm-config-sync reconciler failures (T-15).",
+	}, []string{"stage"})
+
+	DelegationExpiryDeferred = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_delegation_expiry_deferred_total",
+		Help: "delegation-expiry ticks that deferred a row because UP.SetAvailability failed (DEL-6).",
+	}, []string{"reason"})
+
+	DelegateRemovalBlocked = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_delegate_removal_blocked_total",
+		Help: "P-7 removals blocked by WFI-3 delegate-impact pre-check (409 workflow_resolution_required).",
+	}, []string{"scope"})
+
+	DelegateReassignment = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_delegate_reassignment_total",
+		Help: "P-26 removal-resolution completions by action (replace_delegate | stop_workflows).",
+	}, []string{"action"})
+
+	ProcessedEventsDuplicates = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_processed_events_duplicates_total",
+		Help: "SQS redeliveries filtered by processed_events composite PK (IDEMP-4).",
+	}, []string{"consumer"})
+
+	LifecycleConsumerLagSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "iam_lifecycle_consumer_lag_seconds",
+		Help:    "Seconds between event.time and consumer apply time. Sustained high P99 flags backlog.",
+		Buckets: []float64{0.05, 0.1, 0.5, 1, 5, 15, 60, 300, 1800},
+	}, []string{"event_type"})
+
 	TenantOwnerless = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iam_tenant_ownerless",
 		Help: "Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages.",
@@ -106,6 +210,17 @@ func Register() {
 		StaleLifecycleEventSkipped,
 		FutureLifecycleEventRejected,
 		SessionRevokeFailed,
+		DelegateSuspendImpact,
+		TenantOwnerlessEscalated,
+		SeatOverageStarted,
+		SeatLimitReached,
+		InviteThrottled,
+		RealmSyncFailed,
+		DelegationExpiryDeferred,
+		DelegateRemovalBlocked,
+		DelegateReassignment,
+		ProcessedEventsDuplicates,
+		LifecycleConsumerLagSeconds,
 		TenantOwnerless,
 		RealmSyncPending,
 		SeatOverageActive,

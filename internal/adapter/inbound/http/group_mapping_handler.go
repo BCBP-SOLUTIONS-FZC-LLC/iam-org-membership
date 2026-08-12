@@ -27,7 +27,8 @@ func NewGroupMappingHandler(svc *service.GroupMappingService) *GroupMappingHandl
 // @Failure      403  {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
-// @Router       /tenants/{id}/group-mappings/roles [get]
+// @Security     TenantRoles
+// @Router       /tenants/{id}/group-mappings/department-roles [get]
 func (h *GroupMappingHandler) ListDeptRole(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
 	if err != nil {
@@ -64,7 +65,8 @@ func (h *GroupMappingHandler) ListDeptRole(c *gin.Context) {
 // @Failure      403      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
-// @Router       /tenants/{id}/group-mappings/roles [put]
+// @Security     TenantRoles
+// @Router       /tenants/{id}/group-mappings/department-roles [put]
 func (h *GroupMappingHandler) PutDeptRole(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
 	if err != nil {
@@ -113,6 +115,7 @@ func (h *GroupMappingHandler) PutDeptRole(c *gin.Context) {
 // @Failure      403  {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/group-mappings/departments [get]
 func (h *GroupMappingHandler) ListDept(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -150,6 +153,7 @@ func (h *GroupMappingHandler) ListDept(c *gin.Context) {
 // @Failure      403      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/group-mappings/departments [put]
 func (h *GroupMappingHandler) PutDept(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -202,6 +206,7 @@ func (h *GroupMappingHandler) PutDept(c *gin.Context) {
 // @Failure      403      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/group-mappings/tenant-roles [put]
 func (h *GroupMappingHandler) PutTenantRole(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)

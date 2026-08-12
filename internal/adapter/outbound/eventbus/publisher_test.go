@@ -2,13 +2,10 @@ package eventbus
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -51,8 +48,7 @@ func TestPublisher_New_SetsFields(t *testing.T) {
 // ── Enqueue — early-return branches that don't need a real pgx.Tx ─────
 
 // fakeCodec returns a pre-programmed error / value pair. Tests exercise
-// Enqueue's error branches without needing a working tx (the encode
-// check happens before insertEnvelope).
+// Enqueue's validation-error branch without needing a working tx.
 type fakeCodec struct {
 	encodeErr error
 	encoded   []byte
@@ -64,9 +60,6 @@ func (f fakeCodec) Encode(context.Context, string, []byte) ([]byte, string, erro
 		return nil, "", f.encodeErr
 	}
 	return f.encoded, f.schemaID, nil
-}
-func (f fakeCodec) Decode(context.Context, []byte) (string, []byte, error) {
-	return "", nil, errors.New("not used")
 }
 
 func TestPublisher_Enqueue_MarshalPayloadFailure(t *testing.T) {
@@ -91,7 +84,7 @@ func TestPublisher_Enqueue_CodecErrorPropagates(t *testing.T) {
 		Data:     map[string]any{"foo": "bar"},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "encode event TenantCreated")
+	assert.Contains(t, err.Error(), "validate event TenantCreated")
 	assert.ErrorIs(t, err, codecErr)
 }
 
@@ -140,51 +133,16 @@ func TestPublisher_Enqueue_TxExecErrorPropagates(t *testing.T) {
 	assert.ErrorIs(t, err, execErr)
 }
 
-func TestPublisher_Enqueue_WithSchemaVersionIDFromCodec(t *testing.T) {
-	// A non-empty schema version ID from the codec should be propagated
-	// as an Envelope option (WithSchemaID). We can't easily inspect the
-	// envelope after construction, but exercising the branch keeps
-	// coverage honest.
+func TestPublisher_Enqueue_CodecReturnIgnoredPayloadIsPlainJSON(t *testing.T) {
+	// Even when codec returns a non-empty schemaID, Enqueue must store
+	// the plain-JSON raw bytes (not the codec's encoded output) — Glue
+	// encoding is deferred to the SNS publisher via WithCodec (publish path).
 	tx := &fakeTx{}
-	p := New("test", fakeCodec{encoded: []byte(`{"ok":true}`), schemaID: "arn:aws:glue:us-east-1:123:schemaVersion/abc"})
+	p := New("test", fakeCodec{encoded: []byte(`GLUE_BYTES`), schemaID: "arn:aws:glue:us-east-1:123:schemaVersion/abc"})
 	err := p.Enqueue(context.Background(), tx, &domain.DomainEvent{
 		Type: "TenantCreated", TenantID: uuid.New(),
 		Data: map[string]any{"a": "b"},
 	})
 	require.NoError(t, err)
-	assert.True(t, tx.execCalled)
-}
-
-func TestInsertEnvelope_HappyPathCallsTxExec(t *testing.T) {
-	tx := &fakeTx{}
-	env := events.NewEnvelope(
-		"TenantCreated", "iam-org-membership", json.RawMessage(`{"ok":true}`),
-		events.WithTenantID(uuid.New().String()),
-	)
-	err := insertEnvelope(context.Background(), tx, env)
-	require.NoError(t, err)
-	assert.True(t, tx.execCalled)
-	require.NotEmpty(t, tx.lastArgs)
-}
-
-func TestInsertEnvelope_OversizedEnvelopeRejected(t *testing.T) {
-	// Craft an envelope whose JSON-serialized form exceeds 240 KB — the
-	// size check returns before tx.Exec is called, so nil tx is safe.
-	huge := make([]byte, 260*1024)
-	for i := range huge {
-		huge[i] = 'x'
-	}
-	env := events.NewEnvelope(
-		"TenantCreated",
-		"iam-org-membership",
-		json.RawMessage(`"`+string(huge)+`"`),
-		events.WithTenantID(uuid.New().String()),
-	)
-
-	err := insertEnvelope(context.Background(), nil, env)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds SNS 256KB limit")
-	assert.True(t, strings.Contains(err.Error(), "envelope is"),
-		"error must state the actual byte size for the operator to debug")
+	assert.True(t, tx.execCalled, "outbox INSERT must be reached")
 }

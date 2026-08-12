@@ -116,7 +116,7 @@ func TestN3_EffectiveUserID_BothMissingReturnsNil(t *testing.T) {
 // fallback to query string covered in service_regression_test.go.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB9_InvitationRevokeRequest_DTOShape(t *testing.T) {
+func TestInvitationRevokeRequest_DTOShape(t *testing.T) {
 	// Body binding must accept `{"record_version": N}` per LLD §5.4 P-31.
 	body := `{"record_version": 42}`
 	var req InvitationRevokeRequest

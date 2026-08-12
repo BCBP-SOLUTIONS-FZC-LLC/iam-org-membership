@@ -28,9 +28,9 @@ func newTestCache(t *testing.T) (*Cache, *miniredis.Miniredis) {
 	return c, mr
 }
 
-// TestP18_VC_CACHE_001_NewParsesAddr — plain "host:port" and full
+// TestVC_CACHE_001_NewParsesAddr — plain "host:port" and full
 // "redis://..." both construct a working client.
-func TestP18_VC_CACHE_001_NewParsesAddr(t *testing.T) {
+func TestVC_CACHE_001_NewParsesAddr(t *testing.T) {
 	mr, err := miniredis.Run()
 	require.NoError(t, err)
 	defer mr.Close()
@@ -46,10 +46,10 @@ func TestP18_VC_CACHE_001_NewParsesAddr(t *testing.T) {
 	_ = c2.Close()
 }
 
-// TestP18_VC_CACHE_002_TimeoutsHaveTightDefaults — the cache is
+// TestVC_CACHE_002_TimeoutsHaveTightDefaults — the cache is
 // advisory-only; a slow Valkey must degrade fast rather than stall the
 // request. Regression guard for the 50 ms defaults.
-func TestP18_VC_CACHE_002_TimeoutsHaveTightDefaults(t *testing.T) {
+func TestVC_CACHE_002_TimeoutsHaveTightDefaults(t *testing.T) {
 	mr, err := miniredis.Run()
 	require.NoError(t, err)
 	defer mr.Close()
@@ -63,8 +63,8 @@ func TestP18_VC_CACHE_002_TimeoutsHaveTightDefaults(t *testing.T) {
 	assert.Equal(t, 50*time.Millisecond, opts.WriteTimeout, "WriteTimeout default must stay tight")
 }
 
-// TestP18_VC_CACHE_003_GetSetRoundtrip — basic write-then-read.
-func TestP18_VC_CACHE_003_GetSetRoundtrip(t *testing.T) {
+// TestVC_CACHE_003_GetSetRoundtrip — basic write-then-read.
+func TestVC_CACHE_003_GetSetRoundtrip(t *testing.T) {
 	c, _ := newTestCache(t)
 	ctx := context.Background()
 
@@ -74,10 +74,10 @@ func TestP18_VC_CACHE_003_GetSetRoundtrip(t *testing.T) {
 	assert.Equal(t, []byte("world"), got)
 }
 
-// TestP18_VC_CACHE_004_GetMissReturnsNilNil — the port.Cache contract:
+// TestVC_CACHE_004_GetMissReturnsNilNil — the port.Cache contract:
 // a miss returns (nil, nil), not (nil, redis.Nil). Downstream callers
 // switch on nil to fall through to Postgres.
-func TestP18_VC_CACHE_004_GetMissReturnsNilNil(t *testing.T) {
+func TestVC_CACHE_004_GetMissReturnsNilNil(t *testing.T) {
 	c, _ := newTestCache(t)
 	ctx := context.Background()
 
@@ -86,9 +86,9 @@ func TestP18_VC_CACHE_004_GetMissReturnsNilNil(t *testing.T) {
 	assert.Nil(t, got, "miss must return nil bytes")
 }
 
-// TestP18_VC_CACHE_005_MGetHandlesMissesAndHits — MGet returns a
+// TestVC_CACHE_005_MGetHandlesMissesAndHits — MGet returns a
 // same-length slice; missing keys sit as nil entries.
-func TestP18_VC_CACHE_005_MGetHandlesMissesAndHits(t *testing.T) {
+func TestVC_CACHE_005_MGetHandlesMissesAndHits(t *testing.T) {
 	c, _ := newTestCache(t)
 	ctx := context.Background()
 
@@ -103,9 +103,9 @@ func TestP18_VC_CACHE_005_MGetHandlesMissesAndHits(t *testing.T) {
 	assert.Equal(t, []byte("v3"), vals[2])
 }
 
-// TestP18_VC_CACHE_006_SetNXFirstWinsSecondFalses — SETNX (set-if-not-
+// TestVC_CACHE_006_SetNXFirstWinsSecondFalses — SETNX (set-if-not-
 // exists) semantics preserved end-to-end.
-func TestP18_VC_CACHE_006_SetNXFirstWinsSecondFalses(t *testing.T) {
+func TestVC_CACHE_006_SetNXFirstWinsSecondFalses(t *testing.T) {
 	c, _ := newTestCache(t)
 	ctx := context.Background()
 
@@ -122,19 +122,19 @@ func TestP18_VC_CACHE_006_SetNXFirstWinsSecondFalses(t *testing.T) {
 	assert.Equal(t, []byte("first"), got, "value must be unchanged by the losing SetNX")
 }
 
-// TestP18_VC_CACHE_007_DeleteEmptyKeysIsNoOp — Delete() with no args
+// TestVC_CACHE_007_DeleteEmptyKeysIsNoOp — Delete() with no args
 // short-circuits without hitting the client (regression guard for a
 // change that would silently DEL nothing but still spend an RTT).
-func TestP18_VC_CACHE_007_DeleteEmptyKeysIsNoOp(t *testing.T) {
+func TestVC_CACHE_007_DeleteEmptyKeysIsNoOp(t *testing.T) {
 	c, _ := newTestCache(t)
 	ctx := context.Background()
 
 	assert.NoError(t, c.Delete(ctx), "Delete with zero keys must be a no-op, not an error")
 }
 
-// TestP18_VC_CACHE_008_DeleteMultipleKeys — variadic Delete removes all
+// TestVC_CACHE_008_DeleteMultipleKeys — variadic Delete removes all
 // listed keys in one call.
-func TestP18_VC_CACHE_008_DeleteMultipleKeys(t *testing.T) {
+func TestVC_CACHE_008_DeleteMultipleKeys(t *testing.T) {
 	c, _ := newTestCache(t)
 	ctx := context.Background()
 
@@ -150,9 +150,9 @@ func TestP18_VC_CACHE_008_DeleteMultipleKeys(t *testing.T) {
 	}
 }
 
-// TestP18_VC_CACHE_009_TTLHonored — Set with TTL, fast-forward miniredis
+// TestVC_CACHE_009_TTLHonored — Set with TTL, fast-forward miniredis
 // clock past TTL, key must have expired.
-func TestP18_VC_CACHE_009_TTLHonored(t *testing.T) {
+func TestVC_CACHE_009_TTLHonored(t *testing.T) {
 	c, mr := newTestCache(t)
 	ctx := context.Background()
 
@@ -171,10 +171,10 @@ func TestP18_VC_CACHE_009_TTLHonored(t *testing.T) {
 	assert.Nil(t, got, "key must be expired after TTL")
 }
 
-// TestP18_VC_CACHE_010_HealthWhenServerDown — Health returns an error
+// TestVC_CACHE_010_HealthWhenServerDown — Health returns an error
 // once the underlying server is torn down. Drives /readyz to report
 // cache=down.
-func TestP18_VC_CACHE_010_HealthWhenServerDown(t *testing.T) {
+func TestVC_CACHE_010_HealthWhenServerDown(t *testing.T) {
 	c, mr := newTestCache(t)
 	ctx := context.Background()
 
@@ -184,10 +184,10 @@ func TestP18_VC_CACHE_010_HealthWhenServerDown(t *testing.T) {
 	assert.Error(t, c.Health(ctx), "unhealthy after server torn down")
 }
 
-// TestP18_VC_CACHE_011_KeyBuildersFormatCorrectly — every cache-key
+// TestVC_CACHE_011_KeyBuildersFormatCorrectly — every cache-key
 // builder returns the exact `om:...` shape §6.1 mandates. Renames here
 // would silently invalidate every cached entry.
-func TestP18_VC_CACHE_011_KeyBuildersFormatCorrectly(t *testing.T) {
+func TestVC_CACHE_011_KeyBuildersFormatCorrectly(t *testing.T) {
 	c, _ := newTestCache(t)
 	tenant := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	user := uuid.MustParse("22222222-2222-2222-2222-222222222222")

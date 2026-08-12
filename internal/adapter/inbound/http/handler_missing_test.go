@@ -15,7 +15,7 @@ import (
 
 // ── DelegationHandler.List (P-18) ─────────────────────────────────────
 
-func TestDelegationList_MissingIdentity_401(t *testing.T) {
+func TestDelegationList_MissingIdentity(t *testing.T) {
 	h := &DelegationHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
 	h.List(c)
@@ -24,7 +24,7 @@ func TestDelegationList_MissingIdentity_401(t *testing.T) {
 
 // ── MembershipHandler.Patch (P-7) — early-return matrix ───────────────
 
-func TestMembershipPatch_InvalidTenantID_400(t *testing.T) {
+func TestMembershipPatch_InvalidTenantID(t *testing.T) {
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodPatch, "/", `{}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
@@ -32,7 +32,7 @@ func TestMembershipPatch_InvalidTenantID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestMembershipPatch_InvalidUserID_400(t *testing.T) {
+func TestMembershipPatch_InvalidUserID(t *testing.T) {
 	tenant := uuid.New()
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodPatch, "/", `{}`, tenantOwnerCtx(tenant))
@@ -41,7 +41,7 @@ func TestMembershipPatch_InvalidUserID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestMembershipPatch_CrossTenant_403(t *testing.T) {
+func TestMembershipPatch_CrossTenant(t *testing.T) {
 	// Caller in tenant B targets tenant A → cross-tenant blocked.
 	tenantA := uuid.New()
 	h := &MembershipHandler{}
@@ -51,7 +51,7 @@ func TestMembershipPatch_CrossTenant_403(t *testing.T) {
 	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
 }
 
-func TestMembershipPatch_MalformedJSON_400(t *testing.T) {
+func TestMembershipPatch_MalformedJSON(t *testing.T) {
 	tenant := uuid.New()
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodPatch, "/", `{`, tenantOwnerCtx(tenant))
@@ -60,7 +60,7 @@ func TestMembershipPatch_MalformedJSON_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
 }
 
-func TestMembershipPatch_MissingStatus_400(t *testing.T) {
+func TestMembershipPatch_MissingStatus(t *testing.T) {
 	tenant := uuid.New()
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodPatch, "/", `{"record_version":1}`, tenantOwnerCtx(tenant))
@@ -69,7 +69,7 @@ func TestMembershipPatch_MissingStatus_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
 }
 
-func TestMembershipPatch_InvalidStatus_400(t *testing.T) {
+func TestMembershipPatch_InvalidStatus(t *testing.T) {
 	tenant := uuid.New()
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodPatch, "/",
@@ -81,7 +81,7 @@ func TestMembershipPatch_InvalidStatus_400(t *testing.T) {
 
 // ── GroupMappingHandler.ListDept (P-16) — early-return matrix ─────────
 
-func TestGroupMappingListDept_InvalidTenantID_400(t *testing.T) {
+func TestGroupMappingListDept_InvalidTenantID(t *testing.T) {
 	h := &GroupMappingHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
@@ -89,7 +89,7 @@ func TestGroupMappingListDept_InvalidTenantID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestGroupMappingListDept_MissingIdentity_401(t *testing.T) {
+func TestGroupMappingListDept_MissingIdentity(t *testing.T) {
 	h := &GroupMappingHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
@@ -98,7 +98,7 @@ func TestGroupMappingListDept_MissingIdentity_401(t *testing.T) {
 	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
 }
 
-func TestGroupMappingListDept_CrossTenant_403(t *testing.T) {
+func TestGroupMappingListDept_CrossTenant(t *testing.T) {
 	tenantA := uuid.New()
 	h := &GroupMappingHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))

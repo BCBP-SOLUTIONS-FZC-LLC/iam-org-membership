@@ -94,7 +94,10 @@ func (r *InvitationRepository) FindByID(ctx context.Context, tenantID, id uuid.U
 func (r *InvitationRepository) FindPendingByEmail(ctx context.Context, tenantID uuid.UUID, email string) (*domain.PendingInvitation, error) {
 	var out *domain.PendingInvitation
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `SELECT `+inviteCols+` FROM pending_invitations WHERE tenant_id = $1 AND email = $2 AND status = 'pending'`, tenantID, email)
+		// LOWER on both sides makes lookup case-insensitive, so a REGISTER
+		// webhook whose email casing differs from the invite still resolves
+		// the pending row (PI-4 acceptance vs plain-add branch discriminator).
+		row := tx.QueryRow(ctx, `SELECT `+inviteCols+` FROM pending_invitations WHERE tenant_id = $1 AND LOWER(email) = LOWER($2) AND status = 'pending'`, tenantID, email)
 		inv, err := scanInvitation(row)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -165,10 +168,27 @@ func (r *InvitationRepository) Insert(ctx context.Context, inv *domain.PendingIn
 	return out, err
 }
 
-func (r *InvitationRepository) SetKeycloakUserID(ctx context.Context, tenantID, id uuid.UUID, keycloakUserID uuid.UUID) error {
+func (r *InvitationRepository) SetKeycloakUserID(ctx context.Context, tenantID, id uuid.UUID, keycloakUserID uuid.UUID, expectedVersion int64) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE pending_invitations SET keycloak_user_id = $3 WHERE tenant_id = $1 AND id = $2`, tenantID, id, keycloakUserID)
-		return err
+		tag, err := tx.Exec(ctx, `UPDATE pending_invitations SET keycloak_user_id = $3
+			WHERE tenant_id = $1 AND id = $2 AND record_version = $4`,
+			tenantID, id, keycloakUserID, expectedVersion)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			var v int64
+			probe := tx.QueryRow(ctx, `SELECT record_version FROM pending_invitations WHERE tenant_id = $1 AND id = $2`, tenantID, id)
+			if perr := probe.Scan(&v); perr != nil {
+				if errors.Is(perr, pgx.ErrNoRows) {
+					return domain.NewError(domain.ErrInvitationNotFound, "invitation not found")
+				}
+				return perr
+			}
+			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
+				WithDetails(map[string]any{"record_version": v})
+		}
+		return nil
 	})
 }
 
@@ -181,19 +201,24 @@ func (r *InvitationRepository) SetStatus(ctx context.Context, tenantID, id uuid.
 		}
 		row := tx.QueryRow(ctx, `
 			UPDATE pending_invitations SET status = $3`+acceptedAtClause+`
-			WHERE tenant_id = $1 AND id = $2 AND record_version = $4
+			WHERE tenant_id = $1 AND id = $2 AND record_version = $4 AND status = 'pending'
 			RETURNING `+inviteCols,
 			tenantID, id, string(status), expectedVersion)
 		inv, err := scanInvitation(row)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				var v int64
-				probe := tx.QueryRow(ctx, `SELECT record_version FROM pending_invitations WHERE tenant_id = $1 AND id = $2`, tenantID, id)
-				if perr := probe.Scan(&v); perr != nil {
+				var s string
+				probe := tx.QueryRow(ctx, `SELECT record_version, status FROM pending_invitations WHERE tenant_id = $1 AND id = $2`, tenantID, id)
+				if perr := probe.Scan(&v, &s); perr != nil {
 					if errors.Is(perr, pgx.ErrNoRows) {
 						return domain.NewError(domain.ErrInvitationNotFound, "invitation not found")
 					}
 					return perr
+				}
+				// Terminal state (revoked/accepted/expired) — treat as not found per LLD P-31.
+				if s != "pending" {
+					return domain.NewError(domain.ErrInvitationNotFound, "invitation not found")
 				}
 				return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
 					WithDetails(map[string]any{"record_version": v})
@@ -206,10 +231,27 @@ func (r *InvitationRepository) SetStatus(ctx context.Context, tenantID, id uuid.
 	return out, err
 }
 
-func (r *InvitationRepository) SetKCCleanupPending(ctx context.Context, tenantID, id uuid.UUID, pending bool) error {
+func (r *InvitationRepository) SetKCCleanupPending(ctx context.Context, tenantID, id uuid.UUID, pending bool, expectedVersion int64) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE pending_invitations SET kc_cleanup_pending = $3 WHERE tenant_id = $1 AND id = $2`, tenantID, id, pending)
-		return err
+		tag, err := tx.Exec(ctx, `UPDATE pending_invitations SET kc_cleanup_pending = $3
+			WHERE tenant_id = $1 AND id = $2 AND record_version = $4`,
+			tenantID, id, pending, expectedVersion)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			var v int64
+			probe := tx.QueryRow(ctx, `SELECT record_version FROM pending_invitations WHERE tenant_id = $1 AND id = $2`, tenantID, id)
+			if perr := probe.Scan(&v); perr != nil {
+				if errors.Is(perr, pgx.ErrNoRows) {
+					return domain.NewError(domain.ErrInvitationNotFound, "invitation not found")
+				}
+				return perr
+			}
+			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
+				WithDetails(map[string]any{"record_version": v})
+		}
+		return nil
 	})
 }
 
@@ -259,4 +301,35 @@ func (r *InvitationRepository) ListPendingKCCleanup(ctx context.Context, limit i
 		return rows.Err()
 	})
 	return out, err
+}
+
+// MostRecentCreatedAt returns the created_at of the most recent invitation
+// for (tenant_id, email) regardless of status — PI-11 cooldown check.
+func (r *InvitationRepository) MostRecentCreatedAt(ctx context.Context, tenantID uuid.UUID, email string) (time.Time, error) {
+	var t time.Time
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx,
+			`SELECT created_at FROM pending_invitations
+			 WHERE tenant_id = $1 AND email = $2
+			 ORDER BY created_at DESC LIMIT 1`,
+			tenantID, email)
+		return row.Scan(&t)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	return t, err
+}
+
+// CountCreatedInWindow returns the count of invitations created for the
+// tenant since `since` — PI-12 per-tenant hourly rate check.
+func (r *InvitationRepository) CountCreatedInWindow(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error) {
+	var n int
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM pending_invitations
+			 WHERE tenant_id = $1 AND created_at >= $2`,
+			tenantID, since).Scan(&n)
+	})
+	return n, err
 }

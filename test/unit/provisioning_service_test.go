@@ -64,3 +64,49 @@ func TestProvisioning_NewProvisioningService_ReturnsNonNil(t *testing.T) {
 	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	assert.NotNil(t, svc, "constructor must not fail on nil collaborators — production wiring supplies them")
 }
+
+// ── I5-DEP-01: DeleteMember has no WorkflowClient dependency ─────────────
+// LLD WFI-1 documents that the WFI-3 pre-check is present only in
+// MembershipService.RemoveUser (P-8). ProvisioningService.DeleteMember (I-5)
+// performs a direct cascade without any workflow availability check, so the
+// Workflow service being unavailable is irrelevant on this path.
+//
+// This test wires up the minimum fakes needed for DeleteMember to succeed
+// (plain non-owner member with no dept memberships, delegations, or ACLs)
+// and verifies it returns nil — no workflow client is needed.
+
+func TestProvisioning_DeleteMember_WorkflowNotRequired(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+
+	mem := &ruMembershipRepo{
+		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{ID: uuid.New(), UserID: userID, RecordVersion: 1}, nil
+		},
+		softDeleteFn: func(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil },
+	}
+	roles := &ruRoleRepo{
+		// Non-owner → wasOwner=false, TM-12 ownerless escalation skipped.
+		listByUserFn:           func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) { return nil, nil },
+		countActiveOwnersFn:    func(context.Context, uuid.UUID) (int, error) { return 3, nil },
+		softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) { return nil, nil },
+	}
+	deptMems := &ruDeptMemRepo{
+		softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil },
+	}
+	delegations := &ruDelegationRepo{
+		softDeleteForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.Delegation, error) { return nil, nil },
+	}
+	acls := &ruACLRepo{
+		softDeleteForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenderACLEntry, error) { return nil, nil },
+	}
+
+	// NewProvisioningService has no WorkflowClient parameter — the WFI-3
+	// pre-check is architecturally absent from the I-5 path.
+	svc := service.NewProvisioningService(
+		nil, nil, mem, roles, deptMems, nil, nil, nil, delegations, acls, nil,
+		&passthroughTxRunner{}, nil, nil,
+	)
+
+	err := svc.DeleteMember(context.Background(), tenantID, userID)
+	assert.NoError(t, err, "I-5 DeleteMember must succeed without any workflow service dependency")
+}

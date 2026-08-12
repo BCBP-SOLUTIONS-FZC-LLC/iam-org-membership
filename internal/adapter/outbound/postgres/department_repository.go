@@ -10,6 +10,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // DepartmentRepository operates on the global departments catalog (no RLS).
@@ -105,9 +106,14 @@ func (r *DepartmentRepository) Insert(ctx context.Context, d *domain.Department)
 			VALUES ($1, $2, $3, $4, $5)
 			RETURNING `+departmentSelectColumns,
 			d.ID, d.Code, d.Name, d.IsSystem, d.IsActive)
-		created, err := scanDepartment(row)
-		if err != nil {
-			return err
+		created, scanErr := scanDepartment(row)
+		if scanErr != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(scanErr, &pgErr) && pgErr.Code == "23505" {
+				return domain.NewError(domain.ErrConflict, "department code already exists").
+					WithDetails(map[string]any{"code": "duplicate_code"})
+			}
+			return scanErr
 		}
 		out = created
 		return nil

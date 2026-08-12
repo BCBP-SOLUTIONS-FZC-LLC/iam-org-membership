@@ -41,7 +41,7 @@ import (
 
 // ── P12-EVT16-001 ───────────────────────────────────────────────────────────
 
-// TestP12_EVT16_001_TenantStateChangedRelayThroughWire — end-to-end wire
+// TestEVT16_001_TenantStateChangedRelayThroughWire — end-to-end wire
 // test for §16 A61 tenant-state relay:
 //
 //	SNS(iam-tenant-events) → SQS(tenant-orgm-q) → Consumer.Handle
@@ -50,7 +50,7 @@ import (
 //	→ Outbox runner drains → SNS(iam-membership-events) → SQS(workflow-q)
 //
 // Assert the workflow-q ultimately observes the TenantStateChanged relay.
-func TestP12_EVT16_001_TenantStateChangedRelayThroughWire(t *testing.T) {
+func TestEVT16_001_TenantStateChangedRelayThroughWire(t *testing.T) {
 	e := newPhase12Env(t)
 
 	appPool, err := pgcommon.NewPool(e.ctx, pgcommon.Config{
@@ -146,10 +146,10 @@ func TestP12_EVT16_001_TenantStateChangedRelayThroughWire(t *testing.T) {
 
 // ── P12-MULTITEN-001 ────────────────────────────────────────────────────────
 
-// TestP12_MULTITEN_001_TwoTenantsIndependentProjection — publish two events
+// TestTwoTenantsIndependentProjection — publish two events
 // with distinct tenant_ids on the same queue. Both must project independently
 // and each must have its own processed_events row.
-func TestP12_MULTITEN_001_TwoTenantsIndependentProjection(t *testing.T) {
+func TestTwoTenantsIndependentProjection(t *testing.T) {
 	e := newPhase12Env(t)
 
 	appPool, err := pgcommon.NewPool(e.ctx, pgcommon.Config{
@@ -209,11 +209,11 @@ func TestP12_MULTITEN_001_TwoTenantsIndependentProjection(t *testing.T) {
 
 // ── P12-OUTBOX-RETRY-001 ────────────────────────────────────────────────────
 
-// TestP12_OUTBOX_RETRY_001_TransientPublisherFailureRetried — a Publisher
+// TestOUTBOX_RETRY_001_TransientPublisherFailureRetried — a Publisher
 // that fails the first N attempts must NOT poison the outbox row. The
 // outbox runner increments attempts and retries; on eventual success the
 // row is marked published (removed from outbox_events).
-func TestP12_OUTBOX_RETRY_001_TransientPublisherFailureRetried(t *testing.T) {
+func TestOUTBOX_RETRY_001_TransientPublisherFailureRetried(t *testing.T) {
 	e := newPhase12Env(t)
 
 	membershipTopic := e.createTopic(t, "iam-membership-events")

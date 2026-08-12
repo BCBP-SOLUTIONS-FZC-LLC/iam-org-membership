@@ -32,6 +32,7 @@ type SetAvailabilityRequest struct {
 	OOOUntil      *time.Time
 	DelegateID    *uuid.UUID // *uuid.UUID{nil} → wire "delegate_id: null"; nil → field omitted
 	ClearDelegate bool       // true → send delegate_id: null explicitly
+	Note          string     // free-text OOO note shown in UP dashboard (≤500 chars, mapped from delegation reason)
 }
 
 // WorkflowClient calls the Workflow Service for delegate-impact checks

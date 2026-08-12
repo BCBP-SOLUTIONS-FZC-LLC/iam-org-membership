@@ -27,6 +27,7 @@ func NewRoleLabelHandler(svc *service.RoleLabelService) *RoleLabelHandler {
 // @Failure      403  {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/roles [get]
 func (h *RoleLabelHandler) List(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -70,6 +71,7 @@ func (h *RoleLabelHandler) List(c *gin.Context) {
 // @Failure      409        {object}  ErrorResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/roles/{role_code} [patch]
 func (h *RoleLabelHandler) Patch(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)

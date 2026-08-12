@@ -49,6 +49,31 @@ const (
 	DeptApprover   DeptRole = "approver"
 )
 
+// Rank orders the three dept role levels for privilege comparison.
+// Higher rank = more privileged (preparator=1, reviewer=2, approver=3).
+// Used by WFI-9/WFI-12 to detect level decreases in Assign.
+func (r DeptRole) Rank() int {
+	switch r {
+	case DeptPreparator:
+		return 1
+	case DeptReviewer:
+		return 2
+	case DeptApprover:
+		return 3
+	}
+	return -1
+}
+
+// Satisfies reports whether this role meets or exceeds the required minimum
+// (LLD §5.4 I-13 step 2: assignee's role_level >= required_level).
+func (r DeptRole) Satisfies(minimum DeptRole) bool {
+	rr, mr := r.Rank(), minimum.Rank()
+	if rr < 0 || mr < 0 {
+		return false
+	}
+	return rr >= mr
+}
+
 // DeptMembership is a user × department × role_level assignment.
 // tenant_membership_id composite-FKs to tenant_memberships (§16 A15/A28,
 // DM-4).

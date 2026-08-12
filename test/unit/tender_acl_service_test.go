@@ -124,7 +124,7 @@ func TestTenderACLService_Grant_AcceptsAllValidLevels(t *testing.T) {
 	for _, lvl := range []domain.TenderACLLevel{domain.ACLView, domain.ACLEdit, domain.ACLApprove} {
 		t.Run(string(lvl), func(t *testing.T) {
 			tenantID, tenderID, userID := uuid.New(), uuid.New(), uuid.New()
-			mem := &domain.TenantMembership{ID: uuid.New(), TenantID: tenantID, UserID: userID}
+			mem := &domain.TenantMembership{ID: uuid.New(), TenantID: tenantID, UserID: userID, Status: domain.MembershipActive}
 			acl := &fakeACLRepo{
 				grantFn: func(_ context.Context, e *domain.TenderACLEntry) (*domain.TenderACLEntry, error) {
 					assert.Equal(t, lvl, e.AccessLevel)
@@ -165,7 +165,7 @@ func TestTenderACLService_Grant_RejectsPastExpiry(t *testing.T) {
 func TestTenderACLService_Grant_AcceptsFutureExpiry(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	tenantID, userID := uuid.New(), uuid.New()
-	mem := &domain.TenantMembership{ID: uuid.New(), TenantID: tenantID, UserID: userID}
+	mem := &domain.TenantMembership{ID: uuid.New(), TenantID: tenantID, UserID: userID, Status: domain.MembershipActive}
 	acl := &fakeACLRepo{
 		grantFn: func(_ context.Context, e *domain.TenderACLEntry) (*domain.TenderACLEntry, error) {
 			assert.NotNil(t, e.ExpiresAt)
@@ -207,7 +207,7 @@ func TestTenderACLService_Grant_RepoFailurePropagates(t *testing.T) {
 	repoErr := errors.New("insert conflict")
 	mr := &fakeMembershipRepo{
 		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
-			return &domain.TenantMembership{ID: uuid.New()}, nil
+			return &domain.TenantMembership{ID: uuid.New(), Status: domain.MembershipActive}, nil
 		},
 	}
 	acl := &fakeACLRepo{

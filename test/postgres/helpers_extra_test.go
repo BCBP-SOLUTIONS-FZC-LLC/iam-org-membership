@@ -124,7 +124,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		&fakeRealmProvisioner{}, // no-op RP client
 	)
 	fx.DeptMembership = service.NewDeptMembershipService(
-		deptMems, memberships, tenantDepts, delegations,
+		deptMems, memberships, tenantDepts, depts, delegations,
 		&fakeWorkflow{}, nil, txRunner,
 	)
 	fx.GroupMapping = service.NewGroupMappingService(
@@ -149,7 +149,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	fx.UP = &fakeUserProfile{}
 	fx.RP = &fakeRealmProvisioner{}
 	fx.Delegation = service.NewDelegationService(
-		delegations, memberships, fx.UP, txRunner,
+		delegations, memberships, fx.UP, nil, txRunner,
 	)
 	fx.Tenant = service.NewTenantService(tenants, nil, fx.RP)
 	fx.Department = service.NewDepartmentService(depts, tenantDepts, nil)

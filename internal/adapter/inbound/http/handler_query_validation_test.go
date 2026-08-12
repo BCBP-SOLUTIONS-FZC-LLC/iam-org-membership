@@ -15,7 +15,7 @@ import (
 
 // ── MembershipHandler.List — limit + cursor query validation ────────────
 
-func TestP4List_InvalidLimit_400(t *testing.T) {
+func TestP4List_InvalidLimit(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/?limit=notanumber", ``, tenantOwnerCtx(tenant))
@@ -24,7 +24,7 @@ func TestP4List_InvalidLimit_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_limit")
 }
 
-func TestP4List_LimitZero_400(t *testing.T) {
+func TestP4List_LimitZero(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/?limit=0", ``, tenantOwnerCtx(tenant))
@@ -33,7 +33,7 @@ func TestP4List_LimitZero_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_limit")
 }
 
-func TestP4List_LimitTooHigh_400(t *testing.T) {
+func TestP4List_LimitTooHigh(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/?limit=500", ``, tenantOwnerCtx(tenant))
@@ -42,7 +42,7 @@ func TestP4List_LimitTooHigh_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_limit")
 }
 
-func TestP4List_InvalidCursorBase64_400(t *testing.T) {
+func TestP4List_InvalidCursorBase64(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/?cursor=!!!not-b64!!!", ``, tenantOwnerCtx(tenant))
@@ -51,7 +51,7 @@ func TestP4List_InvalidCursorBase64_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_cursor")
 }
 
-func TestP4List_InvalidCursorJSON_400(t *testing.T) {
+func TestP4List_InvalidCursorJSON(t *testing.T) {
 	// Valid base64 that decodes to garbage JSON.
 	badJSON := base64.URLEncoding.EncodeToString([]byte("{not json"))
 	h := &MembershipHandler{}
@@ -64,7 +64,7 @@ func TestP4List_InvalidCursorJSON_400(t *testing.T) {
 
 // ── MembershipHandler.Get — user_id param validation ────────────────────
 
-func TestP5Get_InvalidTenantID_400(t *testing.T) {
+func TestP5Get_InvalidTenantID(t *testing.T) {
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
@@ -72,7 +72,7 @@ func TestP5Get_InvalidTenantID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestP5Get_InvalidUserID_400(t *testing.T) {
+func TestP5Get_InvalidUserID(t *testing.T) {
 	tenant := uuid.New()
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
@@ -81,7 +81,7 @@ func TestP5Get_InvalidUserID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestP5Get_CrossTenant_403(t *testing.T) {
+func TestP5Get_CrossTenant(t *testing.T) {
 	tenantA := uuid.New()
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
@@ -92,7 +92,7 @@ func TestP5Get_CrossTenant_403(t *testing.T) {
 
 // ── ACLHandler.List — tender_id + tenant_id validation ─────────────────
 
-func TestP21ACLList_InvalidTenantID_400(t *testing.T) {
+func TestP21ACLList_InvalidTenantID(t *testing.T) {
 	h := &ACLHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad", "tender_id", uuid.New().String())
@@ -100,7 +100,7 @@ func TestP21ACLList_InvalidTenantID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestP21ACLList_InvalidTenderID_400(t *testing.T) {
+func TestP21ACLList_InvalidTenderID(t *testing.T) {
 	tenant := uuid.New()
 	h := &ACLHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
@@ -111,7 +111,7 @@ func TestP21ACLList_InvalidTenderID_400(t *testing.T) {
 
 // ── ACLHandler.Revoke — same shape ─────────────────────────────────────
 
-func TestP23ACLRevoke_InvalidTenantID_400(t *testing.T) {
+func TestP23ACLRevoke_InvalidTenantID(t *testing.T) {
 	h := &ACLHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad", "tender_id", uuid.New().String(), "user_id", uuid.New().String())
@@ -119,7 +119,7 @@ func TestP23ACLRevoke_InvalidTenantID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestP23ACLRevoke_InvalidUserID_400(t *testing.T) {
+func TestP23ACLRevoke_InvalidUserID(t *testing.T) {
 	tenant := uuid.New()
 	h := &ACLHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
@@ -130,7 +130,7 @@ func TestP23ACLRevoke_InvalidUserID_400(t *testing.T) {
 
 // ── DelegationHandler.Cancel — delegation-id path param + identity gate ─
 
-func TestP20DelegCancel_InvalidDelegationID_400(t *testing.T) {
+func TestP20DelegCancel_InvalidDelegationID(t *testing.T) {
 	h := &DelegationHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus") // {id} in route is the delegation UUID
@@ -138,7 +138,7 @@ func TestP20DelegCancel_InvalidDelegationID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestP20DelegCancel_MissingIdentity_401(t *testing.T) {
+func TestP20DelegCancel_MissingIdentity(t *testing.T) {
 	h := &DelegationHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, nil)
 	setParams(c, "id", uuid.New().String())
@@ -148,7 +148,7 @@ func TestP20DelegCancel_MissingIdentity_401(t *testing.T) {
 
 // ── DeptMembershipHandler.Remove — same validation shape ────────────────
 
-func TestP11DeptRemove_InvalidTenantID_400(t *testing.T) {
+func TestP11DeptRemove_InvalidTenantID(t *testing.T) {
 	h := &DeptMembershipHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad", "user_id", uuid.New().String(), "dept_id", uuid.New().String())
@@ -156,7 +156,7 @@ func TestP11DeptRemove_InvalidTenantID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestP11DeptRemove_InvalidUserID_400(t *testing.T) {
+func TestP11DeptRemove_InvalidUserID(t *testing.T) {
 	tenant := uuid.New()
 	h := &DeptMembershipHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
@@ -165,7 +165,7 @@ func TestP11DeptRemove_InvalidUserID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestP11DeptRemove_InvalidDeptID_400(t *testing.T) {
+func TestP11DeptRemove_InvalidDeptID(t *testing.T) {
 	tenant := uuid.New()
 	h := &DeptMembershipHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
@@ -176,7 +176,7 @@ func TestP11DeptRemove_InvalidDeptID_400(t *testing.T) {
 
 // ── OperatorHandler.PatchDepartment — bad UUID / missing role gates ─────
 
-func TestOP2Patch_InvalidDeptID_400(t *testing.T) {
+func TestOP2Patch_InvalidDeptID(t *testing.T) {
 	h := &OperatorHandler{}
 	c, w := buildCtx(http.MethodPatch, "/", `{"name":"X","record_version":1}`,
 		operatorCtx())
@@ -185,7 +185,7 @@ func TestOP2Patch_InvalidDeptID_400(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-func TestOP2Patch_MissingBody_400(t *testing.T) {
+func TestOP2Patch_MissingBody(t *testing.T) {
 	h := &OperatorHandler{}
 	c, w := buildCtx(http.MethodPatch, "/", `{`,
 		operatorCtx())

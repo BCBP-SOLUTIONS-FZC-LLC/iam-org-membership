@@ -1,0 +1,3 @@
+-- PostgreSQL does not support removing individual enum values.
+-- To roll back: drop and recreate the type (requires no rows using 'full').
+-- Left as no-op; revert by deploying the prior image.

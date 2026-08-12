@@ -38,6 +38,9 @@ func (f *fakeDeptMemRepo) Remove(ctx context.Context, tenantID, userID, departme
 func (f *fakeDeptMemRepo) SoftDeleteAllForUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
+func (f *fakeDeptMemRepo) SoftDeleteAllForDept(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 
 var _ port.DeptMembershipRepository = (*fakeDeptMemRepo)(nil)
 
@@ -70,6 +73,18 @@ func (f *fakeDelegationRepo) SoftDeleteForUser(context.Context, uuid.UUID, uuid.
 }
 func (f *fakeDelegationRepo) FindActiveDeptDelegateForUser(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*domain.Delegation, error) {
 	return f.findActiveDeptDelegateFn(ctx, tenantID, userID, deptID)
+}
+func (f *fakeDelegationRepo) ExtendReview(context.Context, uuid.UUID, uuid.UUID, int, int64) (*domain.Delegation, error) {
+	return nil, nil
+}
+func (f *fakeDelegationRepo) FindOpenEndedForReview(context.Context, time.Time, int) ([]domain.Delegation, error) {
+	return nil, nil
+}
+func (f *fakeDelegationRepo) FindOpenEndedForWarning(context.Context, time.Time, int) ([]domain.Delegation, error) {
+	return nil, nil
+}
+func (f *fakeDelegationRepo) MarkReviewNoticeSent(context.Context, uuid.UUID, uuid.UUID, int64) error {
+	return nil
 }
 
 var _ port.DelegationRepository = (*fakeDelegationRepo)(nil)
@@ -111,6 +126,28 @@ var _ port.TxRunner = (*passthroughTxRunner)(nil)
 
 // ── ListByDepartment (P-9) ─────────────────────────────────────────────
 
+// activeTenantDeptRepo returns a found (active) tenant-department for any lookup.
+// Used to satisfy the P9-VAL-04 pre-check in ListByDepartment without triggering a nil panic.
+type activeTenantDeptRepo struct{}
+
+func (r *activeTenantDeptRepo) Find(_ context.Context, tid, did uuid.UUID) (*domain.TenantDepartment, error) {
+	return &domain.TenantDepartment{TenantID: tid, DepartmentID: did, IsActive: true}, nil
+}
+func (r *activeTenantDeptRepo) List(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (r *activeTenantDeptRepo) ListActive(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (r *activeTenantDeptRepo) Activate(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (r *activeTenantDeptRepo) SetActive(context.Context, uuid.UUID, uuid.UUID, bool, int64) (*domain.TenantDepartment, error) {
+	return nil, nil
+}
+
+var _ port.TenantDepartmentRepository = (*activeTenantDeptRepo)(nil)
+
 func TestDeptMembership_ListByDepartment_DelegatesToRepo(t *testing.T) {
 	tenantID, deptID := uuid.New(), uuid.New()
 	want := []domain.DeptMembership{{ID: uuid.New(), TenantID: tenantID, DepartmentID: deptID, RoleLevel: domain.DeptReviewer}}
@@ -121,7 +158,7 @@ func TestDeptMembership_ListByDepartment_DelegatesToRepo(t *testing.T) {
 			return want, nil
 		},
 	}
-	svc := service.NewDeptMembershipService(repo, nil, nil, nil, nil, nil, nil)
+	svc := service.NewDeptMembershipService(repo, nil, &activeTenantDeptRepo{}, nil, nil, nil, nil, nil)
 
 	got, err := svc.ListByDepartment(context.Background(), tenantID, deptID)
 	require.NoError(t, err)
@@ -135,7 +172,7 @@ func TestDeptMembership_ListByDepartment_PropagatesRepoError(t *testing.T) {
 			return nil, repoErr
 		},
 	}
-	svc := service.NewDeptMembershipService(repo, nil, nil, nil, nil, nil, nil)
+	svc := service.NewDeptMembershipService(repo, nil, &activeTenantDeptRepo{}, nil, nil, nil, nil, nil)
 
 	_, err := svc.ListByDepartment(context.Background(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, repoErr)
@@ -150,7 +187,7 @@ func TestDeptMembership_Remove_DelegationLookupErrorSurfaces(t *testing.T) {
 			return nil, repoErr
 		},
 	}
-	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, delRepo, &fakeWorkflowClient{}, nil, nil)
+	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delRepo, &fakeWorkflowClient{}, nil, nil)
 
 	_, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, repoErr)
@@ -171,7 +208,7 @@ func TestDeptMembership_Remove_ReturnsWorkflowResolutionRequiredWhenImpactPositi
 			return &port.DelegateImpact{ActiveWorkflows: 3, WorkflowIDs: []uuid.UUID{workflowID}}, nil
 		},
 	}
-	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, delRepo, wf, nil, nil)
+	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delRepo, wf, nil, nil)
 
 	_, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
 
@@ -209,7 +246,7 @@ func TestDeptMembership_Remove_ScopesDelegationIDWhenActiveDelegationExists(t *t
 			return &domain.DeptMembership{ID: uuid.New()}, nil
 		},
 	}
-	svc := service.NewDeptMembershipService(repo, nil, nil, delRepo, wf, nil, &passthroughTxRunner{})
+	svc := service.NewDeptMembershipService(repo, nil, nil, nil, delRepo, wf, nil, &passthroughTxRunner{})
 
 	_, err := svc.Remove(context.Background(), tenantID, userID, deptID, uuid.New())
 	require.NoError(t, err)
@@ -231,7 +268,7 @@ func TestDeptMembership_Remove_WorkflowFailOpenProceedsWithRemoval(t *testing.T)
 		},
 	}
 	// delegations==nil path: skip pre-lookup entirely.
-	svc := service.NewDeptMembershipService(repo, nil, nil, nil, wf, nil, &passthroughTxRunner{})
+	svc := service.NewDeptMembershipService(repo, nil, nil, nil, nil, wf, nil, &passthroughTxRunner{})
 
 	got, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
 	require.NoError(t, err)
@@ -246,10 +283,50 @@ func TestDeptMembership_Remove_TxErrorPropagates(t *testing.T) {
 		},
 	}
 	txErr := errors.New("tx aborted")
-	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, wf, nil, &passthroughTxRunner{runErr: txErr})
+	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, nil, wf, nil, &passthroughTxRunner{runErr: txErr})
 
 	_, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, txErr)
+}
+
+// ── P11-BL-03: active dept-scoped delegate with workflows > 0 → 409 ─────────
+// WFI-3 / WFI-11: user is the active delegate on a scope=department delegation
+// for this specific department; GetDelegateImpact receives the delegation ID
+// (scoped query) and returns active_workflows > 0 → 409 workflow_resolution_required.
+// The delegation_id must be threaded through so the WF query is dept-scoped.
+
+func TestDeptMembership_Remove_ActiveDeptDelegationWithPositiveImpact_409(t *testing.T) {
+	tenantID, userID, deptID := uuid.New(), uuid.New(), uuid.New()
+	delegationID := uuid.New()
+	workflowID := uuid.New()
+
+	delRepo := &fakeDelegationRepo{
+		findActiveDeptDelegateFn: func(_ context.Context, tt, uu, dd uuid.UUID) (*domain.Delegation, error) {
+			assert.Equal(t, tenantID, tt)
+			assert.Equal(t, userID, uu)
+			assert.Equal(t, deptID, dd)
+			return &domain.Delegation{ID: delegationID, Scope: domain.ScopeDepartment}, nil
+		},
+	}
+	wf := &fakeWorkflowClient{
+		getDelegateImpactFn: func(_ context.Context, _, _ uuid.UUID, delID *uuid.UUID) (*port.DelegateImpact, error) {
+			require.NotNil(t, delID, "delegation_id must be passed for dept-scoped query (WFI-11)")
+			assert.Equal(t, delegationID, *delID)
+			return &port.DelegateImpact{ActiveWorkflows: 1, WorkflowIDs: []uuid.UUID{workflowID}}, nil
+		},
+	}
+	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delRepo, wf, nil, nil)
+
+	_, err := svc.Remove(context.Background(), tenantID, userID, deptID, uuid.New())
+
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, "workflow_resolution_required", de.Code)
+	assert.Equal(t, 1, de.Details["active_workflows"])
+	actions, ok := de.Details["allowed_actions"].([]string)
+	require.True(t, ok)
+	assert.Contains(t, actions, "replace_delegate")
+	assert.Contains(t, actions, "stop_workflows")
 }
 
 func TestDeptMembership_Remove_RepoRemoveErrorPropagates(t *testing.T) {
@@ -264,7 +341,7 @@ func TestDeptMembership_Remove_RepoRemoveErrorPropagates(t *testing.T) {
 			return nil, removeErr
 		},
 	}
-	svc := service.NewDeptMembershipService(repo, nil, nil, nil, wf, nil, &passthroughTxRunner{})
+	svc := service.NewDeptMembershipService(repo, nil, nil, nil, nil, wf, nil, &passthroughTxRunner{})
 
 	_, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, removeErr)
@@ -283,10 +360,159 @@ func TestDeptMembership_Remove_InvalidatesCacheOnSuccess(t *testing.T) {
 		},
 	}
 	cache := &spyCache{}
-	svc := service.NewDeptMembershipService(repo, nil, nil, nil, wf, cache, &passthroughTxRunner{})
+	svc := service.NewDeptMembershipService(repo, nil, nil, nil, nil, wf, cache, &passthroughTxRunner{})
 
 	_, err := svc.Remove(context.Background(), tenantID, uuid.New(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 	assert.Contains(t, cache.deleteCalls, "om:members:"+tenantID.String()+":50")
 	assert.Contains(t, cache.deleteCalls, "om:seat_usage:"+tenantID.String())
+}
+
+// ── Assign (P-10) — event field validation (AsyncAPI spec) ────────────────
+
+// fakeTenantDeptRepo for Assign tests (unit_test package local).
+type fakeTenantDeptRepoAssign struct {
+	isActive bool
+}
+
+func (r *fakeTenantDeptRepoAssign) Find(_ context.Context, tid, did uuid.UUID) (*domain.TenantDepartment, error) {
+	return &domain.TenantDepartment{TenantID: tid, DepartmentID: did, IsActive: r.isActive}, nil
+}
+func (r *fakeTenantDeptRepoAssign) List(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (r *fakeTenantDeptRepoAssign) ListActive(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (r *fakeTenantDeptRepoAssign) Activate(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (r *fakeTenantDeptRepoAssign) SetActive(context.Context, uuid.UUID, uuid.UUID, bool, int64) (*domain.TenantDepartment, error) {
+	return nil, nil
+}
+
+var _ port.TenantDepartmentRepository = (*fakeTenantDeptRepoAssign)(nil)
+
+// activeMemberRepo returns an active membership for any user.
+type activeMemberRepo struct{}
+
+func (r *activeMemberRepo) FindByUserID(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
+	return &domain.TenantMembership{ID: uuid.New(), TenantID: tid, UserID: uid, Status: domain.MembershipActive}, nil
+}
+func (r *activeMemberRepo) List(context.Context, uuid.UUID, *domain.MembershipListCursor, int) (*domain.MembershipListPage, error) {
+	return &domain.MembershipListPage{}, nil
+}
+func (r *activeMemberRepo) Insert(context.Context, *domain.TenantMembership) (*domain.TenantMembership, error) {
+	return nil, nil
+}
+func (r *activeMemberRepo) SetStatus(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
+	return nil, nil
+}
+func (r *activeMemberRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil }
+func (r *activeMemberRepo) CountActive(context.Context, uuid.UUID) (int, error)           { return 1, nil }
+
+var _ port.MembershipRepository = (*activeMemberRepo)(nil)
+
+// deptPub captures DomainEvents emitted inside RunInTx.
+type deptPub struct{ events []*domain.DomainEvent }
+
+func (p *deptPub) EnqueueCtx(_ context.Context, e *domain.DomainEvent) error {
+	p.events = append(p.events, e)
+	return nil
+}
+
+// deptTxRunner injects a deptPub so service event emission is captured.
+type deptTxRunner struct{ pub *deptPub }
+
+func (r *deptTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
+	return fn(port.WithEventPublisher(ctx, r.pub))
+}
+
+// fullDeptMemRepo supports Assign + ListByUser (for snapshot).
+type fullDeptMemRepo struct {
+	existing *domain.DeptMembership // nil = fresh grant; non-nil = prior row
+}
+
+func (r *fullDeptMemRepo) ListByUser(_ context.Context, _, _ uuid.UUID) ([]domain.DeptMembership, error) {
+	if r.existing != nil {
+		return []domain.DeptMembership{*r.existing}, nil
+	}
+	return nil, nil
+}
+func (r *fullDeptMemRepo) Assign(_ context.Context, tid, uid, did, memID uuid.UUID, level domain.DeptRole, actorID uuid.UUID) (*domain.DeptMembership, error) {
+	return &domain.DeptMembership{TenantID: tid, UserID: uid, DepartmentID: did, RoleLevel: level, RecordVersion: 1}, nil
+}
+func (r *fullDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+func (r *fullDeptMemRepo) Remove(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*domain.DeptMembership, error) {
+	return nil, nil
+}
+func (r *fullDeptMemRepo) SoftDeleteAllForUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+func (r *fullDeptMemRepo) SoftDeleteAllForDept(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+
+// P10-SQS-01: DepartmentMembershipGranted has all required AsyncAPI fields.
+func TestDeptMembership_Assign_GrantedEventFieldsMatchAsyncAPI(t *testing.T) {
+	tenantID, userID, deptID, actorID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	pub := &deptPub{}
+	mem := &activeMemberRepo{}
+	td := &fakeTenantDeptRepoAssign{isActive: true}
+	svc := service.NewDeptMembershipService(&fullDeptMemRepo{}, mem, td, nil, nil, nil, nil, &deptTxRunner{pub: pub})
+
+	_, err := svc.Assign(context.Background(), tenantID, userID, deptID, domain.DeptReviewer, actorID)
+	require.NoError(t, err)
+	require.Len(t, pub.events, 1, "exactly one DepartmentMembershipGranted event expected")
+
+	evt := pub.events[0]
+	assert.Equal(t, domain.EventDepartmentMembershipGranted, evt.Type)
+	payload, ok := evt.Data.(domain.DepartmentMembershipGrantedPayload)
+	require.True(t, ok, "payload must be DepartmentMembershipGrantedPayload")
+	assert.Equal(t, userID, payload.UserID, "user_id")
+	assert.Equal(t, actorID, payload.ActorID, "actor_id")
+	assert.Equal(t, tenantID, payload.TenantID, "tenant_id")
+	assert.Equal(t, deptID, payload.DepartmentID, "department_id")
+	assert.Equal(t, domain.DeptReviewer, payload.Level, "level")
+}
+
+// P10-SQS-02: DepartmentMembershipLevelChanged has previous_level + new_level.
+func TestDeptMembership_Assign_LevelChangedEventHasPreviousAndNewLevel(t *testing.T) {
+	tenantID, userID, deptID, actorID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	pub := &deptPub{}
+	// Existing row at preparator — simulates prior assignment.
+	existing := &domain.DeptMembership{TenantID: tenantID, UserID: userID, DepartmentID: deptID, RoleLevel: domain.DeptPreparator}
+	mem := &activeMemberRepo{}
+	td := &fakeTenantDeptRepoAssign{isActive: true}
+	svc := service.NewDeptMembershipService(&fullDeptMemRepo{existing: existing}, mem, td, nil, nil, nil, nil, &deptTxRunner{pub: pub})
+
+	_, err := svc.Assign(context.Background(), tenantID, userID, deptID, domain.DeptApprover, actorID)
+	require.NoError(t, err)
+	require.Len(t, pub.events, 1, "exactly one DepartmentMembershipLevelChanged event expected")
+
+	evt := pub.events[0]
+	assert.Equal(t, domain.EventDepartmentMembershipLevelChanged, evt.Type)
+	payload, ok := evt.Data.(domain.DepartmentMembershipLevelChangedPayload)
+	require.True(t, ok, "payload must be DepartmentMembershipLevelChangedPayload")
+	assert.Equal(t, domain.DeptPreparator, payload.PreviousLevel, "previous_level must be preparator")
+	assert.Equal(t, domain.DeptApprover, payload.NewLevel, "new_level must be approver")
+	assert.Equal(t, userID, payload.UserID, "user_id")
+	assert.Equal(t, actorID, payload.ActorID, "actor_id")
+	assert.Equal(t, deptID, payload.DepartmentID, "department_id")
+}
+
+// P10-HAPPY-03 (service): same level → no event emitted.
+func TestDeptMembership_Assign_SameLevelEmitsNoEvent(t *testing.T) {
+	tenantID, userID, deptID, actorID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	pub := &deptPub{}
+	existing := &domain.DeptMembership{TenantID: tenantID, UserID: userID, DepartmentID: deptID, RoleLevel: domain.DeptApprover}
+	mem := &activeMemberRepo{}
+	td := &fakeTenantDeptRepoAssign{isActive: true}
+	svc := service.NewDeptMembershipService(&fullDeptMemRepo{existing: existing}, mem, td, nil, nil, nil, nil, &deptTxRunner{pub: pub})
+
+	_, err := svc.Assign(context.Background(), tenantID, userID, deptID, domain.DeptApprover, actorID)
+	require.NoError(t, err)
+	assert.Empty(t, pub.events, "no event must be emitted when level is unchanged (TRG-3 spirit)")
 }

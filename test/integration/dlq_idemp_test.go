@@ -101,11 +101,11 @@ func seedTenantForConsumer(t *testing.T, e *phase12Env, slug string) uuid.UUID {
 
 // ── P12-DLQ-001 ─────────────────────────────────────────────────────────────
 
-// TestP12_DLQ_001_MaxReceiveCountRoutesToDLQ — publish one envelope on a
+// TestMaxReceiveCountRoutesToDLQ — publish one envelope on a
 // queue whose RedrivePolicy limits redelivery to 5. A handler that always
 // returns an error must see it 5 times; on the 6th receive attempt SQS moves
 // it to the DLQ. Assert by draining the DLQ and confirming the envelope ID.
-func TestP12_DLQ_001_MaxReceiveCountRoutesToDLQ(t *testing.T) {
+func TestMaxReceiveCountRoutesToDLQ(t *testing.T) {
 	e := newPhase12Env(t)
 
 	topic := e.createTopic(t, "iam-membership-events")
@@ -165,11 +165,11 @@ func TestP12_DLQ_001_MaxReceiveCountRoutesToDLQ(t *testing.T) {
 
 // ── P12-IDEMP-001 ───────────────────────────────────────────────────────────
 
-// TestP12_IDEMP_001_ProcessedEventsDedupOnRedelivery — send the SAME
+// TestProcessedEventsDedupOnRedelivery — send the SAME
 // envelope twice through the pipe (simulating an SQS at-least-once redeliver
 // after visibility timeout). The consumer's processed_events insert must
 // keep the second delivery from re-projecting state.
-func TestP12_IDEMP_001_ProcessedEventsDedupOnRedelivery(t *testing.T) {
+func TestProcessedEventsDedupOnRedelivery(t *testing.T) {
 	e := newPhase12Env(t)
 
 	// Build a real pgcommon.Pool so the consumer's tx dance works.
@@ -232,7 +232,7 @@ func TestP12_IDEMP_001_ProcessedEventsDedupOnRedelivery(t *testing.T) {
 
 // ── P12-IDEMP-002 ───────────────────────────────────────────────────────────
 
-// TestP12_IDEMP_002_SecondConsumerReceivesIndependently — processed_events is
+// TestSecondConsumerReceivesIndependently — processed_events is
 // keyed by (event_id, consumer_name). If a HYPOTHETICAL second consumer with
 // a different identity sees the same event, its INSERT succeeds because it's
 // a distinct composite key. This isolates dedup per consumer per PE-1.
@@ -240,7 +240,7 @@ func TestP12_IDEMP_001_ProcessedEventsDedupOnRedelivery(t *testing.T) {
 // We don't have two consumer identities in this service — but we exercise
 // the primary key semantics by inserting a manual (event_id, other_consumer)
 // row and verifying it coexists with the org-membership row.
-func TestP12_IDEMP_002_SecondConsumerReceivesIndependently(t *testing.T) {
+func TestSecondConsumerReceivesIndependently(t *testing.T) {
 	e := newPhase12Env(t)
 
 	appPool, err := pgcommon.NewPool(e.ctx, pgcommon.Config{

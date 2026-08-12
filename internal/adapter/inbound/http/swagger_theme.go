@@ -227,15 +227,117 @@ body, .swagger-ui { background: #000 !important; font-family: "Poppins", sans-se
 
 /* ── Auth modal ───────────────────────────────────────────────────────────── */
 .swagger-ui .dialog-ux .modal-ux {
-  background: #0d0d0d !important; border: 1px solid rgba(132,38,176,.4) !important; border-radius: 8px !important;
+  background: #0d0d0d !important;
+  border: 1px solid rgba(132,38,176,.4) !important;
+  border-radius: 8px !important;
+  max-width: 560px !important;
+  width: 92% !important;
 }
 .swagger-ui .dialog-ux .modal-ux-header {
-  border-bottom: 1px solid rgba(132,38,176,.25) !important; background: #000 !important;
+  background: #000 !important;
+  border-bottom: 1px solid rgba(132,38,176,.25) !important;
+  padding: 14px 20px !important;
 }
-.swagger-ui .dialog-ux .modal-ux-header h3 { color: #fff !important; }
-.swagger-ui .dialog-ux .modal-ux-content p,
-.swagger-ui .dialog-ux .modal-ux-content h4 { color: #d1d5db !important; }
-.swagger-ui .dialog-ux .modal-ux-header .close-modal { color: #9ca3af !important; }
+.swagger-ui .dialog-ux .modal-ux-header h3 {
+  color: #fff !important;
+  font-family: "Poppins", sans-serif !important;
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  line-height: 1.3 !important;
+  margin: 0 !important;
+}
+.swagger-ui .dialog-ux .modal-ux-header .close-modal {
+  color: #9ca3af !important;
+  cursor: pointer !important;
+}
+.swagger-ui .dialog-ux .modal-ux-header .close-modal:hover { color: #fff !important; }
+
+.swagger-ui .dialog-ux .modal-ux-inner { padding: 16px 20px !important; }
+
+/* Each scheme block (UserID / TenantID / TenantRoles) — clean vertical rhythm */
+.swagger-ui .dialog-ux .modal-ux-content .auth-container {
+  border-bottom: 1px solid rgba(132,38,176,.15) !important;
+  padding: 14px 0 !important;
+}
+.swagger-ui .dialog-ux .modal-ux-content .auth-container:first-of-type { padding-top: 0 !important; }
+.swagger-ui .dialog-ux .modal-ux-content .auth-container:last-of-type {
+  border-bottom: none !important;
+  padding-bottom: 0 !important;
+}
+
+/* Scheme title — "TenantID (apiKey)" */
+.swagger-ui .dialog-ux .modal-ux-content h4 {
+  color: #fff !important;
+  font-family: "Poppins", sans-serif !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  line-height: 1.4 !important;
+  margin: 0 0 8px 0 !important;
+}
+
+/* Description paragraph — the sentence users said was unreadable */
+.swagger-ui .dialog-ux .modal-ux-content p {
+  color: #e5e7eb !important;
+  font-family: "Poppins", sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  line-height: 1.6 !important;
+  margin: 6px 0 !important;
+}
+
+/* Inline code inside descriptions (platform_operator, iam-system) */
+.swagger-ui .dialog-ux .modal-ux-content p code,
+.swagger-ui .dialog-ux .modal-ux-content code {
+  background: #1a1a1a !important;
+  border: 1px solid rgba(132,38,176,.2) !important;
+  border-radius: 3px !important;
+  color: #e879f9 !important;
+  font-family: monospace !important;
+  font-size: 13px !important;
+  padding: 1px 5px !important;
+}
+
+/* "Name:" / "In:" / "Value:" labels */
+.swagger-ui .dialog-ux .modal-ux-content label {
+  color: #9ca3af !important;
+  display: inline-block !important;
+  font-family: "Poppins", sans-serif !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  letter-spacing: .02em !important;
+  margin: 4px 8px 4px 0 !important;
+  text-transform: none !important;
+}
+
+/* API-key input box */
+.swagger-ui .dialog-ux .modal-ux-content input[type=text] {
+  background: #0d0d0d !important;
+  border: 1px solid rgba(132,38,176,.4) !important;
+  border-radius: 6px !important;
+  color: #fff !important;
+  font-family: "Poppins", sans-serif !important;
+  font-size: 14px !important;
+  max-width: 340px !important;
+  padding: 6px 10px !important;
+  width: 100% !important;
+}
+.swagger-ui .dialog-ux .modal-ux-content input[type=text]:focus {
+  border-color: #8426b0 !important;
+  outline: none !important;
+}
+
+/* Authorize / Close buttons inside a scheme block */
+.swagger-ui .dialog-ux .modal-ux-content .auth-btn-wrapper {
+  display: flex !important;
+  gap: 10px !important;
+  padding-top: 12px !important;
+}
+.swagger-ui .dialog-ux .modal-ux-content .auth-btn-wrapper .btn {
+  font-family: "Poppins", sans-serif !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  padding: 6px 16px !important;
+}
 
 /* ── Misc text / icons ────────────────────────────────────────────────────── */
 .swagger-ui p, .swagger-ui h1, .swagger-ui h3,

@@ -19,8 +19,8 @@ func NewACLHandler(svc *service.TenderACLService) *ACLHandler {
 
 // List is P-21.
 //
-// @Summary      P-21 — List active ACL entries for a tender
-// @Description  AUTH-3 tender_admin/tenant_admin/owner. Returns view/edit/approve grants that have not expired.
+// @Summary      P-21 — List ACL entries for a tender (active + passively expired)
+// @Description  AUTH-3 tender_admin/tenant_admin/owner. Returns all non-revoked grants (TAE-7): active AND passively expired (expires_at in past but not explicitly revoked). Expired entries are visible so admins can explicitly revoke them via P-23. Check expires_at in response to distinguish active vs expired.
 // @Tags         acl
 // @Produce      json
 // @Param        id         path      string                 true  "Tenant UUID"  format(uuid)
@@ -29,6 +29,7 @@ func NewACLHandler(svc *service.TenderACLService) *ACLHandler {
 // @Failure      403        {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/tenders/{tender_id}/acl [get]
 func (h *ACLHandler) List(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -73,9 +74,11 @@ func (h *ACLHandler) List(c *gin.Context) {
 // @Success      201        {object}  TenderACLResponse
 // @Failure      400        {object}  ErrorResponse
 // @Failure      403        {object}  ErrorResponse
-// @Failure      422        {object}  ErrorResponse  "invalid_expires_at | invalid_access_level"
+// @Failure      400        {object}  ErrorResponse  "invalid_access_level (bad enum value)"
+// @Failure      422        {object}  ErrorResponse  "invalid_expires_at (past timestamp)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/tenders/{tender_id}/acl [post]
 func (h *ACLHandler) Grant(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -123,6 +126,7 @@ func (h *ACLHandler) Grant(c *gin.Context) {
 // @Failure      404        {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/tenders/{tender_id}/acl/{user_id} [delete]
 func (h *ACLHandler) Revoke(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)

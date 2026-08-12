@@ -15,9 +15,9 @@ import (
 // for the 0%-units sweep; these tests are documented via the T18 block in
 // Test_cover.md.
 
-// TestP18_VC_001_ConstructionLoadsEmbeddedSchemas — NewValidatingCodec
+// TestConstructionLoadsEmbeddedSchemas — NewValidatingCodec
 // must succeed and populate the schema cache from the embedded FS.
-func TestP18_VC_001_ConstructionLoadsEmbeddedSchemas(t *testing.T) {
+func TestConstructionLoadsEmbeddedSchemas(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err, "constructor must not fail on repo's embedded schemas")
 	assert.NotNil(t, c)
@@ -27,9 +27,9 @@ func TestP18_VC_001_ConstructionLoadsEmbeddedSchemas(t *testing.T) {
 	assert.NotEmpty(t, c.schemas, "at least one schema must have been compiled")
 }
 
-// TestP18_VC_002_EncodeValidPayload — a payload matching the schema for
+// TestEncodeValidPayload — a payload matching the schema for
 // its event type passes through to the inner codec.
-func TestP18_VC_002_EncodeValidPayload(t *testing.T) {
+func TestEncodeValidPayload(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 
@@ -43,9 +43,9 @@ func TestP18_VC_002_EncodeValidPayload(t *testing.T) {
 	assert.Empty(t, schemaVer, "NoopCodec returns empty schema version id")
 }
 
-// TestP18_VC_003_EncodeRejectsMissingRequiredField — a payload missing a
+// TestEncodeRejectsMissingRequiredField — a payload missing a
 // required field must produce a descriptive validation error.
-func TestP18_VC_003_EncodeRejectsMissingRequiredField(t *testing.T) {
+func TestEncodeRejectsMissingRequiredField(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 
@@ -59,10 +59,10 @@ func TestP18_VC_003_EncodeRejectsMissingRequiredField(t *testing.T) {
 		"error must name the missing field so producers can fix it")
 }
 
-// TestP18_VC_004_EncodeRejectsInvalidJSON — non-JSON bytes are caught
+// TestEncodeRejectsInvalidJSON — non-JSON bytes are caught
 // before the schema library sees them; the error indicates JSON parse
 // failure specifically.
-func TestP18_VC_004_EncodeRejectsInvalidJSON(t *testing.T) {
+func TestEncodeRejectsInvalidJSON(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 
@@ -72,11 +72,11 @@ func TestP18_VC_004_EncodeRejectsInvalidJSON(t *testing.T) {
 		"error must indicate the payload is malformed JSON, not a schema mismatch")
 }
 
-// TestP18_VC_005_UnknownEventTypeFallsThroughToInnerCodec — an event
+// TestUnknownEventTypeFallsThroughToInnerCodec — an event
 // type with no registered schema is a soft-error path: the wrapped codec
 // still encodes. This preserves forward-compat for new event types added
 // by producers before this service's schemas catch up.
-func TestP18_VC_005_UnknownEventTypeFallsThroughToInnerCodec(t *testing.T) {
+func TestUnknownEventTypeFallsThroughToInnerCodec(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 
@@ -86,10 +86,10 @@ func TestP18_VC_005_UnknownEventTypeFallsThroughToInnerCodec(t *testing.T) {
 	assert.Equal(t, payload, out, "payload flows to inner codec unchanged")
 }
 
-// TestP18_VC_006_ConcurrentEncodeSafe — the RWMutex-guarded map must
+// TestConcurrentEncodeSafe — the RWMutex-guarded map must
 // tolerate concurrent Encode calls without a data race. Run under
 // `go test -race` to catch a broken lock discipline.
-func TestP18_VC_006_ConcurrentEncodeSafe(t *testing.T) {
+func TestConcurrentEncodeSafe(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 
@@ -112,10 +112,10 @@ func TestP18_VC_006_ConcurrentEncodeSafe(t *testing.T) {
 	}
 }
 
-// TestP18_VC_007_ValidationErrorMentionsEventType — regression guard:
+// TestValidationErrorMentionsEventType — regression guard:
 // upstream error text must always name the event type so consumers can
 // route the error to the responsible schema owner.
-func TestP18_VC_007_ValidationErrorMentionsEventType(t *testing.T) {
+func TestValidationErrorMentionsEventType(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 

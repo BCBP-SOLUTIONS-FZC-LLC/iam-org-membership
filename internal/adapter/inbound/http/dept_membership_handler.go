@@ -30,6 +30,7 @@ func NewDeptMembershipHandler(svc *service.DeptMembershipService) *DeptMembershi
 // @Failure      404      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/departments/{dept_id}/members [get]
 func (h *DeptMembershipHandler) List(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -75,6 +76,7 @@ func (h *DeptMembershipHandler) List(c *gin.Context) {
 // @Failure      422      {object}  ErrorResponse  "department_not_active_for_tenant"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/departments/{dept_id}/members/{user_id} [put]
 func (h *DeptMembershipHandler) Assign(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -130,6 +132,7 @@ func (h *DeptMembershipHandler) Assign(c *gin.Context) {
 // @Failure      409      {object}  ErrorResponse  "workflow_resolution_required (§8.8.4)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id}/departments/{dept_id}/members/{user_id} [delete]
 func (h *DeptMembershipHandler) Remove(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -151,7 +154,8 @@ func (h *DeptMembershipHandler) Remove(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	dm, err := h.svc.Remove(c.Request.Context(), tenantID, userID, deptID)
+	rc, _ := requestctx.FromContext(c.Request.Context())
+	dm, err := h.svc.Remove(c.Request.Context(), tenantID, userID, deptID, rc.UserID)
 	if err != nil {
 		HandleError(c, err)
 		return

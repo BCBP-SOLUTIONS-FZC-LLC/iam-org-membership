@@ -105,11 +105,11 @@ func enqueueDomainEvent(t *testing.T, env *phase12Env, evt *domain.DomainEvent) 
 
 // ── P12-RT-001 ──────────────────────────────────────────────────────────────
 
-// TestP12_RT_001_OutboxRoundTrip — insert one DomainEvent via the outbox
+// TestOutboxRoundTrip — insert one DomainEvent via the outbox
 // publisher, start the outbox runner, and assert the corresponding message
 // materialises on a subscribed SQS queue with the wire-format envelope
 // intact (id, type, source, tenant_id, data).
-func TestP12_RT_001_OutboxRoundTrip(t *testing.T) {
+func TestOutboxRoundTrip(t *testing.T) {
 	e := newPhase12Env(t)
 
 	membershipTopic := e.createTopic(t, "iam-membership-events")
@@ -161,10 +161,10 @@ func TestP12_RT_001_OutboxRoundTrip(t *testing.T) {
 
 // ── P12-ROUTE-001 ───────────────────────────────────────────────────────────
 
-// TestP12_ROUTE_001_TenantLaneIsolated — TenantCreated must land on the
+// TestTenantLaneIsolated — TenantCreated must land on the
 // tenant-topic subscribers only. A membership subscriber to the OTHER topic
 // must NOT observe it.
-func TestP12_ROUTE_001_TenantLaneIsolated(t *testing.T) {
+func TestTenantLaneIsolated(t *testing.T) {
 	e := newPhase12Env(t)
 
 	membershipTopic := e.createTopic(t, "iam-membership-events")
@@ -214,9 +214,9 @@ func TestP12_ROUTE_001_TenantLaneIsolated(t *testing.T) {
 
 // ── P12-ROUTE-002 ───────────────────────────────────────────────────────────
 
-// TestP12_ROUTE_002_MembershipLaneIsolated — a membership-lane event
+// TestMembershipLaneIsolated — a membership-lane event
 // (DepartmentMembershipGranted) must NOT leak into a tenant-topic subscriber.
-func TestP12_ROUTE_002_MembershipLaneIsolated(t *testing.T) {
+func TestMembershipLaneIsolated(t *testing.T) {
 	e := newPhase12Env(t)
 
 	membershipTopic := e.createTopic(t, "iam-membership-events")
@@ -265,10 +265,10 @@ func TestP12_ROUTE_002_MembershipLaneIsolated(t *testing.T) {
 
 // ── P12-FILTER-001 ──────────────────────────────────────────────────────────
 
-// TestP12_FILTER_001_BillingQueueOnlyOverage — the membership-billing-q
+// TestBillingQueueOnlyOverage — the membership-billing-q
 // filter policy limits it to TenantSeatOverageStarted / Resolved. A
 // TenantRoleGranted must be dropped by the subscription filter.
-func TestP12_FILTER_001_BillingQueueOnlyOverage(t *testing.T) {
+func TestBillingQueueOnlyOverage(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
 	billingQ := e.createQueue(t, "membership-billing-q", "", 0)
@@ -299,10 +299,10 @@ func TestP12_FILTER_001_BillingQueueOnlyOverage(t *testing.T) {
 
 // ── P12-FILTER-002 ──────────────────────────────────────────────────────────
 
-// TestP12_FILTER_002_WorkflowQueueDropsOverage — the membership-workflow-q
+// TestWorkflowQueueDropsOverage — the membership-workflow-q
 // filter policy accepts delegation/override/membership/relay events. An
 // overage event must be dropped.
-func TestP12_FILTER_002_WorkflowQueueDropsOverage(t *testing.T) {
+func TestWorkflowQueueDropsOverage(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
 	workflowQ := e.createQueue(t, "membership-workflow-q", "", 0)
@@ -325,9 +325,9 @@ func TestP12_FILTER_002_WorkflowQueueDropsOverage(t *testing.T) {
 
 // ── P12-FILTER-003 ──────────────────────────────────────────────────────────
 
-// TestP12_FILTER_003_AuthzQueueOnlyMembershipRoles — membership-authz-q's
+// TestAuthzQueueOnlyMembershipRoles — membership-authz-q's
 // filter accepts dept-membership + tenant-role events; must drop DelegationStarted.
-func TestP12_FILTER_003_AuthzQueueOnlyMembershipRoles(t *testing.T) {
+func TestAuthzQueueOnlyMembershipRoles(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
 	authzQ := e.createQueue(t, "membership-authz-q", "", 0)
@@ -350,10 +350,10 @@ func TestP12_FILTER_003_AuthzQueueOnlyMembershipRoles(t *testing.T) {
 
 // ── P12-FILTER-004 ──────────────────────────────────────────────────────────
 
-// TestP12_FILTER_004_RealmQueueDropsRevocation — the realm-q filter
+// TestRealmQueueDropsRevocation — the realm-q filter
 // per LLD §7.3.2 accepts Granted / LevelChanged / TenantRole{Granted,Revoked}
 // but NOT DepartmentMembershipRevoked (revocations don't drive requires-mfa).
-func TestP12_FILTER_004_RealmQueueDropsRevocation(t *testing.T) {
+func TestRealmQueueDropsRevocation(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
 	realmQ := e.createQueue(t, "membership-realm-q", "", 0)
@@ -376,11 +376,11 @@ func TestP12_FILTER_004_RealmQueueDropsRevocation(t *testing.T) {
 
 // ── P12-ATTR-001 ────────────────────────────────────────────────────────────
 
-// TestP12_ATTR_001_PublisherStampsEventTypeAttribute — the outbox publisher
+// TestPublisherStampsEventTypeAttribute — the outbox publisher
 // MUST attach an "EventType" SNS MessageAttribute. Without it, SNS filter
 // policies would silently drop every message. Assert directly by looking at
 // the raw SQS message's MessageAttributes after the outbox → SNS → SQS trip.
-func TestP12_ATTR_001_PublisherStampsEventTypeAttribute(t *testing.T) {
+func TestPublisherStampsEventTypeAttribute(t *testing.T) {
 	e := newPhase12Env(t)
 
 	topic := e.createTopic(t, "iam-membership-events")

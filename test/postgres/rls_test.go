@@ -15,6 +15,8 @@ import (
 	"time"
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,7 +42,7 @@ const (
 //	              every checkout (mirrors production).
 //	rawPool     — raw pgxpool bound as postgres superuser, used only to
 //	              seed rows (bypasses RLS naturally).
-func setupTestDB(t *testing.T) (*pgcommon.Pool, *pgxpool.Pool) {
+func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping postgres integration test in short mode")
@@ -80,6 +82,11 @@ func setupTestDB(t *testing.T) (*pgcommon.Pool, *pgxpool.Pool) {
 
 	// Apply migrations as superuser (needs CREATE EXTENSION, CREATE TYPE, etc).
 	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))
+
+	// Apply platform-events outbox schema (creates outbox_events +
+	// outbox_dead_letters). Phase 4 service-integration tests query
+	// outbox_events directly to verify event emission.
+	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 
 	// Grant table + function privileges to org_membership_app so the
 	// RLS-enforced pool can actually read/write. RLS still gates rows.
@@ -122,7 +129,7 @@ func withTenant(ctx context.Context, tenantID uuid.UUID) context.Context {
 
 // seedTenant inserts a tenants row via the superuser pool. Bypasses RLS.
 // Returns the tenant id.
-func seedTenant(t *testing.T, ctx context.Context, rawPool *pgxpool.Pool, slug string) uuid.UUID {
+func seedTenant(t testing.TB, ctx context.Context, rawPool *pgxpool.Pool, slug string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	_, err := rawPool.Exec(ctx, `
@@ -166,6 +173,23 @@ func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
 		assert.True(t, got[e], "expected %s to have ENABLE + FORCE ROW LEVEL SECURITY", e)
 	}
 	assert.Len(t, got, len(expected), "unexpected extra RLS tables: %v", got)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Case 1b (MIG-5 / RLS-4): org_membership_app must never hold BYPASSRLS.
+// The runtime app role is intended to be RLS-scoped; a stray BYPASSRLS
+// grant would defeat every tenant_isolation policy silently. LLD line 1744
+// promises "CI verifies that org_membership_app does not possess BYPASSRLS".
+// ─────────────────────────────────────────────────────────────────────────
+func TestRLS_Case1b_AppRoleHasNoBYPASSRLS(t *testing.T) {
+	_, rawPool := setupTestDB(t)
+	ctx := context.Background()
+
+	var bypass bool
+	err := rawPool.QueryRow(ctx, `
+		SELECT rolbypassrls FROM pg_roles WHERE rolname = 'org_membership_app'`).Scan(&bypass)
+	require.NoError(t, err, "org_membership_app role must exist in the test DB (see rls_test.go setup)")
+	assert.False(t, bypass, "org_membership_app must NOT hold BYPASSRLS (RLS-4/MIG-5)")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -32,6 +32,7 @@ const (
 	EndReasonExpired         EndReason = "expired"
 	EndReasonCancelled       EndReason = "cancelled"
 	EndReasonDelegateRemoved EndReason = "delegate_removed"
+	EndReasonReviewExpired   EndReason = "review_expired" // DEL-13
 )
 
 // Delegation is the authoritative OOO grant that drives workflow reroute
@@ -55,4 +56,9 @@ type Delegation struct {
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 	DeletedAt             *time.Time
+
+	// DEL-13: review window fields — only set when ends_at IS NULL.
+	ReviewDueAt        *time.Time // set at creation to starts_at + DELEGATION_REVIEW_WINDOW_DAYS
+	ReviewNoticeSentAt *time.Time // tracks whether the current cycle's warning already went out; reset when review_due_at is pushed forward
+	ReviewWindowDays   *int       // per-delegation override of the global default (nil = use global DELEGATION_REVIEW_WINDOW_DAYS)
 }

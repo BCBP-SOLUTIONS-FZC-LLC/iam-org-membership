@@ -33,6 +33,7 @@ func NewTenantHandler(svc *service.TenantService) *TenantHandler {
 // @Failure      404  {object}  ErrorResponse  "Row not visible (RLS returns 0 rows OR row absent)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id} [get]
 func (h *TenantHandler) Get(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
@@ -82,6 +83,7 @@ func (h *TenantHandler) Get(c *gin.Context) {
 // @Failure      409      {object}  ErrorResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /tenants/{id} [patch]
 func (h *TenantHandler) Patch(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)

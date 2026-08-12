@@ -1,12 +1,17 @@
 package http
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	pgcommon "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type OperatorHandler struct {
@@ -33,6 +38,7 @@ func NewOperatorHandler(svc *service.OperatorService) *OperatorHandler {
 // @Failure      409      {object}  ErrorResponse  "duplicate_code"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /operator/departments [post]
 func (h *OperatorHandler) CreateDepartment(c *gin.Context) {
 	if err := requireOperator(c); err != nil {
@@ -71,6 +77,7 @@ func (h *OperatorHandler) CreateDepartment(c *gin.Context) {
 // @Failure      422      {object}  ErrorResponse  "field_immutable | system_department_cannot_be_retired"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /operator/departments/{id} [patch]
 func (h *OperatorHandler) PatchDepartment(c *gin.Context) {
 	if err := requireOperator(c); err != nil {
@@ -80,6 +87,27 @@ func (h *OperatorHandler) PatchDepartment(c *gin.Context) {
 	id, err := parseUUIDParam(c, "id")
 	if err != nil {
 		HandleError(c, err)
+		return
+	}
+	// O-2 (LLD §5.4): reject `code`/`is_system` in the body with
+	// 422 field_immutable — the DTO struct would silently drop them.
+	body, _ := io.ReadAll(c.Request.Body)
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	var raw map[string]json.RawMessage
+	if len(body) > 0 {
+		if jerr := json.Unmarshal(body, &raw); jerr != nil {
+			HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+			return
+		}
+	}
+	if _, present := raw["code"]; present {
+		HandleError(c, domain.NewError(domain.ErrFieldImmutable, "code is immutable").
+			WithDetails(map[string]any{"code": "field_immutable", "field": "code"}))
+		return
+	}
+	if _, present := raw["is_system"]; present {
+		HandleError(c, domain.NewError(domain.ErrFieldImmutable, "is_system is immutable").
+			WithDetails(map[string]any{"code": "field_immutable", "field": "is_system"}))
 		return
 	}
 	var req OperatorDepartmentPatchRequest
@@ -107,6 +135,7 @@ func (h *OperatorHandler) PatchDepartment(c *gin.Context) {
 // @Failure      405  {object}  ErrorResponse   "Method not allowed"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /operator/departments/{id} [delete]
 func (h *OperatorHandler) DeleteDepartmentBlocked(c *gin.Context) {
 	if err := requireOperator(c); err != nil {
@@ -136,6 +165,7 @@ func (h *OperatorHandler) DeleteDepartmentBlocked(c *gin.Context) {
 // @Failure      404      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /operator/tenants/{id}/feature-flags [patch]
 func (h *OperatorHandler) SetFeatureFlags(c *gin.Context) {
 	if err := requireOperator(c); err != nil {
@@ -152,7 +182,13 @@ func (h *OperatorHandler) SetFeatureFlags(c *gin.Context) {
 		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
 		return
 	}
-	t, err := h.svc.SetFeatureFlags(c.Request.Context(), tenantID, req.FeatureFlags)
+	// RLS-6: override GUC with the PATH tenant so operator cross-tenant
+	// mutations are scoped to the target tenant, not the header tenant.
+	ctx := c.Request.Context()
+	g, _ := pgcommon.GUCSetFromContext(ctx)
+	g.TenantID = tenantID.String()
+	ctx = pgcommon.WithGUCSet(ctx, g)
+	t, err := h.svc.SetFeatureFlags(ctx, tenantID, req.FeatureFlags, req.RecordVersion)
 	if err != nil {
 		HandleError(c, err)
 		return
@@ -172,6 +208,7 @@ func (h *OperatorHandler) SetFeatureFlags(c *gin.Context) {
 // @Failure      403  {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /operator/plans [get]
 func (h *OperatorHandler) ListPlans(c *gin.Context) {
 	if err := requireOperator(c); err != nil {
@@ -218,6 +255,7 @@ func (h *OperatorHandler) ListPlans(c *gin.Context) {
 // @Failure      409      {object}  ErrorResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /operator/plans/{code} [patch]
 func (h *OperatorHandler) PatchPlan(c *gin.Context) {
 	if err := requireOperator(c); err != nil {
@@ -226,18 +264,37 @@ func (h *OperatorHandler) PatchPlan(c *gin.Context) {
 	}
 	code := domain.TenantPlan(c.Param("code"))
 	var body struct {
-		DisplayName           *string        `json:"display_name,omitempty"`
-		WorkflowTemplateLimit *int           `json:"workflow_template_limit,omitempty"`
-		TenderLimit           *int           `json:"tender_limit,omitempty"`
-		TrialDurationDays     *int           `json:"trial_duration_days,omitempty"`
-		SSOEnabled            *bool          `json:"sso_enabled,omitempty"`
-		CustomBranding        *string        `json:"custom_branding,omitempty"`
-		FeatureSet            map[string]any `json:"feature_set,omitempty"`
-		RecordVersion         int64          `json:"record_version"`
+		DisplayName           *string         `json:"display_name,omitempty"`
+		WorkflowTemplateLimit json.RawMessage `json:"workflow_template_limit"`
+		TenderLimit           json.RawMessage `json:"tender_limit"`
+		TrialDurationDays     *int            `json:"trial_duration_days,omitempty"`
+		SSOEnabled            *bool           `json:"sso_enabled,omitempty"`
+		CustomBranding        *string         `json:"custom_branding,omitempty"`
+		FeatureSet            map[string]any  `json:"feature_set,omitempty"`
+		RecordVersion         int64           `json:"record_version"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
 		return
+	}
+	// parseLimit distinguishes absent (nil RawMessage) from explicit null from a
+	// value — required to drive the **int double-pointer in PlanPatch (LLD §19.3):
+	//   nil **int        = field absent → no SET clause in UPDATE
+	//   **int → nil *int = explicit null → NULL in DB (unlimited)
+	//   **int → *int → n = explicit value → cap n in DB
+	parseLimit := func(raw json.RawMessage, field string) (**int, error) {
+		if len(raw) == 0 {
+			return nil, nil
+		}
+		if string(raw) == "null" {
+			return new(*int), nil
+		}
+		var v int
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, domain.NewError(domain.ErrValidation, field+" must be an integer or null")
+		}
+		vp := &v
+		return &vp, nil
 	}
 	patch := &domain.PlanPatch{
 		DisplayName:       body.DisplayName,
@@ -246,11 +303,16 @@ func (h *OperatorHandler) PatchPlan(c *gin.Context) {
 		FeatureSet:        body.FeatureSet,
 		RecordVersion:     body.RecordVersion,
 	}
-	if body.WorkflowTemplateLimit != nil {
-		patch.WorkflowTemplateLimit = &body.WorkflowTemplateLimit
+	var parseErr error
+	patch.WorkflowTemplateLimit, parseErr = parseLimit(body.WorkflowTemplateLimit, "workflow_template_limit")
+	if parseErr != nil {
+		HandleError(c, parseErr)
+		return
 	}
-	if body.TenderLimit != nil {
-		patch.TenderLimit = &body.TenderLimit
+	patch.TenderLimit, parseErr = parseLimit(body.TenderLimit, "tender_limit")
+	if parseErr != nil {
+		HandleError(c, parseErr)
+		return
 	}
 	if body.CustomBranding != nil {
 		v := domain.BrandingLevel(*body.CustomBranding)
@@ -289,6 +351,7 @@ func (h *OperatorHandler) PatchPlan(c *gin.Context) {
 // @Failure      422      {object}  ErrorResponse  "invalid_owner_candidate"
 // @Security     UserID
 // @Security     TenantID
+// @Security     TenantRoles
 // @Router       /operator/tenants/{id}/reassign-owner [post]
 func (h *OperatorHandler) ReassignOwner(c *gin.Context) {
 	if err := requireOperator(c); err != nil {
@@ -305,8 +368,19 @@ func (h *OperatorHandler) ReassignOwner(c *gin.Context) {
 		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
 		return
 	}
-	rc, _ := requestctx.FromContext(c.Request.Context())
-	tr, err := h.svc.ReassignOwner(c.Request.Context(), tenantID, req.NewOwnerUserID, rc.UserID)
+	newOwnerID := req.EffectiveUserID()
+	if newOwnerID == uuid.Nil {
+		HandleError(c, domain.NewError(domain.ErrValidation, "user_id is required"))
+		return
+	}
+	// RLS-6: override GUC with the PATH tenant so operator cross-tenant
+	// mutations are scoped to the target tenant, not the header tenant.
+	ctx := c.Request.Context()
+	g, _ := pgcommon.GUCSetFromContext(ctx)
+	g.TenantID = tenantID.String()
+	ctx = pgcommon.WithGUCSet(ctx, g)
+	rc, _ := requestctx.FromContext(ctx)
+	tr, err := h.svc.ReassignOwner(ctx, tenantID, newOwnerID, rc.UserID)
 	if err != nil {
 		HandleError(c, err)
 		return

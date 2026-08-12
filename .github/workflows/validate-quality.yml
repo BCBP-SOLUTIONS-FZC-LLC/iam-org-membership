@@ -63,6 +63,24 @@ jobs:
             exit 1
           fi
 
+      # RLS-6 CI gate (LLD line 1746, 4061, 4353): reject any non-LOCAL
+      # SET app.tenant_id in Go/SQL source. The only legitimate way to
+      # bind the GUC is via pgcommon.WithGUCSet / GUCSetFromContext, which
+      # emits SET LOCAL inside a transaction. A session-scoped SET would
+      # persist across pooled backends and leak across tenants under
+      # PgBouncer — the exact breach RLS-6 exists to prevent.
+      - name: Reject non-LOCAL SET app.tenant_id (RLS-6)
+        run: |
+          hits=$(grep -REn '\bSET[[:space:]]+("?app\.tenant_id"?)[[:space:]]*=' \
+                   --include='*.go' --include='*.sql' \
+                   cmd/ internal/ | grep -v 'SET LOCAL' | grep -v 'set_config' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::Non-LOCAL SET app.tenant_id detected (RLS-6). Use pgcommon.WithGUCSet + RunInTx which emits SET LOCAL inside a tx."
+            echo "$hits"
+            exit 1
+          fi
+          echo "RLS-6 non-LOCAL SET check passed."
+
       - name: Format check
         run: |
           unformatted=$(gofmt -l .)

@@ -21,10 +21,10 @@ import (
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 )
 
-// TestP18_MIG_001_UpDownUpRoundTrips — apply all migrations up, roll back
+// TestUpDownUpRoundTrips — apply all migrations up, roll back
 // every single one, then re-apply up. Proves each .down.sql is a valid
 // inverse of its .up.sql (no dangling constraints / enums / roles).
-func TestP18_MIG_001_UpDownUpRoundTrips(t *testing.T) {
+func TestUpDownUpRoundTrips(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping migration round-trip in short mode")
 	}
@@ -66,11 +66,11 @@ func TestP18_MIG_001_UpDownUpRoundTrips(t *testing.T) {
 	assert.Equal(t, 0, n, "fresh table must be empty after up→down→up cycle")
 }
 
-// TestP18_MIG_002_EveryUpHasDownSibling — pairing check. Rule: every
+// TestEveryUpHasDownSibling — pairing check. Rule: every
 // NNNNNN_<name>.up.sql must have a matching .down.sql. A missing down
 // file would break the round-trip test above but also blocks any real
 // production rollback.
-func TestP18_MIG_002_EveryUpHasDownSibling(t *testing.T) {
+func TestEveryUpHasDownSibling(t *testing.T) {
 	migFS := loadMigrationDir(t)
 	entries, err := fs.ReadDir(migFS, ".")
 	require.NoError(t, err)

@@ -26,9 +26,9 @@ import (
 
 // ── P13-ERR-001 ─────────────────────────────────────────────────────────────
 
-// TestP13_ERR_001_UnknownTenantReturnsShapedError — GET on a tenant UUID
+// TestUnknownTenantReturnsShapedError — GET on a tenant UUID
 // that doesn't exist must return 404 with the canonical error envelope.
-func TestP13_ERR_001_UnknownTenantReturnsShapedError(t *testing.T) {
+func TestUnknownTenantReturnsShapedError(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "err-001-existing")
 	userID := e.seedOwner(t, tenantID)
@@ -61,7 +61,7 @@ func TestP13_ERR_001_UnknownTenantReturnsShapedError(t *testing.T) {
 
 // ── P13-ERR-002 ─────────────────────────────────────────────────────────────
 
-func TestP13_ERR_002_InvalidUUIDParam(t *testing.T) {
+func TestInvalidUUIDParam(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "err-002")
 	userID := e.seedOwner(t, tenantID)
@@ -81,7 +81,7 @@ func TestP13_ERR_002_InvalidUUIDParam(t *testing.T) {
 
 // ── P13-ERR-003 ─────────────────────────────────────────────────────────────
 
-func TestP13_ERR_003_MalformedJSONBody(t *testing.T) {
+func TestMalformedJSONBody(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "err-003")
 	userID := e.seedOwner(t, tenantID)
@@ -103,9 +103,9 @@ func TestP13_ERR_003_MalformedJSONBody(t *testing.T) {
 
 // ── P13-ERR-004 ─────────────────────────────────────────────────────────────
 
-// TestP13_ERR_004_CrossTenantForbidden — the caller identifies as tenant A
+// TestCrossTenantForbidden — the caller identifies as tenant A
 // but requests tenant B's resource → handler must reject with 403.
-func TestP13_ERR_004_CrossTenantForbidden(t *testing.T) {
+func TestCrossTenantForbidden(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantA := e.seedTenant(t, "err-004-a")
 	tenantB := e.seedTenant(t, "err-004-b")

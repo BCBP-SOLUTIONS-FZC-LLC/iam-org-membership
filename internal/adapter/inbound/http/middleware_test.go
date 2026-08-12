@@ -17,6 +17,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -423,6 +424,38 @@ func TestHandleError_NonDomainErrorReturns500(t *testing.T) {
 		"raw error message must NOT be surfaced to the client")
 }
 
+// B5 fix: raw pgconn.PgError with SQLSTATE class 08/53/57/58 (DB
+// connectivity / resource-exhaustion) must surface as 503 db_unavailable
+// per LLD §17 (line 2544). Previously all pgconn.PgErrors fell to the
+// generic 500 bucket.
+func TestHandleError_DBConnectivitySQLState_Returns503(t *testing.T) {
+	for _, code := range []string{"08006", "08001", "08004"} { // connection_failure class
+		t.Run(code, func(t *testing.T) {
+			c, w := newTestContext(nil)
+			HandleError(c, &pgconn.PgError{Code: code})
+			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+			assert.Contains(t, w.Body.String(), "db_unavailable")
+		})
+	}
+}
+
+func TestHandleError_DBResourceExhaustionSQLState_Returns503(t *testing.T) {
+	c, w := newTestContext(nil)
+	HandleError(c, &pgconn.PgError{Code: "53300"}) // too_many_connections
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Contains(t, w.Body.String(), "db_unavailable")
+}
+
+// Constraint violations (class 23) are logic errors that should have been
+// caught by the repository layer — if they leak here it is an internal bug,
+// so they still return 500, not 503.
+func TestHandleError_ConstraintViolationSQLState_Returns500(t *testing.T) {
+	c, w := newTestContext(nil)
+	HandleError(c, &pgconn.PgError{Code: "23505"}) // unique_violation
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "internal_error")
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // RequireJSONContentType — 415 gate on write methods
 // ─────────────────────────────────────────────────────────────────────────
@@ -470,4 +503,70 @@ func TestRequireJSONContentType_SkipsEmptyBody(t *testing.T) {
 	RequireJSONContentType()(c)
 
 	assert.False(t, c.IsAborted())
+}
+
+// ── NormalizeAuthErrors (G-13 fix) ────────────────────────────────────────────
+
+// P7-AUTH-03: platform-gincommon 401 response is normalized to include the
+// code field matching LLD §17. The middleware rewrites any 401 body that
+// lacks a "code" field to use code=missing_identity_headers.
+func TestNormalizeAuthErrors_Adds401CodeField(t *testing.T) {
+	r := gin.New()
+	r.Use(NormalizeAuthErrors())
+	// Simulate platform-gincommon writing a 401 without a code field.
+	r.GET("/test", func(c *gin.Context) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"error":  "missing or invalid authentication headers",
+			"status": 401,
+		})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	assert.Equal(t, "missing_identity_headers", body["code"])
+	assert.Equal(t, "missing_identity_headers", body["error"])
+}
+
+// NormalizeAuthErrors passes non-401 responses through unchanged.
+func TestNormalizeAuthErrors_PassesThrough200(t *testing.T) {
+	r := gin.New()
+	r.Use(NormalizeAuthErrors())
+	r.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"ok"`)
+}
+
+// NormalizeAuthErrors does not overwrite a 401 that already has a code field.
+func TestNormalizeAuthErrors_SkipsIfCodeAlreadyPresent(t *testing.T) {
+	r := gin.New()
+	r.Use(NormalizeAuthErrors())
+	r.GET("/test", func(c *gin.Context) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"code":   "missing_identity_headers",
+			"error":  "missing_identity_headers",
+			"status": 401,
+		})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	// code field must still be present and correct
+	assert.Equal(t, "missing_identity_headers", body["code"])
 }

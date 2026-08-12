@@ -105,8 +105,19 @@ func (c *HTTPClient) SetAvailability(ctx context.Context, req port.SetAvailabili
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	c.logger.Warn("userprofile: SetAvailability non-2xx",
 		"user_id", req.UserID, "status", resp.StatusCode, "body", string(msg))
+	if resp.StatusCode == 422 {
+		// Check if the body contains delegate_unavailable (§16 A65)
+		if bytes.Contains(msg, []byte("delegate_unavailable")) {
+			return &upError{code: "delegate_unavailable"}
+		}
+	}
 	return fmt.Errorf("userprofile: SetAvailability returned %d", resp.StatusCode)
 }
+
+// upError carries a machine-readable error code from the User Profile service.
+type upError struct{ code string }
+
+func (e *upError) Error() string { return "userprofile: " + e.code }
 
 // buildBody constructs the wire JSON. delegate_id carries three states:
 //
@@ -123,6 +134,9 @@ func buildBody(req port.SetAvailabilityRequest) map[string]any {
 	}
 	if req.OOOUntil != nil {
 		m["ooo_until"] = req.OOOUntil.UTC().Format(time.RFC3339)
+	}
+	if req.Note != "" {
+		m["note"] = req.Note
 	}
 	switch {
 	case req.ClearDelegate:

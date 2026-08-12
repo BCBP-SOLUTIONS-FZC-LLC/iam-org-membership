@@ -213,8 +213,9 @@ func TestMembership_RemovalResolution_UnknownActionIsValidationError(t *testing.
 
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, "validation_error", de.Code)
-	assert.Equal(t, "invalid_action", de.Details["code"])
+	// Bug B-9 fixed: invalid_action now uses ErrInvalidAction → 422 (LLD §17)
+	assert.Equal(t, "invalid_action", de.Code)
+	assert.Equal(t, domain.ErrInvalidAction, de.Cause)
 }
 
 // ── ValidateAndEmitAssigneeOverride (I-13) ──────────────────────────────

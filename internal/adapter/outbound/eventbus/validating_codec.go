@@ -12,14 +12,11 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// schemasFS embeds the JSON Schema Draft-07 files under
-// internal/eventschema/. Phase 3 populates it with one file per outbound
-// event type per §7.3. Until then it is empty and ValidatingCodec
+// schemasFS embeds the JSON Schema Draft-07 files under this package's
+// sibling `schemas/` directory (one file per outbound event type per §7.3).
+// Colocated with the ValidatingCodec so the schemas can be treated as the
+// design-time source of truth alongside asyncapi.yaml. Empty embed
 // gracefully passes payloads through.
-//
-// The relative-path embed reaches out of adapter/outbound/eventbus/ into
-// the top-level internal/eventschema/ workspace so the schema files can be
-// treated as the design-time source of truth alongside asyncapi.yaml.
 //
 //go:embed schemas/*.json
 var schemasFS embed.FS

@@ -3,7 +3,7 @@
   "$id": "DelegationEnded",
   "title": "DelegationEnded",
   "type": "object",
-  "required": ["delegation_id", "tenant_id", "delegator_id", "delegate_id", "scope", "ended_reason", "actor_id"],
+  "required": ["delegation_id", "tenant_id", "delegator_id", "delegate_id", "ended_reason", "actor_id"],
   "properties": {
     "delegation_id": { "type": "string", "format": "uuid" },
     "tenant_id":     { "type": "string", "format": "uuid" },

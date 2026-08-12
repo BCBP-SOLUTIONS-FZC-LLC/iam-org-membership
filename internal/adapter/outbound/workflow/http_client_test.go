@@ -63,15 +63,15 @@ func TestP10WF001_GetDelegateImpactHappy(t *testing.T) {
 	require.NotNil(t, impact)
 	assert.Equal(t, 0, impact.ActiveWorkflows)
 	assert.Equal(t, http.MethodGet, gotMethod)
-	assert.Equal(t, "/api/v1/internal/workflows/active-by-user", gotPath)
+	assert.Equal(t, "/api/v1/internal/workflows/delegate-impact", gotPath)
 	assert.Contains(t, gotQuery, "tenant_id=")
-	assert.Contains(t, gotQuery, "user_id=")
+	assert.Contains(t, gotQuery, "delegate_user_id=")
 }
 
 // Test Case ID:      P10-WF-002
 // Module:            iam-org-membership · WorkflowClient
 // Feature:           WFI-13 · fail-open when baseURL unconfigured
-// API:               GET /api/v1/internal/workflows/active-by-user
+// API:               GET /api/v1/internal/workflows/delegate-impact
 // Scenario:          Positive — Workflow client with empty baseURL returns 0-impact
 // Preconditions:     none
 // Test Steps:

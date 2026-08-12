@@ -13,16 +13,33 @@ import (
 // 'pending' state.
 //
 // Uses sysPool (BYPASSRLS) because the sweep spans tenants.
+//
+// Note on wave-expiry seat-overage resolution (§8.10.3): this job does
+// NOT invalidate `om:seat_usage:<tenant>` caches or emit
+// `TenantSeatOverageResolved` when a batch of expiries drops pending
+// below the licensed cap. That work is delegated to `seat-overage-
+// reconcile`, which sweeps every tenant's overage state daily. Callers
+// hitting /seat-usage in the intervening window may see stale numbers
+// up to CACHE-5 TTL — an accepted LLD trade-off (avoids an O(tenants)
+// broadcast on every expiry tick).
 func InvitationExpiry(ctx context.Context, jctx *Context) (Result, error) {
 	var res Result
 
 	// Select expired pending rows in batches to keep lock hold time bounded.
+	// LIMIT via a scoped subquery — plain UPDATE ... LIMIT isn't Postgres
+	// syntax. Sibling reconcilers (seat_overage, realm_config_sync,
+	// invitation_kc_cleanup, delegation_expiry) use the same pattern.
 	err := runInTxWithSysPool(ctx, jctx.SysPool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			UPDATE pending_invitations
 			SET status = 'expired'
-			WHERE status = 'pending' AND expires_at < now()
-			RETURNING id, tenant_id`)
+			WHERE id IN (
+				SELECT id FROM pending_invitations
+				WHERE status = 'pending' AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $1
+			)
+			RETURNING id, tenant_id`, jctx.BatchLimit)
 		if err != nil {
 			return err
 		}

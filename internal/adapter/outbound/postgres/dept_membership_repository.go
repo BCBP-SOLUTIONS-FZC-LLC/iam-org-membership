@@ -67,10 +67,13 @@ func (r *DeptMembershipRepository) listWhere(ctx context.Context, whereClause st
 func (r *DeptMembershipRepository) Assign(ctx context.Context, tenantID, userID, departmentID, membershipID uuid.UUID, level domain.DeptRole, grantedBy uuid.UUID) (*domain.DeptMembership, error) {
 	var out *domain.DeptMembership
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		// Look up existing active row.
+		// Look up existing active row with FOR UPDATE to serialize concurrent
+		// callers holding the same (tenant, user, dept) triple (idempotency,
+		// PI-10 spirit for dept memberships).
 		row := tx.QueryRow(ctx, `
 			SELECT `+dmCols+` FROM dept_memberships
-			WHERE tenant_id = $1 AND user_id = $2 AND department_id = $3 AND deleted_at IS NULL`,
+			WHERE tenant_id = $1 AND user_id = $2 AND department_id = $3 AND deleted_at IS NULL
+			FOR UPDATE`,
 			tenantID, userID, departmentID)
 		existing, err := scanDeptMembership(row)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -86,17 +89,34 @@ func (r *DeptMembershipRepository) Assign(ctx context.Context, tenantID, userID,
 				return err
 			}
 		}
-		// Insert new row.
+		// Insert new row. ON CONFLICT DO NOTHING absorbs the race where a
+		// concurrent worker inserted first (they hold uq_dm_active_membership
+		// and our FOR UPDATE only locked existing rows, not phantom inserts).
 		newRow := tx.QueryRow(ctx, `
 			INSERT INTO dept_memberships (id, tenant_id, user_id, tenant_membership_id, department_id, role_level, granted_by)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+			ON CONFLICT (tenant_id, user_id, department_id) WHERE deleted_at IS NULL
+			DO NOTHING
 			RETURNING `+dmCols,
 			tenantID, userID, membershipID, departmentID, string(level), grantedBy)
 		created, err := scanDeptMembership(newRow)
-		if err != nil {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		out = created
+		if created != nil {
+			out = created
+			return nil
+		}
+		// Insert absorbed by ON CONFLICT — fetch the winning row.
+		winner := tx.QueryRow(ctx, `
+			SELECT `+dmCols+` FROM dept_memberships
+			WHERE tenant_id = $1 AND user_id = $2 AND department_id = $3 AND deleted_at IS NULL`,
+			tenantID, userID, departmentID)
+		final, ferr := scanDeptMembership(winner)
+		if ferr != nil {
+			return ferr
+		}
+		out = final
 		return nil
 	})
 	return out, err
@@ -123,6 +143,40 @@ func (r *DeptMembershipRepository) Remove(ctx context.Context, tenantID, userID,
 	return out, err
 }
 
+// SoftDeleteAllForDept is called on department deactivation (GAP-P25-1).
+// Soft-deletes every active dept_membership row for the given (tenant, dept).
+func (r *DeptMembershipRepository) SoftDeleteAllForDept(ctx context.Context, tenantID, departmentID uuid.UUID) ([]domain.DeptMembership, error) {
+	var out []domain.DeptMembership
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			UPDATE dept_memberships SET deleted_at = now()
+			WHERE tenant_id = $1 AND department_id = $2 AND deleted_at IS NULL
+			RETURNING `+dmCols,
+			tenantID, departmentID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			dm, err := scanDeptMembership(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, *dm)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// SoftDeleteAllForUser is a CASCADE-ONLY method called by the user removal
+// path (I-5 / P-7). CONC-1 optimistic locking is deliberately not applied
+// here — the caller is deleting the parent tenant_membership, and enforcing
+// per-row record_version would cause a partial-cascade (some rows locked
+// out, others deleted) that would leave the tenant in an inconsistent state.
+// This is safe because dept memberships have no dependents once the user
+// is gone. Do not call this from a direct-mutation endpoint — use Remove()
+// for those, which DOES optimistic-lock the target row.
 func (r *DeptMembershipRepository) SoftDeleteAllForUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.DeptMembership, error) {
 	var out []domain.DeptMembership
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {

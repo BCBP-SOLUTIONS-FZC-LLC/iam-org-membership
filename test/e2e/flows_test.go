@@ -33,7 +33,7 @@ import (
 
 // ── P13-FLOW-001 ────────────────────────────────────────────────────────────
 
-func TestP13_FLOW_001_GetTenantHappyPath(t *testing.T) {
+func TestGetTenantHappyPath(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "flow-001")
 	userID := e.seedOwner(t, tenantID)
@@ -56,7 +56,7 @@ func TestP13_FLOW_001_GetTenantHappyPath(t *testing.T) {
 
 // ── P13-FLOW-002 ────────────────────────────────────────────────────────────
 
-func TestP13_FLOW_002_InviteThenList(t *testing.T) {
+func TestInviteThenList(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "flow-002")
 	userID := e.seedOwner(t, tenantID)
@@ -99,7 +99,7 @@ func TestP13_FLOW_002_InviteThenList(t *testing.T) {
 
 // ── P13-FLOW-003 ────────────────────────────────────────────────────────────
 
-func TestP13_FLOW_003_DelegationCreateListCancel(t *testing.T) {
+func TestDelegationCreateListCancel(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "flow-003")
 	delegator := e.seedOwner(t, tenantID)
@@ -154,7 +154,7 @@ func TestP13_FLOW_003_DelegationCreateListCancel(t *testing.T) {
 
 // ── P13-FLOW-004 ────────────────────────────────────────────────────────────
 
-func TestP13_FLOW_004_SeatUsageShape(t *testing.T) {
+func TestSeatUsageShape(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "flow-004")
 	userID := e.seedOwner(t, tenantID)
@@ -177,9 +177,9 @@ func TestP13_FLOW_004_SeatUsageShape(t *testing.T) {
 
 // ── P13-FLOW-005 ────────────────────────────────────────────────────────────
 
-// TestP13_FLOW_005_InternalGetMemberships — I-8 hot path returns full
+// TestInternalGetMemberships — I-8 hot path returns full
 // projection for a user, callable only with iam-system role.
-func TestP13_FLOW_005_InternalGetMemberships(t *testing.T) {
+func TestInternalGetMemberships(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "flow-005")
 	userID := e.seedOwner(t, tenantID)
@@ -202,8 +202,8 @@ func TestP13_FLOW_005_InternalGetMemberships(t *testing.T) {
 
 // ── P13-FLOW-006 ────────────────────────────────────────────────────────────
 
-// TestP13_FLOW_006_InternalProvisionTenant — full trial signup via I-1.
-func TestP13_FLOW_006_InternalProvisionTenant(t *testing.T) {
+// TestInternalProvisionTenant — full trial signup via I-1.
+func TestInternalProvisionTenant(t *testing.T) {
 	e := newE2EEnv(t)
 
 	// Migrations already seed 3 plans + 5 system departments (§8.1) — see
@@ -257,9 +257,9 @@ func TestP13_FLOW_006_InternalProvisionTenant(t *testing.T) {
 
 // ── P13-FLOW-007 ────────────────────────────────────────────────────────────
 
-// TestP13_FLOW_007_ReconcileRoles — PUT roles is idempotent-declarative:
+// TestReconcileRoles — PUT roles is idempotent-declarative:
 // send the desired set, get exactly that set (grants missing, revokes extras).
-func TestP13_FLOW_007_ReconcileRoles(t *testing.T) {
+func TestReconcileRoles(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "flow-007")
 	owner := e.seedOwner(t, tenantID)

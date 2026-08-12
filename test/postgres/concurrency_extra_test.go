@@ -43,12 +43,12 @@ import (
 
 // ── P15-JIT-001 ─────────────────────────────────────────────────────────────
 
-// TestP15_JIT_001_ConcurrentSameUserMembershipAdd — two concurrent JIT SAML
+// TestConcurrentSameUserMembershipAdd — two concurrent JIT SAML
 // flows for the same (tenant, user) attempt to INSERT a fresh active
 // tenant_memberships row. The uq_tm_active_user partial unique
 // (WHERE deleted_at IS NULL) must reject the loser; final state has
 // exactly ONE active row.
-func TestP15_JIT_001_ConcurrentSameUserMembershipAdd(t *testing.T) {
+func TestConcurrentSameUserMembershipAdd(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "jit-001")
@@ -90,11 +90,11 @@ func TestP15_JIT_001_ConcurrentSameUserMembershipAdd(t *testing.T) {
 
 // ── P15-ACCEPT-001 ──────────────────────────────────────────────────────────
 
-// TestP15_ACCEPT_001_ConcurrentAcceptOfSameInvitation — two racers UPDATE
+// TestConcurrentAcceptOfSameInvitation — two racers UPDATE
 // the same pending invitation's status to 'accepted'. Guard clause
 // `WHERE status = 'pending'` in the transition allows only the first to
 // mutate; the second observes zero rows affected.
-func TestP15_ACCEPT_001_ConcurrentAcceptOfSameInvitation(t *testing.T) {
+func TestConcurrentAcceptOfSameInvitation(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "accept-001")
@@ -135,12 +135,12 @@ func TestP15_ACCEPT_001_ConcurrentAcceptOfSameInvitation(t *testing.T) {
 
 // ── P15-DEL-CREATE-001 ──────────────────────────────────────────────────────
 
-// TestP15_DEL_CREATE_001_ConcurrentDelegationCreate — two racers try to
+// TestDEL_CREATE_001_ConcurrentDelegationCreate — two racers try to
 // insert a delegation for the same delegator, both scope=all, different
 // delegates. DEL-1 (one active per delegator) is enforced at the app
 // layer via FOR UPDATE. We simulate that guard here — the losing racer
 // must observe an existing active delegation and abort.
-func TestP15_DEL_CREATE_001_ConcurrentDelegationCreate(t *testing.T) {
+func TestDEL_CREATE_001_ConcurrentDelegationCreate(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "del-create-001")
@@ -224,10 +224,10 @@ func TestP15_DEL_CREATE_001_ConcurrentDelegationCreate(t *testing.T) {
 
 // ── P15-DEL-CANCEL-001 ──────────────────────────────────────────────────────
 
-// TestP15_DEL_CANCEL_001_ConcurrentCancelSameVersion — two racers cancel
+// TestDEL_CANCEL_001_ConcurrentCancelSameVersion — two racers cancel
 // the same delegation with the SAME (stale-after-first) record_version.
 // CONC-1 optimistic lock permits one; the other's UPDATE affects 0 rows.
-func TestP15_DEL_CANCEL_001_ConcurrentCancelSameVersion(t *testing.T) {
+func TestDEL_CANCEL_001_ConcurrentCancelSameVersion(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "del-cancel-001")
@@ -283,10 +283,10 @@ func TestP15_DEL_CANCEL_001_ConcurrentCancelSameVersion(t *testing.T) {
 
 // ── P15-B15-EXT-001 ─────────────────────────────────────────────────────────
 
-// TestP15_B15_EXT_001_ConcurrentDeptAssignDifferentLevels — two racers
+// TestConcurrentDeptAssignDifferentLevels — two racers
 // PUT the same (tenant, user, dept) at different role_levels. The
 // uq_dm_active_membership partial unique lets exactly one INSERT succeed.
-func TestP15_B15_EXT_001_ConcurrentDeptAssignDifferentLevels(t *testing.T) {
+func TestConcurrentDeptAssignDifferentLevels(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "b15-ext-001")
@@ -343,11 +343,11 @@ func TestP15_B15_EXT_001_ConcurrentDeptAssignDifferentLevels(t *testing.T) {
 
 // ── P15-REC-001 ─────────────────────────────────────────────────────────────
 
-// TestP15_REC_001_ExpiryReconcilerVsLiveInvites — while the
+// TestExpiryReconcilerVsLiveInvites — while the
 // invitation-expiry reconciler is running, a burst of fresh (not-yet-
 // expired) invites is inserted. The reconciler must flip ONLY the
 // truly-expired rows; the fresh invites must remain 'pending'.
-func TestP15_REC_001_ExpiryReconcilerVsLiveInvites(t *testing.T) {
+func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "rec-001")
@@ -417,11 +417,11 @@ func TestP15_REC_001_ExpiryReconcilerVsLiveInvites(t *testing.T) {
 
 // ── P15-OUTBOX-001 ──────────────────────────────────────────────────────────
 
-// TestP15_OUTBOX_001_SkipLockedPreventsDuplicatePublish — the outbox
+// TestSkipLockedPreventsDuplicatePublish — the outbox
 // runner claim query uses SELECT … FOR UPDATE SKIP LOCKED. Two concurrent
 // claimers must produce DISJOINT batches (no row appears in both). This
 // is the horizontal-scale safety property for the runner.
-func TestP15_OUTBOX_001_SkipLockedPreventsDuplicatePublish(t *testing.T) {
+func TestSkipLockedPreventsDuplicatePublish(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 

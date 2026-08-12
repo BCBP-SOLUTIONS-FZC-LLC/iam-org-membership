@@ -17,27 +17,27 @@ import (
 
 // ── B7: DeptRole.Satisfies implements `>=` per LLD §5.4 I-13 step 2 ─────
 
-func TestB7_DeptRoleSatisfies_ExactMatch(t *testing.T) {
+func TestDeptRoleSatisfies_ExactMatch(t *testing.T) {
 	assert.True(t, domain.DeptPreparator.Satisfies(domain.DeptPreparator))
 	assert.True(t, domain.DeptReviewer.Satisfies(domain.DeptReviewer))
 	assert.True(t, domain.DeptApprover.Satisfies(domain.DeptApprover))
 }
 
-func TestB7_DeptRoleSatisfies_HigherFillsLower(t *testing.T) {
+func TestDeptRoleSatisfies_HigherFillsLower(t *testing.T) {
 	// approver >= reviewer >= preparator (privilege monotonicity).
 	assert.True(t, domain.DeptApprover.Satisfies(domain.DeptReviewer))
 	assert.True(t, domain.DeptApprover.Satisfies(domain.DeptPreparator))
 	assert.True(t, domain.DeptReviewer.Satisfies(domain.DeptPreparator))
 }
 
-func TestB7_DeptRoleSatisfies_LowerCannotFillHigher(t *testing.T) {
+func TestDeptRoleSatisfies_LowerCannotFillHigher(t *testing.T) {
 	// LLD §5.4 I-13 step 2: assignee's role_level MUST be >= required.
 	assert.False(t, domain.DeptPreparator.Satisfies(domain.DeptReviewer))
 	assert.False(t, domain.DeptPreparator.Satisfies(domain.DeptApprover))
 	assert.False(t, domain.DeptReviewer.Satisfies(domain.DeptApprover))
 }
 
-func TestB7_DeptRoleSatisfies_UnknownValuesRejected(t *testing.T) {
+func TestDeptRoleSatisfies_UnknownValuesRejected(t *testing.T) {
 	// Guard against garbage strings sneaking past the DB enum.
 	unknown := domain.DeptRole("intern")
 	assert.False(t, unknown.Satisfies(domain.DeptPreparator))

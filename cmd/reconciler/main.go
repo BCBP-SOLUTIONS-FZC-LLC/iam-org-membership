@@ -29,6 +29,7 @@ var registry = map[string]jobs.Func{
 	"realm-config-sync":      jobs.RealmConfigSync,
 	"seat-overage-reconcile": jobs.SeatOverageReconcile,
 	"delegation-expiry":      jobs.DelegationExpiry,
+	"delegation-review":      jobs.DelegationReview,
 	"trial-cleanup":          jobs.TrialCleanup,
 	"outbox-prune":           jobs.OutboxPrune,
 	"processed-events-prune": jobs.ProcessedEventsPrune,

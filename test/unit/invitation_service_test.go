@@ -62,6 +62,12 @@ func (f *fakeInviteRepo) ListExpiring(context.Context, time.Time, int) ([]domain
 func (f *fakeInviteRepo) ListPendingKCCleanup(context.Context, int) ([]domain.PendingInvitation, error) {
 	return nil, errors.New("not used")
 }
+func (f *fakeInviteRepo) MostRecentCreatedAt(context.Context, uuid.UUID, string) (time.Time, error) {
+	return time.Time{}, nil // no prior invite — cooldown passes
+}
+func (f *fakeInviteRepo) CountCreatedInWindow(context.Context, uuid.UUID, time.Time) (int, error) {
+	return 0, nil // no invites in window — rate limit passes
+}
 
 var _ port.InvitationRepository = (*fakeInviteRepo)(nil)
 

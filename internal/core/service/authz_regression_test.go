@@ -39,7 +39,7 @@ func TestG8_ReadOnlyForStatus_OnlyCancelled(t *testing.T) {
 // The struct-shape assertion — a compile-time contract check.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB11_MembershipProjection_FieldsPresent(t *testing.T) {
+func TestMembershipProjection_FieldsPresent(t *testing.T) {
 	// Populate the projection and read back both the deprecated alias and
 	// the LLD-canonical field. Both must be present and reflect the same
 	// underlying subscription state; ReadOnly must be derived, not stored.
@@ -53,7 +53,7 @@ func TestB11_MembershipProjection_FieldsPresent(t *testing.T) {
 	assert.True(t, proj.ReadOnly)
 }
 
-func TestB11_MembershipProjection_ReadOnlyFalseForTrial(t *testing.T) {
+func TestMembershipProjection_ReadOnlyFalseForTrial(t *testing.T) {
 	proj := &MembershipProjection{
 		SubscriptionStatus: domain.StatusTrial,
 		ReadOnly:           readOnlyForStatus(domain.StatusTrial),

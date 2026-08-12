@@ -6,6 +6,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -90,7 +91,15 @@ func endDelegationInTx(ctx context.Context, jctx *Context, t struct {
 	scopeID     *uuid.UUID
 	version     int64
 }) error {
-	return jctx.TxRunner.RunInTx(ctx, func(txCtx context.Context) error {
+	// RLS-6 (LLD line 1746): TxRunner runs against the RLS-scoped app pool, so
+	// app.tenant_id must be bound before RunInTx or the delegation UPDATE fails
+	// the tenant_isolation WITH CHECK — silently leaving expired delegations
+	// active after UP pointer-clear already succeeded (DEL-6 split-brain).
+	g, _ := pgcommon.GUCSetFromContext(ctx)
+	g.UserID = "iam-system"
+	g.TenantID = t.tenantID.String()
+	gucCtx := pgcommon.WithGUCSet(ctx, g)
+	return jctx.TxRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
 		tx, ok := txFromCtx(txCtx)
 		if !ok {
 			return errNoTx
@@ -113,11 +122,14 @@ func endDelegationInTx(ctx context.Context, jctx *Context, t struct {
 		return pub.EnqueueCtx(txCtx, &domain.DomainEvent{
 			Type: domain.EventDelegationEnded, TenantID: t.tenantID,
 			Subject: t.id.String(), Actor: "iam-system",
+			IPAddress: "system",
+			UserAgent: "iam-org-membership/delegation-expiry-cron",
 			Data: domain.DelegationEndedPayload{
 				DelegationID: t.id, TenantID: t.tenantID,
 				DelegatorID: t.delegatorID, DelegateID: t.delegateID,
 				Scope: domain.DelegationScope(t.scope), ScopeID: t.scopeID,
 				EndedReason: domain.EndReasonExpired,
+				ActorID:     domain.SystemActorID,
 			},
 		})
 	})

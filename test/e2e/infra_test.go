@@ -29,7 +29,7 @@ import (
 
 // ── P13-INFRA-001 ───────────────────────────────────────────────────────────
 
-func TestP13_INFRA_001_HealthzUnauthenticated(t *testing.T) {
+func TestHealthzUnauthenticated(t *testing.T) {
 	e := newE2EEnv(t)
 	code, _, body := e.do(t, reqOpts{method: http.MethodGet, path: "/healthz"})
 	assert.Equal(t, http.StatusOK, code, "P13-INFRA-001: /healthz must accept unauthenticated probes")
@@ -38,7 +38,7 @@ func TestP13_INFRA_001_HealthzUnauthenticated(t *testing.T) {
 
 // ── P13-INFRA-002 ───────────────────────────────────────────────────────────
 
-func TestP13_INFRA_002_ReadyzWhenDBUp(t *testing.T) {
+func TestReadyzWhenDBUp(t *testing.T) {
 	e := newE2EEnv(t)
 	code, _, body := e.do(t, reqOpts{method: http.MethodGet, path: "/readyz"})
 	assert.Equal(t, http.StatusOK, code, "P13-INFRA-002: /readyz must return 200 when the DB is healthy")
@@ -47,7 +47,7 @@ func TestP13_INFRA_002_ReadyzWhenDBUp(t *testing.T) {
 
 // ── P13-MW-001 ──────────────────────────────────────────────────────────────
 
-func TestP13_MW_001_ProtectedRouteMissingHeaders(t *testing.T) {
+func TestProtectedRouteMissingHeaders(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "mw-001")
 	code, _, body := e.do(t, reqOpts{
@@ -61,7 +61,7 @@ func TestP13_MW_001_ProtectedRouteMissingHeaders(t *testing.T) {
 
 // ── P13-MW-002 ──────────────────────────────────────────────────────────────
 
-func TestP13_MW_002_XRequestIDEchoedWhenProvided(t *testing.T) {
+func TestXRequestIDEchoedWhenProvided(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "mw-002")
 	userID := e.seedOwner(t, tenantID)
@@ -81,7 +81,7 @@ func TestP13_MW_002_XRequestIDEchoedWhenProvided(t *testing.T) {
 
 // ── P13-MW-003 ──────────────────────────────────────────────────────────────
 
-func TestP13_MW_003_XRequestIDGeneratedWhenAbsent(t *testing.T) {
+func TestXRequestIDGeneratedWhenAbsent(t *testing.T) {
 	e := newE2EEnv(t)
 	_, respHeaders, _ := e.do(t, reqOpts{method: http.MethodGet, path: "/healthz"})
 	rid := respHeaders.Get("X-Request-ID")
@@ -90,8 +90,8 @@ func TestP13_MW_003_XRequestIDGeneratedWhenAbsent(t *testing.T) {
 
 // ── P13-MW-004 ──────────────────────────────────────────────────────────────
 
-// TestP13_MW_004_BodyCapEnforced — payload larger than 1MB must be rejected.
-func TestP13_MW_004_BodyCapEnforced(t *testing.T) {
+// TestBodyCapEnforced — payload larger than 1MB must be rejected.
+func TestBodyCapEnforced(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "mw-004")
 	userID := e.seedOwner(t, tenantID)
@@ -111,7 +111,7 @@ func TestP13_MW_004_BodyCapEnforced(t *testing.T) {
 
 // ── P13-MW-005 ──────────────────────────────────────────────────────────────
 
-func TestP13_MW_005_InternalRequiresSystemRole(t *testing.T) {
+func TestInternalRequiresSystemRole(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "mw-005")
 	userID := e.seedOwner(t, tenantID)
@@ -129,7 +129,7 @@ func TestP13_MW_005_InternalRequiresSystemRole(t *testing.T) {
 
 // ── P13-MW-006 ──────────────────────────────────────────────────────────────
 
-func TestP13_MW_006_OperatorRequiresOperatorRole(t *testing.T) {
+func TestOperatorRequiresOperatorRole(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "mw-006")
 	userID := e.seedOwner(t, tenantID)
@@ -146,7 +146,7 @@ func TestP13_MW_006_OperatorRequiresOperatorRole(t *testing.T) {
 
 // ── P13-MW-007 ──────────────────────────────────────────────────────────────
 
-func TestP13_MW_007_ContentTypeGate(t *testing.T) {
+func TestContentTypeGate(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "mw-007")
 	userID := e.seedOwner(t, tenantID)

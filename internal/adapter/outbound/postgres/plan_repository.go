@@ -123,7 +123,7 @@ func (r *PlanRepository) Update(ctx context.Context, code domain.TenantPlan, pat
 		sets = append(sets, "feature_set = "+next(string(fsJSON))+"::jsonb")
 	}
 	if len(sets) == 0 {
-		return r.FindByCode(ctx, code)
+		return nil, domain.NewError(domain.ErrNoMutableField, "at least one field must be provided")
 	}
 	sql := `UPDATE plans SET ` + strings.Join(sets, ", ") +
 		` WHERE code = $1 AND record_version = $2 RETURNING ` + planCols

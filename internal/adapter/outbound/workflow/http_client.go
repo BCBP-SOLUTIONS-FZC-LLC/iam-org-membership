@@ -82,14 +82,14 @@ func (c *HTTPClient) GetDelegateImpact(ctx context.Context, tenantID, userID uui
 		return fallback, nil
 	}
 	q := url.Values{
-		"tenant_id": {tenantID.String()},
-		"user_id":   {userID.String()},
+		"tenant_id":        {tenantID.String()},
+		"delegate_user_id": {userID.String()},
 	}
 	if delegationID != nil {
 		q.Set("delegation_id", delegationID.String())
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/api/v1/internal/workflows/active-by-user?%s", c.baseURL, q.Encode()), nil)
+		fmt.Sprintf("%s/api/v1/internal/workflows/delegate-impact?%s", c.baseURL, q.Encode()), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -125,14 +125,14 @@ func (c *HTTPClient) ReassignDelegate(ctx context.Context, tenantID, oldUserID, 
 		return nil
 	}
 	body := map[string]any{
-		"tenant_id":   tenantID,
-		"old_user_id": oldUserID,
-		"new_user_id": newUserID,
+		"tenant_id":       tenantID,
+		"old_delegate_id": oldUserID,
+		"new_delegate_id": newUserID,
 	}
 	if delegationID != nil {
 		body["delegation_id"] = *delegationID
 	}
-	return c.postInternal(ctx, tenantID, "/api/v1/internal/workflows/reassign", body)
+	return c.postInternal(ctx, tenantID, "/api/v1/internal/workflows/reassign-delegate", body)
 }
 
 func (c *HTTPClient) CancelByDelegate(ctx context.Context, tenantID, userID uuid.UUID, delegationID *uuid.UUID) error {
@@ -142,8 +142,8 @@ func (c *HTTPClient) CancelByDelegate(ctx context.Context, tenantID, userID uuid
 		return nil
 	}
 	body := map[string]any{
-		"tenant_id": tenantID,
-		"user_id":   userID,
+		"tenant_id":        tenantID,
+		"delegate_user_id": userID,
 	}
 	if delegationID != nil {
 		body["delegation_id"] = *delegationID

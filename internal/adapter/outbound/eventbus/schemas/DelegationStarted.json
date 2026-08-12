@@ -11,6 +11,7 @@
     "delegate_id":   { "type": "string", "format": "uuid" },
     "scope":         { "type": "string", "enum": ["all","department","tender"] },
     "scope_id":      { "type": "string", "format": "uuid" },
+    "starts_at":     { "type": "string", "format": "date-time" },
     "ends_at":       { "type": "string", "format": "date-time" },
     "actor_id":      { "type": "string", "format": "uuid" }
   },

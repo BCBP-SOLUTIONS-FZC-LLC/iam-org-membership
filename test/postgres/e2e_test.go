@@ -21,6 +21,7 @@ package postgres_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -38,7 +39,7 @@ import (
 // and read_only=false.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestE2E1_TrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
+func TestTrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -46,7 +47,7 @@ func TestE2E1_TrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
 	ownerID := uuid.New()
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	_, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+	_, _, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
 		TenantID: tenantID, Slug: "acme-e2e1", Name: "Acme E2E1",
 		Plan: domain.PlanStarter, OwnerUserID: ownerID, DefaultLocale: "en-US",
 	})
@@ -71,7 +72,7 @@ func TestE2E1_TrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
 // E2E-2: Invite → accept → grants land + I-8 reflects.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestE2E2_InviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
+func TestInviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -80,7 +81,7 @@ func TestE2E2_InviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
 	tctx := withSystemAndTenant(ctx, tenantID)
 
 	// 1) Trial-signup the tenant so we have an active tenant + owner.
-	_, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+	_, _, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
 		TenantID: tenantID, Slug: "acme-e2e2", Name: "Acme E2E2",
 		Plan: domain.PlanStarter, OwnerUserID: ownerID, DefaultLocale: "en-US",
 	})
@@ -147,7 +148,7 @@ func TestE2E2_InviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
 // E2E-3: P-28 role reconcile grant + revoke round-trip + I-8 reflects.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestE2E3_RoleReconcile_GrantThenRevoke(t *testing.T) {
+func TestRoleReconcile_GrantThenRevoke(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e3")
@@ -196,7 +197,7 @@ func roleCodes(rs []domain.TenantRole) []domain.TenantRoleCode {
 // E2E-4: Dept assign + level change + I-8 reflects role_level flip.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestE2E4_DeptAssignAndLevelChange_I8Reflects(t *testing.T) {
+func TestDeptAssignAndLevelChange_I8Reflects(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e4")
@@ -242,7 +243,7 @@ func TestE2E4_DeptAssignAndLevelChange_I8Reflects(t *testing.T) {
 //   - I-8 returns "member not found" or empty projection
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestE2E5_FullRemovalCascade(t *testing.T) {
+func TestFullRemovalCascade(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e5")
@@ -314,7 +315,271 @@ func TestE2E5_FullRemovalCascade(t *testing.T) {
 // + AuthZ cache eviction happens (via cache=nil = advisory, no-op here).
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestE2E6_ReassignOwnerFlow(t *testing.T) {
+// ─────────────────────────────────────────────────────────────────────────
+// E2E-7: I-1 idempotency (LLD I1-1) — replaying with same tenant_id
+// short-circuits before re-seeding depts/labels/members/roles and does
+// NOT re-emit any outbox events. Covers I1-IDP-01 + I1-EVT-04 in one shot.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestTrialSignup_IdempotentReplay_NoReSeedNoReEvents(t *testing.T) {
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+
+	tenantID := uuid.New()
+	ownerID := uuid.New()
+	tctx := withSystemAndTenant(ctx, tenantID)
+
+	// First call — full seed.
+	_, _, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+		TenantID: tenantID, Slug: "acme-e2e7", Name: "Acme E2E7",
+		Plan: domain.PlanStarter, OwnerUserID: ownerID, DefaultLocale: "en-US",
+	})
+	require.NoError(t, err)
+
+	// Snapshot post-first-call counts.
+	before := struct{ Depts, Members, Roles, Events int }{}
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_departments WHERE tenant_id=$1`, tenantID).Scan(&before.Depts))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_memberships WHERE tenant_id=$1`, tenantID).Scan(&before.Members))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_roles WHERE tenant_id=$1`, tenantID).Scan(&before.Roles))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM outbox_events WHERE tenant_id=$1`, tenantID.String()).Scan(&before.Events))
+
+	require.Equal(t, 5, before.Depts, "5 system departments seeded on first call")
+	require.Equal(t, 1, before.Members, "1 owner membership seeded")
+	require.Equal(t, 1, before.Roles, "1 tenant_owner role seeded")
+	require.Equal(t, 3, before.Events, "3 events emitted (TenantCreated + TrialStarted + TenantRoleGranted)")
+
+	// Replay with an intentionally different slug/name — LLD says tenant `id`
+	// is the SOLE idempotency key, and mismatching-body fields are silently
+	// discarded (the caller gets back the original row).
+	_, _, err = fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+		TenantID: tenantID, Slug: "acme-e2e7-different", Name: "Acme E2E7 (replay)",
+		Plan: domain.PlanEnterprise, OwnerUserID: uuid.New(), DefaultLocale: "fr-FR",
+	})
+	require.NoError(t, err)
+
+	// Snapshot post-replay counts — MUST be unchanged.
+	after := struct{ Depts, Members, Roles, Events int }{}
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_departments WHERE tenant_id=$1`, tenantID).Scan(&after.Depts))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_memberships WHERE tenant_id=$1`, tenantID).Scan(&after.Members))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_roles WHERE tenant_id=$1`, tenantID).Scan(&after.Roles))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM outbox_events WHERE tenant_id=$1`, tenantID.String()).Scan(&after.Events))
+
+	assert.Equal(t, before.Depts, after.Depts, "LLD I1-1: replay must NOT re-seed departments")
+	assert.Equal(t, before.Members, after.Members, "LLD I1-1: replay must NOT create a second owner membership")
+	assert.Equal(t, before.Roles, after.Roles, "LLD I1-1: replay must NOT re-grant the tenant_owner role")
+	assert.Equal(t, before.Events, after.Events, "LLD I1-EVT-04: replay must NOT re-emit any outbox events")
+
+	// The original row (owner_user_id, name) must be preserved — replay
+	// with different fields is a no-op, not an update.
+	var storedName string
+	var storedPlan string
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT name, plan FROM tenants WHERE id=$1`, tenantID).Scan(&storedName, &storedPlan))
+	assert.Equal(t, "Acme E2E7", storedName, "original tenant name preserved on replay")
+	assert.Equal(t, string(domain.PlanStarter), storedPlan, "original plan preserved on replay (not upgraded to enterprise)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// E2E-8: I-1 slug conflict (LLD I1-2) — two tenants cannot share a slug.
+// Covers I1-IDP-02.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestTrialSignup_SlugConflict_ReturnsError(t *testing.T) {
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+
+	tenantA := uuid.New()
+	ctxA := withSystemAndTenant(ctx, tenantA)
+	_, _, err := fx.Provisioning.TrialSignup(ctxA, service.TrialSignupInput{
+		TenantID: tenantA, Slug: "acme-e2e8", Name: "Acme E2E8",
+		Plan: domain.PlanStarter, OwnerUserID: uuid.New(),
+	})
+	require.NoError(t, err)
+
+	// Different tenant_id, SAME slug — must fail per LLD I1-2 (uq_tenants_slug).
+	tenantB := uuid.New()
+	ctxB := withSystemAndTenant(ctx, tenantB)
+	_, _, err = fx.Provisioning.TrialSignup(ctxB, service.TrialSignupInput{
+		TenantID: tenantB, Slug: "acme-e2e8", Name: "Acme E2E8 clone",
+		Plan: domain.PlanStarter, OwnerUserID: uuid.New(),
+	})
+	require.Error(t, err, "LLD I1-2: uq_tenants_slug must reject a slug owned by a different tenant")
+	assert.Contains(t, err.Error(), "slug", "error should reference the slug conflict")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// I1-CONC-01: two concurrent TrialSignup calls with the same tenant_id
+// must produce EXACTLY ONE tenant row with no duplicated seeds. Exactly
+// one caller wins (wasCreated=true); the other sees ON CONFLICT (id) DO
+// NOTHING and returns the existing row (wasCreated=false).
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestTrialSignup_ConcurrentSameIdRace_OneWinsOneReplays(t *testing.T) {
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+
+	tenantID := uuid.New()
+	ownerID := uuid.New()
+
+	var wg sync.WaitGroup
+	results := make([]bool, 2) // wasCreated values
+	errs := make([]error, 2)
+	// LLD line 2476: idempotency is keyed on tenant_id (PK), not slug —
+	// uq_tenants_slug is a SEPARATE conflict domain. To isolate the id
+	// idempotency invariant under a concurrent race, the two calls use
+	// different slugs (as would happen if a retry passed a new suffix).
+	slugs := []string{"acme-conc01-a", "acme-conc01-b"}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			tctx := withSystemAndTenant(ctx, tenantID)
+			_, wasCreated, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+				TenantID:    tenantID,
+				Slug:        slugs[idx],
+				Name:        "Acme CONC01",
+				Plan:        domain.PlanStarter,
+				OwnerUserID: ownerID,
+			})
+			results[idx] = wasCreated
+			errs[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	assert.NotEqual(t, results[0], results[1],
+		"race: exactly one caller must win the INSERT (wasCreated=true), the other is idempotent (wasCreated=false)")
+
+	// No duplication in the DB.
+	var depts, members, roles, events int
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_departments WHERE tenant_id=$1`, tenantID).Scan(&depts))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_memberships WHERE tenant_id=$1`, tenantID).Scan(&members))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_roles WHERE tenant_id=$1`, tenantID).Scan(&roles))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM outbox_events WHERE tenant_id=$1`, tenantID.String()).Scan(&events))
+
+	assert.Equal(t, 5, depts, "still 5 system departments, not 10")
+	assert.Equal(t, 1, members, "still 1 owner membership, not 2")
+	assert.Equal(t, 1, roles, "still 1 tenant_owner role, not 2")
+	assert.Equal(t, 3, events, "still 3 outbox events, not 6 (LLD I1-EVT-04 IDEMP-1)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// I1-DEP-02: depts.List fails mid-transaction → RunInTx rolls back.
+// Simulated by renaming the departments catalog table before the call
+// and restoring on cleanup. Proves CONS-1 transactional-outbox atomicity
+// under partial failure — zero orphan rows / zero orphan events.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestTrialSignup_DeptsListFailureMidTx_RollsBackCleanly(t *testing.T) {
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+
+	// Rename the catalog to force depts.List to raise "relation does not exist".
+	_, err := fx.rawPool.Exec(ctx, `ALTER TABLE departments RENAME TO departments_dep02_bkp`)
+	require.NoError(t, err)
+	// Always restore before the test fixture tears down.
+	t.Cleanup(func() {
+		_, restoreErr := fx.rawPool.Exec(ctx, `ALTER TABLE departments_dep02_bkp RENAME TO departments`)
+		require.NoError(t, restoreErr, "MUST restore departments to avoid poisoning subsequent tests")
+	})
+
+	tenantID := uuid.New()
+	tctx := withSystemAndTenant(ctx, tenantID)
+	_, _, err = fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+		TenantID: tenantID, Slug: "acme-dep02", Name: "Acme DEP02",
+		Plan: domain.PlanStarter, OwnerUserID: uuid.New(),
+	})
+	require.Error(t, err, "depts.List must fail → RunInTx aborts the transaction")
+
+	// Rollback proof — no partial state committed.
+	var tenantRows, members, roles, events int
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenants WHERE id=$1`, tenantID).Scan(&tenantRows))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_memberships WHERE tenant_id=$1`, tenantID).Scan(&members))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tenant_roles WHERE tenant_id=$1`, tenantID).Scan(&roles))
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM outbox_events WHERE tenant_id=$1`, tenantID.String()).Scan(&events))
+
+	assert.Equal(t, 0, tenantRows, "tenant row must not survive the rollback")
+	assert.Equal(t, 0, members, "no orphan owner membership")
+	assert.Equal(t, 0, roles, "no orphan role grant")
+	assert.Equal(t, 0, events, "no orphan outbox events (CONS-1 transactional outbox atomicity)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// P2-CONC-03: two concurrent PATCHes against the same tenant with the
+// same expected record_version. Exactly one succeeds; the other's UPDATE
+// matches 0 rows and is translated by the service to 409 optimistic_lock_conflict.
+// Exercised at the SQL level so the DB constraint itself is proven; the
+// handler translation is separately covered by
+// TestTenantPatch_OptimisticLock and TestTenantPatch_MissingRecordVersionRaises409.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestTenantPatch_ConcurrentPatchRace_OneWinsOne409(t *testing.T) {
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "conc03")
+
+	// Read the current record_version — both writers race with this pre-image.
+	var currentVersion int64
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT record_version FROM tenants WHERE id=$1`, tenantID).Scan(&currentVersion))
+
+	var wg sync.WaitGroup
+	rowsAffected := make([]int64, 2)
+	for i, name := range []string{"Racer A", "Racer B"} {
+		wg.Add(1)
+		go func(idx int, newName string) {
+			defer wg.Done()
+			cmd, err := fx.rawPool.Exec(ctx,
+				`UPDATE tenants
+				 SET name=$1, record_version=record_version+1
+				 WHERE id=$2 AND record_version=$3 AND deleted_at IS NULL`,
+				newName, tenantID, currentVersion)
+			require.NoError(t, err)
+			rowsAffected[idx] = cmd.RowsAffected()
+		}(i, name)
+	}
+	wg.Wait()
+
+	won := 0
+	lost := 0
+	for _, ra := range rowsAffected {
+		if ra == 1 {
+			won++
+		} else {
+			lost++
+		}
+	}
+	assert.Equal(t, 1, won, "exactly one concurrent PATCH must win the optimistic-lock race")
+	assert.Equal(t, 1, lost, "exactly one concurrent PATCH must lose (service translates to 409)")
+
+	// record_version must advance by exactly 1, not 2.
+	var finalVersion int64
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT record_version FROM tenants WHERE id=$1`, tenantID).Scan(&finalVersion))
+	assert.Equal(t, currentVersion+1, finalVersion,
+		"record_version must advance by exactly 1 despite two concurrent writers (CONC-4)")
+}
+
+func TestReassignOwnerFlow(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e6")

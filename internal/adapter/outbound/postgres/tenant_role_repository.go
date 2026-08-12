@@ -79,16 +79,35 @@ func (r *TenantRoleRepository) Grant(ctx context.Context, tr *domain.TenantRole)
 	}
 	var out *domain.TenantRole
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		// LLD §5.4 O-7 line 2069 mandates ON CONFLICT DO NOTHING for
+		// idempotent role grants. Uniqueness enforced by uq_tenant_roles_active
+		// partial index. If the caller re-submits, we fall through to a SELECT
+		// of the existing row (RETURNING is empty on conflict).
 		row := tx.QueryRow(ctx, `
 			INSERT INTO tenant_roles (id, tenant_id, user_id, tenant_membership_id, role_code, granted_by)
 			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (tenant_id, user_id, role_code) WHERE deleted_at IS NULL
+			DO NOTHING
 			RETURNING `+tenantRoleCols,
 			tr.ID, tr.TenantID, tr.UserID, tr.TenantMembershipID, string(tr.RoleCode), tr.GrantedBy)
 		created, err := scanTenantRole(row)
-		if err != nil {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		out = created
+		if created != nil {
+			out = created
+			return nil
+		}
+		// Idempotent path — role already granted; return existing row.
+		winner := tx.QueryRow(ctx, `
+			SELECT `+tenantRoleCols+` FROM tenant_roles
+			WHERE tenant_id = $1 AND user_id = $2 AND role_code = $3 AND deleted_at IS NULL`,
+			tr.TenantID, tr.UserID, string(tr.RoleCode))
+		final, ferr := scanTenantRole(winner)
+		if ferr != nil {
+			return ferr
+		}
+		out = final
 		return nil
 	})
 	return out, err

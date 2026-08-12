@@ -1761,7 +1761,9 @@ components:
       name: TrialStarted
       title: Trial Started
       summary: |
-        Emitted onto iam-tenant-events immediately after TenantCreated when
+        Emitted onto iam-tenant-events immediately after 
+        
+         when
         the tenant begins its trial window (both events written in the same
         outbox transaction). Consumers can treat this as an independently
         meaningful signal (it carries plan + trial_ends_at).

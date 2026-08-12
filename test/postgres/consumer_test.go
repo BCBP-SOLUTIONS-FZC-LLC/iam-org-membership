@@ -144,7 +144,7 @@ func TestConsumer_TenantOffboarded_ReplayPreservesTimestamps(t *testing.T) {
 // never produces a single unbounded UPDATE.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestB17_InvitationExpiry_RespectsBatchLimit(t *testing.T) {
+func TestInvitationExpiry_RespectsBatchLimit(t *testing.T) {
 	jctx, _, _ := newJobContext(t, context.Background())
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, jctx.SysPool, "b17-batch")

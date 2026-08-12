@@ -176,9 +176,10 @@ func newPhase12Env(t *testing.T) *phase12Env {
 	pgDSN, closePg := startPostgres(t, ctx)
 	t.Cleanup(closePg)
 
-	// Apply domain migrations + platform-events outbox schema.
-	require.NoError(t, pgadapter.RunMigrations(ctx, pgDSN))
+	// Apply outbox schema FIRST (creates outbox_events), then domain migrations
+	// (000010_outbox_payload_text.up.sql alters outbox_events and must run after).
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: pgDSN}))
+	require.NoError(t, pgadapter.RunMigrations(ctx, pgDSN))
 
 	rawPool, err := pgxpool.New(ctx, pgDSN)
 	require.NoError(t, err)

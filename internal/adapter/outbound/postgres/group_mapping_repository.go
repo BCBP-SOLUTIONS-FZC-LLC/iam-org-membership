@@ -2,12 +2,14 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type GroupMappingRepository struct {
@@ -147,6 +149,11 @@ func (r *GroupMappingRepository) ReplaceDeptMappings(ctx context.Context, tenant
 				INSERT INTO group_dept_mappings (id, tenant_id, keycloak_group_name, department_id)
 				VALUES (gen_random_uuid(), $1, $2, $3)`,
 				tenantID, m.KeycloakGroupName, m.DepartmentID); err != nil {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+					return domain.NewError(domain.ErrValidation, "department_id does not exist").
+						WithDetails(map[string]any{"code": "invalid_department_id", "department_id": m.DepartmentID})
+				}
 				return err
 			}
 		}

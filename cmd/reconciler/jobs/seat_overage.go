@@ -6,6 +6,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -73,9 +74,17 @@ func SeatOverageReconcile(ctx context.Context, jctx *Context) (Result, error) {
 }
 
 func reconcileOneTenant(ctx context.Context, jctx *Context, tenantID uuid.UUID) error {
+	// RLS-6 (LLD line 1746): the TxRunner runs against the RLS-scoped app pool
+	// (GUCProvider=pgcommon.GUCSetFromContext), so app.tenant_id must be bound
+	// on this ctx or every UPDATE fails the tenant_isolation WITH CHECK and
+	// returns 0 rows silently — defeating SEAT-5's overage_since transitions.
+	g, _ := pgcommon.GUCSetFromContext(ctx)
+	g.UserID = "iam-system"
+	g.TenantID = tenantID.String()
+	gucCtx := pgcommon.WithGUCSet(ctx, g)
 	// Use the txRunner so any emitted event goes into the same tx as the
 	// tenants UPDATE.
-	return jctx.TxRunner.RunInTx(ctx, func(txCtx context.Context) error {
+	return jctx.TxRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
 		tx, ok := txFromCtx(txCtx)
 		if !ok {
 			return errNoTx

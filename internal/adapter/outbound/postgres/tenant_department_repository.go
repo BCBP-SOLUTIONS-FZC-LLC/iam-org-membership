@@ -68,7 +68,7 @@ func (r *TenantDepartmentRepository) Find(ctx context.Context, tenantID, departm
 		td, err := scanTenantDept(row)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NewError(domain.ErrDepartmentNotFound, "department not active for tenant")
+				return domain.NewError(domain.ErrDepartmentNotFound, "department not found for tenant")
 			}
 			return err
 		}
@@ -78,23 +78,24 @@ func (r *TenantDepartmentRepository) Find(ctx context.Context, tenantID, departm
 	return out, err
 }
 
-// Activate upserts a tenant_departments row → is_active=true. Idempotent.
+// Activate inserts a tenant_departments row with is_active=true.
+// TD-7: if a row for (tenant_id, department_id) already exists — active OR
+// inactive — returns ErrDepartmentAlreadyActivated (409). Use P-25 SetActive
+// to bring an inactive row back.
 func (r *TenantDepartmentRepository) Activate(ctx context.Context, tenantID, departmentID uuid.UUID) (*domain.TenantDepartment, error) {
 	var out *domain.TenantDepartment
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
 			INSERT INTO tenant_departments (tenant_id, department_id, is_active)
 			VALUES ($1, $2, true)
-			ON CONFLICT (tenant_id, department_id) DO UPDATE
-				SET is_active = true
-				WHERE tenant_departments.is_active = false
+			ON CONFLICT (tenant_id, department_id) DO NOTHING
 			RETURNING `+tenantDeptSelectColumns,
 			tenantID, departmentID)
 		td, err := scanTenantDept(row)
 		if err != nil {
-			// If ON CONFLICT WHERE didn't match (already active), re-read.
 			if errors.Is(err, pgx.ErrNoRows) {
-				return r.findInTx(ctx, tx, tenantID, departmentID, &out)
+				return domain.NewError(domain.ErrDepartmentAlreadyActivated,
+					"department is already activated for this tenant")
 			}
 			return err
 		}
@@ -102,16 +103,6 @@ func (r *TenantDepartmentRepository) Activate(ctx context.Context, tenantID, dep
 		return nil
 	})
 	return out, err
-}
-
-func (r *TenantDepartmentRepository) findInTx(ctx context.Context, tx pgx.Tx, tenantID, departmentID uuid.UUID, out **domain.TenantDepartment) error {
-	row := tx.QueryRow(ctx, `SELECT `+tenantDeptSelectColumns+` FROM tenant_departments WHERE tenant_id = $1 AND department_id = $2`, tenantID, departmentID)
-	td, err := scanTenantDept(row)
-	if err != nil {
-		return err
-	}
-	*out = td
-	return nil
 }
 
 // SetActive flips is_active with optimistic locking (P-25).
@@ -130,7 +121,7 @@ func (r *TenantDepartmentRepository) SetActive(ctx context.Context, tenantID, de
 				probe := tx.QueryRow(ctx, `SELECT record_version FROM tenant_departments WHERE tenant_id = $1 AND department_id = $2`, tenantID, departmentID)
 				if perr := probe.Scan(&currentVersion); perr != nil {
 					if errors.Is(perr, pgx.ErrNoRows) {
-						return domain.NewError(domain.ErrDepartmentNotFound, "department not active for tenant")
+						return domain.NewError(domain.ErrDepartmentNotFound, "department not found for tenant")
 					}
 					return perr
 				}

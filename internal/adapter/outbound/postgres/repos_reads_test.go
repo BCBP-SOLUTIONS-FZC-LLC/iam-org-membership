@@ -14,7 +14,7 @@ import (
 )
 
 // delegationRow builds a scripted row matching the SELECT column order of
-// delegationCols (16 fields).
+// delegationCols (19 fields: 16 original + review_due_at, review_notice_sent_at, review_window_days).
 func delegationRow(tenantID, delegatorID, delegateID uuid.UUID, scope, status string) []any {
 	now := time.Now()
 	var reason *string
@@ -23,6 +23,7 @@ func delegationRow(tenantID, delegatorID, delegateID uuid.UUID, scope, status st
 		uuid.New(), uuid.New(),
 		scope, (*uuid.UUID)(nil), reason, now, (*time.Time)(nil), status,
 		int64(1), now, now, (*time.Time)(nil),
+		(*time.Time)(nil), (*time.Time)(nil), (*int)(nil), // review_due_at, review_notice_sent_at, review_window_days
 	}
 }
 

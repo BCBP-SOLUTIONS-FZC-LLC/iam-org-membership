@@ -160,10 +160,12 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		// ── EVT-16 tenant-state relay ────────────────────────────────────
 		if c.outbox != nil && (newStatus != prevStatus || newPlan != prevPlan) {
 			if err := c.outbox.EnqueueInTx(txCtx, tx, &domain.DomainEvent{
-				Type:     domain.EventTenantStateChanged,
-				TenantID: tenantID,
-				Subject:  tenantID.String(),
-				Actor:    "iam-system",
+				Type:      domain.EventTenantStateChanged,
+				TenantID:  tenantID,
+				Subject:   tenantID.String(),
+				Actor:     "iam-system",
+				IPAddress: "system",
+				UserAgent: "iam-org-membership/event-consumer",
 				Data: domain.TenantStateChangedPayload{
 					TenantID:       tenantID,
 					Status:         newStatus,
@@ -234,14 +236,32 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'trial_expired' WHERE id = $1`, tenantID)
 		return domain.StatusTrialExpired, prevPlan, err
 	case "TrialReactivated":
-		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'trial',
-			                    trial_ends_at = now() + INTERVAL '30 days',
-			                    trial_reactivation_count = trial_reactivation_count + 1
-			WHERE id = $1`, tenantID)
-		return domain.StatusTrial, prevPlan, err
+		// TR2 (§15.4, LLD line 4237): trial_ends_at uses per-tier plan.trial_duration_days,
+		// not a hardcoded 30 (rev 1.32/A32(g)). T-14 caps trial_reactivation_count at 1;
+		// the WHERE clause enforces the one-time cap and the CHECK constraint is the DB backstop.
+		tag, err := tx.Exec(ctx, `
+			UPDATE tenants t
+			SET status = 'trial',
+			    trial_ends_at = now() + make_interval(days => (SELECT trial_duration_days FROM plans WHERE code = t.plan)),
+			    trial_reactivation_count = trial_reactivation_count + 1
+			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, tenantID)
+		if err != nil {
+			return prevStatus, prevPlan, err
+		}
+		if tag.RowsAffected() == 0 {
+			c.logger.Warn("TrialReactivated: reactivation cap reached (TRIAL-5), no-op",
+				"tenant_id", tenantID, "event_id", env.ID)
+			return prevStatus, prevPlan, nil
+		}
+		return domain.StatusTrial, prevPlan, nil
 	case "TenantSuspended":
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, tenantID)
+		// T-11 biconditional (LLD line 704): cancelled_at IS NOT NULL iff status IN
+		// (cancelled, suspended, offboarded). COALESCE preserves an existing timestamp
+		// (idempotent replay after a manual suspend).
+		_, err := tx.Exec(ctx, `
+			UPDATE tenants SET status = 'suspended',
+			                    cancelled_at = COALESCE(cancelled_at, now())
+			WHERE id = $1`, tenantID)
 		return domain.StatusSuspended, prevPlan, err
 	case "TenantOffboarded":
 		// PAID-1: terminal. Per tenant-offboarding-workflow doc — O&M
@@ -271,7 +291,10 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'past_due' WHERE id = $1`, tenantID)
 		return domain.StatusPastDue, prevPlan, err
 	case "TenantSubscriptionCancelled":
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'cancelled', cancelled_at = now() WHERE id = $1`, tenantID)
+		// Preserve any existing cancelled_at (e.g. tenant was previously suspended
+		// with cancelled_at set). Replaying this event must NOT reset the §15.5
+		// retention/grace clock. Parity with TenantSuspended/TenantOffboarded.
+		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, now()) WHERE id = $1`, tenantID)
 		return domain.StatusCancelled, prevPlan, err
 	case "TenantReactivated":
 		if prevStatus == domain.StatusOffboarded {

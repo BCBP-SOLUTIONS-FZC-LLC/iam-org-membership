@@ -62,8 +62,12 @@ type DelegationStartedPayload struct {
 	DelegateID   uuid.UUID       `json:"delegate_id"`
 	Scope        DelegationScope `json:"scope"`
 	ScopeID      *uuid.UUID      `json:"scope_id,omitempty"`
-	EndsAt       *time.Time      `json:"ends_at,omitempty"`
-	ActorID      uuid.UUID       `json:"actor_id"`
+	// StartsAt is per LLD §7.4 skeleton line 3029 (added rev-alignment;
+	// §7.3 catalog omitted it but §7.4 requires it). Optional to remain
+	// backward-compat with existing consumers.
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+	EndsAt   *time.Time `json:"ends_at,omitempty"`
+	ActorID  uuid.UUID  `json:"actor_id"`
 }
 
 type DelegationEndedPayload struct {
@@ -73,7 +77,20 @@ type DelegationEndedPayload struct {
 	DelegateID   uuid.UUID       `json:"delegate_id"`
 	Scope        DelegationScope `json:"scope"`
 	ScopeID      *uuid.UUID      `json:"scope_id,omitempty"`
-	EndedReason  EndReason       `json:"ended_reason"` // expired | cancelled | delegate_removed (DEL-7)
+	EndedReason  EndReason       `json:"ended_reason"` // expired | cancelled | delegate_removed | review_expired (DEL-7, DEL-13)
+	ActorID      uuid.UUID       `json:"actor_id"`
+}
+
+// DelegationReviewRequestedPayload is the §16 A70 / DEL-13 warning event emitted
+// when an open-ended delegation's review_due_at is within the warning window.
+type DelegationReviewRequestedPayload struct {
+	DelegationID uuid.UUID       `json:"delegation_id"`
+	TenantID     uuid.UUID       `json:"tenant_id"`
+	DelegatorID  uuid.UUID       `json:"delegator_id"`
+	DelegateID   uuid.UUID       `json:"delegate_id"`
+	Scope        DelegationScope `json:"scope"`
+	ScopeID      *uuid.UUID      `json:"scope_id,omitempty"`
+	ReviewDueAt  time.Time       `json:"review_due_at"`
 	ActorID      uuid.UUID       `json:"actor_id"`
 }
 

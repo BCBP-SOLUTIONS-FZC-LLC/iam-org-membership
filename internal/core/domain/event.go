@@ -6,6 +6,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// SystemActorID is the well-known UUID used as actor_id in system-initiated
+// events (cascade deletions, cron jobs). Distinguishable from uuid.Nil.
+var SystemActorID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
 // DomainEvent is the framework-agnostic event carrier passed from services
 // into the outbox layer. The eventbus adapter wraps this in an
 // events.Envelope[json.RawMessage] and inserts it into outbox_events within
@@ -41,6 +45,7 @@ const (
 	EventTenantRoleRevoked                = "TenantRoleRevoked"
 	EventDelegationStarted                = "DelegationStarted"
 	EventDelegationEnded                  = "DelegationEnded"
+	EventDelegationReviewRequested        = "DelegationReviewRequested"
 	EventTenderAssigneeOverridden         = "TenderAssigneeOverridden"
 	EventTenantSeatOverageStarted         = "TenantSeatOverageStarted"
 	EventTenantSeatOverageResolved        = "TenantSeatOverageResolved"

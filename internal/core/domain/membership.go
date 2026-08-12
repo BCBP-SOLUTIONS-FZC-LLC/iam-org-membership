@@ -57,6 +57,6 @@ type MembershipListItem struct {
 // DeptMembershipView is the compact per-user dept view embedded in the
 // membership projection.
 type DeptMembershipView struct {
-	DepartmentID uuid.UUID
-	RoleLevel    DeptRole
+	DepartmentID uuid.UUID `json:"department_id"`
+	RoleLevel    DeptRole  `json:"level"`
 }

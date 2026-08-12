@@ -33,7 +33,7 @@ import (
 // Test Steps:        1. Call List with id path param="not-a-uuid"
 // Expected Result:   400 invalid_uuid
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P3001_ListDept_InvalidTenantID_400(t *testing.T) {
+func TestListDept_InvalidTenantID(t *testing.T) {
 	h := &DepartmentHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
@@ -47,7 +47,7 @@ func TestP9P3001_ListDept_InvalidTenantID_400(t *testing.T) {
 // Test Steps:        1. Call List without requestctx
 // Expected Result:   401 missing_identity_headers
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P3002_ListDept_MissingIdentity_401(t *testing.T) {
+func TestListDept_MissingIdentity(t *testing.T) {
 	h := &DepartmentHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
@@ -62,7 +62,7 @@ func TestP9P3002_ListDept_MissingIdentity_401(t *testing.T) {
 // Test Steps:        1. Call List with tenant A path, ctx from tenant B
 // Expected Result:   403 insufficient_role
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9P3003_ListDept_CrossTenant_403(t *testing.T) {
+func TestListDept_CrossTenant(t *testing.T) {
 	h := &DepartmentHandler{}
 	tenantA := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
@@ -81,7 +81,7 @@ func TestP9P3003_ListDept_CrossTenant_403(t *testing.T) {
 // Test Steps:        1. Call Activate with malformed JSON
 // Expected Result:   400 validation_error
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P24001_ActivateDept_MalformedBody_400(t *testing.T) {
+func TestActivateDept_MalformedBody(t *testing.T) {
 	h := &DepartmentHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPost, "/", `{`, tenantOwnerCtx(tenant))
@@ -95,7 +95,7 @@ func TestP9P24001_ActivateDept_MalformedBody_400(t *testing.T) {
 // Test Steps:        1. Activate against a different tenant than the caller's
 // Expected Result:   403 insufficient_role (before body binding)
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9P24002_ActivateDept_CrossTenant_403(t *testing.T) {
+func TestActivateDept_CrossTenant(t *testing.T) {
 	h := &DepartmentHandler{}
 	tenantA := uuid.New()
 	body := `{"department_id":"` + uuid.New().String() + `"}`
@@ -110,7 +110,7 @@ func TestP9P24002_ActivateDept_CrossTenant_403(t *testing.T) {
 // Test Steps:        1. Activate with role=[member] only
 // Expected Result:   403 insufficient_role
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P24003_ActivateDept_NonAdmin_403(t *testing.T) {
+func TestActivateDept_NonAdmin(t *testing.T) {
 	h := &DepartmentHandler{}
 	tenant := uuid.New()
 	rc := &requestctx.RequestContext{
@@ -130,7 +130,7 @@ func TestP9P24003_ActivateDept_NonAdmin_403(t *testing.T) {
 // Test Case ID:      P9-P25-001
 // Feature:           P-25 · Invalid dept UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P25001_PatchDept_InvalidDeptID_400(t *testing.T) {
+func TestPatchDept_InvalidDeptID(t *testing.T) {
 	h := &DepartmentHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPatch, "/", `{"is_active":true,"record_version":1}`, tenantOwnerCtx(tenant))
@@ -142,7 +142,7 @@ func TestP9P25001_PatchDept_InvalidDeptID_400(t *testing.T) {
 // Test Case ID:      P9-P25-002
 // Feature:           P-25 · Cross-tenant patch blocked → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9P25002_PatchDept_CrossTenant_403(t *testing.T) {
+func TestPatchDept_CrossTenant(t *testing.T) {
 	h := &DepartmentHandler{}
 	tenantA := uuid.New()
 	c, w := buildCtx(http.MethodPatch, "/", `{"is_active":true,"record_version":1}`, tenantOwnerCtx(uuid.New()))
@@ -158,7 +158,7 @@ func TestP9P25002_PatchDept_CrossTenant_403(t *testing.T) {
 // Test Case ID:      P9-P4-001
 // Feature:           P-4 · Invalid tenant UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P4001_ListMembers_InvalidTenantID_400(t *testing.T) {
+func TestListMembers_InvalidTenantID(t *testing.T) {
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
@@ -169,7 +169,7 @@ func TestP9P4001_ListMembers_InvalidTenantID_400(t *testing.T) {
 // Test Case ID:      P9-P4-002
 // Feature:           P-4 · Cross-tenant list blocked → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9P4002_ListMembers_CrossTenant_403(t *testing.T) {
+func TestListMembers_CrossTenant(t *testing.T) {
 	h := &MembershipHandler{}
 	tenantA := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
@@ -185,7 +185,7 @@ func TestP9P4002_ListMembers_CrossTenant_403(t *testing.T) {
 // Test Case ID:      P9-P5-001
 // Feature:           P-5 · Invalid user_id UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P5001_GetMember_InvalidUserID_400(t *testing.T) {
+func TestGetMember_InvalidUserID(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
@@ -197,7 +197,7 @@ func TestP9P5001_GetMember_InvalidUserID_400(t *testing.T) {
 // Test Case ID:      P9-P5-002
 // Feature:           P-5 · Missing identity → 401
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P5002_GetMember_MissingIdentity_401(t *testing.T) {
+func TestGetMember_MissingIdentity(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
@@ -213,7 +213,7 @@ func TestP9P5002_GetMember_MissingIdentity_401(t *testing.T) {
 // Test Case ID:      P9-P27-001
 // Feature:           P-27 · Invalid tenant UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P27001_SeatUsage_InvalidTenantID_400(t *testing.T) {
+func TestSeatUsage_InvalidTenantID(t *testing.T) {
 	h := &MembershipHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
@@ -224,7 +224,7 @@ func TestP9P27001_SeatUsage_InvalidTenantID_400(t *testing.T) {
 // Test Case ID:      P9-P27-002
 // Feature:           P-27 · Cross-tenant read blocked → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9P27002_SeatUsage_CrossTenant_403(t *testing.T) {
+func TestSeatUsage_CrossTenant(t *testing.T) {
 	h := &MembershipHandler{}
 	tenantA := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
@@ -240,7 +240,7 @@ func TestP9P27002_SeatUsage_CrossTenant_403(t *testing.T) {
 // Test Case ID:      P9-P26-001
 // Feature:           P-26 · Invalid user_id → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P26001_RemovalResolution_InvalidUserID_400(t *testing.T) {
+func TestRemovalResolution_InvalidUserID(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	body := `{"action":"stop_workflows"}`
@@ -253,7 +253,7 @@ func TestP9P26001_RemovalResolution_InvalidUserID_400(t *testing.T) {
 // Test Case ID:      P9-P26-002
 // Feature:           P-26 · Malformed body → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P26002_RemovalResolution_MalformedBody_400(t *testing.T) {
+func TestRemovalResolution_MalformedBody(t *testing.T) {
 	h := &MembershipHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPost, "/", `{`, tenantOwnerCtx(tenant))
@@ -269,7 +269,7 @@ func TestP9P26002_RemovalResolution_MalformedBody_400(t *testing.T) {
 // Test Case ID:      P9-P12-001
 // Feature:           P-12 · Invalid tenant UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P12001_ListRoleLabels_InvalidTenantID_400(t *testing.T) {
+func TestListRoleLabels_InvalidTenantID(t *testing.T) {
 	h := &RoleLabelHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
@@ -280,7 +280,7 @@ func TestP9P12001_ListRoleLabels_InvalidTenantID_400(t *testing.T) {
 // Test Case ID:      P9-P12-002
 // Feature:           P-12 · Cross-tenant list → 403
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P12002_ListRoleLabels_CrossTenant_403(t *testing.T) {
+func TestListRoleLabels_CrossTenant(t *testing.T) {
 	h := &RoleLabelHandler{}
 	tenantA := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
@@ -296,7 +296,7 @@ func TestP9P12002_ListRoleLabels_CrossTenant_403(t *testing.T) {
 // Test Case ID:      P9-P13-001
 // Feature:           P-13 · Malformed body → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P13001_PatchRoleLabel_MalformedBody_400(t *testing.T) {
+func TestPatchRoleLabel_MalformedBody(t *testing.T) {
 	h := &RoleLabelHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPatch, "/", `{`, tenantOwnerCtx(tenant))
@@ -308,7 +308,7 @@ func TestP9P13001_PatchRoleLabel_MalformedBody_400(t *testing.T) {
 // Test Case ID:      P9-P13-002
 // Feature:           P-13 · Cross-tenant → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9P13002_PatchRoleLabel_CrossTenant_403(t *testing.T) {
+func TestPatchRoleLabel_CrossTenant(t *testing.T) {
 	h := &RoleLabelHandler{}
 	tenantA := uuid.New()
 	body := `{"display_name":"Buyer","record_version":1}`
@@ -325,7 +325,7 @@ func TestP9P13002_PatchRoleLabel_CrossTenant_403(t *testing.T) {
 // Test Case ID:      P9-P19-001
 // Feature:           P-19 · Invalid tender UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P19001_ACLGrant_InvalidTenderID_400(t *testing.T) {
+func TestACLGrant_InvalidTenderID(t *testing.T) {
 	h := &ACLHandler{}
 	tenant := uuid.New()
 	body := `{"user_id":"` + uuid.New().String() + `","access_level":"view"}`
@@ -338,7 +338,7 @@ func TestP9P19001_ACLGrant_InvalidTenderID_400(t *testing.T) {
 // Test Case ID:      P9-P19-002
 // Feature:           P-19 · Malformed body → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P19002_ACLGrant_MalformedBody_400(t *testing.T) {
+func TestACLGrant_MalformedBody(t *testing.T) {
 	h := &ACLHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPost, "/", `{`, tenantOwnerCtx(tenant))
@@ -350,7 +350,7 @@ func TestP9P19002_ACLGrant_MalformedBody_400(t *testing.T) {
 // Test Case ID:      P9-P19-003
 // Feature:           P-19 · Cross-tenant grant blocked → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9P19003_ACLGrant_CrossTenant_403(t *testing.T) {
+func TestACLGrant_CrossTenant(t *testing.T) {
 	h := &ACLHandler{}
 	tenantA := uuid.New()
 	body := `{"user_id":"` + uuid.New().String() + `","access_level":"view"}`
@@ -367,7 +367,7 @@ func TestP9P19003_ACLGrant_CrossTenant_403(t *testing.T) {
 // Test Case ID:      P9-P18-001
 // Feature:           P-18 · Invalid tender UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P18001_ACLList_InvalidTenderID_400(t *testing.T) {
+func TestACLList_InvalidTenderID(t *testing.T) {
 	h := &ACLHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
@@ -383,7 +383,7 @@ func TestP9P18001_ACLList_InvalidTenderID_400(t *testing.T) {
 // Test Case ID:      P9-P20-001
 // Feature:           P-20 · Invalid user UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P20001_ACLRevoke_InvalidUserID_400(t *testing.T) {
+func TestACLRevoke_InvalidUserID(t *testing.T) {
 	h := &ACLHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
@@ -399,7 +399,7 @@ func TestP9P20001_ACLRevoke_InvalidUserID_400(t *testing.T) {
 // Test Case ID:      P9-P16-001
 // Feature:           P-16 · Cross-tenant list dept-role mappings → 403
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P16001_ListDeptRoleMappings_CrossTenant_403(t *testing.T) {
+func TestListDeptRoleMappings_CrossTenant(t *testing.T) {
 	h := &GroupMappingHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", uuid.New().String())
@@ -410,7 +410,7 @@ func TestP9P16001_ListDeptRoleMappings_CrossTenant_403(t *testing.T) {
 // Test Case ID:      P9-P17-001
 // Feature:           P-17 · Malformed body → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P17001_PutDeptRoleMappings_MalformedBody_400(t *testing.T) {
+func TestPutDeptRoleMappings_MalformedBody(t *testing.T) {
 	h := &GroupMappingHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPut, "/", `{`, tenantOwnerCtx(tenant))
@@ -422,7 +422,7 @@ func TestP9P17001_PutDeptRoleMappings_MalformedBody_400(t *testing.T) {
 // Test Case ID:      P9-P17-002
 // Feature:           P-17 · PutDept malformed body → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P17002_PutDeptMappings_MalformedBody_400(t *testing.T) {
+func TestPutDeptMappings_MalformedBody(t *testing.T) {
 	h := &GroupMappingHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPut, "/", `{`, tenantOwnerCtx(tenant))
@@ -434,7 +434,7 @@ func TestP9P17002_PutDeptMappings_MalformedBody_400(t *testing.T) {
 // Test Case ID:      P9-P17-003
 // Feature:           P-17 · PutTenantRole malformed body → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9P17003_PutTenantRoleMappings_MalformedBody_400(t *testing.T) {
+func TestPutTenantRoleMappings_MalformedBody(t *testing.T) {
 	h := &GroupMappingHandler{}
 	tenant := uuid.New()
 	c, w := buildCtx(http.MethodPut, "/", `{`, tenantOwnerCtx(tenant))
@@ -450,7 +450,7 @@ func TestP9P17003_PutTenantRoleMappings_MalformedBody_400(t *testing.T) {
 // Test Case ID:      P9-O1-001
 // Feature:           O-1 · Non-operator caller → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9O1001_CreateDept_RequiresOperator_403(t *testing.T) {
+func TestP9O1001_CreateDept_RequiresOperator(t *testing.T) {
 	h := &OperatorHandler{}
 	c, w := buildCtx(http.MethodPost, "/", `{"code":"X","name":"X"}`, tenantOwnerCtx(uuid.New()))
 	h.CreateDepartment(c)
@@ -460,7 +460,7 @@ func TestP9O1001_CreateDept_RequiresOperator_403(t *testing.T) {
 // Test Case ID:      P9-O1-002
 // Feature:           O-1 · Malformed body → 400 (with operator role)
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9O1002_CreateDept_MalformedBody_400(t *testing.T) {
+func TestP9O1002_CreateDept_MalformedBody(t *testing.T) {
 	h := &OperatorHandler{}
 	c, w := buildCtx(http.MethodPost, "/", `{`, operatorCtx())
 	h.CreateDepartment(c)
@@ -474,7 +474,7 @@ func TestP9O1002_CreateDept_MalformedBody_400(t *testing.T) {
 // Test Case ID:      P9-O2-001
 // Feature:           O-2 · Non-operator → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9O2001_PatchDept_RequiresOperator_403(t *testing.T) {
+func TestP9O2001_PatchDept_RequiresOperator(t *testing.T) {
 	h := &OperatorHandler{}
 	body := `{"name":"X","record_version":1}`
 	c, w := buildCtx(http.MethodPatch, "/", body, tenantOwnerCtx(uuid.New()))
@@ -486,7 +486,7 @@ func TestP9O2001_PatchDept_RequiresOperator_403(t *testing.T) {
 // Test Case ID:      P9-O2-002
 // Feature:           O-2 · Invalid dept UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9O2002_PatchDept_InvalidID_400(t *testing.T) {
+func TestP9O2002_PatchDept_InvalidID(t *testing.T) {
 	h := &OperatorHandler{}
 	body := `{"name":"X","record_version":1}`
 	c, w := buildCtx(http.MethodPatch, "/", body, operatorCtx())
@@ -502,7 +502,7 @@ func TestP9O2002_PatchDept_InvalidID_400(t *testing.T) {
 // Test Case ID:      P9-O3-001
 // Feature:           O-3 · Non-operator → 403 (before hitting the 405 guardrail)
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9O3001_DeleteDept_RequiresOperator_403(t *testing.T) {
+func TestP9O3001_DeleteDept_RequiresOperator(t *testing.T) {
 	h := &OperatorHandler{}
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", uuid.New().String())
@@ -530,7 +530,7 @@ func TestP9O3002_DeleteDept_OperatorGets405(t *testing.T) {
 // Test Case ID:      P9-O4-001
 // Feature:           O-4 · Non-operator → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9O4001_SetFeatureFlags_RequiresOperator_403(t *testing.T) {
+func TestP9O4001_SetFeatureFlags_RequiresOperator(t *testing.T) {
 	h := &OperatorHandler{}
 	body := `{"feature_flags":{"a":true}}`
 	c, w := buildCtx(http.MethodPatch, "/", body, tenantOwnerCtx(uuid.New()))
@@ -542,7 +542,7 @@ func TestP9O4001_SetFeatureFlags_RequiresOperator_403(t *testing.T) {
 // Test Case ID:      P9-O4-002
 // Feature:           O-4 · Invalid tenant UUID → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9O4002_SetFeatureFlags_InvalidID_400(t *testing.T) {
+func TestP9O4002_SetFeatureFlags_InvalidID(t *testing.T) {
 	h := &OperatorHandler{}
 	body := `{"feature_flags":{}}`
 	c, w := buildCtx(http.MethodPatch, "/", body, operatorCtx())
@@ -558,7 +558,7 @@ func TestP9O4002_SetFeatureFlags_InvalidID_400(t *testing.T) {
 // Test Case ID:      P9-O5-001
 // Feature:           O-5 · Non-operator → 403
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9O5001_ListPlans_RequiresOperator_403(t *testing.T) {
+func TestP9O5001_ListPlans_RequiresOperator(t *testing.T) {
 	h := &OperatorHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	h.ListPlans(c)
@@ -572,7 +572,7 @@ func TestP9O5001_ListPlans_RequiresOperator_403(t *testing.T) {
 // Test Case ID:      P9-O6-001
 // Feature:           O-6 · Non-operator → 403
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP9O6001_PatchPlan_RequiresOperator_403(t *testing.T) {
+func TestP9O6001_PatchPlan_RequiresOperator(t *testing.T) {
 	h := &OperatorHandler{}
 	body := `{"record_version":1}`
 	c, w := buildCtx(http.MethodPatch, "/", body, tenantOwnerCtx(uuid.New()))
@@ -584,7 +584,7 @@ func TestP9O6001_PatchPlan_RequiresOperator_403(t *testing.T) {
 // Test Case ID:      P9-O6-002
 // Feature:           O-6 · Malformed body → 400
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9O6002_PatchPlan_MalformedBody_400(t *testing.T) {
+func TestP9O6002_PatchPlan_MalformedBody(t *testing.T) {
 	h := &OperatorHandler{}
 	c, w := buildCtx(http.MethodPatch, "/", `{`, operatorCtx())
 	setParams(c, "code", "starter")

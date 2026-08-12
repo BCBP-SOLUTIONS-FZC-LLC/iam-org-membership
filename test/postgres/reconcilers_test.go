@@ -54,10 +54,10 @@ func (r *recFakeRP) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error 
 
 // ── P18-REC-OUTBOX-001 ──────────────────────────────────────────────────────
 
-// TestP18_REC_OUTBOX_001_PruneDropsOnlyRowsPastRetention — seed 3
+// TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention — seed 3
 // old-published + 3 recent-published + 2 unpublished; assert only the 3
 // old rows disappear after OutboxPrune with retention_days=8.
-func TestP18_REC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
+func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "outbox-prune-018")
@@ -89,9 +89,9 @@ func TestP18_REC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
 	}
 }
 
-// TestP18_REC_OUTBOX_002_EmptyTableIsNoOp — prune against a clean
+// TestREC_OUTBOX_002_EmptyTableIsNoOp — prune against a clean
 // outbox_events table returns Attempted=Succeeded=0, no error.
-func TestP18_REC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
+func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
@@ -106,10 +106,10 @@ func TestP18_REC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
 
 // ── P18-REC-TRIAL-001 ───────────────────────────────────────────────────────
 
-// TestP18_REC_TRIAL_001_HardDeletesExpiredPastGrace — a trial_expired
+// TestREC_TRIAL_001_HardDeletesExpiredPastGrace — a trial_expired
 // tenant with trial_ends_at past grace hard-deletes; one within grace and
 // one non-trial-expired both survive.
-func TestP18_REC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
+func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -132,10 +132,10 @@ func TestP18_REC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 
 // ── P18-REC-REALM-001 ───────────────────────────────────────────────────────
 
-// TestP18_REC_REALM_001_SweepClearsMarkerOnSuccess — a tenant with
+// TestREC_REALM_001_SweepClearsMarkerOnSuccess — a tenant with
 // realm_sync_pending=true is swept, RP.PatchRealmConfig is called with
 // the current LocalAccountsEnabled value, and the marker is cleared.
-func TestP18_REC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
+func TestREC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -168,9 +168,9 @@ func TestP18_REC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
 	assert.False(t, pending, "realm_sync_pending must be cleared after successful sync")
 }
 
-// TestP18_REC_REALM_002_MarkerRemainsOnRPFailure — RP.PatchRealmConfig
+// TestREC_REALM_002_MarkerRemainsOnRPFailure — RP.PatchRealmConfig
 // returns an error → marker stays set for next tick.
-func TestP18_REC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
+func TestREC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -200,10 +200,10 @@ func TestP18_REC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
 
 // ── P18-REC-KC-001 ──────────────────────────────────────────────────────────
 
-// TestP18_REC_KC_001_ClearsMarkerAfterDeleteUserSuccess — invitation with
+// TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess — invitation with
 // kc_cleanup_pending=true and a keycloak_user_id → RP.DeleteUser called,
 // marker cleared.
-func TestP18_REC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
+func TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -229,10 +229,10 @@ func TestP18_REC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
 	assert.False(t, pending, "kc_cleanup_pending must be cleared after DeleteUser success")
 }
 
-// TestP18_REC_KC_002_SkipsWhenNoKeycloakUserID — a row with the marker
+// TestREC_KC_002_SkipsWhenNoKeycloakUserID — a row with the marker
 // set but keycloak_user_id IS NULL clears the marker without calling
 // RP (nothing to delete on Keycloak side).
-func TestP18_REC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
+func TestREC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -258,9 +258,9 @@ func TestP18_REC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
 	assert.False(t, pending, "kc_cleanup_pending must be cleared even when there's nothing to delete")
 }
 
-// TestP18_REC_KC_003_MarkerRemainsOnRPFailure — DEL-6 fail-open: RP
+// TestREC_KC_003_MarkerRemainsOnRPFailure — DEL-6 fail-open: RP
 // returns an error → marker stays set, no crash, res.Failed = 1.
-func TestP18_REC_KC_003_MarkerRemainsOnRPFailure(t *testing.T) {
+func TestREC_KC_003_MarkerRemainsOnRPFailure(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 

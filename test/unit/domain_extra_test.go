@@ -21,7 +21,7 @@ import (
 // Test Case ID:      P11-DOMAIN-001
 // Feature:           TR-7 · IsElevated returns true for all elevated codes
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain001_IsElevatedForElevatedRoles(t *testing.T) {
+func TestDomain_IsElevatedForElevatedRoles(t *testing.T) {
 	assert.True(t, domain.RoleTenantOwner.IsElevated())
 	assert.True(t, domain.RoleTenantAdmin.IsElevated())
 	assert.True(t, domain.RoleTenderAdmin.IsElevated())
@@ -30,7 +30,7 @@ func TestP11Domain001_IsElevatedForElevatedRoles(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-002
 // Feature:           TR-7 · 'member' is NOT elevated (never persistable)
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain002_IsElevatedFalseForMember(t *testing.T) {
+func TestDomain_IsElevatedFalseForMember(t *testing.T) {
 	assert.False(t, domain.RoleMember.IsElevated(),
 		"TR-7: 'member' is derived at read time; must not be persistable")
 }
@@ -38,7 +38,7 @@ func TestP11Domain002_IsElevatedFalseForMember(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-003
 // Feature:           Unknown role codes → not elevated (defensive)
 // Priority: P2 · Severity: Minor · Automation Status: Automated
-func TestP11Domain003_IsElevatedFalseForUnknown(t *testing.T) {
+func TestDomain_IsElevatedFalseForUnknown(t *testing.T) {
 	assert.False(t, domain.TenantRoleCode("wizard").IsElevated())
 	assert.False(t, domain.TenantRoleCode("").IsElevated())
 }
@@ -50,7 +50,7 @@ func TestP11Domain003_IsElevatedFalseForUnknown(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-010
 // Feature:           NewError wraps sentinel as Cause; errors.Is matches
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain010_NewErrorWrapsCause(t *testing.T) {
+func TestDomain_NewErrorWrapsCause(t *testing.T) {
 	de := domain.NewError(domain.ErrSeatLimitReached, "no seats")
 	assert.Equal(t, "seat_limit_reached", de.Code)
 	assert.True(t, errors.Is(de, domain.ErrSeatLimitReached),
@@ -60,7 +60,7 @@ func TestP11Domain010_NewErrorWrapsCause(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-011
 // Feature:           DomainError.Error() format
 // Priority: P2 · Severity: Minor · Automation Status: Automated
-func TestP11Domain011_DomainErrorString(t *testing.T) {
+func TestDomain_DomainErrorString(t *testing.T) {
 	de := domain.NewError(domain.ErrValidation, "empty body")
 	assert.Equal(t, "validation_error: empty body", de.Error())
 }
@@ -68,7 +68,7 @@ func TestP11Domain011_DomainErrorString(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-012
 // Feature:           WithDetails chains fluently
 // Priority: P2 · Severity: Major · Automation Status: Automated
-func TestP11Domain012_WithDetailsChains(t *testing.T) {
+func TestDomain_WithDetailsChains(t *testing.T) {
 	de := domain.NewError(domain.ErrSeatLimitReached, "cap").
 		WithDetails(map[string]any{"licensed_seats": 10, "active_users": 10})
 	assert.Equal(t, 10, de.Details["licensed_seats"])
@@ -83,7 +83,7 @@ func TestP11Domain012_WithDetailsChains(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-020
 // Feature:           §17 error taxonomy — full wire-code inventory
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain020_AllSentinelsWireCodes(t *testing.T) {
+func TestDomain_AllSentinelsWireCodes(t *testing.T) {
 	// Every sentinel documented in LLD §17. If a wire code drifts from
 	// what downstream consumers/tooling expect, this test fails loudly.
 	cases := map[error]string{
@@ -156,7 +156,7 @@ func TestP11Domain020_AllSentinelsWireCodes(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-030
 // Feature:           §16 A61 · tenant lane fixed at exactly {TenantCreated, TrialStarted}
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain030_TopicForEvent_TenantLaneOnlyTwo(t *testing.T) {
+func TestDomain_TopicForEvent_TenantLaneOnlyTwo(t *testing.T) {
 	// Only 2 event types route to iam.tenant.events.
 	assert.Equal(t, domain.TopicTenant, domain.TopicForEvent(domain.EventTenantCreated))
 	assert.Equal(t, domain.TopicTenant, domain.TopicForEvent(domain.EventTrialStarted))
@@ -178,7 +178,7 @@ func TestP11Domain030_TopicForEvent_TenantLaneOnlyTwo(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-031
 // Feature:           §16 A61 · unknown event type defaults to membership
 // Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP11Domain031_TopicForEvent_UnknownDefaultsToMembership(t *testing.T) {
+func TestDomain_TopicForEvent_UnknownDefaultsToMembership(t *testing.T) {
 	assert.Equal(t, domain.TopicMembership, domain.TopicForEvent(""))
 	assert.Equal(t, domain.TopicMembership, domain.TopicForEvent("FutureEvent"))
 }
@@ -186,7 +186,7 @@ func TestP11Domain031_TopicForEvent_UnknownDefaultsToMembership(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-032
 // Feature:           Event type constants stability
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain032_EventTypeConstants(t *testing.T) {
+func TestDomain_EventTypeConstants(t *testing.T) {
 	// Downstream consumers (Audit / AuthZ / Notification) filter by these
 	// exact strings. Any rename breaks every subscriber's SNS filter policy.
 	cases := map[string]string{
@@ -218,7 +218,7 @@ func TestP11Domain032_EventTypeConstants(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-040
 // Feature:           DeptRole enum values stability
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain040_DeptRoleWireValues(t *testing.T) {
+func TestDomain_DeptRoleWireValues(t *testing.T) {
 	assert.EqualValues(t, "preparator", domain.DeptPreparator)
 	assert.EqualValues(t, "reviewer", domain.DeptReviewer)
 	assert.EqualValues(t, "approver", domain.DeptApprover)
@@ -227,7 +227,7 @@ func TestP11Domain040_DeptRoleWireValues(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-041
 // Feature:           TenantRoleCode enum values stability
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain041_TenantRoleCodeWireValues(t *testing.T) {
+func TestDomain_TenantRoleCodeWireValues(t *testing.T) {
 	assert.EqualValues(t, "tenant_owner", domain.RoleTenantOwner)
 	assert.EqualValues(t, "tenant_admin", domain.RoleTenantAdmin)
 	assert.EqualValues(t, "tender_admin", domain.RoleTenderAdmin)
@@ -237,7 +237,7 @@ func TestP11Domain041_TenantRoleCodeWireValues(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-042
 // Feature:           SubscriptionStatus enum values stability
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain042_SubscriptionStatusValues(t *testing.T) {
+func TestDomain_SubscriptionStatusValues(t *testing.T) {
 	// Enum values are baked into the Postgres tenant_status ENUM.
 	// Any rename requires a migration too.
 	assert.EqualValues(t, "trial", domain.StatusTrial)
@@ -256,7 +256,7 @@ func TestP11Domain042_SubscriptionStatusValues(t *testing.T) {
 // Test Case ID:      P11-DOMAIN-050
 // Feature:           DelegationScope enum values stability
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestP11Domain050_DelegationScopeValues(t *testing.T) {
+func TestDomain_DelegationScopeValues(t *testing.T) {
 	assert.EqualValues(t, "all", domain.ScopeAll)
 	assert.EqualValues(t, "department", domain.ScopeDepartment)
 	assert.EqualValues(t, "tender", domain.ScopeTender)

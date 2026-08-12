@@ -45,8 +45,11 @@
 // @name                       x-tenant-roles
 // @description                Comma-separated tenant-role list injected by the API gateway. Operator routes require `platform_operator`; internal routes require `iam-system`.
 //
-// @tag.name         infra
-// @tag.description  Health & metrics (unauthenticated)
+// @tag.name         internal
+// @tag.description  In-mesh service-to-service (I-1..I-13)
+//
+// @tag.name         operator
+// @tag.description  Platform operator (O-1..O-7)
 //
 // @tag.name         tenant
 // @tag.description  Tenant CRUD (P-1, P-2)
@@ -75,9 +78,6 @@
 // @tag.name         resolution
 // @tag.description  Removal-resolution (P-26)
 //
-// @tag.name         internal
-// @tag.description  In-mesh service-to-service (I-1..I-13)
-//
-// @tag.name         operator
-// @tag.description  Platform operator (O-1..O-7)
+// @tag.name         infra
+// @tag.description  Health & metrics (unauthenticated)
 package main

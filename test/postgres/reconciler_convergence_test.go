@@ -139,12 +139,21 @@ func TestReconciler_InvitationExpiry_FlipsPastExpiresAt(t *testing.T) {
 	pastID := uuid.New()
 	freshID := uuid.New()
 	revokedID := uuid.New()
+	// G5 trigger blocks INSERT with past expires_at, so we insert future
+	// then UPDATE the ones we want to appear stale. UPDATE is intentionally
+	// NOT gated by the trigger (accept/revoke/expiry flows legitimately
+	// transition rows after their expires_at has passed).
 	_, err := jctx.SysPool.Exec(ctx, `
 		INSERT INTO pending_invitations (id, tenant_id, email, full_name, invited_by, status, expires_at) VALUES
-		    ($1, $4, 'past@example.com',    'Past',    gen_random_uuid(), 'pending',  now() - interval '1 hour'),
+		    ($1, $4, 'past@example.com',    'Past',    gen_random_uuid(), 'pending',  now() + interval '1 hour'),
 		    ($2, $4, 'fresh@example.com',   'Fresh',   gen_random_uuid(), 'pending',  now() + interval '1 hour'),
-		    ($3, $4, 'revoked@example.com', 'Revoked', gen_random_uuid(), 'revoked',  now() - interval '1 hour')`,
+		    ($3, $4, 'revoked@example.com', 'Revoked', gen_random_uuid(), 'revoked',  now() + interval '1 hour')`,
 		pastID, freshID, revokedID, tenantA)
+	require.NoError(t, err)
+	// Backdate the two rows that should appear stale.
+	_, err = jctx.SysPool.Exec(ctx,
+		`UPDATE pending_invitations SET expires_at = now() - interval '1 hour' WHERE id IN ($1, $2)`,
+		pastID, revokedID)
 	require.NoError(t, err)
 
 	res, err := jobs.InvitationExpiry(ctx, jctx)
@@ -174,10 +183,17 @@ func TestReconciler_InvitationExpiry_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, jctx.SysPool, "recon-invexp-idemp")
 
+	// Same pattern as above — insert-then-backdate to bypass the G5 trigger
+	// while still ending up with a past-expiry pending row.
+	inviteID := uuid.New()
 	_, err := jctx.SysPool.Exec(ctx, `
 		INSERT INTO pending_invitations (id, tenant_id, email, full_name, invited_by, status, expires_at)
-		VALUES (gen_random_uuid(), $1, 'x@example.com', 'X', gen_random_uuid(), 'pending', now() - interval '1 hour')`,
-		tenantA)
+		VALUES ($1, $2, 'x@example.com', 'X', gen_random_uuid(), 'pending', now() + interval '1 hour')`,
+		inviteID, tenantA)
+	require.NoError(t, err)
+	_, err = jctx.SysPool.Exec(ctx,
+		`UPDATE pending_invitations SET expires_at = now() - interval '1 hour' WHERE id = $1`,
+		inviteID)
 	require.NoError(t, err)
 
 	res1, err := jobs.InvitationExpiry(ctx, jctx)

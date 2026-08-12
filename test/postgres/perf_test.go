@@ -85,11 +85,11 @@ func percentile(ds []time.Duration, p float64) time.Duration {
 
 // ── P16-SLO-I8-P99 ──────────────────────────────────────────────────────────
 
-// TestP16_SLO_I8_P99UnderBudget — call AuthZService.GetMembership 500
+// TestSLO_I8_P99UnderBudget — call AuthZService.GetMembership 500
 // times and assert the P99 latency < 30 ms (LLD §11.1 SLO-1 miss target).
 // The 15 ms cache-hit target is not asserted here because the test fixture
 // wires cache=nil.
-func TestP16_SLO_I8_P99UnderBudget(t *testing.T) {
+func TestSLO_I8_P99UnderBudget(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, userID := seedTenantWithOwner(t, ctx, fx, "slo-i8")
@@ -120,11 +120,11 @@ func TestP16_SLO_I8_P99UnderBudget(t *testing.T) {
 
 // ── P16-SLO-SEAT-PREFLIGHT ──────────────────────────────────────────────────
 
-// TestP16_SLO_SeatPreflight100Concurrent — 100 concurrent Invite attempts
+// TestSLO_SeatPreflight100Concurrent — 100 concurrent Invite attempts
 // against a tenant with 5 free seats. The SEAT-1 pre-flight must let
 // exactly 5 succeed; the wall-clock ceiling proves the FOR UPDATE
 // serialization doesn't collapse throughput.
-func TestP16_SLO_SeatPreflight100Concurrent(t *testing.T) {
+func TestSLO_SeatPreflight100Concurrent(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "slo-seat")
@@ -175,11 +175,11 @@ func TestP16_SLO_SeatPreflight100Concurrent(t *testing.T) {
 
 // ── P16-RLS-OVERHEAD ────────────────────────────────────────────────────────
 
-// TestP16_RLS_OverheadBounded — same SELECT via the RLS-enforcing app pool
+// TestRLS_OverheadBounded — same SELECT via the RLS-enforcing app pool
 // vs the BYPASSRLS raw pool. The RLS overhead (SET LOCAL + policy eval)
 // must be within a small constant multiple. Prevents an accidental
 // regression that would inflate every read.
-func TestP16_RLS_OverheadBounded(t *testing.T) {
+func TestRLS_OverheadBounded(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "rls-overhead")

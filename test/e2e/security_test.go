@@ -44,10 +44,10 @@ import (
 
 // ── P14-SQLI-001 ────────────────────────────────────────────────────────────
 
-// TestP14_SQLI_001_InviteEmailSQLInjection — a classic tautology payload in
+// TestInviteEmailSQLInjection — a classic tautology payload in
 // the invite email must be stored verbatim (parameterized query), not
 // interpreted. The tenants row must NOT be dropped.
-func TestP14_SQLI_001_InviteEmailSQLInjection(t *testing.T) {
+func TestInviteEmailSQLInjection(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "sqli-001")
 	userID := e.seedOwner(t, tenantID)
@@ -86,9 +86,9 @@ func TestP14_SQLI_001_InviteEmailSQLInjection(t *testing.T) {
 
 // ── P14-SQLI-002 ────────────────────────────────────────────────────────────
 
-// TestP14_SQLI_002_RoleLabelSQLInjection — patch a role label's display name
+// TestRoleLabelSQLInjection — patch a role label's display name
 // with a classic UNION SELECT probe. Table must be intact after.
-func TestP14_SQLI_002_RoleLabelSQLInjection(t *testing.T) {
+func TestRoleLabelSQLInjection(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "sqli-002")
 	userID := e.seedOwner(t, tenantID)
@@ -132,12 +132,12 @@ func TestP14_SQLI_002_RoleLabelSQLInjection(t *testing.T) {
 
 // ── P14-XSS-001 ─────────────────────────────────────────────────────────────
 
-// TestP14_XSS_001_ScriptTagInInvitationName — a <script> payload in full_name
+// TestScriptTagInInvitationName — a <script> payload in full_name
 // must be stored verbatim server-side (no interpretation) AND the JSON
 // response must Unicode-escape `<`/`>` per Go's encoding/json default
 // (defense in depth — prevents accidental HTML execution if JSON is ever
 // mis-served as text/html).
-func TestP14_XSS_001_ScriptTagInInvitationName(t *testing.T) {
+func TestScriptTagInInvitationName(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "xss-001")
 	userID := e.seedOwner(t, tenantID)
@@ -177,9 +177,9 @@ func TestP14_XSS_001_ScriptTagInInvitationName(t *testing.T) {
 
 // ── P14-XSS-002 ─────────────────────────────────────────────────────────────
 
-// TestP14_XSS_002_HTMLInDelegationReason — same defense-in-depth check as
+// TestHTMLInDelegationReason — same defense-in-depth check as
 // XSS-001 but for delegation reason: DB stores raw, JSON escapes `<`.
-func TestP14_XSS_002_HTMLInDelegationReason(t *testing.T) {
+func TestHTMLInDelegationReason(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "xss-002")
 	delegator := e.seedOwner(t, tenantID)
@@ -213,9 +213,9 @@ func TestP14_XSS_002_HTMLInDelegationReason(t *testing.T) {
 
 // ── P14-AUTH-001 ────────────────────────────────────────────────────────────
 
-// TestP14_AUTH_001_EmptyUserIDHeaderRejected — x-user-id present but empty
+// TestEmptyUserIDHeaderRejected — x-user-id present but empty
 // must be treated as missing (401), not as an anonymous session.
-func TestP14_AUTH_001_EmptyUserIDHeaderRejected(t *testing.T) {
+func TestEmptyUserIDHeaderRejected(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "auth-001")
 
@@ -234,9 +234,9 @@ func TestP14_AUTH_001_EmptyUserIDHeaderRejected(t *testing.T) {
 
 // ── P14-AUTH-002 ────────────────────────────────────────────────────────────
 
-// TestP14_AUTH_002_EmptyTenantIDHeaderRejected — x-tenant-id present but
+// TestEmptyTenantIDHeaderRejected — x-tenant-id present but
 // empty must be treated as missing.
-func TestP14_AUTH_002_EmptyTenantIDHeaderRejected(t *testing.T) {
+func TestEmptyTenantIDHeaderRejected(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "auth-002")
 
@@ -255,9 +255,9 @@ func TestP14_AUTH_002_EmptyTenantIDHeaderRejected(t *testing.T) {
 
 // ── P14-AUTH-003 ────────────────────────────────────────────────────────────
 
-// TestP14_AUTH_003_NonUUIDTenantIDHeaderRejected — a well-formed but non-UUID
+// TestNonUUIDTenantIDHeaderRejected — a well-formed but non-UUID
 // x-tenant-id must be rejected by the GUCBridge / handler layer.
-func TestP14_AUTH_003_NonUUIDTenantIDHeaderRejected(t *testing.T) {
+func TestNonUUIDTenantIDHeaderRejected(t *testing.T) {
 	e := newE2EEnv(t)
 	code, _, body := e.do(t, reqOpts{
 		method: http.MethodGet,
@@ -275,10 +275,10 @@ func TestP14_AUTH_003_NonUUIDTenantIDHeaderRejected(t *testing.T) {
 
 // ── P14-AUTH-004 ────────────────────────────────────────────────────────────
 
-// TestP14_AUTH_004_UnknownRoleCannotElevate — a role string the gateway
+// TestUnknownRoleCannotElevate — a role string the gateway
 // didn't grant (e.g. "definitely_not_a_real_role") must not open protected
 // routes — RequireOperatorRole / RequireSystemRole reject by exact match.
-func TestP14_AUTH_004_UnknownRoleCannotElevate(t *testing.T) {
+func TestUnknownRoleCannotElevate(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "auth-004")
 	userID := uuid.New()
@@ -298,9 +298,9 @@ func TestP14_AUTH_004_UnknownRoleCannotElevate(t *testing.T) {
 
 // ── P14-TAMPER-001 ──────────────────────────────────────────────────────────
 
-// TestP14_TAMPER_001_FabricatedRecordVersionOnPatch — attacker sends a huge
+// TestFabricatedRecordVersionOnPatch — attacker sends a huge
 // record_version on PATCH tenant. Optimistic-lock rejects with 409.
-func TestP14_TAMPER_001_FabricatedRecordVersionOnPatch(t *testing.T) {
+func TestFabricatedRecordVersionOnPatch(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "tamper-001")
 	userID := e.seedOwner(t, tenantID)
@@ -322,10 +322,10 @@ func TestP14_TAMPER_001_FabricatedRecordVersionOnPatch(t *testing.T) {
 
 // ── P14-TAMPER-002 ──────────────────────────────────────────────────────────
 
-// TestP14_TAMPER_002_InviteWithOwnerRoleFromNonOwner — a tender_admin (who
+// TestInviteWithOwnerRoleFromNonOwner — a tender_admin (who
 // can invite) tries to include `tenant_owner` in initial_tenant_roles.
 // Handler must reject the elevation attempt.
-func TestP14_TAMPER_002_InviteWithOwnerRoleFromNonOwner(t *testing.T) {
+func TestInviteWithOwnerRoleFromNonOwner(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "tamper-002")
 	inviter := e.seedActiveMember(t, tenantID)
@@ -357,9 +357,9 @@ func TestP14_TAMPER_002_InviteWithOwnerRoleFromNonOwner(t *testing.T) {
 
 // ── P14-TAMPER-003 ──────────────────────────────────────────────────────────
 
-// TestP14_TAMPER_003_BodyActorIgnored — a body-supplied actor_id must be
+// TestBodyActorIgnored — a body-supplied actor_id must be
 // ignored; the audit trail uses the gateway-supplied identity.
-func TestP14_TAMPER_003_BodyActorIgnored(t *testing.T) {
+func TestBodyActorIgnored(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "tamper-003")
 	realOwner := e.seedOwner(t, tenantID)
@@ -391,9 +391,9 @@ func TestP14_TAMPER_003_BodyActorIgnored(t *testing.T) {
 
 // ── P14-PRIV-001 ────────────────────────────────────────────────────────────
 
-// TestP14_PRIV_001_TenderAdminCannotGrantOwnerViaReconcile — a tender_admin
+// TestTenderAdminCannotGrantOwnerViaReconcile — a tender_admin
 // tries to grant a peer `tenant_owner` via P-28. Must be rejected.
-func TestP14_PRIV_001_TenderAdminCannotGrantOwnerViaReconcile(t *testing.T) {
+func TestTenderAdminCannotGrantOwnerViaReconcile(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "priv-001")
 	e.seedOwner(t, tenantID) // seed at least one owner so TM-13 doesn't reject
@@ -419,9 +419,9 @@ func TestP14_PRIV_001_TenderAdminCannotGrantOwnerViaReconcile(t *testing.T) {
 
 // ── P14-PRIV-002 ────────────────────────────────────────────────────────────
 
-// TestP14_PRIV_002_MemberCannotSelfElevate — a regular member (no elevated
+// TestMemberCannotSelfElevate — a regular member (no elevated
 // roles) tries to grant themselves tender_admin via P-28 → 403.
-func TestP14_PRIV_002_MemberCannotSelfElevate(t *testing.T) {
+func TestMemberCannotSelfElevate(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "priv-002")
 	e.seedOwner(t, tenantID)
@@ -439,9 +439,9 @@ func TestP14_PRIV_002_MemberCannotSelfElevate(t *testing.T) {
 
 // ── P14-CT-001 ──────────────────────────────────────────────────────────────
 
-// TestP14_CT_001_CrossTenantInviteRejected — owner of tenant A tries to
+// TestCrossTenantInviteRejected — owner of tenant A tries to
 // POST an invite into tenant B.
-func TestP14_CT_001_CrossTenantInviteRejected(t *testing.T) {
+func TestCrossTenantInviteRejected(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantA := e.seedTenant(t, "ct-001-a")
 	tenantB := e.seedTenant(t, "ct-001-b")
@@ -462,7 +462,7 @@ func TestP14_CT_001_CrossTenantInviteRejected(t *testing.T) {
 
 // ── P14-CT-002 ──────────────────────────────────────────────────────────────
 
-func TestP14_CT_002_CrossTenantListMembersRejected(t *testing.T) {
+func TestCrossTenantListMembersRejected(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantA := e.seedTenant(t, "ct-002-a")
 	tenantB := e.seedTenant(t, "ct-002-b")
@@ -479,7 +479,7 @@ func TestP14_CT_002_CrossTenantListMembersRejected(t *testing.T) {
 
 // ── P14-CT-003 ──────────────────────────────────────────────────────────────
 
-func TestP14_CT_003_CrossTenantDeptAssignRejected(t *testing.T) {
+func TestCrossTenantDeptAssignRejected(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantA := e.seedTenant(t, "ct-003-a")
 	tenantB := e.seedTenant(t, "ct-003-b")
@@ -498,7 +498,7 @@ func TestP14_CT_003_CrossTenantDeptAssignRejected(t *testing.T) {
 
 // ── P14-CT-004 ──────────────────────────────────────────────────────────────
 
-func TestP14_CT_004_CrossTenantRoleReconcileRejected(t *testing.T) {
+func TestCrossTenantRoleReconcileRejected(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantA := e.seedTenant(t, "ct-004-a")
 	tenantB := e.seedTenant(t, "ct-004-b")
@@ -517,11 +517,11 @@ func TestP14_CT_004_CrossTenantRoleReconcileRejected(t *testing.T) {
 
 // ── P14-CT-005 ──────────────────────────────────────────────────────────────
 
-// TestP14_CT_005_RLSIsolatesConcurrentTenantContext — the RLS-enforcing app
+// TestRLSIsolatesConcurrentTenantContext — the RLS-enforcing app
 // pool must return ZERO rows for tenant B when the request context carries
 // tenant A's GUC. Bypasses the HTTP layer entirely — directly proves the
 // bottom-of-stack isolation.
-func TestP14_CT_005_RLSIsolatesConcurrentTenantContext(t *testing.T) {
+func TestRLSIsolatesConcurrentTenantContext(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantA := e.seedTenant(t, "ct-005-a")
 	tenantB := e.seedTenant(t, "ct-005-b")
@@ -552,10 +552,10 @@ func TestP14_CT_005_RLSIsolatesConcurrentTenantContext(t *testing.T) {
 
 // ── P14-REPLAY-001 ──────────────────────────────────────────────────────────
 
-// TestP14_REPLAY_001_DoubleInviteSameEmail — posting the same invite email
+// TestDoubleInviteSameEmail — posting the same invite email
 // twice must yield a business-level 409 on the second call (§8.10, PI-1
 // pending-invitations unique-per-tenant partial index).
-func TestP14_REPLAY_001_DoubleInviteSameEmail(t *testing.T) {
+func TestDoubleInviteSameEmail(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "replay-001")
 	userID := e.seedOwner(t, tenantID)
@@ -584,10 +584,10 @@ func TestP14_REPLAY_001_DoubleInviteSameEmail(t *testing.T) {
 
 // ── P14-REPLAY-002 ──────────────────────────────────────────────────────────
 
-// TestP14_REPLAY_002_DoubleDelegationCancelWithSameVersion — cancelling
+// TestDoubleDelegationCancelWithSameVersion — cancelling
 // a delegation twice with the same record_version must succeed once and
 // fail the second time as an optimistic-lock or not-found conflict.
-func TestP14_REPLAY_002_DoubleDelegationCancelWithSameVersion(t *testing.T) {
+func TestDoubleDelegationCancelWithSameVersion(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "replay-002")
 	delegator := e.seedOwner(t, tenantID)

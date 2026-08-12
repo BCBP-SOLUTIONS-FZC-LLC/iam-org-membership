@@ -208,7 +208,7 @@ func TestP8Deleg004_ListExpiringBefore(t *testing.T) {
 // Test Case ID:      P8-GMAP-001
 // Module:            iam-org-membership · Persistence
 // Feature:           group_dept_role_mappings · Replace happy
-// API:               PUT /api/v1/tenants/{id}/group-mappings/roles
+// API:               PUT /api/v1/tenants/{id}/group-mappings/department-roles
 // Scenario:          Full-replacement of dept-role mappings
 // Preconditions:     Empty tenant
 // Test Steps:

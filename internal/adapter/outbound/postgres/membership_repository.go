@@ -107,6 +107,14 @@ func (r *MembershipRepository) FindByUserID(ctx context.Context, tenantID, userI
 	return out, err
 }
 
+// Insert creates a tenant_memberships row (PI-10 idempotent). Redelivery
+// or concurrent retry with the same (tenant_id, user_id) resolves via the
+// uq_tm_active_user partial-unique index. We deliberately DO NOTHING on
+// conflict rather than laundering the row's status (a `suspended` or
+// `left` row must not be silently reset to `active` by a KC re-register
+// — that would bypass SEAT-1 re-check + TM-8 last-owner gate + audit
+// trail). After ON CONFLICT DO NOTHING returns 0 rows, a follow-up SELECT
+// fetches the existing active row so the caller sees the true state.
 func (r *MembershipRepository) Insert(ctx context.Context, tm *domain.TenantMembership) (*domain.TenantMembership, error) {
 	if tm.ID == uuid.Nil {
 		tm.ID = uuid.New()
@@ -115,13 +123,32 @@ func (r *MembershipRepository) Insert(ctx context.Context, tm *domain.TenantMemb
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
 			INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
-			VALUES ($1, $2, $3, $4) RETURNING `+membershipCols,
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (tenant_id, user_id) WHERE deleted_at IS NULL
+			DO NOTHING
+			RETURNING `+membershipCols,
 			tm.ID, tm.TenantID, tm.UserID, string(tm.Status))
 		created, err := scanMembership(row)
-		if err != nil {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		out = created
+		if created != nil {
+			out = created
+			return nil
+		}
+		// Insert absorbed by ON CONFLICT — return the existing row unchanged.
+		// Status stays as-is (suspended/left/active); callers wanting to
+		// reactivate a soft-leaver must go through SetStatus with a valid
+		// optimistic-lock version and any relevant policy gates.
+		winner := tx.QueryRow(ctx, `
+			SELECT `+membershipCols+` FROM tenant_memberships
+			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+			tm.TenantID, tm.UserID)
+		final, ferr := scanMembership(winner)
+		if ferr != nil {
+			return ferr
+		}
+		out = final
 		return nil
 	})
 	return out, err

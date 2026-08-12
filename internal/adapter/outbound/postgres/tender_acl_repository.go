@@ -9,6 +9,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type TenderACLRepository struct {
@@ -42,10 +43,13 @@ func scanTenderACL(row pgx.Row) (*domain.TenderACLEntry, error) {
 func (r *TenderACLRepository) ListByTender(ctx context.Context, tenantID, tenderID uuid.UUID) ([]domain.TenderACLEntry, error) {
 	var out []domain.TenderACLEntry
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		// TAE-7: P-21 list is for admin management — returns active AND passively
+		// expired rows (deleted_at IS NULL) so admins can see and explicitly
+		// revoke expired grants. The expiry filter is TAE-3's authorization
+		// concern (I-12 FindActiveForUser), not the management list.
 		rows, err := tx.Query(ctx, `
 			SELECT `+taeCols+` FROM tender_acl_entries
 			WHERE tenant_id = $1 AND tender_id = $2 AND deleted_at IS NULL
-			  AND (expires_at IS NULL OR expires_at > now())
 			ORDER BY user_id`,
 			tenantID, tenderID)
 		if err != nil {
@@ -108,6 +112,10 @@ func (r *TenderACLRepository) Grant(ctx context.Context, e *domain.TenderACLEntr
 			string(e.AccessLevel), e.GrantedBy, reason, e.ExpiresAt)
 		created, err := scanTenderACL(row)
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_tae_active_entry" {
+				return domain.NewError(domain.ErrACLAlreadyExists, "active ACL grant already exists for this user on this tender")
+			}
 			return err
 		}
 		out = created
@@ -137,6 +145,10 @@ func (r *TenderACLRepository) Revoke(ctx context.Context, tenantID, tenderID, us
 	return out, err
 }
 
+// SoftDeleteForUser is a CASCADE-ONLY method called by the user removal
+// path (I-5 / P-7). CONC-1 optimistic locking is intentionally not applied
+// (same rationale as DeptMembershipRepository.SoftDeleteAllForUser). For
+// direct ACL revoke flows use Revoke(), which optimistic-locks.
 func (r *TenderACLRepository) SoftDeleteForUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.TenderACLEntry, error) {
 	var out []domain.TenderACLEntry
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
