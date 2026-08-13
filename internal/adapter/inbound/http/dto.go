@@ -261,18 +261,8 @@ type InvitationRevokeRequest struct {
 }
 
 // ── Operator ───────────────────────────────────────────────────────────
-
-type OperatorDepartmentCreateRequest struct {
-	Code     string `json:"code"`
-	Name     string `json:"name"`
-	IsSystem bool   `json:"is_system,omitempty"`
-}
-
-type OperatorDepartmentPatchRequest struct {
-	Name          *string `json:"name,omitempty"`
-	IsActive      *bool   `json:"is_active,omitempty"`
-	RecordVersion int64   `json:"record_version"`
-}
+// O-1/O-2/O-3 (departments) and O-5/O-6 (plans) DTOs moved to the Catalog /
+// Admin Config Service per migration-runbook Phase 4 (LLD §12 step 4).
 
 type OperatorFeatureFlagsRequest struct {
 	// RecordVersion is the current tenants.record_version obtained from
@@ -582,46 +572,6 @@ type AssigneeOverrideResponse struct {
 	TenderID  uuid.UUID `json:"tender_id" format:"uuid"`
 	TenantID  uuid.UUID `json:"tenant_id" format:"uuid"`
 	UserID    uuid.UUID `json:"user_id" format:"uuid"`
-}
-
-// OperatorDepartmentResponse is the O-1 / O-2 success shape.
-type OperatorDepartmentResponse struct {
-	ID            uuid.UUID `json:"id" format:"uuid"`
-	Code          string    `json:"code" example:"engineering"`
-	Name          string    `json:"name" example:"Engineering"`
-	IsSystem      bool      `json:"is_system,omitempty"`
-	IsActive      bool      `json:"is_active"`
-	RecordVersion int64     `json:"record_version,omitempty" example:"1"`
-}
-
-// OperatorPlanResponse is one entry in the O-5 list / O-6 result.
-type OperatorPlanResponse struct {
-	Code                  string         `json:"code" enums:"starter,pro,enterprise"`
-	DisplayName           string         `json:"display_name"`
-	WorkflowTemplateLimit *int           `json:"workflow_template_limit,omitempty"`
-	TenderLimit           *int           `json:"tender_limit,omitempty"`
-	TrialDurationDays     int            `json:"trial_duration_days" example:"14"`
-	SSOEnabled            bool           `json:"sso_enabled" example:"false"`
-	CustomBranding        string         `json:"custom_branding,omitempty" enums:"none,logo,full"`
-	FeatureSet            map[string]any `json:"feature_set,omitempty"`
-	RecordVersion         int64          `json:"record_version" example:"1"`
-}
-
-// OperatorPlansListResponse wraps the O-5 payload.
-type OperatorPlansListResponse struct {
-	Items []OperatorPlanResponse `json:"items"`
-}
-
-// OperatorPlanPatchRequest is the O-6 body.
-type OperatorPlanPatchRequest struct {
-	DisplayName           *string        `json:"display_name,omitempty"`
-	WorkflowTemplateLimit *int           `json:"workflow_template_limit,omitempty"`
-	TenderLimit           *int           `json:"tender_limit,omitempty"`
-	TrialDurationDays     *int           `json:"trial_duration_days,omitempty"`
-	SSOEnabled            *bool          `json:"sso_enabled,omitempty"`
-	CustomBranding        *string        `json:"custom_branding,omitempty" enums:"none,logo,full"`
-	FeatureSet            map[string]any `json:"feature_set,omitempty"`
-	RecordVersion         int64          `json:"record_version" example:"1"`
 }
 
 // OperatorReassignOwnerResponse is the O-7 success shape.

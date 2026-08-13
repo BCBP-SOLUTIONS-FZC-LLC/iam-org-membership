@@ -291,14 +291,12 @@ func TestConcurrentDeptAssignDifferentLevels(t *testing.T) {
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "b15-ext-001")
 
-	// tenant_departments requires a departments row + a tenant_departments row.
+	// department_id has no FK to a catalog table (departments was dropped —
+	// migration-runbook Phase 4, LLD §12 step 4); this test bypasses the
+	// service layer entirely, so any UUID satisfies tenant_departments.
 	deptID := uuid.New()
-	_, err := rawPool.Exec(ctx, `
-		INSERT INTO departments (id, code, name, is_system, is_active)
-		VALUES ($1, 'B15EXT001', 'B15 Test', false, true)`, deptID)
-	require.NoError(t, err)
 	// tenant_departments PK is (tenant_id, department_id) — no id column.
-	_, err = rawPool.Exec(ctx, `
+	_, err := rawPool.Exec(ctx, `
 		INSERT INTO tenant_departments (tenant_id, department_id, is_active)
 		VALUES ($1, $2, true)`, tenantID, deptID)
 	require.NoError(t, err)
@@ -496,4 +494,6 @@ var errDelegationExists = &delegationExistsErr{}
 
 type delegationExistsErr struct{}
 
-func (*delegationExistsErr) Error() string { return "P15-DEL-CREATE-001: active delegation already exists" }
+func (*delegationExistsErr) Error() string {
+	return "P15-DEL-CREATE-001: active delegation already exists"
+}

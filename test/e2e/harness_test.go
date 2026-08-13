@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,9 +41,10 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
+	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
@@ -84,8 +86,6 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 
 	// Repositories.
 	tenantRepo := pgadapter.NewTenantRepository(appPool)
-	planRepo := pgadapter.NewPlanRepository(appPool)
-	deptRepo := pgadapter.NewDepartmentRepository(appPool)
 	tenantDeptRepo := pgadapter.NewTenantDepartmentRepository(appPool)
 	membershipRepo := pgadapter.NewMembershipRepository(appPool)
 	tenantRoleRepo := pgadapter.NewTenantRoleRepository(appPool)
@@ -108,19 +108,26 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	up := &fakeUserProfile{}
 	wf := &fakeWorkflow{}
 
+	// catalogDepts/catalogPlans stand in for the departments/plans catalog
+	// (migration-runbook Phase 4 — LLD §12 step 4: those tables and their
+	// FKs are dropped; validation now happens app-side against a Catalog
+	// service client, which these fakes stand in for).
+	catalogDepts := newFakeCatalogDepartments()
+	catalogPlans := newFakeCatalogPlans()
+
 	// Services.
-	authzSvc := service.NewAuthZService(appPool, planRepo, nil)
-	provisioningSvc := service.NewProvisioningService(appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, deptRepo, delegationRepo, aclRepo, planRepo, txRunner, nil, rp)
+	authzSvc := service.NewAuthZService(appPool, catalogPlans, nil)
+	provisioningSvc := service.NewProvisioningService(appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogDepts, delegationRepo, aclRepo, catalogPlans, txRunner, nil, rp)
 	tenantSvc := service.NewTenantService(tenantRepo, nil, rp)
-	deptSvc := service.NewDepartmentService(deptRepo, tenantDeptRepo, nil)
+	deptSvc := service.NewDepartmentService(catalogDepts, tenantDeptRepo, nil)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, delegationRepo, aclRepo, tenantRepo, invitationRepo, nil, rp, wf, txRunner, nil, 30)
-	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, delegationRepo, wf, nil, txRunner)
+	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogDepts, delegationRepo, wf, nil, txRunner)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, nil)
-	groupMappingSvc := service.NewGroupMappingService(groupMappingRepo, membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, nil)
+	groupMappingSvc := service.NewGroupMappingService(groupMappingRepo, membershipRepo, tenantRoleRepo, deptMemRepo, catalogDepts, txRunner, nil)
 	delegationSvc := service.NewDelegationService(delegationRepo, membershipRepo, up, nil, txRunner)
 	aclSvc := service.NewTenderACLService(aclRepo, membershipRepo)
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rp, nil, txRunner, nil, 7)
-	operatorSvc := service.NewOperatorService(appPool, planRepo, deptRepo, tenantRepo, tenantRoleRepo, membershipRepo, nil, txRunner)
+	operatorSvc := service.NewOperatorService(appPool, tenantRepo, tenantRoleRepo, membershipRepo, nil, txRunner)
 
 	// Handlers.
 	tenantH := httpadapter.NewTenantHandler(tenantSvc)
@@ -198,12 +205,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 		v1.DELETE("/delegations/:id", delegationH.Cancel)
 
 		op := v1.Group("/operator", httpadapter.RequireOperatorRole())
-		op.POST("/departments", operatorH.CreateDepartment)
-		op.PATCH("/departments/:id", operatorH.PatchDepartment)
-		op.DELETE("/departments/:id", operatorH.DeleteDepartmentBlocked)
 		op.PATCH("/tenants/:id/feature-flags", operatorH.SetFeatureFlags)
-		op.GET("/plans", operatorH.ListPlans)
-		op.PATCH("/plans/:code", operatorH.PatchPlan)
 		op.POST("/tenants/:id/reassign-owner", operatorH.ReassignOwner)
 
 		internal := v1.Group("/internal", httpadapter.RequireSystemRole())
@@ -262,8 +264,11 @@ func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *pgxpool.Poo
 		`CREATE ROLE org_membership_migrator LOGIN PASSWORD '%s' BYPASSRLS`, migratorPassword))
 	require.NoError(t, err)
 
-	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))
+	// outbox.ApplySchema must run first so platform-events creates
+	// outbox_events (jsonb payload) before domain migration 000010
+	// converts it to TEXT.
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
+	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))
 
 	grants := []string{
 		`GRANT CONNECT ON DATABASE org_membership TO org_membership_app`,
@@ -473,6 +478,122 @@ func (f *fakeWorkflow) ReassignDelegate(_ context.Context, _, _, _ uuid.UUID, _ 
 func (f *fakeWorkflow) CancelByDelegate(_ context.Context, _, _ uuid.UUID, _ *uuid.UUID) error {
 	return nil
 }
+
+// fakeCatalogDepartments is an in-memory stand-in for the departments that
+// used to live in this service's own `departments` table (dropped per
+// migration-runbook Phase 4 — LLD §12 step 4, now owned by the Catalog /
+// Admin Config Service). Seeded with the same 5 system departments the
+// dropped migration used to seed.
+type fakeCatalogDepartments struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID]domain.Department
+}
+
+func newFakeCatalogDepartments() *fakeCatalogDepartments {
+	f := &fakeCatalogDepartments{rows: map[uuid.UUID]domain.Department{}}
+	for _, code := range []string{"ENGINEERING", "DESIGN", "PROCUREMENT", "FINANCE", "LEGAL"} {
+		f.add(domain.Department{Code: code, Name: code, IsSystem: true, IsActive: true})
+	}
+	return f
+}
+
+func (f *fakeCatalogDepartments) add(d domain.Department) uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d.ID == uuid.Nil {
+		d.ID = uuid.New()
+	}
+	if d.RecordVersion == 0 {
+		d.RecordVersion = 1
+	}
+	f.rows[d.ID] = d
+	return d.ID
+}
+
+func (f *fakeCatalogDepartments) byCode(code string) (domain.Department, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, d := range f.rows {
+		if d.Code == code {
+			return d, true
+		}
+	}
+	return domain.Department{}, false
+}
+
+func (f *fakeCatalogDepartments) Departments(_ context.Context) ([]domain.Department, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]domain.Department, 0, len(f.rows))
+	for _, d := range f.rows {
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (f *fakeCatalogDepartments) DepartmentByID(_ context.Context, id uuid.UUID) (*domain.Department, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.rows[id]
+	if !ok {
+		return nil, domain.NewError(domain.ErrDepartmentNotFound, "department not found")
+	}
+	return &d, nil
+}
+
+var _ port.DepartmentCatalogReader = (*fakeCatalogDepartments)(nil)
+
+// fakeCatalogPlans is the plans-side equivalent of fakeCatalogDepartments,
+// seeded with the same 3 plan tiers the dropped migration used to seed.
+type fakeCatalogPlans struct {
+	mu   sync.Mutex
+	rows map[domain.TenantPlan]domain.Plan
+}
+
+func newFakeCatalogPlans() *fakeCatalogPlans {
+	limit := func(n int) *int { return &n }
+	return &fakeCatalogPlans{rows: map[domain.TenantPlan]domain.Plan{
+		domain.PlanStarter: {
+			Code: domain.PlanStarter, DisplayName: "Starter",
+			WorkflowTemplateLimit: limit(5), TenderLimit: limit(10),
+			TrialDurationDays: 30, CustomBranding: domain.BrandingNone,
+			FeatureSet: map[string]any{}, RecordVersion: 1,
+		},
+		domain.PlanPro: {
+			Code: domain.PlanPro, DisplayName: "Pro",
+			WorkflowTemplateLimit: limit(50), TenderLimit: limit(100),
+			TrialDurationDays: 30, CustomBranding: domain.BrandingLogo,
+			FeatureSet: map[string]any{}, RecordVersion: 1,
+		},
+		domain.PlanEnterprise: {
+			Code: domain.PlanEnterprise, DisplayName: "Enterprise",
+			TrialDurationDays: 30, SSOEnabled: true, CustomBranding: domain.BrandingLogo,
+			FeatureSet: map[string]any{"require_mfa_all_users_allowed": true}, RecordVersion: 1,
+		},
+	}}
+}
+
+func (f *fakeCatalogPlans) Plans(_ context.Context) ([]domain.Plan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]domain.Plan, 0, len(f.rows))
+	for _, p := range f.rows {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (f *fakeCatalogPlans) PlanByCode(_ context.Context, code domain.TenantPlan) (*domain.Plan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.rows[code]
+	if !ok {
+		return nil, domain.NewError(domain.ErrPlanNotFound, "plan not found")
+	}
+	return &p, nil
+}
+
+var _ port.PlanCatalogReader = (*fakeCatalogPlans)(nil)
 
 // unmarshalBody decodes response bytes into v, failing the test on error.
 func unmarshalBody(t *testing.T, body []byte, v any) {

@@ -48,10 +48,11 @@ func TestTrialSignup_TrialEndsAt_FromPlanDays(t *testing.T) {
 	require.NoError(t, fx.rawPool.QueryRow(ctx,
 		`SELECT trial_ends_at FROM tenants WHERE id = $1`, tenantID).Scan(&trialEndsAt))
 
-	// Fetch plan.trial_duration_days from plans catalog.
-	var trialDays int
-	require.NoError(t, fx.rawPool.QueryRow(ctx,
-		`SELECT trial_duration_days FROM plans WHERE code = 'starter'`).Scan(&trialDays))
+	// Fetch plan.trial_duration_days from the catalog (plans table dropped
+	// per migration-runbook Phase 4 — LLD §12 step 4).
+	starter, err := fx.CatalogPlans.PlanByCode(ctx, domain.PlanStarter)
+	require.NoError(t, err)
+	trialDays := starter.TrialDurationDays
 
 	expected := before.Add(time.Duration(trialDays) * 24 * time.Hour)
 	assert.WithinDuration(t, expected, trialEndsAt, 5*time.Second,
@@ -64,7 +65,9 @@ func TestTrialSignup_TrialEndsAt_FromPlanDays(t *testing.T) {
 // Test Case ID:      I2-CONC-01
 // Feature:           I-2 · CONC-4 optimistic locking now enforced (BUG-I2-2 FIXED)
 // Note:              First call (version=1) succeeds; second call with same version=1
-//                    gets 409 optimistic_lock_conflict — record_version guard added.
+//
+//	gets 409 optimistic_lock_conflict — record_version guard added.
+//
 // Priority: P1 · Severity: Medium · Automation Status: Automated
 func TestSetRealmFields_ConcurrentBothSucceed_BUG_I2_2(t *testing.T) {
 	fx := buildTestFixtures(t)
@@ -395,15 +398,23 @@ func TestDeptMembershipAssign_AfterSoftDelete_FreshGrant(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────
 
-// seedActiveDept creates an activated department entry for a tenant and
-// returns its department_id. Uses PROCUREMENT as the system dept to activate.
+// seedActiveDept activates a department entry for a tenant and returns its
+// department_id. Picks whichever is_system=true dept the fake catalog
+// happens to return first (migration-runbook Phase 4 — LLD §12 step 4
+// dropped the real departments table; fx.CatalogDepts stands in for it,
+// seeded with the same 5 system departments).
 func seedActiveDept(t testing.TB, ctx context.Context, fx *testFixtures, tenantID uuid.UUID) uuid.UUID {
 	t.Helper()
-	// Look up an is_system=true dept from the catalog (seeded by migrations).
+	all, err := fx.CatalogDepts.Departments(ctx)
+	require.NoError(t, err)
 	var deptID uuid.UUID
-	err := fx.rawPool.QueryRow(ctx,
-		`SELECT id FROM departments WHERE is_system=true AND is_active=true LIMIT 1`).Scan(&deptID)
-	require.NoError(t, err, "need at least one system dept in catalog")
+	for _, d := range all {
+		if d.IsSystem && d.IsActive {
+			deptID = d.ID
+			break
+		}
+	}
+	require.NotEqual(t, uuid.Nil, deptID, "need at least one system dept in catalog")
 
 	// Activate it for the tenant (insert into tenant_departments if not present).
 	_, err = fx.rawPool.Exec(ctx,
@@ -414,14 +425,15 @@ func seedActiveDept(t testing.TB, ctx context.Context, fx *testFixtures, tenantI
 	return deptID
 }
 
-
 // ── I3-EXPIRED-INV-01 ────────────────────────────────────────────────
 
 // Test Case ID:      I3-EXPIRED-INV-01
 // Feature:           I-3 · plain-add path (no matching invitation) creates membership with no roles.
 // Note:              Per LLD I-3: expired-but-pending invitations are STILL honoured (acceptance +
-//                    initial roles applied) with a seat re-check. This test covers the separate
-//                    plain-add path where NO invitation exists at all.
+//
+//	initial roles applied) with a seat re-check. This test covers the separate
+//	plain-add path where NO invitation exists at all.
+//
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestAddFromRegister_ExpiredInvitation_PlainAdd(t *testing.T) {
 	fx := buildTestFixtures(t)
@@ -544,12 +556,11 @@ func TestDeptMembershipAssign_LevelDecrease_WithActiveDelegation_Returns409(t *t
 	// That is tested via the unit test below.
 }
 
-
 // seedNonSystemDeptForTenant creates a non-system dept and activates it for the tenant.
 func seedNonSystemDeptForTenant(t testing.TB, ctx context.Context, fx *testFixtures, tenantID uuid.UUID) uuid.UUID {
 	t.Helper()
 	code := "TESTDEPT-" + tenantID.String()[:8]
-	deptID := seedNonSystemDept(t.(*testing.T), ctx, fx.rawPool, code, "Test Department")
+	deptID := seedNonSystemDept(t.(*testing.T), ctx, fx.CatalogDepts, code, "Test Department")
 	_, err := fx.rawPool.Exec(ctx,
 		`INSERT INTO tenant_departments (tenant_id, department_id, is_active)
 		 VALUES ($1, $2, true) ON CONFLICT DO NOTHING`, tenantID, deptID)

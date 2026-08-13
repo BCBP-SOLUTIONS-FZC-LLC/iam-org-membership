@@ -6,12 +6,17 @@
 -- review_window_days: optional per-delegation override of the tenant's default review cycle.
 -- Partial index mirrors idx_delegations_ends_at pattern for CronJob efficiency.
 -- Zero-downtime additive migration (all nullable, no backfill required).
+--
+-- Plain CREATE INDEX (not CONCURRENTLY): golang-migrate runs every migration
+-- inside a transaction, and CONCURRENTLY cannot run inside one (SQLSTATE
+-- 25001). This migration has never successfully applied anywhere with the
+-- CONCURRENTLY form, so this is an in-place fix, not a new migration.
 
 ALTER TABLE delegations
     ADD COLUMN review_due_at        timestamptz,
     ADD COLUMN review_notice_sent_at timestamptz,
     ADD COLUMN review_window_days   int;
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_delegations_review_due
+CREATE INDEX IF NOT EXISTS idx_delegations_review_due
     ON delegations (review_due_at)
     WHERE ends_at IS NULL AND status = 'active';

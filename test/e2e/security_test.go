@@ -73,13 +73,17 @@ func TestInviteEmailSQLInjection(t *testing.T) {
 		`SELECT count(*) FROM tenants WHERE id = $1`, tenantID).Scan(&count))
 	assert.Equal(t, 1, count, "P14-SQLI-001: tenants row must survive the SQLi attempt")
 
-	// Confirm the raw payload was stored verbatim if accepted.
+	// Confirm the payload was stored verbatim (proof of parameterization) if
+	// accepted. InvitationService.normalizeEmail lowercases every email
+	// before storage (case-insensitive dedup, applies uniformly to all
+	// invites) — that's the one intentional transformation; the tautology
+	// payload itself must otherwise survive untouched.
 	if code == http.StatusAccepted || code == http.StatusCreated {
 		var stored string
 		err := e.rawPool.QueryRow(e.ctx,
 			`SELECT email FROM pending_invitations WHERE tenant_id = $1 LIMIT 1`, tenantID).Scan(&stored)
 		if err == nil {
-			assert.Equal(t, payload, stored, "SQLi payload stored verbatim (proof of parameterization)")
+			assert.Equal(t, strings.ToLower(payload), stored, "SQLi payload stored verbatim modulo case-normalization")
 		}
 	}
 }
@@ -283,14 +287,18 @@ func TestUnknownRoleCannotElevate(t *testing.T) {
 	tenantID := e.seedTenant(t, "auth-004")
 	userID := uuid.New()
 
+	// O-1/O-2/O-3/O-5/O-6 moved to the Catalog / Admin Config Service
+	// (migration-runbook Phase 4); O-4 is the remaining RequireOperatorRole
+	// route to exercise this gate against.
 	code, _, body := e.do(t, reqOpts{
-		method: http.MethodGet,
-		path:   "/api/v1/operator/plans",
+		method: http.MethodPatch,
+		path:   "/api/v1/operator/tenants/" + tenantID.String() + "/feature-flags",
 		headers: map[string]string{
 			"x-user-id":      userID.String(),
 			"x-tenant-id":    tenantID.String(),
 			"x-tenant-roles": "definitely_not_a_real_role,another_fake_one",
 		},
+		body: map[string]any{"feature_flags": map[string]any{}},
 	})
 	assert.Equal(t, http.StatusForbidden, code,
 		"P14-AUTH-004: bogus roles must not open operator lane (got %d body=%s)", code, string(body))

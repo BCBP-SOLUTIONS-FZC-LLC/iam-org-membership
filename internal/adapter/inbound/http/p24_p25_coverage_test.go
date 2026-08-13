@@ -134,8 +134,10 @@ func TestDeptPatch_OptimisticLockConflict_409(t *testing.T) {
 }
 
 // P25-422-01: deactivate a system department → 422 system_department_cannot_be_retired.
-// The DB constraint chk_system_department_active surfaces as a PgError which
-// the postgres adapter maps to ErrSystemDepartmentCannotBeRetired.
+// This used to be enforced by the departments table's chk_system_department_active
+// constraint; that table now lives in the Catalog Service (migration-runbook
+// Phase 4), so DepartmentService.SetActive checks dept.IsSystem itself against
+// the fetched catalog record and returns ErrSystemDepartmentCannotBeRetired directly.
 func TestDeptPatch_SystemDeptRetire_422(t *testing.T) {
 	tenantID := uuid.New()
 	deptID := uuid.New()

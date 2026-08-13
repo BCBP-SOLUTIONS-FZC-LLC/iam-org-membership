@@ -134,10 +134,14 @@ func TestOperatorRequiresOperatorRole(t *testing.T) {
 	tenantID := e.seedTenant(t, "mw-006")
 	userID := e.seedOwner(t, tenantID)
 
+	// O-1/O-2/O-3/O-5/O-6 moved to the Catalog / Admin Config Service
+	// (migration-runbook Phase 4); O-4 is the remaining RequireOperatorRole
+	// route to exercise this gate against.
 	code, _, body := e.do(t, reqOpts{
-		method:  http.MethodGet,
-		path:    "/api/v1/operator/plans",
+		method:  http.MethodPatch,
+		path:    "/api/v1/operator/tenants/" + tenantID.String() + "/feature-flags",
 		headers: ownerHeaders(userID, tenantID),
+		body:    map[string]any{"feature_flags": map[string]any{}},
 	})
 	assert.Equal(t, http.StatusForbidden, code,
 		"P13-MW-006: operator route without platform_operator role must return 403")

@@ -156,3 +156,23 @@ func (c *Cache) SeatUsageKey(tenantID uuid.UUID) string {
 func (c *Cache) PlansKey() string {
 	return "om:plans"
 }
+
+// DepartmentsKey builds om:departments (global, not tenant-scoped) — the
+// read-through cache populated from catalog-admin-config's CAT-I1 bulk
+// endpoint (migration-runbook Phase 2).
+func (c *Cache) DepartmentsKey() string {
+	return "om:departments"
+}
+
+// DepartmentsStaleKey builds om:departments:stale — the 24h stale-if-error
+// fallback (CAT-D4), served only when DepartmentsKey has expired and the
+// live call to catalog-admin-config also fails.
+func (c *Cache) DepartmentsStaleKey() string {
+	return "om:departments:stale"
+}
+
+// PlansStaleKey builds om:plans:stale — the 24h stale-if-error fallback
+// (CAT-D4) for the plans catalog.
+func (c *Cache) PlansStaleKey() string {
+	return "om:plans:stale"
+}

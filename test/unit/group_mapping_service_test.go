@@ -50,9 +50,15 @@ func (f *fakeGroupMappingRepo) ReplaceDeptMappings(ctx context.Context, tenantID
 var _ port.GroupMappingRepository = (*fakeGroupMappingRepo)(nil)
 
 // buildSvc wires up a GroupMappingService with the given repo + cache and
-// nil stubs for collaborators unused by the list/replace paths.
+// nil stubs for collaborators unused by the list/replace paths. A nil
+// catalog skips ReplaceDept's department_id validation (see
+// buildSvcWithCatalog for tests that need it enforced).
 func buildSvc(repo *fakeGroupMappingRepo, cache port.Cache) *service.GroupMappingService {
-	return service.NewGroupMappingService(repo, nil, nil, nil, nil, cache)
+	return service.NewGroupMappingService(repo, nil, nil, nil, nil, nil, cache)
+}
+
+func buildSvcWithCatalog(repo *fakeGroupMappingRepo, catalog port.DepartmentCatalogReader, cache port.Cache) *service.GroupMappingService {
+	return service.NewGroupMappingService(repo, nil, nil, nil, catalog, nil, cache)
 }
 
 // ── ListDeptRole (P-14) ────────────────────────────────────────────────
@@ -281,6 +287,41 @@ func TestGroupMapping_ReplaceDept_AcceptsValidMapping(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 	assert.Len(t, cache.deleteCalls, 2, "invalidate must fire on success")
+}
+
+func TestGroupMapping_ReplaceDept_RejectsUnknownDepartmentID(t *testing.T) {
+	// fk_gdm_department used to enforce this at the DB level; now that
+	// departments live in the Catalog service, ReplaceDept must validate
+	// department_id itself before the repo ever runs (LLD §12 step 4).
+	catalog := &fakeDeptCatalogRepo{
+		findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Department, error) {
+			return nil, domain.NewError(domain.ErrDepartmentNotFound, "department not found")
+		},
+	}
+	repo := &fakeGroupMappingRepo{
+		replaceDeptFn: func(_ context.Context, _ uuid.UUID, d []domain.GroupDeptMapping) ([]domain.GroupDeptMapping, error) {
+			t.Fatal("repo must not be called when department_id fails catalog validation")
+			return nil, nil
+		},
+	}
+	_, err := buildSvcWithCatalog(repo, catalog, nil).ReplaceDept(context.Background(), uuid.New(),
+		[]domain.GroupDeptMapping{{KeycloakGroupName: "eng", DepartmentID: uuid.New()}})
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, domain.ErrDepartmentNotFound.Error(), de.Code)
+}
+
+func TestGroupMapping_ReplaceDept_AcceptsKnownDepartmentID(t *testing.T) {
+	catalog := &fakeDeptCatalogRepo{} // default stub: every id resolves, IsActive=true
+	desired := []domain.GroupDeptMapping{{KeycloakGroupName: "eng", DepartmentID: uuid.New()}}
+	repo := &fakeGroupMappingRepo{
+		replaceDeptFn: func(_ context.Context, _ uuid.UUID, d []domain.GroupDeptMapping) ([]domain.GroupDeptMapping, error) {
+			return d, nil
+		},
+	}
+	got, err := buildSvcWithCatalog(repo, catalog, nil).ReplaceDept(context.Background(), uuid.New(), desired)
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
 }
 
 func TestGroupMapping_ReplaceDept_RepoErrorPropagates(t *testing.T) {

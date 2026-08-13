@@ -8,17 +8,18 @@
 // Coverage focus: the audit findings that couldn't be tested at the pure
 // repo layer (Phase 2 postgres tests):
 //
-//   G1  — Trial signup activates EXACTLY 5 named departments.
-//   B5  — JIT SAML emits Granted / LevelChanged / no-event based on
-//         prior dept-membership state (LLD rev 0.69, TRG-3 discipline).
-//   B15 — DeptMembershipService classifies concurrent Assign calls
-//         correctly (Granted vs LevelChanged race-safe).
-//   B1  — O-7 ReassignOwner emits TenantRoleGranted via TxRunner.
-//   B13 — TM-12 last-owner escalation increments the prometheus counter.
+//	G1  — Trial signup activates EXACTLY 5 named departments.
+//	B5  — JIT SAML emits Granted / LevelChanged / no-event based on
+//	      prior dept-membership state (LLD rev 0.69, TRG-3 discipline).
+//	B15 — DeptMembershipService classifies concurrent Assign calls
+//	      correctly (Granted vs LevelChanged race-safe).
+//	B1  — O-7 ReassignOwner emits TenantRoleGranted via TxRunner.
+//	B13 — TM-12 last-owner escalation increments the prometheus counter.
 package postgres_test
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -60,23 +61,25 @@ func TestG1_TrialSignup_ActivatesExactly5NamedDepartments(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Query the exact department codes activated for this tenant.
-	rows, err := fx.rawPool.Query(ctx, `
-		SELECT d.code
-		FROM tenant_departments td
-		JOIN departments d ON d.id = td.department_id
-		WHERE td.tenant_id = $1
-		ORDER BY d.code`, tenantID)
+	// Resolve the exact department codes activated for this tenant. The
+	// departments table was dropped (migration-runbook Phase 4 — LLD §12
+	// step 4); tenant_departments.department_id now resolves against
+	// fx.CatalogDepts instead of a local JOIN.
+	rows, err := fx.rawPool.Query(ctx,
+		`SELECT department_id FROM tenant_departments WHERE tenant_id = $1`, tenantID)
 	require.NoError(t, err)
 	defer rows.Close()
 
 	var codes []string
 	for rows.Next() {
-		var code string
-		require.NoError(t, rows.Scan(&code))
-		codes = append(codes, code)
+		var deptID uuid.UUID
+		require.NoError(t, rows.Scan(&deptID))
+		d, derr := fx.CatalogDepts.DepartmentByID(ctx, deptID)
+		require.NoError(t, derr)
+		codes = append(codes, d.Code)
 	}
 	require.NoError(t, rows.Err())
+	sort.Strings(codes)
 
 	expected := []string{"DESIGN", "ENGINEERING", "FINANCE", "LEGAL", "PROCUREMENT"}
 	assert.Equal(t, expected, codes,
@@ -123,7 +126,7 @@ func TestJIT_FirstTimeAssignment_EmitsGranted(t *testing.T) {
 
 	// Establish an active tenant_membership + tenant_department + a
 	// group_dept_mapping so JIT resolves to a real dept assignment.
-	deptID := seedSystemDept(t, ctx, fx.rawPool, "ENG_B5A", "Eng B5A")
+	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_B5A", "Eng B5A")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
 	seedGroupDeptMapping(t, ctx, fx.rawPool, tenantID, "eng-team", deptID)
 	seedGroupDeptRoleMapping(t, ctx, fx.rawPool, tenantID, "eng-team", domain.DeptReviewer)
@@ -143,7 +146,7 @@ func TestJIT_SameLevelReplay_EmitsNothing(t *testing.T) {
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5b")
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	deptID := seedSystemDept(t, ctx, fx.rawPool, "ENG_B5B", "Eng B5B")
+	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_B5B", "Eng B5B")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
 	seedGroupDeptMapping(t, ctx, fx.rawPool, tenantID, "eng-team", deptID)
 	seedGroupDeptRoleMapping(t, ctx, fx.rawPool, tenantID, "eng-team", domain.DeptReviewer)
@@ -166,7 +169,7 @@ func TestJIT_LevelChange_EmitsLevelChanged(t *testing.T) {
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5c")
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	deptID := seedSystemDept(t, ctx, fx.rawPool, "ENG_B5C", "Eng B5C")
+	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_B5C", "Eng B5C")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
 	// Map same group to two different levels via mapping updates.
 	seedGroupDeptMapping(t, ctx, fx.rawPool, tenantID, "eng-team", deptID)
@@ -198,7 +201,7 @@ func TestConcurrentAssign_NoMisclassification(t *testing.T) {
 	tenantID, userID := seedTenantWithOwner(t, ctx, fx, "acme-b15")
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	deptID := seedSystemDept(t, ctx, fx.rawPool, "ENG_B15", "Eng B15")
+	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_B15", "Eng B15")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
 
 	// Two concurrent Assign calls for the SAME (tenant, user, dept) with
@@ -350,13 +353,17 @@ func seedTenantWithOwner(t testing.TB, ctx context.Context, fx *testFixtures, sl
 	return tenantID, ownerID
 }
 
-func seedSystemDept(t *testing.T, ctx context.Context, rawPool *pgxpoolPool, code, name string) uuid.UUID {
+// seedSystemDept registers a system (is_system=true, is_active=true)
+// department. The departments table was dropped (migration-runbook Phase
+// 4 — LLD §12 step 4); catalog is nil for tests that construct repos
+// directly without a fixture (department_id no longer needs to resolve
+// against anything at the DB level — there's no FK left to satisfy).
+func seedSystemDept(t *testing.T, ctx context.Context, catalog *fakeCatalogDepartments, code, name string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
-	_, err := rawPool.Exec(ctx,
-		`INSERT INTO departments (id, code, name, is_system) VALUES ($1, $2, $3, true)`,
-		id, code, name)
-	require.NoError(t, err)
+	if catalog != nil {
+		catalog.add(domain.Department{ID: id, Code: code, Name: name, IsSystem: true, IsActive: true})
+	}
 	return id
 }
 

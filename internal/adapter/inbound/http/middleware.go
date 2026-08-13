@@ -481,6 +481,7 @@ func domainErrorStatus(de *domain.DomainError) int {
 		errors.Is(de.Cause, domain.ErrUserProfileUnavailable),
 		errors.Is(de.Cause, domain.ErrWorkflowServiceUnavailable),
 		errors.Is(de.Cause, domain.ErrRealmProvisionerUnavailable),
+		errors.Is(de.Cause, domain.ErrCatalogServiceUnavailable),
 		errors.Is(de.Cause, domain.ErrDependencyUnavailable):
 		return http.StatusServiceUnavailable
 	default:

@@ -94,6 +94,13 @@ var (
 	ErrUserProfileUnavailable      = errors.New("user_profile_unavailable")
 	ErrWorkflowServiceUnavailable  = errors.New("workflow_service_unavailable")
 	ErrRealmProvisionerUnavailable = errors.New("realm_provisioner_unavailable")
+	// ErrCatalogServiceUnavailable is returned by service.CatalogService
+	// when both the cat:departments/plans-equivalent primary cache AND the
+	// 24h stale-if-error fallback are empty and the live call to
+	// catalog-admin-config also failed — i.e. there is truly no data to
+	// serve, not merely stale data. Never a silent wrong answer (LLD §11,
+	// CAT-FAIL-2).
+	ErrCatalogServiceUnavailable = errors.New("catalog_service_unavailable")
 )
 
 // DomainError wraps a sentinel with a human-readable message and optional

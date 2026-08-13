@@ -45,6 +45,22 @@ func cacheKeySeatUsage(tenantID uuid.UUID) string {
 	return fmt.Sprintf("om:seat_usage:%s", tenantID)
 }
 
+// ── catalog-admin-config read-cutover keys (migration-runbook Phase 2) ──
+//
+// Global, not tenant-scoped — mirror valkey.Cache.PlansKey()'s existing
+// no-arg global-key shape. cacheKeyPlans() returns the same string
+// operator_service.go's PatchPlan already hardcodes ("om:plans") — that
+// write-side literal is intentionally left as-is (out of scope for this
+// read-cutover pass); both resolve to the identical key.
+
+func cacheKeyDepartments() string { return "om:departments" }
+
+func cacheKeyDepartmentsStale() string { return "om:departments:stale" }
+
+func cacheKeyPlans() string { return "om:plans" }
+
+func cacheKeyPlansStale() string { return "om:plans:stale" }
+
 // Reference the Phase 2b+ helpers so `golangci-lint unused` doesn't flag
 // them until their consuming service lands. Named individually so a
 // future rename fails at compile time.

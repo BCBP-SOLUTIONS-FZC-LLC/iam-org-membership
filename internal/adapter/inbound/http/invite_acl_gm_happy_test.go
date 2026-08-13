@@ -437,7 +437,7 @@ func TestGM_ListDeptRole_Success_200(t *testing.T) {
 			{TenantID: tid, KeycloakGroupName: "engineers", RoleCode: domain.DeptApprover},
 		}, nil
 	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, happyTxRunner{}, happyCacheStub{})
+	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
 	h := &GroupMappingHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -457,7 +457,7 @@ func TestGM_PutDeptRole_Success_200(t *testing.T) {
 	repo := &iahGMRepo{replaceDeptRoleFn: func(_ context.Context, tid uuid.UUID, d []domain.GroupDeptRoleMapping) ([]domain.GroupDeptRoleMapping, error) {
 		return d, nil
 	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, happyTxRunner{}, happyCacheStub{})
+	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
 	h := &GroupMappingHandler{svc: svc}
 
 	body := `{"mappings":[{"keycloak_group_name":"eng","role_code":"approver"}]}`
@@ -481,7 +481,7 @@ func TestGM_ListDept_Success_200(t *testing.T) {
 			{TenantID: tid, KeycloakGroupName: "engineers", DepartmentID: deptA},
 		}, nil
 	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, happyTxRunner{}, happyCacheStub{})
+	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
 	h := &GroupMappingHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -502,7 +502,7 @@ func TestGM_PutDept_Success_200(t *testing.T) {
 	repo := &iahGMRepo{replaceDeptFn: func(_ context.Context, tid uuid.UUID, d []domain.GroupDeptMapping) ([]domain.GroupDeptMapping, error) {
 		return d, nil
 	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, happyTxRunner{}, happyCacheStub{})
+	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
 	h := &GroupMappingHandler{svc: svc}
 
 	body := `{"mappings":[{"keycloak_group_name":"eng","department_id":"` + deptID.String() + `"}]}`
@@ -522,7 +522,7 @@ func TestGM_PutTenantRole_Success_200(t *testing.T) {
 	repo := &iahGMRepo{replaceTRFn: func(_ context.Context, tid uuid.UUID, d []domain.GroupTenantRoleMapping) ([]domain.GroupTenantRoleMapping, error) {
 		return d, nil
 	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, happyTxRunner{}, happyCacheStub{})
+	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
 	h := &GroupMappingHandler{svc: svc}
 
 	body := `{"mappings":[{"keycloak_group_name":"admins","role_code":"tenant_admin"}]}`

@@ -10,7 +10,6 @@ package postgres_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -264,7 +263,11 @@ func TestTenantsRLSPolicy_UsesHelperFunction(t *testing.T) {
 
 // seedForDeptAssign creates tenant + tenant_departments row + membership
 // so DeptMembership.Assign can succeed (its precondition is an active
-// tenant_departments row).
+// tenant_departments row). Calls DeptMembershipRepository directly
+// (bypassing DeptMembershipService), so department_id needs no catalog
+// backing — the departments table (and its FK) was dropped per
+// migration-runbook Phase 4 (LLD §12 step 4); any UUID satisfies
+// tenant_departments' remaining constraints.
 func seedForDeptAssign(t *testing.T, ctx context.Context, rawPool *pgxpool.Pool, slug string) (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) {
 	t.Helper()
 	tenantID := seedTenant(t, ctx, rawPool, slug)
@@ -272,11 +275,7 @@ func seedForDeptAssign(t *testing.T, ctx context.Context, rawPool *pgxpool.Pool,
 	deptID := uuid.New()
 	membershipID := uuid.New()
 
-	_, err := rawPool.Exec(ctx, `INSERT INTO departments (id, code, name, is_system) VALUES ($1, $2, $3, false)`,
-		deptID, "TEST_"+strings.ToUpper(slug), "Test "+slug)
-	require.NoError(t, err)
-
-	_, err = rawPool.Exec(ctx, `INSERT INTO tenant_departments (tenant_id, department_id, is_active) VALUES ($1, $2, true)`,
+	_, err := rawPool.Exec(ctx, `INSERT INTO tenant_departments (tenant_id, department_id, is_active) VALUES ($1, $2, true)`,
 		tenantID, deptID)
 	require.NoError(t, err)
 
@@ -286,4 +285,3 @@ func seedForDeptAssign(t *testing.T, ctx context.Context, rawPool *pgxpool.Pool,
 
 	return tenantID, userID, membershipID, deptID
 }
-

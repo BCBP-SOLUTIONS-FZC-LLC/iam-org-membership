@@ -4,9 +4,12 @@
 //
 // Module:   iam-org-membership
 // Feature:  Persistence layer — delegation, group mapping, dept role label,
-//           tender ACL repos.
+//
+//	tender ACL repos.
+//
 // Files:    internal/adapter/outbound/postgres/{delegation,group_mapping,
-//           dept_role_label,tender_acl}_repository.go
+//
+//	dept_role_label,tender_acl}_repository.go
 //
 // Test IDs: P8-DELEG-NNN, P8-GMAP-NNN, P8-LABELR-NNN, P8-ACL-NNN.
 package postgres_test
@@ -35,11 +38,13 @@ import (
 // Scenario:          Happy — insert active delegation, then FindByID
 // Preconditions:     Tenant + 2 memberships seeded
 // Test Steps:
-//   1. Seed tenant + 2 members
-//   2. Insert delegation
-//   3. FindByID
+//  1. Seed tenant + 2 members
+//  2. Insert delegation
+//  3. FindByID
+//
 // Expected Result:
 //   - Returns the inserted row with status=active, RecordVersion=1
+//
 // Priority:          P1
 // Severity:          Blocker
 // Automation Status: Automated
@@ -71,16 +76,20 @@ func TestP8Deleg001_InsertAndFindByID(t *testing.T) {
 // Feature:           delegations · List surfaces all non-deleted rows (any status)
 // API:               Internal (P-18)
 // Scenario:          Positive — List filters by deleted_at IS NULL only; the
-//                    caller (service / handler) is responsible for further
-//                    status filtering per view semantics.
+//
+//	caller (service / handler) is responsible for further
+//	status filtering per view semantics.
+//
 // Preconditions:     One delegation, cancelled but not soft-deleted
 // Test Steps:
-//   1. Insert delegation
-//   2. Cancel via End(status=cancelled) — sets status but does NOT flip deleted_at
-//   3. List
+//  1. Insert delegation
+//  2. Cancel via End(status=cancelled) — sets status but does NOT flip deleted_at
+//  3. List
+//
 // Expected Result:
 //   - Row still appears (List = "all not-hard-deleted for tenant")
 //   - status = cancelled
+//
 // Priority:          P2
 // Severity:          Major
 // Automation Status: Automated
@@ -116,10 +125,12 @@ func TestP8Deleg002_ListSurfacesAllNonDeleted(t *testing.T) {
 // Scenario:          Negative — record_version stale
 // Preconditions:     Active delegation at v=1
 // Test Steps:
-//   1. Insert
-//   2. End with expectedVersion=999
+//  1. Insert
+//  2. End with expectedVersion=999
+//
 // Expected Result:
 //   - Returns ErrOptimisticLockConflict
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -153,11 +164,13 @@ func TestP8Deleg003_EndOptimisticLock(t *testing.T) {
 // Scenario:          Positive — one entry with ends_at in the past returned
 // Preconditions:     One entry with ends_at 1 h ago, one with ends_at future
 // Test Steps:
-//   1. Insert with future ends_at
-//   2. Backdate one to now-1h via SQL
-//   3. Call ListExpiringBefore(now, limit=100)
+//  1. Insert with future ends_at
+//  2. Backdate one to now-1h via SQL
+//  3. Call ListExpiringBefore(now, limit=100)
+//
 // Expected Result:
 //   - Returns only the backdated row
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -212,11 +225,13 @@ func TestP8Deleg004_ListExpiringBefore(t *testing.T) {
 // Scenario:          Full-replacement of dept-role mappings
 // Preconditions:     Empty tenant
 // Test Steps:
-//   1. Replace with 2 mappings
-//   2. Replace with 1 mapping
-//   3. List
+//  1. Replace with 2 mappings
+//  2. Replace with 1 mapping
+//  3. List
+//
 // Expected Result:
 //   - Second replace narrows to 1 row (old mappings removed)
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -252,10 +267,12 @@ func TestP8GMap001_ReplaceDeptRoleMappings(t *testing.T) {
 // Scenario:          Full-replacement, elevated codes only
 // Preconditions:     Empty tenant
 // Test Steps:
-//   1. Replace with tender_admin + tenant_admin mapping
-//   2. List
+//  1. Replace with tender_admin + tenant_admin mapping
+//  2. List
+//
 // Expected Result:
 //   - Both mappings present
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -284,11 +301,13 @@ func TestP8GMap002_ReplaceTenantRoleMappings(t *testing.T) {
 // Scenario:          Full-replacement with catalog dept id
 // Preconditions:     Dept catalog row exists
 // Test Steps:
-//   1. Insert catalog dept
-//   2. Replace with (group, dept) mapping
-//   3. List
+//  1. Insert catalog dept
+//  2. Replace with (group, dept) mapping
+//  3. List
+//
 // Expected Result:
 //   - Mapping present, department_id matches
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -296,7 +315,7 @@ func TestP8GMap003_ReplaceDeptMappings(t *testing.T) {
 	appPool, rawPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "gmap-003")
-	deptID := seedNonSystemDept(t, ctx, rawPool, "GMAP_DEPT_003", "Dept")
+	deptID := seedNonSystemDept(t, ctx, nil, "GMAP_DEPT_003", "Dept")
 	tctx := withTenant(ctx, tenantID)
 
 	repo := pgadapter.NewGroupMappingRepository(appPool)
@@ -318,11 +337,13 @@ func TestP8GMap003_ReplaceDeptMappings(t *testing.T) {
 // Scenario:          Boundary — Replace with empty slice
 // Preconditions:     3 existing dept-role mappings
 // Test Steps:
-//   1. Seed 3 mappings
-//   2. Replace with []
-//   3. List
+//  1. Seed 3 mappings
+//  2. Replace with []
+//  3. List
+//
 // Expected Result:
 //   - List returns empty slice
+//
 // Priority:          P2
 // Severity:          Major
 // Automation Status: Automated
@@ -358,10 +379,12 @@ func TestP8GMap004_ReplaceWithEmptyClearsAll(t *testing.T) {
 // Scenario:          Positive — Seed creates 3 rows with default names
 // Preconditions:     Fresh tenant, no labels
 // Test Steps:
-//   1. Call Seed
-//   2. Call List
+//  1. Call Seed
+//  2. Call List
+//
 // Expected Result:
 //   - Returns 3 labels (preparator/reviewer/approver) with default DisplayName
+//
 // Priority:          P1
 // Severity:          Blocker
 // Automation Status: Automated
@@ -387,10 +410,12 @@ func TestP8LabelR001_SeedHappy(t *testing.T) {
 // Scenario:          Rename approver → Buyer
 // Preconditions:     Labels seeded
 // Test Steps:
-//   1. Seed
-//   2. Update(role=approver, display=Buyer, v=1)
+//  1. Seed
+//  2. Update(role=approver, display=Buyer, v=1)
+//
 // Expected Result:
 //   - Returns row with DisplayName=Buyer, RecordVersion=2
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -417,10 +442,12 @@ func TestP8LabelR002_UpdateHappy(t *testing.T) {
 // Scenario:          Negative — stale record_version
 // Preconditions:     Labels seeded at v=1
 // Test Steps:
-//   1. Seed
-//   2. Update with expectedVersion=999
+//  1. Seed
+//  2. Update with expectedVersion=999
+//
 // Expected Result:
 //   - Returns ErrOptimisticLockConflict
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -452,10 +479,12 @@ func TestP8LabelR003_UpdateOptimisticLock(t *testing.T) {
 // Scenario:          Positive — grant a view ACL
 // Preconditions:     Tenant + user + arbitrary tender_id
 // Test Steps:
-//   1. Seed tenant + member
-//   2. Grant TenderACLEntry{user, tender, view}
+//  1. Seed tenant + member
+//  2. Grant TenderACLEntry{user, tender, view}
+//
 // Expected Result:
 //   - Returned entry has AccessLevel=view, no deleted_at
+//
 // Priority:          P1
 // Severity:          Blocker
 // Automation Status: Automated
@@ -487,10 +516,12 @@ func TestP8ACL001_GrantHappy(t *testing.T) {
 // Scenario:          Positive — returns the granted level
 // Preconditions:     ACL granted at view
 // Test Steps:
-//   1. Grant view
-//   2. FindActiveForUser
+//  1. Grant view
+//  2. FindActiveForUser
+//
 // Expected Result:
 //   - Returns entry with AccessLevel=view
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -523,12 +554,14 @@ func TestP8ACL002_FindActiveHappy(t *testing.T) {
 // Scenario:          Positive — soft-delete existing grant
 // Preconditions:     ACL granted
 // Test Steps:
-//   1. Grant
-//   2. Revoke
-//   3. FindActiveForUser
+//  1. Grant
+//  2. Revoke
+//  3. FindActiveForUser
+//
 // Expected Result:
 //   - Revoke returns the soft-deleted row (deleted_at IS NOT NULL)
 //   - Subsequent Find returns nil (or not-found)
+//
 // Priority:          P1
 // Severity:          Major
 // Automation Status: Automated
@@ -568,12 +601,14 @@ func TestP8ACL003_RevokeSoftDeletes(t *testing.T) {
 // Scenario:          Positive — returns all active entries for a tender
 // Preconditions:     2 users granted; one revoked
 // Test Steps:
-//   1. Grant u1
-//   2. Grant u2
-//   3. Revoke u1
-//   4. ListByTender
+//  1. Grant u1
+//  2. Grant u2
+//  3. Revoke u1
+//  4. ListByTender
+//
 // Expected Result:
 //   - Returns 1 entry (u2 only)
+//
 // Priority:          P2
 // Severity:          Major
 // Automation Status: Automated

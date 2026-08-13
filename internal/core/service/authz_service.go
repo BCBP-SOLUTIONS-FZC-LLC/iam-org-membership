@@ -18,11 +18,11 @@ import (
 // uses to inject headers. See LLD §5.4 / §8.3 / §21.
 type AuthZService struct {
 	pool  *pgcommon.Pool
-	plans port.PlanRepository
+	plans port.PlanCatalogReader
 	cache port.Cache
 }
 
-func NewAuthZService(pool *pgcommon.Pool, plans port.PlanRepository, cache port.Cache) *AuthZService {
+func NewAuthZService(pool *pgcommon.Pool, plans port.PlanCatalogReader, cache port.Cache) *AuthZService {
 	return &AuthZService{pool: pool, plans: plans, cache: cache}
 }
 
@@ -186,8 +186,14 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 		delrows.Close()
 
 		// Effective feature flags = planDefaults(plan) ⊕ tenants.feature_flags (PLAN-6).
+		// Errors from PlanByCode are deliberately swallowed (err == nil
+		// gate below), unchanged from this method's pre-cutover behavior:
+		// a catalog-admin-config outage degrades I-8 to "no plan
+		// baseline" rather than failing the request — this service has
+		// no caller relationship with the catalog service (LLD §3), and
+		// must not newly acquire one via an unswallowed error here.
 		effective := map[string]any{}
-		plan, err := s.plans.FindByCode(ctx, domain.TenantPlan(tPlan))
+		plan, err := s.plans.PlanByCode(ctx, domain.TenantPlan(tPlan))
 		if err == nil && plan != nil {
 			for k, v := range plan.FeatureSet {
 				effective[k] = v

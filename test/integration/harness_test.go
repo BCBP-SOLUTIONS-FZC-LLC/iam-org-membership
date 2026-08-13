@@ -75,11 +75,32 @@ var (
 // down on exit. Individual tests get a lightweight "phase12Env" via
 // newPhase12Env that reuses this LocalStack.
 func TestMain(m *testing.M) {
+	ensureLocalStackCredentials()
 	code := m.Run()
 	if sharedLocalStack != nil && !sharedLSTerminated {
 		_ = sharedLocalStack.Terminate(sharedLSCtx)
 	}
 	os.Exit(code)
+}
+
+// ensureLocalStackCredentials pins dummy static AWS credentials into the
+// process environment when none are already configured. phase12Env's own
+// snsCli/sqsCli pass explicit static credentials, but the outbox-runner
+// SNS publishers the tests build via events.NewSNSPublisher only expose
+// Region/EndpointURL/Logger — no credentials override — so they fall back
+// to the AWS SDK's default credential chain. On a machine with no
+// ~/.aws/credentials and no AWS_* env vars, that chain finds nothing and
+// every real Publish call to LocalStack fails at credential-resolution
+// time (LocalStack accepts any credentials, real or fake, but the SDK
+// still requires *some*). Only set when unset, so a CI runner or developer
+// machine with real/intentional credentials is left untouched.
+func ensureLocalStackCredentials() {
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		_ = os.Setenv("AWS_ACCESS_KEY_ID", "localstack")
+	}
+	if os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		_ = os.Setenv("AWS_SECRET_ACCESS_KEY", "localstack")
+	}
 }
 
 // startLocalStack lazily boots the shared LocalStack container. Idempotent

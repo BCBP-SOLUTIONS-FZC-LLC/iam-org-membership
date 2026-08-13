@@ -88,17 +88,14 @@
 
 ### Operator routes (`/api/v1/operator/*`)
 
+**O-1/O-2/O-3 (department CRUD) and O-5/O-6 (plan read/edit) moved to the standalone Catalog / Admin Config Service** (`iam-catalog-admin`, migration-runbook Phase 4) along with the `departments`/`plans` tables themselves — see `database-schema.md`. Only O-4 and O-7 remain in O&M's `/operator` group:
+
 | # | Method & Path | Purpose |
 |---|---|---|
-| O-1 | `POST /departments` | Add global-catalog department |
-| O-2 | `PATCH /departments/:id` | Update `name` or `is_active` (retire/reactivate). `code`/`is_system` immutable (`422 field_immutable`); system dept retire requires operator migration (`422 system_department_cannot_be_retired`) |
-| O-3 | `DELETE /departments/:id` | Hard-blocked (`405`); retire via `is_active=false` |
 | O-4 | `PATCH /tenants/:id/feature-flags` | Full-replacement of override delta (§16 A18). Allow-list validated; scalars only |
-| O-5 | `GET /plans[/:code]` | Read plan entitlement catalog |
-| O-6 | `PATCH /plans/:code` | Edit tier entitlements. PATCH-only, no create/delete (PLAN-4). Evicts `om:plans` |
 | O-7 | `POST /tenants/:id/reassign-owner` | Recover ownerless tenant — grant `tenant_owner` to existing active member; clear `ownerless_since` (§16 A39, TM-12/T-13). Only path to resolve TM-12 escalation |
 
-**Operator invariants (OP-1..7):** Only `platform_operator` writes catalog/plans/feature_flags/reassign-owner. Departments never physically deleted (OP-3). Retirement affects future assignments only, existing rows untouched (OP-5).
+**Operator invariants (OP-1..7):** Only `platform_operator` writes feature_flags/reassign-owner in O&M (catalog/plans writes now live in the Catalog Service). Departments never physically deleted (OP-3, enforced by the Catalog Service now). Retirement affects future assignments only, existing rows untouched (OP-5).
 
 ## 5.5 Status Codes
 
@@ -133,7 +130,10 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 | `om:grm:{tenant}` | Group-role mappings | 600 s | P-15 |
 | `om:gdm:{tenant}` | Group-dept mappings | 600 s | P-17 |
 | `om:seat_usage:{tenant}` | `{active, pending, licensed_seats, over_cap, overage_since, grace_ends_at}` | 30 s (CACHE-5) | membership add/remove; invite create/revoke/expire/accept; `TenantSeatsChanged`; overage set/clear |
-| `om:plans` | Whole plan catalog (3 tiers) | 600 s | O-6 |
+| `om:plans` | Whole plan catalog, read through `CatalogService`/`CatalogAdminClient` from the Catalog Service (Phase 2 read-cutover; `plans` table dropped from O&M in Phase 4) | 600 s | Passive expiry only — O&M no longer writes plans, so nothing evicts this key on write; a stale read can live up to the TTL |
+| `om:plans:stale` | Same payload as `om:plans`, second-tier stale-if-error fallback (CAT-D4) — served when the Catalog Service is unreachable and the primary key has expired | 24 h | Refreshed on every successful primary-key populate; never explicitly evicted |
+| `om:departments` | Whole department catalog, read through `CatalogService`/`CatalogAdminClient` from the Catalog Service (Phase 2 read-cutover; `departments` table dropped from O&M in Phase 4) | 600 s | Passive expiry only, same rationale as `om:plans` |
+| `om:departments:stale` | Same payload as `om:departments`, second-tier stale-if-error fallback (CAT-D4) | 24 h | Refreshed on every successful primary-key populate; never explicitly evicted |
 
 ### 6.2 I-8 Hot-Path Query
 

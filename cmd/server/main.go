@@ -32,6 +32,7 @@ import (
 	_ "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/docs/swagger"
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
+	catalogadminclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/catalogadmin"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
@@ -385,8 +386,6 @@ func main() {
 
 	// ── 8b. Repositories, services, handlers ─────────────────────────────
 	tenantRepo := pgadapter.NewTenantRepository(pool)
-	planRepo := pgadapter.NewPlanRepository(pool)
-	deptRepo := pgadapter.NewDepartmentRepository(pool)
 	tenantDeptRepo := pgadapter.NewTenantDepartmentRepository(pool)
 	membershipRepo := pgadapter.NewMembershipRepository(pool)
 	tenantRoleRepo := pgadapter.NewTenantRoleRepository(pool)
@@ -401,27 +400,35 @@ func main() {
 	rpClient := realmprovisionerclient.New()
 	upClient := userprofileclient.New()
 	wfClient := workflowclient.New()
+	// catalogAdminClient/catalogReader: departments/plans read paths go
+	// through catalog-admin-config's CAT-I1/CAT-I2 + a local cache.
+	// Migration-runbook Phase 4 (LLD §12 step 4) completed the cutover —
+	// catalog-admin-config is now the sole writer too; O-1/O-2/O-3/O-5/O-6
+	// and the local departments/plans tables have been removed from this
+	// service entirely.
+	catalogAdminClient := catalogadminclient.New()
+	catalogReader := service.NewCatalogService(catalogAdminClient, cache)
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	invitationExpiryDays := envInt("INVITATION_EXPIRY_DAYS", 7)
 	reinviteCooldownMin := envInt("INVITE_REINVITE_COOLDOWN_MINUTES", 60) // PI-11
 	inviteMaxPerHour := envInt("INVITE_MAX_PER_TENANT_PER_HOUR", 200)     // PI-12
 
-	authzSvc := service.NewAuthZService(pool, planRepo, cache)
-	provisioningSvc := service.NewProvisioningService(pool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, deptRepo, delegationRepo, aclRepo, planRepo, txRunner, cache, rpClient)
+	authzSvc := service.NewAuthZService(pool, catalogReader, cache)
+	provisioningSvc := service.NewProvisioningService(pool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, delegationRepo, aclRepo, catalogReader, txRunner, cache, rpClient)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
-	deptSvc := service.NewDepartmentService(deptRepo, tenantDeptRepo, cache)
+	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, delegationRepo, aclRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, nil, seatOverageDays)
-	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, deptRepo, delegationRepo, wfClient, cache, txRunner)
+	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogReader, delegationRepo, wfClient, cache, txRunner)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, cache)
-	groupMappingSvc := service.NewGroupMappingService(groupMappingRepo, membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache)
+	groupMappingSvc := service.NewGroupMappingService(groupMappingRepo, membershipRepo, tenantRoleRepo, deptMemRepo, catalogReader, txRunner, cache)
 	reviewWindowDays := envInt("DELEGATION_REVIEW_WINDOW_DAYS", 90) // superseded by tenants.delegation_review_window_days (§16 A71); kept as fallback
 	delegationSvc := service.NewDelegationService(delegationRepo, membershipRepo, upClient, tenantRepo, txRunner, reviewWindowDays)
 	aclSvc := service.NewTenderACLService(aclRepo, membershipRepo)
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, nil, invitationExpiryDays).
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour)
-	operatorSvc := service.NewOperatorService(pool, planRepo, deptRepo, tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
+	operatorSvc := service.NewOperatorService(pool, tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 
 	tenantH := httpadapter.NewTenantHandler(tenantSvc)
 	deptH := httpadapter.NewDepartmentHandler(deptSvc)
@@ -508,13 +515,11 @@ func main() {
 
 		// Operator routes — AUTH-6 defense-in-depth (RequireOperatorRole
 		// middleware + handler re-check inside each operator handler).
+		// O-1/O-2/O-3 (departments) and O-5/O-6 (plans) moved to the
+		// Catalog / Admin Config Service (migration-runbook Phase 4, LLD
+		// §12 step 4).
 		op := v1.Group("/operator", httpadapter.RequireOperatorRole())
-		op.POST("/departments", operatorH.CreateDepartment)               // O-1
-		op.PATCH("/departments/:id", operatorH.PatchDepartment)           // O-2
-		op.DELETE("/departments/:id", operatorH.DeleteDepartmentBlocked)  // O-3
 		op.PATCH("/tenants/:id/feature-flags", operatorH.SetFeatureFlags) // O-4
-		op.GET("/plans", operatorH.ListPlans)                             // O-5
-		op.PATCH("/plans/:code", operatorH.PatchPlan)                     // O-6
 		op.POST("/tenants/:id/reassign-owner", operatorH.ReassignOwner)   // O-7
 
 		// Internal /api/v1/internal/* routes — mTLS + iam-system role

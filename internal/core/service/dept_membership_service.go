@@ -14,7 +14,7 @@ type DeptMembershipService struct {
 	deptMemberships port.DeptMembershipRepository
 	memberships     port.MembershipRepository
 	tenantDepts     port.TenantDepartmentRepository
-	catalog         port.DepartmentRepository // global catalog — D-5/TD-6 retired check
+	catalog         port.DepartmentCatalogReader // global catalog — D-5/TD-6 retired check
 	delegations     port.DelegationRepository
 	workflow        port.WorkflowClient
 	cache           port.Cache
@@ -25,7 +25,7 @@ func NewDeptMembershipService(
 	dm port.DeptMembershipRepository,
 	m port.MembershipRepository,
 	td port.TenantDepartmentRepository,
-	catalog port.DepartmentRepository,
+	catalog port.DepartmentCatalogReader,
 	del port.DelegationRepository,
 	wf port.WorkflowClient,
 	cache port.Cache,
@@ -55,7 +55,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	}
 	// D-5/TD-6 step 1: global catalog must be active (department_retired).
 	if s.catalog != nil {
-		dept, err := s.catalog.FindByID(ctx, deptID)
+		dept, err := s.catalog.DepartmentByID(ctx, deptID)
 		if err != nil {
 			return nil, err
 		}

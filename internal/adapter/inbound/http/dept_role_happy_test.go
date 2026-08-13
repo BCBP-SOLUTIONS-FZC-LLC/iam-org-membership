@@ -21,45 +21,24 @@ import (
 // ── LOCAL fakes (prefix "drh") ────────────────────────────────────────
 
 type drhDeptRepo struct {
-	listFn       func(context.Context, bool) ([]domain.Department, error)
-	findByIDFn   func(context.Context, uuid.UUID) (*domain.Department, error)
-	findByCodeFn func(context.Context, string) (*domain.Department, error)
-	insertFn     func(context.Context, *domain.Department) (*domain.Department, error)
-	updateFn     func(context.Context, uuid.UUID, *string, *bool, int64) (*domain.Department, error)
+	listFn     func(context.Context, bool) ([]domain.Department, error)
+	findByIDFn func(context.Context, uuid.UUID) (*domain.Department, error)
 }
 
-func (f *drhDeptRepo) List(ctx context.Context, a bool) ([]domain.Department, error) {
+func (f *drhDeptRepo) Departments(ctx context.Context) ([]domain.Department, error) {
 	if f.listFn != nil {
-		return f.listFn(ctx, a)
+		return f.listFn(ctx, false)
 	}
 	return nil, nil
 }
-func (f *drhDeptRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Department, error) {
+func (f *drhDeptRepo) DepartmentByID(ctx context.Context, id uuid.UUID) (*domain.Department, error) {
 	if f.findByIDFn != nil {
 		return f.findByIDFn(ctx, id)
 	}
 	return &domain.Department{ID: id, Code: "eng", Name: "Engineering", IsActive: true}, nil
 }
-func (f *drhDeptRepo) FindByCode(ctx context.Context, c string) (*domain.Department, error) {
-	if f.findByCodeFn != nil {
-		return f.findByCodeFn(ctx, c)
-	}
-	return nil, nil
-}
-func (f *drhDeptRepo) Insert(ctx context.Context, d *domain.Department) (*domain.Department, error) {
-	if f.insertFn != nil {
-		return f.insertFn(ctx, d)
-	}
-	return d, nil
-}
-func (f *drhDeptRepo) Update(ctx context.Context, id uuid.UUID, name *string, active *bool, ver int64) (*domain.Department, error) {
-	if f.updateFn != nil {
-		return f.updateFn(ctx, id, name, active, ver)
-	}
-	return nil, nil
-}
 
-var _ port.DepartmentRepository = (*drhDeptRepo)(nil)
+var _ port.DepartmentCatalogReader = (*drhDeptRepo)(nil)
 
 type drhTenantDeptRepo struct {
 	listFn       func(context.Context, uuid.UUID) ([]domain.TenantDepartment, error)
@@ -264,7 +243,7 @@ func TestDepartmentList_Success_200(t *testing.T) {
 	tenantID := uuid.New()
 	deptA := uuid.New()
 	td := &drhTenantDeptRepo{
-		listActiveFn: func(_ context.Context, tid uuid.UUID) ([]domain.TenantDepartment, error) {
+		listFn: func(_ context.Context, tid uuid.UUID) ([]domain.TenantDepartment, error) {
 			return []domain.TenantDepartment{{TenantID: tid, DepartmentID: deptA, IsActive: true, RecordVersion: 1}}, nil
 		},
 	}
@@ -284,7 +263,7 @@ func TestDepartmentList_Success_200(t *testing.T) {
 
 func TestDepartmentList_RepoError(t *testing.T) {
 	tenantID := uuid.New()
-	td := &drhTenantDeptRepo{listActiveFn: func(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	td := &drhTenantDeptRepo{listFn: func(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
 		return nil, errors.New("db down")
 	}}
 	svc := service.NewDepartmentService(&drhDeptRepo{}, td, drhCache{})

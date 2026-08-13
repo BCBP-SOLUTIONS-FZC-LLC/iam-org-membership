@@ -173,23 +173,3 @@ func TestP11DeptRemove_InvalidDeptID(t *testing.T) {
 	h.Remove(c)
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
-
-// ── OperatorHandler.PatchDepartment — bad UUID / missing role gates ─────
-
-func TestOP2Patch_InvalidDeptID(t *testing.T) {
-	h := &OperatorHandler{}
-	c, w := buildCtx(http.MethodPatch, "/", `{"name":"X","record_version":1}`,
-		operatorCtx())
-	setParams(c, "id", "not-a-uuid")
-	h.PatchDepartment(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-func TestOP2Patch_MissingBody(t *testing.T) {
-	h := &OperatorHandler{}
-	c, w := buildCtx(http.MethodPatch, "/", `{`,
-		operatorCtx())
-	setParams(c, "id", uuid.New().String())
-	h.PatchDepartment(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
-}

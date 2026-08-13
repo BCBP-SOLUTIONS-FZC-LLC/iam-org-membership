@@ -10,13 +10,13 @@
 //
 // Flows covered:
 //
-//   E2E-1  Trial signup → I-8 hot-path returns correct owner projection.
-//   E2E-2  Invite → accept → grants land + I-8 reflects new state.
-//   E2E-3  Role reconcile grant + revoke round-trip + events + I-8.
-//   E2E-4  Dept assign + level change + I-8 reflects role_level flip.
-//   E2E-5  Full removal cascade — all roles/depts/delegations revoked,
-//          I-8 returns 0 memberships for the removed user.
-//   E2E-6  O-7 reassign owner — new owner has tenant_owner + event fires.
+//	E2E-1  Trial signup → I-8 hot-path returns correct owner projection.
+//	E2E-2  Invite → accept → grants land + I-8 reflects new state.
+//	E2E-3  Role reconcile grant + revoke round-trip + events + I-8.
+//	E2E-4  Dept assign + level change + I-8 reflects role_level flip.
+//	E2E-5  Full removal cascade — all roles/depts/delegations revoked,
+//	       I-8 returns 0 memberships for the removed user.
+//	E2E-6  O-7 reassign owner — new owner has tenant_owner + event fires.
 package postgres_test
 
 import (
@@ -87,12 +87,17 @@ func TestInviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Pick the Engineering dept ID from the tenant's activated set.
-	var engineeringID uuid.UUID
-	require.NoError(t, fx.rawPool.QueryRow(ctx, `
-		SELECT d.id FROM tenant_departments td
-		JOIN departments d ON d.id = td.department_id
-		WHERE td.tenant_id = $1 AND d.code = 'ENGINEERING'`, tenantID).Scan(&engineeringID))
+	// Pick the Engineering dept ID from the tenant's activated set. The
+	// departments table was dropped (migration-runbook Phase 4 — LLD §12
+	// step 4); resolve the code against fx.CatalogDepts instead of a JOIN.
+	engineering, ok := fx.CatalogDepts.byCode("ENGINEERING")
+	require.True(t, ok, "ENGINEERING must be one of the seeded system departments")
+	engineeringID := engineering.ID
+	var activatedCount int
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT count(*) FROM tenant_departments WHERE tenant_id = $1 AND department_id = $2`,
+		tenantID, engineeringID).Scan(&activatedCount))
+	require.Equal(t, 1, activatedCount, "ENGINEERING must be one of the tenant's activated system departments")
 
 	// 2) Invite user1 with queued tender_admin + Engineering/reviewer.
 	inv, err := fx.Invitation.Invite(tctx, tenantID, service.InvitationInput{
@@ -203,7 +208,7 @@ func TestDeptAssignAndLevelChange_I8Reflects(t *testing.T) {
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e4")
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	deptID := seedSystemDept(t, ctx, fx.rawPool, "ENG_E2E4", "Eng E2E4")
+	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_E2E4", "Eng E2E4")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
 
 	// First assign — Granted.
@@ -262,7 +267,7 @@ func TestFullRemovalCascade(t *testing.T) {
 		VALUES (gen_random_uuid(), $1, $2, $3, 'tender_admin', $4)`,
 		tenantID, user1ID, user1MemID, ownerID)
 	require.NoError(t, err)
-	deptID := seedSystemDept(t, ctx, fx.rawPool, "ENG_E2E5", "Eng E2E5")
+	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_E2E5", "Eng E2E5")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
 	_, err = fx.rawPool.Exec(ctx, `
 		INSERT INTO dept_memberships (id, tenant_id, user_id, tenant_membership_id, department_id, role_level, granted_by)
@@ -478,32 +483,29 @@ func TestTrialSignup_ConcurrentSameIdRace_OneWinsOneReplays(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// I1-DEP-02: depts.List fails mid-transaction → RunInTx rolls back.
-// Simulated by renaming the departments catalog table before the call
-// and restoring on cleanup. Proves CONS-1 transactional-outbox atomicity
-// under partial failure — zero orphan rows / zero orphan events.
+// I1-DEP-02: a catalog fetch failure must prevent TrialSignup from
+// executing ANY side effects. The department catalog read happens BEFORE
+// RunInTx begins (read-cutover design — provisioning_service.go pre-fetches
+// trialDeptIDs outside the tx precisely so a catalog outage never holds a
+// DB transaction open), so this no longer exercises a mid-transaction
+// rollback the way it did when departments was a local table — it proves
+// the simpler, still load-bearing guarantee that a pre-tx catalog failure
+// short-circuits before any tenant/membership/role/outbox row is written.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestTrialSignup_DeptsListFailureMidTx_RollsBackCleanly(t *testing.T) {
+func TestTrialSignup_CatalogFetchFailure_PreventsAnySideEffects(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
-	// Rename the catalog to force depts.List to raise "relation does not exist".
-	_, err := fx.rawPool.Exec(ctx, `ALTER TABLE departments RENAME TO departments_dep02_bkp`)
-	require.NoError(t, err)
-	// Always restore before the test fixture tears down.
-	t.Cleanup(func() {
-		_, restoreErr := fx.rawPool.Exec(ctx, `ALTER TABLE departments_dep02_bkp RENAME TO departments`)
-		require.NoError(t, restoreErr, "MUST restore departments to avoid poisoning subsequent tests")
-	})
+	fx.CatalogDepts.failNextCall()
 
 	tenantID := uuid.New()
 	tctx := withSystemAndTenant(ctx, tenantID)
-	_, _, err = fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+	_, _, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
 		TenantID: tenantID, Slug: "acme-dep02", Name: "Acme DEP02",
 		Plan: domain.PlanStarter, OwnerUserID: uuid.New(),
 	})
-	require.Error(t, err, "depts.List must fail → RunInTx aborts the transaction")
+	require.Error(t, err, "catalog.Departments failure must abort TrialSignup before any write")
 
 	// Rollback proof — no partial state committed.
 	var tenantRows, members, roles, events int

@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	appRolePassword    = "apppassword-testonly"
-	migratorPassword   = "migratorpassword-testonly"
+	appRolePassword  = "apppassword-testonly"
+	migratorPassword = "migratorpassword-testonly"
 )
 
 // setupTestDB spins up a Postgres 17 container, applies every migration
@@ -80,13 +80,17 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool) {
 		`CREATE ROLE org_membership_migrator LOGIN PASSWORD '%s' BYPASSRLS`, migratorPassword))
 	require.NoError(t, err)
 
+	// Apply platform-events outbox schema FIRST (creates outbox_events +
+	// outbox_dead_letters, with a JSONB payload column) — domain migration
+	// 000010_outbox_payload_text ALTERs that same column to TEXT, so the
+	// outbox schema must exist before domain migrations run (mirrors
+	// cmd/server/main.go's own ordering comment). Phase 4
+	// service-integration tests query outbox_events directly to verify
+	// event emission.
+	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
+
 	// Apply migrations as superuser (needs CREATE EXTENSION, CREATE TYPE, etc).
 	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))
-
-	// Apply platform-events outbox schema (creates outbox_events +
-	// outbox_dead_letters). Phase 4 service-integration tests query
-	// outbox_events directly to verify event emission.
-	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 
 	// Grant table + function privileges to org_membership_app so the
 	// RLS-enforced pool can actually read/write. RLS still gates rows.
@@ -349,20 +353,6 @@ func TestTR7_MemberRoleRejected(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// D-4 / OP-3: DELETE on departments raises via trg_prevent_department_delete.
-// ─────────────────────────────────────────────────────────────────────────
-func TestD4_DepartmentDeleteBlocked(t *testing.T) {
-	_, rawPool := setupTestDB(t)
-	ctx := context.Background()
-
-	// Try to delete a system dept as superuser (RLS bypassed, so only the
-	// trigger stands between us and destruction).
-	_, err := rawPool.Exec(ctx, `DELETE FROM departments WHERE code = 'LEGAL'`)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "departments cannot be deleted")
-}
-
-// ─────────────────────────────────────────────────────────────────────────
 // Composite FK (§16 A15/A28, DM-4): dept_memberships INSERT with a
 // (id, tenant_id, user_id) triple that does not match a real
 // tenant_memberships row is rejected by fk_dm_tenant_membership.
@@ -377,6 +367,11 @@ func TestCompositeFK_DeptMembershipRejectsWrongUser(t *testing.T) {
 		userID := uuid.New()
 		membershipID := uuid.New()
 		wrongUserID := uuid.New()
+		// department_id has no FK to a catalog table anymore (departments
+		// was dropped — migration-runbook Phase 4, LLD §12 step 4), so any
+		// UUID satisfies fk_dm_tenant_dept; this test is only exercising
+		// the composite (id, tenant_id, user_id) FK below.
+		deptID := uuid.New()
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO tenant_memberships (id, tenant_id, user_id) VALUES ($1, $2, $3)`,
 			membershipID, tenantA, userID); err != nil {
@@ -384,41 +379,17 @@ func TestCompositeFK_DeptMembershipRejectsWrongUser(t *testing.T) {
 		}
 		// Activate a dept for the tenant so fk_dm_tenant_dept doesn't fail first.
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO tenant_departments (tenant_id, department_id)
-			 SELECT $1, id FROM departments WHERE code='ENGINEERING'`, tenantA); err != nil {
+			`INSERT INTO tenant_departments (tenant_id, department_id) VALUES ($1, $2)`,
+			tenantA, deptID); err != nil {
 			return err
 		}
 		// Composite FK targets (id, tenant_id, user_id) — passing wrongUserID must fail.
 		_, err := tx.Exec(ctx, `
 			INSERT INTO dept_memberships (tenant_id, user_id, tenant_membership_id, department_id, role_level, granted_by)
-			SELECT $1, $2, $3, id, 'preparator', $2
-			FROM departments WHERE code='ENGINEERING'`,
-			tenantA, wrongUserID, membershipID)
+			VALUES ($1, $2, $3, $4, 'preparator', $2)`,
+			tenantA, wrongUserID, membershipID, deptID)
 		return err
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fk_dm_tenant_membership")
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Seeds: 3 plans + 5 system departments present.
-// ─────────────────────────────────────────────────────────────────────────
-func TestSeeds_PlansAndSystemDepartments(t *testing.T) {
-	_, rawPool := setupTestDB(t)
-	ctx := context.Background()
-
-	var planCount, deptCount int
-	require.NoError(t, rawPool.QueryRow(ctx, `SELECT count(*) FROM plans`).Scan(&planCount))
-	assert.Equal(t, 3, planCount, "3 plan tiers must be seeded (starter/pro/enterprise)")
-
-	require.NoError(t, rawPool.QueryRow(ctx,
-		`SELECT count(*) FROM departments WHERE is_system = true`).Scan(&deptCount))
-	assert.Equal(t, 5, deptCount, "5 system departments must be seeded (Engineering, Design, Procurement, Finance, Legal)")
-
-	// Enterprise plan has NULL limits (unlimited per §19.3).
-	var wf, tender *int
-	require.NoError(t, rawPool.QueryRow(ctx,
-		`SELECT workflow_template_limit, tender_limit FROM plans WHERE code='enterprise'`).Scan(&wf, &tender))
-	assert.Nil(t, wf, "enterprise workflow_template_limit must be NULL (unlimited)")
-	assert.Nil(t, tender, "enterprise tender_limit must be NULL (unlimited)")
 }

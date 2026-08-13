@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -12,19 +11,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// OperatorService owns O-1..O-7. Every method assumes handler-layer AUTH-6
-// gate (platform_operator role). RLS still applies unless the caller
-// uses the org_membership_migrator connection — for O-* operations we
-// typically want the app pool to see all tenants, which under
-// org_membership_app means the operator can only ever mutate global
-// catalog rows (plans, departments) OR their own tenant. The specific
-// case of O-4 (feature-flags on any tenant) and O-7 (reassign ownership)
-// mutate a specific tenant — the handler sets that tenant's id in the
-// GUCSet before calling in.
+// OperatorService owns O-4/O-7 — the two operator write paths not
+// extracted to the Catalog / Admin Config Service. O-1/O-2/O-3
+// (departments) and O-5/O-6 (plans) moved there per migration-runbook
+// Phase 4 (LLD §12 step 4); this service, its repositories, and the
+// local departments/plans tables have all been removed. Every remaining
+// method assumes handler-layer AUTH-6 gate (platform_operator role). RLS
+// still applies unless the caller uses the org_membership_migrator
+// connection. O-4 (feature-flags on any tenant) and O-7 (reassign
+// ownership) mutate a specific tenant — the handler sets that tenant's id
+// in the GUCSet before calling in.
 type OperatorService struct {
 	pool     *pgcommon.Pool
-	plans    port.PlanRepository
-	depts    port.DepartmentRepository
 	tenants  port.TenantRepository
 	tenRoles port.TenantRoleRepository
 	memBs    port.MembershipRepository
@@ -34,60 +32,14 @@ type OperatorService struct {
 
 func NewOperatorService(
 	pool *pgcommon.Pool,
-	plans port.PlanRepository, depts port.DepartmentRepository,
 	tenants port.TenantRepository, roles port.TenantRoleRepository,
 	memberships port.MembershipRepository, cache port.Cache,
 	txRunner port.TxRunner,
 ) *OperatorService {
 	return &OperatorService{
-		pool: pool, plans: plans, depts: depts, tenants: tenants,
+		pool: pool, tenants: tenants,
 		tenRoles: roles, memBs: memberships, cache: cache, txRunner: txRunner,
 	}
-}
-
-// ── O-1..O-3 Departments (global catalog) ───────────────────────────────
-
-func (s *OperatorService) CreateDepartment(ctx context.Context, code, name string, isSystem bool) (*domain.Department, error) {
-	if strings.TrimSpace(code) == "" || strings.TrimSpace(name) == "" {
-		return nil, domain.NewError(domain.ErrValidation, "code and name are required")
-	}
-	return s.depts.Insert(ctx, &domain.Department{
-		Code:     code,
-		Name:     name,
-		IsSystem: isSystem,
-		IsActive: true,
-	})
-}
-
-func (s *OperatorService) PatchDepartment(ctx context.Context, id uuid.UUID, name *string, isActive *bool, expectedVersion int64) (*domain.Department, error) {
-	if name == nil && isActive == nil {
-		return nil, domain.NewError(domain.ErrNoMutableField, "at least one of name or is_active must be provided").
-			WithDetails(map[string]any{"code": "no_mutable_field"})
-	}
-	if name != nil && *name == "" {
-		return nil, domain.NewError(domain.ErrValidation, "name must not be empty")
-	}
-	// D-9/D-11 (system dept retirement) is blocked at the DB level by
-	// chk_system_department_active — surfaces as a CHECK violation which
-	// bubbles up as a raw error. Map it explicitly here for a clean 422.
-	d, err := s.depts.Update(ctx, id, name, isActive, expectedVersion)
-	if err != nil {
-		if isCheckViolation(err, "chk_system_department_active") {
-			return nil, domain.NewError(domain.ErrSystemDepartmentCannotBeRetired, "system department cannot be retired")
-		}
-		if isCheckViolation(err, "system department name is immutable") {
-			return nil, domain.NewError(domain.ErrFieldImmutable, "system department name is immutable").
-				WithDetails(map[string]any{"code": "field_immutable", "field": "name"})
-		}
-		return nil, err
-	}
-	return d, nil
-}
-
-// DeleteDepartmentBlocked always returns 405-equivalent (OP-3).
-func (s *OperatorService) DeleteDepartmentBlocked() error {
-	return domain.NewError(domain.ErrValidation, "departments cannot be deleted; retire via is_active=false").
-		WithDetails(map[string]any{"code": "cannot_delete_system_department"})
 }
 
 // ── O-4 Feature flags on a tenant ──────────────────────────────────────
@@ -169,56 +121,6 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 	return updated, nil
 }
 
-// ── O-5/O-6 Plans catalog ──────────────────────────────────────────────
-
-func (s *OperatorService) ListPlans(ctx context.Context) ([]domain.Plan, error) {
-	return s.plans.List(ctx)
-}
-
-func (s *OperatorService) PatchPlan(ctx context.Context, code domain.TenantPlan, patch *domain.PlanPatch) (*domain.Plan, error) {
-	switch code {
-	case domain.PlanStarter, domain.PlanPro, domain.PlanEnterprise:
-	default:
-		return nil, domain.NewError(domain.ErrPlanNotFound, "plan not found")
-	}
-	if patch.DisplayName == nil &&
-		patch.WorkflowTemplateLimit == nil &&
-		patch.TenderLimit == nil &&
-		patch.TrialDurationDays == nil &&
-		patch.SSOEnabled == nil &&
-		patch.CustomBranding == nil &&
-		patch.FeatureSet == nil {
-		return nil, domain.NewError(domain.ErrNoMutableField, "at least one field must be provided").
-			WithDetails(map[string]any{"code": "no_mutable_field"})
-	}
-	// Mirror DB CHECK constraints at the service layer so invalid values
-	// surface as 400 validation_error rather than a 500 pgconn CHECK violation.
-	if patch.WorkflowTemplateLimit != nil && *patch.WorkflowTemplateLimit != nil && **patch.WorkflowTemplateLimit < 0 {
-		return nil, domain.NewError(domain.ErrValidation, "workflow_template_limit must be >= 0")
-	}
-	if patch.TenderLimit != nil && *patch.TenderLimit != nil && **patch.TenderLimit < 0 {
-		return nil, domain.NewError(domain.ErrValidation, "tender_limit must be >= 0")
-	}
-	if patch.TrialDurationDays != nil && *patch.TrialDurationDays < 0 {
-		return nil, domain.NewError(domain.ErrValidation, "trial_duration_days must be >= 0")
-	}
-	if patch.CustomBranding != nil {
-		switch *patch.CustomBranding {
-		case domain.BrandingNone, domain.BrandingLogo:
-		default:
-			return nil, domain.NewError(domain.ErrValidation, "custom_branding must be one of: none, logo")
-		}
-	}
-	p, err := s.plans.Update(ctx, code, patch)
-	if err != nil {
-		return nil, err
-	}
-	if s.cache != nil {
-		_ = s.cache.Delete(ctx, "om:plans")
-	}
-	return p, nil
-}
-
 // ── O-7 Reassign owner ─────────────────────────────────────────────────
 
 func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerUserID uuid.UUID, actorID uuid.UUID) (*domain.TenantRole, error) {
@@ -278,36 +180,6 @@ func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerU
 		_ = s.cache.Delete(ctx, cacheKeyMemberships(tenantID, newOwnerUserID))
 	}
 	return tr, nil
-}
-
-// isCheckViolation is a best-effort matcher for named CHECK constraints.
-// pgconn.PgError.ConstraintName carries the name; we match by substring so
-// downstream code can spot D-11 vs generic CHECK.
-func isCheckViolation(err error, name string) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	if msg == "" {
-		return false
-	}
-	// Cheap contains check — the LLD's DomainError wrap doesn't preserve
-	// the raw PgError.ConstraintName field, so the substring match on the
-	// error message is the pragmatic choice for Phase 2b.
-	return contains(msg, name)
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && indexOf(s, substr) >= 0
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
 
 // Suppress unused reference to time (present for future policy checks).

@@ -7,16 +7,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// DepartmentRepository owns the global departments catalog. Operator-only
-// writes via O-1/O-2 (AUTH-6). No RLS on this table (global reference).
-type DepartmentRepository interface {
-	List(ctx context.Context, activeOnly bool) ([]domain.Department, error)
-	FindByID(ctx context.Context, id uuid.UUID) (*domain.Department, error)
-	FindByCode(ctx context.Context, code string) (*domain.Department, error)
-	Insert(ctx context.Context, d *domain.Department) (*domain.Department, error)
-	Update(ctx context.Context, id uuid.UUID, name *string, isActive *bool, expectedVersion int64) (*domain.Department, error)
-}
-
 // TenantDepartmentRepository owns per-tenant activation of catalog depts.
 // RLS-scoped by tenant. P-3 lists active depts for the caller's tenant.
 // P-24 activates + P-25 toggles is_active.

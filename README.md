@@ -92,11 +92,14 @@ Base path: `/api/v1` · Developer tools (non-production only): Swagger UI at `/s
 
 ### Operator routes
 
+O-1/O-2/O-3 (global-catalog departments) and O-5/O-6 (plan entitlement catalog) moved to
+the **Catalog / Admin Config Service** per migration-runbook Phase 4 (ADR-0007) — this
+service is no longer the writer (or reader) of record for `departments`/`plans`, both
+tables have been dropped, and `OperatorService`/`OperatorHandler` now only implement O-4/O-7.
+
 | # | Method & Path | Purpose |
 |---|---|---|
-| O-1 / O-2 / O-3 | `/departments` | Add / update global-catalog department; DELETE hard-blocked (405) |
 | O-4 | `PATCH /tenants/:id/feature-flags` | Full-replacement of override delta (§16 A18, T-9) |
-| O-5 / O-6 | `/plans[/:code]` | Read / edit plan entitlement catalog (PATCH-only, PLAN-4) |
 | O-7 | `POST /tenants/:id/reassign-owner` | Recover ownerless tenant (§16 A39, TM-12/T-13) |
 
 Full endpoint catalogue with authZ, cache invalidation, and status-code table: [`.claude/api-caching-events.md § 5.3`](.claude/api-caching-events.md) and `api/openapi.yaml`.
@@ -850,7 +853,7 @@ For write operations, O&M availability = O&M × dependency (except fail-open). *
 | `local_accounts_enabled` change (P-2) | RP `PatchRealmConfig` | **fail-open + durable reconcile** | commits, `realm_sync_pending=true`, 202 |
 | Invite compensation / revoke / expiry KC-cleanup | RP `DeleteUser` | **async + durable reconcile** | `kc_cleanup_pending=true`, PI-9 reconciler converges |
 | Session revoke (AUTH-8) | RP `RevokeUserSessions` | **fail-open (TTL backstop)** | O&M commits, TTL bounds effective cutoff |
-| Plan-defaults on I-8 miss | *(none — local `plans` + `om:plans` cache)* | n/a | served from cache/DB |
+| Plan-defaults on I-8 miss | Catalog Service `PlanByCode` (via `catalogReader`, `om:plans` cache) | **fail-open (swallowed)** | I-8 proceeds with no plan-default merge — never a hard failure on the hot path |
 
 Three fail-closed calls (invite, delegation, removal/resolution) stop completing during the respective dependency's outage; none corrupts state. Fail-open + durable reconcile chosen for security-critical and high-value paths.
 

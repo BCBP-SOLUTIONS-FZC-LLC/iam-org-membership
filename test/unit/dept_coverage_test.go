@@ -26,26 +26,17 @@ type fakeDeptCatalogRepo struct {
 	findByIDFn func(ctx context.Context, id uuid.UUID) (*domain.Department, error)
 }
 
-func (f *fakeDeptCatalogRepo) List(_ context.Context, _ bool) ([]domain.Department, error) {
+func (f *fakeDeptCatalogRepo) Departments(_ context.Context) ([]domain.Department, error) {
 	return nil, nil
 }
-func (f *fakeDeptCatalogRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Department, error) {
+func (f *fakeDeptCatalogRepo) DepartmentByID(ctx context.Context, id uuid.UUID) (*domain.Department, error) {
 	if f.findByIDFn != nil {
 		return f.findByIDFn(ctx, id)
 	}
 	return &domain.Department{ID: id, IsActive: true, IsSystem: false}, nil
 }
-func (f *fakeDeptCatalogRepo) FindByCode(_ context.Context, _ string) (*domain.Department, error) {
-	return nil, nil
-}
-func (f *fakeDeptCatalogRepo) Insert(_ context.Context, d *domain.Department) (*domain.Department, error) {
-	return d, nil
-}
-func (f *fakeDeptCatalogRepo) Update(_ context.Context, _ uuid.UUID, _ *string, _ *bool, _ int64) (*domain.Department, error) {
-	return nil, nil
-}
 
-var _ port.DepartmentRepository = (*fakeDeptCatalogRepo)(nil)
+var _ port.DepartmentCatalogReader = (*fakeDeptCatalogRepo)(nil)
 
 // ── fakeTenantDeptRepoFull ─────────────────────────────────────────────
 

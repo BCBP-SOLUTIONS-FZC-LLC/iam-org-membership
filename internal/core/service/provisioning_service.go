@@ -25,10 +25,10 @@ type ProvisioningService struct {
 	deptMems    port.DeptMembershipRepository
 	labels      port.DeptRoleLabelRepository
 	tenantDepts port.TenantDepartmentRepository
-	depts       port.DepartmentRepository
+	depts       port.DepartmentCatalogReader
 	delegations port.DelegationRepository
 	acls        port.TenderACLRepository
-	plans       port.PlanRepository
+	plans       port.PlanCatalogReader
 	txRunner    port.TxRunner
 	cache       port.Cache
 	rp          port.RealmProvisionerClient
@@ -39,8 +39,8 @@ func NewProvisioningService(
 	tenants port.TenantRepository, memberships port.MembershipRepository,
 	roles port.TenantRoleRepository, deptMems port.DeptMembershipRepository,
 	labels port.DeptRoleLabelRepository, tenantDepts port.TenantDepartmentRepository,
-	depts port.DepartmentRepository, delegations port.DelegationRepository,
-	acls port.TenderACLRepository, plans port.PlanRepository,
+	depts port.DepartmentCatalogReader, delegations port.DelegationRepository,
+	acls port.TenderACLRepository, plans port.PlanCatalogReader,
 	txRunner port.TxRunner, cache port.Cache, rp port.RealmProvisionerClient,
 ) *ProvisioningService {
 	return &ProvisioningService{
@@ -103,11 +103,42 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			"default_locale must be a valid BCP-47 language tag (e.g. en-US, fr, zh-Hant)")
 	}
 	// Look up plan for trial_duration_days.
-	plan, err := s.plans.FindByCode(ctx, req.Plan)
+	plan, err := s.plans.PlanByCode(ctx, req.Plan)
 	if err != nil {
 		return nil, false, err
 	}
 	trialEnds := time.Now().UTC().Add(time.Duration(plan.TrialDurationDays) * 24 * time.Hour)
+
+	// Fetch the system-department seeding set BEFORE the tx starts (outer
+	// ctx, not gucCtx/txCtx) — catalog-admin-config's client+cache call has
+	// no business running while a Postgres tx is open (LLD §7: CAT-I1 is a
+	// mesh HTTP call, ≤30ms p99 but still a new failure mode inside a tx
+	// boundary that didn't exist when this was a local repo.List call).
+	// §8.1 fixes the trial-activation set to exactly these 5 system-dept
+	// codes; activeOnly=true's old semantic (only activate depts that are
+	// still globally active) is preserved here via the explicit IsActive
+	// filter below.
+	trialCodes := map[string]struct{}{
+		"ENGINEERING": {},
+		"DESIGN":      {},
+		"PROCUREMENT": {},
+		"FINANCE":     {},
+		"LEGAL":       {},
+	}
+	allDepts, err := s.depts.Departments(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	var trialDeptIDs []uuid.UUID
+	for _, d := range allDepts {
+		if !d.IsSystem || !d.IsActive {
+			continue
+		}
+		if _, ok := trialCodes[d.Code]; !ok {
+			continue
+		}
+		trialDeptIDs = append(trialDeptIDs, d.ID)
+	}
 
 	// Set GUC to the new tenant + iam-system so RLS WITH CHECK passes on
 	// inserts. This is the RLS-5 internal-provisioning path.
@@ -154,30 +185,12 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			return nil
 		}
 
-		// 2) Activate 5 system departments (§8.1). Use ListActive from
-		// catalog — filter is_system=true, is_active=true.
-		// §8.1 fixes the trial-activation set to exactly these 5 codes.
+		// 2) Activate the pre-fetched system departments (§8.1) — the
+		// catalog read itself already happened outside this tx (see above).
 		// If the global catalog ever grows a 6th is_system dept, it's opt-in
 		// per-tenant via P-24; trial signup never auto-activates it.
-		trialCodes := map[string]struct{}{
-			"ENGINEERING": {},
-			"DESIGN":      {},
-			"PROCUREMENT": {},
-			"FINANCE":     {},
-			"LEGAL":       {},
-		}
-		catalog, err := s.depts.List(txCtx, true)
-		if err != nil {
-			return err
-		}
-		for _, d := range catalog {
-			if !d.IsSystem {
-				continue
-			}
-			if _, ok := trialCodes[d.Code]; !ok {
-				continue
-			}
-			if _, err := s.tenantDepts.Activate(txCtx, req.TenantID, d.ID); err != nil {
+		for _, deptID := range trialDeptIDs {
+			if _, err := s.tenantDepts.Activate(txCtx, req.TenantID, deptID); err != nil {
 				return err
 			}
 		}

@@ -4,7 +4,9 @@ This document describes the internal structure, dependency rules, and runtime da
 
 `iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.5+) deployed as a containerised microservice (HPA 2–8 replicas). It refines **IAM HLD v1.39 §5.6**; LLD v1.61 (Draft, 4799 lines). Where LLD and HLD disagree, HLD is authoritative.
 
-The service owns the **organizational layer** of the IAM subsystem: tenants, the operator-managed plan catalogue, departments, tenant and department memberships, tenant-level and department-level role grants, group→role/dept mappings, delegations, tender ACL overlays, and pending invitations. It is the single source of truth consumed on every authenticated request by **AuthZ Enrichment** via `GET /api/v1/internal/users/:id/memberships` (I-8, LLD §5.4) — the hottest path in the IAM subsystem.
+The service owns the **organizational layer** of the IAM subsystem: tenants, tenant and department memberships (which departments a tenant has activated, and who's assigned to them), tenant-level and department-level role grants, group→role/dept mappings, delegations, tender ACL overlays, and pending invitations. It is the single source of truth consumed on every authenticated request by **AuthZ Enrichment** via `GET /api/v1/internal/users/:id/memberships` (I-8, LLD §5.4) — the hottest path in the IAM subsystem.
+
+The global **plan entitlement catalogue** and **department catalogue** (the reference data — plan tiers, department codes/names) moved to the **Catalog / Admin Config Service** per migration-runbook Phase 4 (ADR-0007). This service reads that catalog through `port.PlanCatalogReader`/`port.DepartmentCatalogReader` (`service.CatalogService`, a two-tier cached HTTP client) — it no longer owns `plans`/`departments` as local tables, and `OperatorService`/`OperatorHandler` no longer implement O-1/O-2/O-3 (departments) or O-5/O-6 (plans).
 
 ---
 
@@ -192,8 +194,8 @@ The domain layer imports nothing external. Entities carry no persistence or tran
 | Type | Notes |
 |---|---|
 | `Tenant` | Root aggregate. Fields: `plan`, `status`, `trial_ends_at`, `realm_id`, `realm_type` (§16 A22), `keycloak_shard` (RP-owned projection T-12), `mfa_freshness_seconds ∈ [60,900]` (T-10), `local_accounts_enabled`, `licensed_seats > 0` (T-8, SEAT-1..5), `ownerless_since` (T-13), `overage_since` (SEAT-5), `realm_sync_pending` (T-15), `feature_flags jsonb` (override delta only — T-9). Immutable `slug` (T-1). |
-| `Plan` | Global operator catalogue (§16 A19). Per-tier entitlements — `workflow_template_limit`, `tender_limit`, `sso_enabled`, `custom_branding` (`none`/`logo`), `feature_set jsonb`, `trial_duration_days`. `NULL` on the two limit columns means unlimited. |
-| `Department` | Global operator catalogue. `is_system` immutable (D-2). Never physically deleted — `is_active` retirement only (OP-3, D-9). Seeds: Engineering, Design, Procurement, Finance, Legal (§8.1). |
+| `Plan` | Read-only projection of the Catalog Service's global entitlement catalogue (§16 A19) — this service has no local `plans` table. Per-tier entitlements — `workflow_template_limit`, `tender_limit`, `sso_enabled`, `custom_branding` (`none`/`logo`), `feature_set jsonb`, `trial_duration_days`. `NULL` on the two limit columns means unlimited. |
+| `Department` | Read-only projection of the Catalog Service's global department catalogue — this service has no local `departments` table. `is_system`/`is_active`/code-immutability semantics (D-2, D-9, OP-3) are enforced there, not here. Seeds: Engineering, Design, Procurement, Finance, Legal (§8.1). |
 | `TenantMembership` | Lifecycle only, no role data (§16 A14). `status ∈ (active, suspended, left)`. |
 | `TenantRoleGrant` | Elevated tenant roles only (`tenant_owner`, `tenant_admin`, `tender_admin`). Multi-role (TR-1, one row per grant). `chk_tr_no_member` bars `role_code='member'` — the `member` role is **derived at read time**, never persisted (TR-7, §16 A29). |
 | `DeptMembership` | User↔department↔`role_level` (`preparator`/`reviewer`/`approver`). Composite FK to `tenant_memberships` (§16 A15/A28). |

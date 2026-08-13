@@ -255,63 +255,6 @@ func TestP9I10003_AssignFromGroups_MalformedBody(t *testing.T) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// O-2 · OperatorHandler.PatchDepartment — authorization coverage
-// Test Case IDs: O2-A-02, O2-A-04
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      O2-A-02
-// Feature:           O-2 · Regular tenant member role → 403 insufficient_role
-// Expected:          403 insufficient_role (AUTH-6: RequireOperatorRole blocks non-operator)
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPatchDept_MemberRole_403(t *testing.T) {
-	h := &OperatorHandler{}
-	rc := &requestctx.RequestContext{
-		UserID: uuid.New(), TenantID: uuid.New(), Roles: []string{"member"},
-	}
-	c, w := buildCtx(http.MethodPatch, "/", `{"name":"X","record_version":1}`, rc)
-	setParams(c, "id", uuid.New().String())
-	h.PatchDepartment(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// Test Case ID:      O2-A-04
-// Feature:           O-2 · platform_operator passes auth gate (AUTH-6/AUTH-7 double-check)
-// Expected:          Auth gate does NOT return 403 — request proceeds to service layer
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPatchDept_OperatorRole_200(t *testing.T) {
-	h := &OperatorHandler{} // nil service — panics at service call after auth passes
-	c, w := buildCtx(http.MethodPatch, "/", `{"name":"X","record_version":1}`, operatorCtx())
-	setParams(c, "id", uuid.New().String())
-	// Absorb nil-service panic that occurs AFTER the auth gate passes.
-	// We only test that requireOperator does NOT abort with 403.
-	func() {
-		defer func() { _ = recover() }()
-		h.PatchDepartment(c)
-	}()
-	assert.NotEqual(t, http.StatusForbidden, w.Code, "platform_operator must pass requireOperator gate")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// O-3 · OperatorHandler.DeleteDepartmentBlocked — authorization coverage
-// Test Case ID: O3-A-02
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      O3-A-02
-// Feature:           O-3 · Regular tenant member → 403 before hitting 405 guardrail
-// Expected:          403 insufficient_role (RequireOperatorRole fires before handler body)
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestDeleteDept_MemberRole_403(t *testing.T) {
-	h := &OperatorHandler{}
-	rc := &requestctx.RequestContext{
-		UserID: uuid.New(), TenantID: uuid.New(), Roles: []string{"member"},
-	}
-	c, w := buildCtx(http.MethodDelete, "/", ``, rc)
-	setParams(c, "id", uuid.New().String())
-	h.DeleteDepartmentBlocked(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
 // O-4 · OperatorHandler.SetFeatureFlags — authorization coverage
 // Test Case IDs: O4-A-01, O4-A-03
 // ═════════════════════════════════════════════════════════════════════════

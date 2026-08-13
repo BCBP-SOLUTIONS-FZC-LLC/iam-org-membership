@@ -15,6 +15,7 @@ type GroupMappingService struct {
 	memberships port.MembershipRepository
 	roles       port.TenantRoleRepository
 	deptMems    port.DeptMembershipRepository
+	catalog     port.DepartmentCatalogReader // global catalog — validates department_id (fk_gdm_department degraded to app-level, LLD §12 step 4)
 	txRunner    port.TxRunner
 	cache       port.Cache
 }
@@ -24,12 +25,13 @@ func NewGroupMappingService(
 	memberships port.MembershipRepository,
 	roles port.TenantRoleRepository,
 	deptMems port.DeptMembershipRepository,
+	catalog port.DepartmentCatalogReader,
 	txRunner port.TxRunner,
 	cache port.Cache,
 ) *GroupMappingService {
 	return &GroupMappingService{
 		repo: repo, memberships: memberships, roles: roles, deptMems: deptMems,
-		txRunner: txRunner, cache: cache,
+		catalog: catalog, txRunner: txRunner, cache: cache,
 	}
 }
 
@@ -281,6 +283,15 @@ func (s *GroupMappingService) ReplaceDept(ctx context.Context, tenantID uuid.UUI
 		if m.DepartmentID == uuid.Nil {
 			return nil, domain.NewError(domain.ErrValidation, "department_id is required").
 				WithDetails(map[string]any{"code": "invalid_uuid"})
+		}
+		// department_id must resolve against the global catalog — this used
+		// to be enforced by fk_gdm_department; that FK is gone now that
+		// departments live in the Catalog service (LLD §12 step 4), so this
+		// is the app-level replacement (cached, ~600s staleness bound).
+		if s.catalog != nil {
+			if _, err := s.catalog.DepartmentByID(ctx, m.DepartmentID); err != nil {
+				return nil, err
+			}
 		}
 	}
 	out, err := s.repo.ReplaceDeptMappings(ctx, tenantID, mappings)

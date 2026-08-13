@@ -19,12 +19,12 @@ import (
 // the chk_system_department_active constraint was never migrated, so the
 // is_system guard in SetActive is the sole enforcement point.
 type DepartmentService struct {
-	catalog     port.DepartmentRepository
+	catalog     port.DepartmentCatalogReader
 	tenantDepts port.TenantDepartmentRepository
 	cache       port.Cache
 }
 
-func NewDepartmentService(catalog port.DepartmentRepository, tenantDepts port.TenantDepartmentRepository, cache port.Cache) *DepartmentService {
+func NewDepartmentService(catalog port.DepartmentCatalogReader, tenantDepts port.TenantDepartmentRepository, cache port.Cache) *DepartmentService {
 	return &DepartmentService{catalog: catalog, tenantDepts: tenantDepts, cache: cache}
 }
 
@@ -45,7 +45,7 @@ func (s *DepartmentService) ListForTenant(ctx context.Context, tenantID uuid.UUI
 	// count is small (5) so N+1 is fine.
 	out := make([]TenantDepartmentView, 0, len(tds))
 	for _, td := range tds {
-		d, err := s.catalog.FindByID(ctx, td.DepartmentID)
+		d, err := s.catalog.DepartmentByID(ctx, td.DepartmentID)
 		if err != nil {
 			return nil, err
 		}
@@ -65,7 +65,7 @@ func (s *DepartmentService) ListForTenant(ctx context.Context, tenantID uuid.UUI
 // existing row with wasCreated=false (→ 200). Fresh insert: wasCreated=true (→ 201).
 func (s *DepartmentService) Activate(ctx context.Context, tenantID, departmentID uuid.UUID) (*domain.TenantDepartment, bool, error) {
 	// D-5 / TD-1: catalog entry must exist AND be globally active.
-	dept, err := s.catalog.FindByID(ctx, departmentID)
+	dept, err := s.catalog.DepartmentByID(ctx, departmentID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -90,7 +90,7 @@ func (s *DepartmentService) Activate(ctx context.Context, tenantID, departmentID
 //   - is_active=false: blocks system depts (is_system=true → 422)
 //   - is_active=true: blocks globally retired depts (is_active=false → 422, TD-1/D-5)
 func (s *DepartmentService) SetActive(ctx context.Context, tenantID, departmentID uuid.UUID, isActive bool, expectedVersion int64) (*domain.TenantDepartment, error) {
-	dept, err := s.catalog.FindByID(ctx, departmentID)
+	dept, err := s.catalog.DepartmentByID(ctx, departmentID)
 	if err != nil {
 		return nil, err
 	}

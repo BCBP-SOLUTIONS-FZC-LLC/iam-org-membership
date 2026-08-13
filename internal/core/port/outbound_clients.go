@@ -104,7 +104,44 @@ type RealmConfigPatch struct {
 	// Future: IdP/federation config, MFA policy, etc.
 }
 
-// _ silences the "unused domain" compile-check on some builds — we import
-// domain even though this file doesn't directly reference it, for the
-// type comments to be linkable.
-var _ domain.TenantPlan
+// CatalogAdminClient is the outbound HTTP client for the Catalog / Admin
+// Config Service (catalog-admin-config), which owns the global
+// departments/plans catalogs as of ADR-0007 Wave 1. Read-only, mesh-only
+// bulk endpoints (CAT-I1/CAT-I2) — this is the migration-runbook Phase 2
+// "cut over reads" seam. Unlike the other outbound clients in this file,
+// an unconfigured base URL is NOT a fail-open condition: fabricating
+// department/plan data would be worse than erroring, so both methods
+// return an error when the client isn't configured. Callers get
+// resilience from service.CatalogService's cache + stale-if-error layer,
+// not from this client silently inventing a safe default.
+type CatalogAdminClient interface {
+	// Departments returns the full global department catalog (LLD §7.1).
+	Departments(ctx context.Context) ([]CatalogDepartment, error)
+	// Plans returns the full three-tier plan catalog (LLD §7.2).
+	Plans(ctx context.Context) ([]CatalogPlan, error)
+}
+
+// CatalogDepartment mirrors catalog-admin-config's wire shape for a
+// single department row (its DepartmentResponse DTO).
+type CatalogDepartment struct {
+	ID            uuid.UUID
+	Code          string
+	Name          string
+	IsSystem      bool
+	IsActive      bool
+	RecordVersion int64
+}
+
+// CatalogPlan mirrors catalog-admin-config's wire shape for a single plan
+// row (its PlanResponse DTO).
+type CatalogPlan struct {
+	Code                  domain.TenantPlan
+	DisplayName           string
+	WorkflowTemplateLimit *int
+	TenderLimit           *int
+	TrialDurationDays     int
+	SSOEnabled            bool
+	CustomBranding        string
+	FeatureSet            map[string]any
+	RecordVersion         int64
+}
