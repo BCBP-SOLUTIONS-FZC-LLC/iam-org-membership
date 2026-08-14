@@ -49,7 +49,6 @@ type testFixtures struct {
 	TenantDepts port.TenantDepartmentRepository
 	Delegations port.DelegationRepository
 	ACLs        port.TenderACLRepository
-	GroupMaps   port.GroupMappingRepository
 	Invitations port.InvitationRepository
 
 	// CatalogDepts/CatalogPlans stand in for the departments/plans catalog
@@ -78,7 +77,29 @@ type testFixtures struct {
 	// fx.UP.FailNext = true to simulate a UP outage for CONS-2 tests).
 	UP *fakeUserProfile
 	RP *fakeRealmProvisioner
+
+	// GroupMappingClient stands in for Group Mapping Service's GM-I1 call
+	// (ADR-0007 Wave 2, Document 3 §18 Stage 2) — I-10's JIT resolution no
+	// longer reads group_dept_mappings/group_dept_role_mappings/
+	// group_tenant_role_mappings directly, so tests exercising
+	// AssignFromGroups set resolveFn instead of seeding those tables via
+	// raw SQL. Defaults to an empty resolution (fail-open) when unset.
+	GroupMappingClient *fakeGroupMappingClient
 }
+
+// fakeGroupMappingClient is a settable stand-in for port.GroupMappingClient.
+type fakeGroupMappingClient struct {
+	resolveFn func(ctx context.Context, tenantID uuid.UUID, groups []string) (*port.GroupResolution, error)
+}
+
+func (f *fakeGroupMappingClient) ResolveGroups(ctx context.Context, tenantID uuid.UUID, groups []string) (*port.GroupResolution, error) {
+	if f.resolveFn != nil {
+		return f.resolveFn(ctx, tenantID, groups)
+	}
+	return &port.GroupResolution{}, nil
+}
+
+var _ port.GroupMappingClient = (*fakeGroupMappingClient)(nil)
 
 // buildTestFixtures wires everything on top of the containers Postgres.
 // Fake outbound clients are used for RP/UP/Workflow — they always return
@@ -95,7 +116,6 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	tenantDepts := pgadapter.NewTenantDepartmentRepository(appPool)
 	delegations := pgadapter.NewDelegationRepository(appPool)
 	acls := pgadapter.NewTenderACLRepository(appPool)
-	groupMaps := pgadapter.NewGroupMappingRepository(appPool)
 	invitations := pgadapter.NewInvitationRepository(appPool)
 
 	// Outbox publisher — writes to outbox_events table on EnqueueCtx.
@@ -126,7 +146,6 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		TenantDepts:  tenantDepts,
 		Delegations:  delegations,
 		ACLs:         acls,
-		GroupMaps:    groupMaps,
 		Invitations:  invitations,
 		CatalogDepts: catalogDepts,
 		CatalogPlans: catalogPlans,
@@ -142,8 +161,9 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		deptMems, memberships, tenantDepts, catalogDepts, delegations,
 		&fakeWorkflow{}, nil, txRunner,
 	)
+	fx.GroupMappingClient = &fakeGroupMappingClient{}
 	fx.GroupMapping = service.NewGroupMappingService(
-		groupMaps, memberships, roles, deptMems, catalogDepts, txRunner, nil,
+		memberships, roles, deptMems, txRunner, nil, fx.GroupMappingClient,
 	)
 	fx.Membership = service.NewMembershipService(
 		memberships, roles, deptMems, delegations, acls,

@@ -1,5 +1,4 @@
-// Phase 19 — Handler happy-path coverage for
-// InvitationHandler, ACLHandler, GroupMappingHandler.
+// Phase 19 — Handler happy-path coverage for InvitationHandler, ACLHandler.
 package http
 
 import (
@@ -149,56 +148,6 @@ func (f *iahACLRepo) SoftDeleteForUser(ctx context.Context, tid, uid uuid.UUID) 
 }
 
 var _ port.TenderACLRepository = (*iahACLRepo)(nil)
-
-type iahGMRepo struct {
-	listDeptRoleFn    func(context.Context, uuid.UUID) ([]domain.GroupDeptRoleMapping, error)
-	replaceDeptRoleFn func(context.Context, uuid.UUID, []domain.GroupDeptRoleMapping) ([]domain.GroupDeptRoleMapping, error)
-
-	listTRFn    func(context.Context, uuid.UUID) ([]domain.GroupTenantRoleMapping, error)
-	replaceTRFn func(context.Context, uuid.UUID, []domain.GroupTenantRoleMapping) ([]domain.GroupTenantRoleMapping, error)
-
-	listDeptFn    func(context.Context, uuid.UUID) ([]domain.GroupDeptMapping, error)
-	replaceDeptFn func(context.Context, uuid.UUID, []domain.GroupDeptMapping) ([]domain.GroupDeptMapping, error)
-}
-
-func (f *iahGMRepo) ListDeptRoleMappings(ctx context.Context, tid uuid.UUID) ([]domain.GroupDeptRoleMapping, error) {
-	if f.listDeptRoleFn != nil {
-		return f.listDeptRoleFn(ctx, tid)
-	}
-	return nil, nil
-}
-func (f *iahGMRepo) ReplaceDeptRoleMappings(ctx context.Context, tid uuid.UUID, d []domain.GroupDeptRoleMapping) ([]domain.GroupDeptRoleMapping, error) {
-	if f.replaceDeptRoleFn != nil {
-		return f.replaceDeptRoleFn(ctx, tid, d)
-	}
-	return d, nil
-}
-func (f *iahGMRepo) ListTenantRoleMappings(ctx context.Context, tid uuid.UUID) ([]domain.GroupTenantRoleMapping, error) {
-	if f.listTRFn != nil {
-		return f.listTRFn(ctx, tid)
-	}
-	return nil, nil
-}
-func (f *iahGMRepo) ReplaceTenantRoleMappings(ctx context.Context, tid uuid.UUID, d []domain.GroupTenantRoleMapping) ([]domain.GroupTenantRoleMapping, error) {
-	if f.replaceTRFn != nil {
-		return f.replaceTRFn(ctx, tid, d)
-	}
-	return d, nil
-}
-func (f *iahGMRepo) ListDeptMappings(ctx context.Context, tid uuid.UUID) ([]domain.GroupDeptMapping, error) {
-	if f.listDeptFn != nil {
-		return f.listDeptFn(ctx, tid)
-	}
-	return nil, nil
-}
-func (f *iahGMRepo) ReplaceDeptMappings(ctx context.Context, tid uuid.UUID, d []domain.GroupDeptMapping) ([]domain.GroupDeptMapping, error) {
-	if f.replaceDeptFn != nil {
-		return f.replaceDeptFn(ctx, tid, d)
-	}
-	return d, nil
-}
-
-var _ port.GroupMappingRepository = (*iahGMRepo)(nil)
 
 // The invitation service also needs a TenantRepo, RP, TxRunner, and members repo.
 // We re-use the fakes defined in tenant_delegation_happy_test.go for tenant + RP + membership,
@@ -426,110 +375,5 @@ func TestACLRevoke_Success_200(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"revoked":true`)
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// P-14 · GroupMappingHandler.ListDeptRole
-// ═════════════════════════════════════════════════════════════════════════
-
-func TestGM_ListDeptRole_Success_200(t *testing.T) {
-	tenantID := uuid.New()
-	repo := &iahGMRepo{listDeptRoleFn: func(_ context.Context, tid uuid.UUID) ([]domain.GroupDeptRoleMapping, error) {
-		return []domain.GroupDeptRoleMapping{
-			{TenantID: tid, KeycloakGroupName: "engineers", RoleCode: domain.DeptApprover},
-		}, nil
-	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
-	h := &GroupMappingHandler{svc: svc}
-
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
-	setParams(c, "id", tenantID.String())
-	h.ListDeptRole(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "engineers")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// P-15 · GroupMappingHandler.PutDeptRole
-// ═════════════════════════════════════════════════════════════════════════
-
-func TestGM_PutDeptRole_Success_200(t *testing.T) {
-	tenantID := uuid.New()
-	repo := &iahGMRepo{replaceDeptRoleFn: func(_ context.Context, tid uuid.UUID, d []domain.GroupDeptRoleMapping) ([]domain.GroupDeptRoleMapping, error) {
-		return d, nil
-	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
-	h := &GroupMappingHandler{svc: svc}
-
-	body := `{"mappings":[{"keycloak_group_name":"eng","role_code":"approver"}]}`
-	c, w := buildCtx(http.MethodPut, "/", body, tenantOwnerCtx(tenantID))
-	setParams(c, "id", tenantID.String())
-	h.PutDeptRole(c)
-
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "approver")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// P-16 · GroupMappingHandler.ListDept
-// ═════════════════════════════════════════════════════════════════════════
-
-func TestGM_ListDept_Success_200(t *testing.T) {
-	tenantID := uuid.New()
-	deptA := uuid.New()
-	repo := &iahGMRepo{listDeptFn: func(_ context.Context, tid uuid.UUID) ([]domain.GroupDeptMapping, error) {
-		return []domain.GroupDeptMapping{
-			{TenantID: tid, KeycloakGroupName: "engineers", DepartmentID: deptA},
-		}, nil
-	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
-	h := &GroupMappingHandler{svc: svc}
-
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
-	setParams(c, "id", tenantID.String())
-	h.ListDept(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "engineers")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// P-17 · GroupMappingHandler.PutDept
-// ═════════════════════════════════════════════════════════════════════════
-
-func TestGM_PutDept_Success_200(t *testing.T) {
-	tenantID := uuid.New()
-	deptID := uuid.New()
-	repo := &iahGMRepo{replaceDeptFn: func(_ context.Context, tid uuid.UUID, d []domain.GroupDeptMapping) ([]domain.GroupDeptMapping, error) {
-		return d, nil
-	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
-	h := &GroupMappingHandler{svc: svc}
-
-	body := `{"mappings":[{"keycloak_group_name":"eng","department_id":"` + deptID.String() + `"}]}`
-	c, w := buildCtx(http.MethodPut, "/", body, tenantOwnerCtx(tenantID))
-	setParams(c, "id", tenantID.String())
-	h.PutDept(c)
-
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// P-29 · GroupMappingHandler.PutTenantRole (§16 A25)
-// ═════════════════════════════════════════════════════════════════════════
-
-func TestGM_PutTenantRole_Success_200(t *testing.T) {
-	tenantID := uuid.New()
-	repo := &iahGMRepo{replaceTRFn: func(_ context.Context, tid uuid.UUID, d []domain.GroupTenantRoleMapping) ([]domain.GroupTenantRoleMapping, error) {
-		return d, nil
-	}}
-	svc := service.NewGroupMappingService(repo, &happyMembershipRepo{}, nil, nil, nil, happyTxRunner{}, happyCacheStub{})
-	h := &GroupMappingHandler{svc: svc}
-
-	body := `{"mappings":[{"keycloak_group_name":"admins","role_code":"tenant_admin"}]}`
-	c, w := buildCtx(http.MethodPut, "/", body, tenantOwnerCtx(tenantID))
-	setParams(c, "id", tenantID.String())
-	h.PutTenantRole(c)
-
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "tenant_admin")
-}
+// P-14/P-15/P-16/P-17/P-29 (GroupMappingHandler) — retired, moved to Group
+// Mapping Service. IDs never reused.

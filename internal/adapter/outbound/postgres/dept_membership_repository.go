@@ -64,9 +64,24 @@ func (r *DeptMembershipRepository) listWhere(ctx context.Context, whereClause st
 // Assign upserts a (user, dept) row to the given level. If the level
 // changes, this soft-deletes the existing row and inserts a new one so
 // callers can emit DepartmentMembershipLevelChanged with previous_level.
-func (r *DeptMembershipRepository) Assign(ctx context.Context, tenantID, userID, departmentID, membershipID uuid.UUID, level domain.DeptRole, grantedBy uuid.UUID) (*domain.DeptMembership, error) {
-	var out *domain.DeptMembership
+//
+// Returns (current, previous, err) — previous is nil when no active row
+// existed before this call (a fresh grant). previous MUST come from here,
+// not from a separate pre-fetch by the caller: the FOR UPDATE probe below
+// only locks an EXISTING row, so on a brand-new (tenant, user, dept) key
+// there is nothing to lock, and two truly concurrent callers would both
+// see "no existing row" and both misclassify their write as a fresh grant
+// (B15). The pg_advisory_xact_lock below closes that gap by serializing
+// concurrent callers for the same key even before any row exists;
+// transaction-scoped, released automatically on commit/rollback.
+func (r *DeptMembershipRepository) Assign(ctx context.Context, tenantID, userID, departmentID, membershipID uuid.UUID, level domain.DeptRole, grantedBy uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
+	var out, previous *domain.DeptMembership
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtextextended($1::text || $2::text || $3::text, 0))`,
+			tenantID, userID, departmentID); err != nil {
+			return err
+		}
 		// Look up existing active row with FOR UPDATE to serialize concurrent
 		// callers holding the same (tenant, user, dept) triple (idempotency,
 		// PI-10 spirit for dept memberships).
@@ -79,6 +94,7 @@ func (r *DeptMembershipRepository) Assign(ctx context.Context, tenantID, userID,
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		previous = existing
 		if existing != nil {
 			if existing.RoleLevel == level {
 				out = existing
@@ -119,7 +135,7 @@ func (r *DeptMembershipRepository) Assign(ctx context.Context, tenantID, userID,
 		out = final
 		return nil
 	})
-	return out, err
+	return out, previous, err
 }
 
 func (r *DeptMembershipRepository) Remove(ctx context.Context, tenantID, userID, departmentID uuid.UUID) (*domain.DeptMembership, error) {

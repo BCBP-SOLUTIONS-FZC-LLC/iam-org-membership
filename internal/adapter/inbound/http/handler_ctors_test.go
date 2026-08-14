@@ -36,11 +36,6 @@ func TestNewDeptMembershipHandler_Constructs(t *testing.T) {
 	assert.NotNil(t, h)
 }
 
-func TestNewGroupMappingHandler_Constructs(t *testing.T) {
-	h := NewGroupMappingHandler(nil)
-	assert.NotNil(t, h)
-}
-
 func TestNewInvitationHandler_Constructs(t *testing.T) {
 	h := NewInvitationHandler(nil)
 	assert.NotNil(t, h)

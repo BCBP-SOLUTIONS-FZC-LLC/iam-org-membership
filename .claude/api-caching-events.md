@@ -52,15 +52,13 @@
 | P-11 | `DELETE /tenants/:id/departments/:dept_id/members/:user_id` | Dept remove — dept-scope delegate-impact gated (§8.8.4) | tenant_admin/owner | invalidates |
 | P-12 | `GET /tenants/:id/roles` | Role catalog (`dept_role_labels`) | member | yes |
 | P-13 | `PATCH /tenants/:id/roles/:role_code` | Update `display_name` only | tenant_admin/owner | invalidates |
-| P-14/P-15 | `GET`/`PUT /tenants/:id/group-mappings/roles` | List/replace group→**dept-role** mappings | tenant_admin/owner | yes/invalidates |
-| P-16/P-17 | `GET`/`PUT /tenants/:id/group-mappings/departments` | List/replace group→dept mappings | tenant_admin/owner | yes/invalidates |
+| P-14/P-15/P-16/P-17/P-29 | *retired* | — | Group→role/department mapping CRUD moved to Group Mapping Service (`group-mapping-jit-config`, ADR-0007 Wave 2), along with `group_dept_role_mappings`/`group_tenant_role_mappings`/`group_dept_mappings` themselves — see `database-schema.md`. IDs never reused. |
 | P-18/P-19/P-20 | `GET`/`POST`/`DELETE /delegations[/:id]` | List/create/cancel delegation (POST also coordinates User Profile) | self / self+admin | see caching |
 | P-21/P-22/P-23 | `GET`/`POST`/`DELETE /tenants/:id/tenders/:tender_id/acl[/:user_id]` | List/grant/revoke tender ACL (accepts optional `reason`, `expires_at`) | tender_admin/tenant_admin/tenant_owner | yes/invalidates |
 | P-24/P-25 | `POST`/`PATCH /tenants/:id/departments[/:dept_id]` | Activate/deactivate/reactivate tenant department | tenant_admin/owner | invalidates |
 | P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve blocked removal/demotion — `replace_delegate` or `stop_workflows` (§8.8.3/§8.8.4) | tenant_admin/owner | invalidates |
 | P-27 | `GET /tenants/:id/seat-usage` | `{active_users, pending_invitations, licensed_seats, over_cap, overage_since, grace_ends_at}` | tenant_admin/owner | yes (30 s TTL) |
 | P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement multi-role reconcile; `422 last_owner_removal` guard (TM-8) | tenant_admin/owner | invalidates |
-| P-29 | `PUT /tenants/:id/group-mappings/tenant-roles` | Replace group→**tenant-role** mappings (§16 A25) | tenant_admin/owner | invalidates |
 | P-30/P-31 | `GET`/`DELETE /tenants/:id/invitations[/:invitation_id]` | List/revoke pending invitations (P-31 sets `kc_cleanup_pending`, PI-6) | tenant_admin/owner | no/invalidates seat-usage |
 
 ### Internal routes (`/api/v1/internal/*`)
@@ -127,8 +125,12 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 | `om:dept_members:{tenant}:{dept}` | JSON dept member list | 120 s | any dept_memberships write for tenant+dept |
 | `om:locale:{tenant}` | BCP-47 string | 600 s | P-2 with locale change |
 | `om:roles:{tenant}` | Role catalog | 600 s | P-13 |
-| `om:grm:{tenant}` | Group-role mappings | 600 s | P-15 |
-| `om:gdm:{tenant}` | Group-dept mappings | 600 s | P-17 |
+| `om:grm:{tenant}` | Group→dept-role mappings, read through `GroupMappingClient` from Group Mapping Service's GM-I1 (ADR-0007 Wave 2 — `group_dept_role_mappings` table dropped from O&M) | 600 s | Passive expiry only — O&M no longer writes these tables, so nothing evicts this key on write; a stale read can live up to the TTL |
+| `om:grm:stale:{tenant}` | Same payload as `om:grm:{tenant}`, second-tier stale-if-error fallback — served when Group Mapping Service is unreachable and the primary key has expired | 24 h | Refreshed on every successful primary-key populate; never explicitly evicted |
+| `om:gdm:{tenant}` | Group→department mappings, same read-through/GM-I1 sourcing as `om:grm` | 600 s | Passive expiry only, same rationale as `om:grm` |
+| `om:gdm:stale:{tenant}` | Same payload as `om:gdm:{tenant}`, second-tier stale-if-error fallback | 24 h | Refreshed on every successful primary-key populate; never explicitly evicted |
+| `om:gtrm:{tenant}` | Group→tenant-role mappings, same read-through/GM-I1 sourcing as `om:grm` — closes a pre-existing gap (this dimension previously had no cache at all) | 600 s | Passive expiry only, same rationale as `om:grm` |
+| `om:gtrm:stale:{tenant}` | Same payload as `om:gtrm:{tenant}`, second-tier stale-if-error fallback | 24 h | Refreshed on every successful primary-key populate; never explicitly evicted |
 | `om:seat_usage:{tenant}` | `{active, pending, licensed_seats, over_cap, overage_since, grace_ends_at}` | 30 s (CACHE-5) | membership add/remove; invite create/revoke/expire/accept; `TenantSeatsChanged`; overage set/clear |
 | `om:plans` | Whole plan catalog, read through `CatalogService`/`CatalogAdminClient` from the Catalog Service (Phase 2 read-cutover; `plans` table dropped from O&M in Phase 4) | 600 s | Passive expiry only — O&M no longer writes plans, so nothing evicts this key on write; a stale read can live up to the TTL |
 | `om:plans:stale` | Same payload as `om:plans`, second-tier stale-if-error fallback (CAT-D4) — served when the Catalog Service is unreachable and the primary key has expired | 24 h | Refreshed on every successful primary-key populate; never explicitly evicted |

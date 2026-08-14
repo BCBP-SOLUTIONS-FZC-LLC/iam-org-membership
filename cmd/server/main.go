@@ -25,7 +25,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 
@@ -34,6 +33,7 @@ import (
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
 	catalogadminclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/catalogadmin"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
+	groupmappingclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/groupmappingclient"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
@@ -295,29 +295,9 @@ func main() {
 
 	// Public infra endpoints (registered before RequireAuth so LB probes
 	// with no headers still get 200).
-	r.GET("/healthz", gincommon.HealthHandler())
-	r.GET("/readyz", func(c *gin.Context) {
-		hs := pool.Health(c.Request.Context())
-		if !hs.Healthy {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "database": "down"})
-			return
-		}
-		if err := cache.Health(c.Request.Context()); err != nil {
-			// Cache is advisory (CACHE-9), but /readyz still fails so the
-			// pod is removed from rotation while Valkey is down — otherwise
-			// every cache miss silently amplifies DB load.
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "cache": "down"})
-			return
-		}
-		select {
-		case <-outboxRunner.Ready():
-		default:
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "outbox": "initialising"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ready"})
-	})
-	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	r.GET("/healthz", healthzHandler())
+	r.GET("/readyz", readyzHandler(pool, cache, outboxRunner))
+	r.GET("/metrics", metricsHandler())
 
 	// ── API + Event docs surface ────────────────────────────────────────
 	// Mirrors sibling iam-user-profile2 exactly:
@@ -391,7 +371,6 @@ func main() {
 	tenantRoleRepo := pgadapter.NewTenantRoleRepository(pool)
 	deptMemRepo := pgadapter.NewDeptMembershipRepository(pool)
 	deptRoleLabelRepo := pgadapter.NewDeptRoleLabelRepository(pool)
-	groupMappingRepo := pgadapter.NewGroupMappingRepository(pool)
 	delegationRepo := pgadapter.NewDelegationRepository(pool)
 	aclRepo := pgadapter.NewTenderACLRepository(pool)
 	invitationRepo := pgadapter.NewInvitationRepository(pool)
@@ -408,6 +387,12 @@ func main() {
 	// service entirely.
 	catalogAdminClient := catalogadminclient.New()
 	catalogReader := service.NewCatalogService(catalogAdminClient, cache)
+	// groupMappingClient: I-10's mapping-resolution step goes through Group
+	// Mapping Service's GM-I1 behind the om:grm/gdm/gtrm cache (ADR-0007
+	// Wave 2). P-14..P-29 admin CRUD and the local group-mapping tables
+	// have been fully removed from this service — Group Mapping Service is
+	// now the sole owner of that config surface.
+	groupMappingClient := groupmappingclient.New()
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	invitationExpiryDays := envInt("INVITATION_EXPIRY_DAYS", 7)
@@ -421,7 +406,7 @@ func main() {
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, delegationRepo, aclRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, nil, seatOverageDays)
 	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogReader, delegationRepo, wfClient, cache, txRunner)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, cache)
-	groupMappingSvc := service.NewGroupMappingService(groupMappingRepo, membershipRepo, tenantRoleRepo, deptMemRepo, catalogReader, txRunner, cache)
+	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache, groupMappingClient)
 	reviewWindowDays := envInt("DELEGATION_REVIEW_WINDOW_DAYS", 90) // superseded by tenants.delegation_review_window_days (§16 A71); kept as fallback
 	delegationSvc := service.NewDelegationService(delegationRepo, membershipRepo, upClient, tenantRepo, txRunner, reviewWindowDays)
 	aclSvc := service.NewTenderACLService(aclRepo, membershipRepo)
@@ -435,7 +420,6 @@ func main() {
 	membershipH := httpadapter.NewMembershipHandler(membershipSvc)
 	deptMemH := httpadapter.NewDeptMembershipHandler(deptMemSvc)
 	roleLabelH := httpadapter.NewRoleLabelHandler(roleLabelSvc)
-	groupMappingH := httpadapter.NewGroupMappingHandler(groupMappingSvc)
 	delegationH := httpadapter.NewDelegationHandler(delegationSvc)
 	aclH := httpadapter.NewACLHandler(aclSvc)
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
@@ -488,12 +472,8 @@ func main() {
 		tenants.GET("/:id/roles", roleLabelH.List)
 		tenants.PATCH("/:id/roles/:role_code", roleLabelH.Patch)
 
-		// Group mappings — P-14, P-15, P-16, P-17, P-29
-		tenants.GET("/:id/group-mappings/department-roles", groupMappingH.ListDeptRole)
-		tenants.PUT("/:id/group-mappings/department-roles", groupMappingH.PutDeptRole)
-		tenants.GET("/:id/group-mappings/departments", groupMappingH.ListDept)
-		tenants.PUT("/:id/group-mappings/departments", groupMappingH.PutDept)
-		tenants.PUT("/:id/group-mappings/tenant-roles", groupMappingH.PutTenantRole)
+		// Group mappings (P-14, P-15, P-16, P-17, P-29) — retired, moved
+		// to Group Mapping Service (GM-1..GM-6). IDs never reused.
 
 		// Tender ACL — P-21, P-22, P-23
 		tenants.GET("/:id/tenders/:tender_id/acl", aclH.List)

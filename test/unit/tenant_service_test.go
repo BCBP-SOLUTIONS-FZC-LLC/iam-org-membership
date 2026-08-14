@@ -178,7 +178,9 @@ func (r *tsRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, er
 	}
 	return nil, errors.New("not implemented")
 }
-func (r *tsRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) { return r.FindByID(ctx, id) }
+func (r *tsRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	return r.FindByID(ctx, id)
+}
 func (r *tsRepo) Update(ctx context.Context, id uuid.UUID, patch *domain.TenantPatch) (*domain.Tenant, error) {
 	if r.updateFn != nil {
 		return r.updateFn(ctx, id, patch)

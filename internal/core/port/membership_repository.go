@@ -66,7 +66,12 @@ type DeptMembershipRepository interface {
 	// Assign upserts a (user, dept) pair to the given level. On level
 	// change it soft-deletes the old row and inserts a new one so the
 	// DepartmentMembershipLevelChanged event carries previous_level.
-	Assign(ctx context.Context, tenantID, userID, departmentID uuid.UUID, membershipID uuid.UUID, level domain.DeptRole, grantedBy uuid.UUID) (*domain.DeptMembership, error)
+	//
+	// Returns (current, previous, err) — previous is nil when no active row
+	// existed before this call (fresh grant). previous is determined
+	// atomically inside the same lock as the write (B15) — callers must use
+	// it instead of a separate pre-fetch to decide Granted/LevelChanged/no-op.
+	Assign(ctx context.Context, tenantID, userID, departmentID uuid.UUID, membershipID uuid.UUID, level domain.DeptRole, grantedBy uuid.UUID) (current *domain.DeptMembership, previous *domain.DeptMembership, err error)
 
 	// Remove soft-deletes an active dept membership.
 	Remove(ctx context.Context, tenantID, userID, departmentID uuid.UUID) (*domain.DeptMembership, error)

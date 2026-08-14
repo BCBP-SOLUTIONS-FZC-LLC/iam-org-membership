@@ -63,9 +63,6 @@
 // @tag.name         roles
 // @tag.description  Dept-role labels (P-12, P-13)
 //
-// @tag.name         groups
-// @tag.description  SAML group mappings (P-14..P-17, P-29)
-//
 // @tag.name         delegations
 // @tag.description  OOO delegations (P-18, P-19, P-20)
 //

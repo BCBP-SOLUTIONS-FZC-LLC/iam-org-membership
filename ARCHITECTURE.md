@@ -22,17 +22,18 @@ graph TD
     end
 
     subgraph adapters_in["Inbound Adapters  —  internal/adapter/inbound/"]
-        http_h["http/\nTenantHandler · DepartmentHandler\nMembershipHandler · RoleHandler\nGroupMappingHandler · DelegationHandler\nACLHandler · InvitationHandler · SeatUsageHandler\nOperatorHandler · InternalHandler\nvalidation.go · errors.go · dto.go"]
+        http_h["http/\nTenantHandler · DepartmentHandler\nMembershipHandler · RoleHandler\nDelegationHandler\nACLHandler · InvitationHandler · SeatUsageHandler\nOperatorHandler · InternalHandler\nvalidation.go · errors.go · dto.go"]
         consumer["consumer/\nMembershipEventConsumer\ntenant-orgm-q  ← iam.tenant.events (RP)\nbilling-orgm-q ← billing.events (Billing)\nEVT-14 recency · EVT-15 clamp · EVT-16 relay"]
     end
 
     subgraph adapters_out["Outbound Adapters  —  internal/adapter/outbound/"]
         postgres["postgres/\n15 repositories · TxRunner\ngolang-migrate SQL migrations\nrls_check_tenant / touch_row"]
-        valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only\nom:memberships · om:tenant · om:members\nom:dept_members · om:locale · om:roles\nom:grm · om:gdm · om:seat_usage · om:plans"]
+        valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only\nom:memberships · om:tenant · om:members\nom:dept_members · om:locale · om:roles\nom:grm/gdm/gtrm (+ :stale) · om:seat_usage\nom:plans/departments (+ :stale)"]
         eventbus["eventbus/\nRoutingPublisher — two topics by Envelope.Source\nValidatingCodec (fail-closed) · Outbox Runner\niam.membership.events · iam.tenant.events\nembedded schemas/*.json (go:embed)"]
         userprofile["userprofile/\nHTTPClient — PUT /internal/users/:id/availability\nDelegation coordination (§8.6 CONS-2)"]
         workflow["workflow/\nHTTPClient — GetDelegateImpact\nReassignDelegate · CancelByDelegate\n(§8.8 synchronous, WFI-7)"]
         rp["realmprovisioner/\nHTTPClient — CreateInvitedUser · DeleteUser\nPatchRealmConfig · RevokeUserSessions\n(AUTH-8 · PI-9 · T-15)"]
+        groupmappingclient["groupmappingclient/\nHTTPClient — ResolveGroups (GM-I1)\nI-10 JIT resolution, mesh-only\n(ADR-0007 Wave 2)"]
         metrics["metrics/\nbusiness.go — iam_membership_joins_total\niam_delegation_created_total · iam_seat_limit_reached_total\niam_delegate_removal_blocked_total · iam_tenant_ownerless\niam_realm_sync_pending · iam_lifecycle_consumer_lag_seconds"]
     end
 
@@ -41,9 +42,9 @@ graph TD
     end
 
     subgraph core["Core  —  internal/core/"]
-        service["service/\nTenantService · DepartmentService\nMembershipService (largest) · RoleService\nGroupMappingService · DelegationService\nACLService · InvitationService\nvalidator.go — ValidateSlug · ValidateLocale\nValidateRoleLevel · ValidateGroupName · ..."]
-        port["port/\nTenantRepository · DepartmentRepository\nMembershipRepository · RoleRepository\nGroupMappingRepository · DelegationRepository\nACLRepository · InvitationRepository\nCache · EventPublisher\nUserProfileClient · WorkflowClient\nRealmProvisionerClient"]
-        domain["domain/\nTenant · Plan · Department · TenantMembership\nTenantRoleGrant · DeptMembership · Delegation\nTenderACLEntry · PendingInvitation · GroupMapping\nDomainEvent payloads · DomainError catalogue\nErrWorkflowResolutionRequired · ErrSeatLimitReached\nErrInvitationAlreadyExists · ErrInvalidReplacement\nErrConflict · ErrNotFound"]
+        service["service/\nTenantService · DepartmentService\nMembershipService (largest) · RoleService\nGroupMappingService (I-10 JIT resolution only)\nDelegationService · ACLService · InvitationService\nvalidator.go — ValidateSlug · ValidateLocale\nValidateRoleLevel · ValidateGroupName · ..."]
+        port["port/\nTenantRepository · DepartmentRepository\nMembershipRepository · RoleRepository\nDelegationRepository\nACLRepository · InvitationRepository\nCache · EventPublisher\nUserProfileClient · WorkflowClient\nRealmProvisionerClient · GroupMappingClient"]
+        domain["domain/\nTenant · Plan · Department · TenantMembership\nTenantRoleGrant · DeptMembership · Delegation\nTenderACLEntry · PendingInvitation\nGroupDeptMapping · GroupDeptRoleMapping · GroupTenantRoleMapping\n(read-only DTOs for I-10 — admin CRUD moved to Group Mapping Service)\nDomainEvent payloads · DomainError catalogue\nErrWorkflowResolutionRequired · ErrSeatLimitReached\nErrInvitationAlreadyExists · ErrInvalidReplacement\nErrConflict · ErrNotFound"]
     end
 
     subgraph pkg["Shared Packages  —  pkg/"]
@@ -230,7 +231,7 @@ Interfaces required by the core. Every outbound dependency crosses this boundary
 
 ### Repository interfaces
 
-`TenantRepository`, `DepartmentRepository`, `MembershipRepository`, `RoleRepository`, `GroupMappingRepository` (per mapping flavour), `DelegationRepository`, `ACLRepository`, `InvitationRepository`, `PlanRepository`. All 14 `record_version`-carrying tables (all except `processed_events`) expose an optimistic-lock update method that returns `ErrOptimisticLockConflict` on `RowsAffected() == 0` (CONC-3).
+`TenantRepository`, `DepartmentRepository`, `MembershipRepository`, `RoleRepository`, `DelegationRepository`, `ACLRepository`, `InvitationRepository`. All 9 `record_version`-carrying tables (all except `processed_events`) expose an optimistic-lock update method that returns `ErrOptimisticLockConflict` on `RowsAffected() == 0` (CONC-3).
 
 ### `Cache` — advisory only
 
@@ -345,7 +346,7 @@ Three guardrails, applied in order on every consumed message:
 
 ### Outbound Postgres — `adapter/outbound/postgres/`
 
-15 repositories implementing the `port.*Repository` interfaces plus a `TxRunner` for cross-repository transactions. All 14 `record_version`-carrying tables use the optimistic-lock pattern:
+9 repositories implementing the `port.*Repository` interfaces plus a `TxRunner` for cross-repository transactions. All 9 `record_version`-carrying tables use the optimistic-lock pattern:
 
 ```go
 tag, err := tx.Exec(ctx,
@@ -390,7 +391,7 @@ Each client has its own `*_BASE_URL` and `*_TIMEOUT_MS` env vars (default 3000 m
 
 ### Optimistic locking (CONC-1..4)
 
-All 14 `record_version`-carrying tables use the pattern above. CONC-4 requires 409 responses to include the current `record_version` and `updated_at` so the caller can re-read and retry without a separate GET.
+All 9 `record_version`-carrying tables use the pattern above. CONC-4 requires 409 responses to include the current `record_version` and `updated_at` so the caller can re-read and retry without a separate GET.
 
 ### Consistency invariants (CONS-1..4)
 
@@ -600,7 +601,7 @@ Coverage is measured over `./internal/...` and `./pkg/...` only. See [CONTRIBUTI
 | AUTH-8 session revocation is fail-open with TTL backstop | O&M state commits first; RP `RevokeUserSessions` best-effort; `iam_session_revoke_failed_total` paged on sustained rate |
 | EVT-14 recency guard is silent — lag is the drift signal | Alert on `iam_lifecycle_consumer_lag_seconds`, not on DLQ (SLO-3 primary drift signal) |
 | ValidatingCodec is fail-closed | Unknown event type → error at Encode → outbox never inserts (matches `iam-user-profile` convention) |
-| `member` role never persisted | `chk_tr_no_member` on `tenant_roles`; `chk_gtrm_no_member` on `group_tenant_role_mappings`; injected by I-8 at projection layer (TR-7 / §16 A29) |
+| `member` role never persisted | `chk_tr_no_member` on `tenant_roles`; injected by I-8 at projection layer (TR-7 / §16 A29) |
 | GDPR erasure for pending invitations is email-keyed | `pending_invitations` is the only table where GDPR erasure is keyed on `email` (citext), not `user_id` — invitee has no Keycloak/UP identity yet (§15.8) |
 
 ---

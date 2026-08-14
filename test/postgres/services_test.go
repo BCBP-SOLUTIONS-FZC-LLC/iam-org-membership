@@ -26,6 +26,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
@@ -124,12 +125,18 @@ func TestJIT_FirstTimeAssignment_EmitsGranted(t *testing.T) {
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5a")
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	// Establish an active tenant_membership + tenant_department + a
-	// group_dept_mapping so JIT resolves to a real dept assignment.
+	// Establish an active tenant_membership + tenant_department, and stub
+	// Group Mapping Service's GM-I1 resolution (ADR-0007 Wave 2 — I-10 no
+	// longer reads group_dept_mappings/group_dept_role_mappings directly)
+	// so JIT resolves to a real dept assignment.
 	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_B5A", "Eng B5A")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
-	seedGroupDeptMapping(t, ctx, fx.rawPool, tenantID, "eng-team", deptID)
-	seedGroupDeptRoleMapping(t, ctx, fx.rawPool, tenantID, "eng-team", domain.DeptReviewer)
+	fx.GroupMappingClient.resolveFn = func(_ context.Context, _ uuid.UUID, _ []string) (*port.GroupResolution, error) {
+		return &port.GroupResolution{
+			DeptMappings:     []port.ResolvedDeptMapping{{KeycloakGroupName: "eng-team", DepartmentID: deptID}},
+			DeptRoleMappings: []port.ResolvedDeptRoleMapping{{KeycloakGroupName: "eng-team", RoleCode: domain.DeptReviewer}},
+		}, nil
+	}
 
 	_, err := fx.GroupMapping.AssignFromGroups(tctx, tenantID, ownerID, []string{"eng-team"})
 	require.NoError(t, err)
@@ -148,8 +155,12 @@ func TestJIT_SameLevelReplay_EmitsNothing(t *testing.T) {
 
 	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_B5B", "Eng B5B")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
-	seedGroupDeptMapping(t, ctx, fx.rawPool, tenantID, "eng-team", deptID)
-	seedGroupDeptRoleMapping(t, ctx, fx.rawPool, tenantID, "eng-team", domain.DeptReviewer)
+	fx.GroupMappingClient.resolveFn = func(_ context.Context, _ uuid.UUID, _ []string) (*port.GroupResolution, error) {
+		return &port.GroupResolution{
+			DeptMappings:     []port.ResolvedDeptMapping{{KeycloakGroupName: "eng-team", DepartmentID: deptID}},
+			DeptRoleMappings: []port.ResolvedDeptRoleMapping{{KeycloakGroupName: "eng-team", RoleCode: domain.DeptReviewer}},
+		}, nil
+	}
 
 	// First JIT — establishes the row.
 	_, err := fx.GroupMapping.AssignFromGroups(tctx, tenantID, ownerID, []string{"eng-team"})
@@ -171,15 +182,24 @@ func TestJIT_LevelChange_EmitsLevelChanged(t *testing.T) {
 
 	deptID := seedSystemDept(t, ctx, fx.CatalogDepts, "ENG_B5C", "Eng B5C")
 	activateDept(t, ctx, fx.rawPool, tenantID, deptID)
-	// Map same group to two different levels via mapping updates.
-	seedGroupDeptMapping(t, ctx, fx.rawPool, tenantID, "eng-team", deptID)
-	seedGroupDeptRoleMapping(t, ctx, fx.rawPool, tenantID, "eng-team", domain.DeptPreparator)
+	// Map same group to two different levels via two resolveFn swaps.
+	fx.GroupMappingClient.resolveFn = func(_ context.Context, _ uuid.UUID, _ []string) (*port.GroupResolution, error) {
+		return &port.GroupResolution{
+			DeptMappings:     []port.ResolvedDeptMapping{{KeycloakGroupName: "eng-team", DepartmentID: deptID}},
+			DeptRoleMappings: []port.ResolvedDeptRoleMapping{{KeycloakGroupName: "eng-team", RoleCode: domain.DeptPreparator}},
+		}, nil
+	}
 
 	_, err := fx.GroupMapping.AssignFromGroups(tctx, tenantID, ownerID, []string{"eng-team"})
 	require.NoError(t, err)
 
 	// Flip the role_code in the mapping to reviewer, then re-JIT.
-	updateGroupDeptRoleMapping(t, ctx, fx.rawPool, tenantID, "eng-team", domain.DeptReviewer)
+	fx.GroupMappingClient.resolveFn = func(_ context.Context, _ uuid.UUID, _ []string) (*port.GroupResolution, error) {
+		return &port.GroupResolution{
+			DeptMappings:     []port.ResolvedDeptMapping{{KeycloakGroupName: "eng-team", DepartmentID: deptID}},
+			DeptRoleMappings: []port.ResolvedDeptRoleMapping{{KeycloakGroupName: "eng-team", RoleCode: domain.DeptReviewer}},
+		}, nil
+	}
 	_, err = fx.GroupMapping.AssignFromGroups(tctx, tenantID, ownerID, []string{"eng-team"})
 	require.NoError(t, err)
 
@@ -372,33 +392,6 @@ func activateDept(t *testing.T, ctx context.Context, rawPool *pgxpoolPool, tenan
 	_, err := rawPool.Exec(ctx,
 		`INSERT INTO tenant_departments (tenant_id, department_id, is_active) VALUES ($1, $2, true)`,
 		tenantID, deptID)
-	require.NoError(t, err)
-}
-
-func seedGroupDeptMapping(t *testing.T, ctx context.Context, rawPool *pgxpoolPool, tenantID uuid.UUID, group string, deptID uuid.UUID) {
-	t.Helper()
-	_, err := rawPool.Exec(ctx,
-		`INSERT INTO group_dept_mappings (id, tenant_id, keycloak_group_name, department_id)
-		 VALUES (gen_random_uuid(), $1, $2, $3)`,
-		tenantID, group, deptID)
-	require.NoError(t, err)
-}
-
-func seedGroupDeptRoleMapping(t *testing.T, ctx context.Context, rawPool *pgxpoolPool, tenantID uuid.UUID, group string, level domain.DeptRole) {
-	t.Helper()
-	_, err := rawPool.Exec(ctx,
-		`INSERT INTO group_dept_role_mappings (id, tenant_id, keycloak_group_name, role_code)
-		 VALUES (gen_random_uuid(), $1, $2, $3)`,
-		tenantID, group, string(level))
-	require.NoError(t, err)
-}
-
-func updateGroupDeptRoleMapping(t *testing.T, ctx context.Context, rawPool *pgxpoolPool, tenantID uuid.UUID, group string, newLevel domain.DeptRole) {
-	t.Helper()
-	_, err := rawPool.Exec(ctx,
-		`UPDATE group_dept_role_mappings SET role_code = $3
-		 WHERE tenant_id = $1 AND keycloak_group_name = $2`,
-		tenantID, group, string(newLevel))
 	require.NoError(t, err)
 }
 

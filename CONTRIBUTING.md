@@ -190,7 +190,7 @@ The lint config (`.golangci.yml`) enforces `unparam`, `revive`, `gocritic`, and 
 - **Never write `SET app.tenant_id` in code.** The pool's `GUCProvider = pgcommon.GUCSetFromContext` binds `app.tenant_id` transaction-locally on every checkout. A session-scoped `SET` breaks RLS-6 under PgBouncer transaction pooling — the last tenant's GUC persists on the pooled backend and leaks to the next request. **CI greps for the pattern.**
 - **Never write session-scoped GUCs in general.** Always `SET LOCAL` via `set_config(..., is_local => true)`.
 - **Never call the Keycloak Admin API directly.** That is Realm Provisioner's exclusive responsibility (HLD §4.2 / §5.2). O&M calls RP via `POST /internal/tenants/:id/users`, `POST /internal/tenants/:id/users/:kc_user_id/logout`, `PATCH /internal/tenants/:id/realm-config`, etc.
-- **Never persist the derived `member` role.** It is injected at read time by I-8 (TR-7 / §16 A29). CI enforces the `chk_tr_no_member` CHECK on `tenant_roles` and `chk_gtrm_no_member` on `group_tenant_role_mappings` (GTRM-6).
+- **Never persist the derived `member` role.** It is injected at read time by I-8 (TR-7 / §16 A29). CI enforces the `chk_tr_no_member` CHECK on `tenant_roles` (GTRM-6; the equivalent `chk_gtrm_no_member` moved with `group_tenant_role_mappings` to Group Mapping Service, ADR-0007 Wave 2).
 - **Optimistic locking:** every `record_version`-carrying UPDATE must include `WHERE id=$1 AND record_version=$2` (CONC-1..4). Never SET `record_version` from client code — the `touch_row()` trigger owns it (TRG-1).
 - **Every state change and its event share one `RunInTx`** (EVT-10, CONS-1..4). No dual writes; no "publish first, commit later."
 

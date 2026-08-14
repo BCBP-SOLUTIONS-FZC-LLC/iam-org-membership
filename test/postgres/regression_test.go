@@ -100,13 +100,16 @@ func TestDeptMembershipAssign_SameLevelNoOp(t *testing.T) {
 	tctx := withTenant(ctx, tenantID)
 	repo := pgadapter.NewDeptMembershipRepository(appPool)
 
-	first, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptReviewer, uuid.Nil)
+	first, firstPrev, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptReviewer, uuid.Nil)
 	require.NoError(t, err)
+	assert.Nil(t, firstPrev, "first-ever assign for this key must report no previous row")
 
-	second, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptReviewer, uuid.Nil)
+	second, secondPrev, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptReviewer, uuid.Nil)
 	require.NoError(t, err)
 	assert.Equal(t, first.ID, second.ID, "same-level replay must return existing row")
 	assert.Equal(t, first.RecordVersion, second.RecordVersion, "no version bump on no-op")
+	require.NotNil(t, secondPrev, "replay must report the existing row as previous")
+	assert.Equal(t, domain.DeptReviewer, secondPrev.RoleLevel, "previous must reflect the row found under lock")
 }
 
 func TestDeptMembershipAssign_LevelChange(t *testing.T) {
@@ -116,14 +119,16 @@ func TestDeptMembershipAssign_LevelChange(t *testing.T) {
 	tctx := withTenant(ctx, tenantID)
 	repo := pgadapter.NewDeptMembershipRepository(appPool)
 
-	first, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptPreparator, uuid.Nil)
+	first, _, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptPreparator, uuid.Nil)
 	require.NoError(t, err)
 
 	// Level change → old soft-deleted, new inserted.
-	second, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptApprover, uuid.Nil)
+	second, previous, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptApprover, uuid.Nil)
 	require.NoError(t, err)
 	assert.NotEqual(t, first.ID, second.ID, "level change gets a fresh row for audit history")
 	assert.Equal(t, domain.DeptApprover, second.RoleLevel)
+	require.NotNil(t, previous, "level change must report the pre-change row")
+	assert.Equal(t, domain.DeptPreparator, previous.RoleLevel, "previous must be the level before this call")
 }
 
 func TestDeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) {
@@ -133,11 +138,17 @@ func TestDeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) 
 	tctx := withTenant(ctx, tenantID)
 	repo := pgadapter.NewDeptMembershipRepository(appPool)
 
-	// Race two Assigns for the same (tenant, user, dept). Only one should
-	// win the INSERT; the other must be absorbed by ON CONFLICT DO NOTHING
-	// and return the winner via the fallback SELECT. Neither should error.
+	// Race two Assigns for the same brand-new (tenant, user, dept) — nothing
+	// exists yet, so there is nothing for the old FOR-UPDATE-only locking to
+	// serialize on. Before the B15 fix (pg_advisory_xact_lock), both
+	// goroutines' pre-fetch would see "no existing row" and both would
+	// report previous=nil, causing the caller to double-emit
+	// DepartmentMembershipGranted for what is really one row. The fix must
+	// make exactly one goroutine see previous=nil (the true creator) and the
+	// other see previous=the just-created row (a no-op replay).
 	var wg sync.WaitGroup
 	results := make([]*domain.DeptMembership, 2)
+	previous := make([]*domain.DeptMembership, 2)
 	errs := make([]error, 2)
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
@@ -145,8 +156,9 @@ func TestDeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) 
 			defer wg.Done()
 			// Small stagger so both goroutines have a real chance to overlap.
 			time.Sleep(time.Duration(idx) * 5 * time.Millisecond)
-			out, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptReviewer, uuid.Nil)
+			out, prev, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptReviewer, uuid.Nil)
 			results[idx] = out
+			previous[idx] = prev
 			errs[idx] = err
 		}(i)
 	}
@@ -158,6 +170,15 @@ func TestDeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) 
 	require.NotNil(t, results[1])
 	assert.Equal(t, results[0].ID, results[1].ID,
 		"both goroutines must resolve to the same row (winner returned to both)")
+
+	nilPrevCount := 0
+	for _, p := range previous {
+		if p == nil {
+			nilPrevCount++
+		}
+	}
+	assert.Equal(t, 1, nilPrevCount,
+		"B15: exactly one concurrent Assign for a brand-new key must report previous=nil (fresh grant); the other must see the winner's row, not a second nil")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

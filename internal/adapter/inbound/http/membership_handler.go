@@ -335,7 +335,7 @@ func (h *MembershipHandler) Remove(c *gin.Context) {
 //
 // @Summary      P-26 — Resolve blocked user removal
 // @Description  Reassigns or cancels workflows the target user is delegate on so P-8 can proceed (§8.8.3, WFI-6).
-// @Tags         members
+// @Tags         resolution
 // @Accept       json
 // @Param        id       path  string                       true  "Tenant UUID"   format(uuid)
 // @Param        user_id  path  string                       true  "User UUID"     format(uuid)

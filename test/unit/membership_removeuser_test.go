@@ -120,8 +120,8 @@ func (f *ruDeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]dom
 func (f *ruDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
-func (f *ruDeptMemRepo) Assign(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, domain.DeptRole, uuid.UUID) (*domain.DeptMembership, error) {
-	return nil, nil
+func (f *ruDeptMemRepo) Assign(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, domain.DeptRole, uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
+	return nil, nil, nil
 }
 func (f *ruDeptMemRepo) Remove(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*domain.DeptMembership, error) {
 	return nil, nil

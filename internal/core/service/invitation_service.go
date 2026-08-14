@@ -392,7 +392,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 			}
 			// Apply queued initial dept mappings.
 			for _, dm := range pending.InitialDeptMappings {
-				assigned, aerr := s.deptMems.Assign(txCtx, tenantID, userID, dm.DepartmentID, mem.ID, dm.Level, pending.InvitedBy)
+				assigned, _, aerr := s.deptMems.Assign(txCtx, tenantID, userID, dm.DepartmentID, mem.ID, dm.Level, pending.InvitedBy)
 				if aerr != nil {
 					return aerr
 				}

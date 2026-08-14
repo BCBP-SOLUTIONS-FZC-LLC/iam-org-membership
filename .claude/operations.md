@@ -27,7 +27,6 @@
 | Remove (P-8), suspend/reactivate (P-7) | `tenant_admin`, `tenant_owner` |
 | Grant/revoke tenant-level role (P-28) | `tenant_admin`, `tenant_owner`; last-owner protected (TM-8) |
 | Assign user to dept (P-10/P-11) | `tenant_admin`, `tenant_owner` |
-| Configure group mappings (P-15/P-17/P-29) | `tenant_admin`, `tenant_owner` |
 | Create/cancel own delegation | Any tenant member |
 | Cancel another user's delegation | `tenant_admin`, `tenant_owner` |
 | Grant tender ACL (P-22) | `tender_admin`, `tenant_admin`, `tenant_owner` |

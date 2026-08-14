@@ -84,16 +84,16 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	}
 	var dm *domain.DeptMembership
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		// Snapshot prior state INSIDE the tx so a concurrent write can't
-		// slip in between the read and the Assign — that race would let
-		// us emit `Granted` when reality is `LevelChanged` (or vice versa).
-		// deptMemberships.Assign() itself takes SELECT FOR UPDATE on the
-		// target key, so we read within its serialization window.
-		var previous *domain.DeptMembership
+		// Best-effort snapshot for the WFI-9/12 delegate-impact gate below —
+		// this check fails open on a race (WFI-9) so a stale read here is
+		// acceptable. It must NOT be used to classify the Granted/LevelChanged/
+		// no-op event below: that decision needs the atomically-accurate
+		// `previous` value Assign() itself returns (see its doc comment / B15).
+		var preflightPrevious *domain.DeptMembership
 		snapshot, _ := s.deptMemberships.ListByUser(txCtx, tenantID, userID)
 		for i := range snapshot {
 			if snapshot[i].DepartmentID == deptID {
-				previous = &snapshot[i]
+				preflightPrevious = &snapshot[i]
 				break
 			}
 		}
@@ -104,7 +104,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 		// WFI-10: scope='all' delegations are excluded (handled by GetDelegateImpact
 		// taking an optional delegation_id; we pass the specific dept delegation).
 		// WFI-12: promotions (higher or equal level) never trigger.
-		if previous != nil && level.Rank() < previous.RoleLevel.Rank() && s.delegations != nil && s.workflow != nil {
+		if preflightPrevious != nil && level.Rank() < preflightPrevious.RoleLevel.Rank() && s.delegations != nil && s.workflow != nil {
 			delg, err := s.delegations.FindActiveDeptDelegateForUser(txCtx, tenantID, userID, deptID)
 			if err != nil {
 				return err
@@ -126,7 +126,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 			}
 		}
 
-		out, err := s.deptMemberships.Assign(txCtx, tenantID, userID, deptID, m.ID, level, actorID)
+		out, previous, err := s.deptMemberships.Assign(txCtx, tenantID, userID, deptID, m.ID, level, actorID)
 		if err != nil {
 			return err
 		}

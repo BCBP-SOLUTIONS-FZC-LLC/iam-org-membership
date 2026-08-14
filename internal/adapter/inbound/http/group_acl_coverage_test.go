@@ -1,10 +1,10 @@
-// Handler-layer tests for five APIs added in today's testing session:
+// Handler-layer tests for two APIs added in today's testing session:
 //
-//	P-15  PUT /tenants/{id}/group-mappings/department-roles
-//	P-17  PUT /tenants/{id}/group-mappings/departments
-//	P-29  PUT /tenants/{id}/group-mappings/tenant-roles
 //	P-22  POST /tenants/{id}/tenders/{tender_id}/acl
 //	P-23  DELETE /tenants/{id}/tenders/{tender_id}/acl/{user_id}
+//
+// (P-15/P-17/P-29 GroupMappingHandler coverage retired along with the
+// handler itself — moved to Group Mapping Service.)
 //
 // Pattern: nil-service + nil-repo. Any path that reaches the service with
 // a nil pointer panics — proving the handler's early-return contract.
@@ -23,150 +23,6 @@ func tenderAdminCtx(tenantID uuid.UUID) *requestctx.RequestContext {
 	return &requestctx.RequestContext{
 		UserID: uuid.New(), TenantID: tenantID, Roles: []string{"tender_admin"},
 	}
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// P-17 · GroupMappingHandler.PutDept — PUT group-mappings/departments
-// ═════════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P17-INVALID-TENANT-01
-// Feature:           P-17 · Invalid tenant UUID → 400 invalid_uuid
-// Scenario ID:       P17-VAL-TENANT-01
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestPutDeptMappings_InvalidTenantID(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, tenantOwnerCtx(tenant))
-	setParams(c, "id", "not-a-uuid")
-	h.PutDept(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// Test Case ID:      P17-AUTH-01
-// Feature:           P-17 · Plain member caller → 403 insufficient_role (AUTH-2)
-// Scenario ID:       P17-AUTH-01
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPutDeptMappings_PlainMember(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, plainMemberCtx(tenant))
-	setParams(c, "id", tenant.String())
-	h.PutDept(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// Test Case ID:      P17-AUTH-03
-// Feature:           P-17 · Cross-tenant caller → 403 (AUTH-2)
-// Scenario ID:       P17-AUTH-03
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPutDeptMappings_CrossTenant(t *testing.T) {
-	h := &GroupMappingHandler{}
-	pathTenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", pathTenant.String())
-	h.PutDept(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// Test Case ID:      P17-AUTH-02
-// Feature:           P-17 · tenant_admin caller is also authorised (AUTH-2)
-// Scenario ID:       P17-AUTH-02
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestPutDeptMappings_TenantAdminAuthorised(t *testing.T) {
-	// With nil service the handler panics if it reaches the service call.
-	// We verify that 403 is NOT returned — the panic would be caught by the
-	// test harness and surface as a failure, confirming auth passed.
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, _ := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, tenantAdminCtx(tenant))
-	setParams(c, "id", tenant.String())
-	// Panics at service call is acceptable proof that auth + parse passed.
-	defer func() { _ = recover() }()
-	h.PutDept(c)
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// P-15 · GroupMappingHandler.PutDeptRole — PUT group-mappings/department-roles
-// ═════════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P15-VAL-TENANT-01
-// Feature:           P-15 · Invalid tenant UUID → 400
-// Scenario ID:       P15-VAL-TENANT-01
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestPutDeptRoleMappings_InvalidTenantID(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, tenantOwnerCtx(tenant))
-	setParams(c, "id", "bad-uuid")
-	h.PutDeptRole(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// Test Case ID:      P15-AUTH-01
-// Feature:           P-15 · Plain member → 403 (AUTH-2)
-// Scenario ID:       P15-AUTH-01
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPutDeptRoleMappings_PlainMember(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, plainMemberCtx(tenant))
-	setParams(c, "id", tenant.String())
-	h.PutDeptRole(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// Test Case ID:      P15-AUTH-03
-// Feature:           P-15 · Cross-tenant → 403
-// Scenario ID:       P15-AUTH-03
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPutDeptRoleMappings_CrossTenant(t *testing.T) {
-	h := &GroupMappingHandler{}
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", uuid.New().String())
-	h.PutDeptRole(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// P-29 · GroupMappingHandler.PutTenantRole — PUT group-mappings/tenant-roles
-// ═════════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P29-VAL-TENANT-01
-// Feature:           P-29 · Invalid tenant UUID → 400
-// Scenario ID:       P29-VAL-TENANT-01
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestPutTenantRoleMappings_InvalidTenantID(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, tenantOwnerCtx(tenant))
-	setParams(c, "id", "bad-uuid")
-	h.PutTenantRole(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// Test Case ID:      P29-AUTH-01
-// Feature:           P-29 · Plain member → 403 (AUTH-2)
-// Scenario ID:       P29-AUTH-01
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPutTenantRoleMappings_PlainMember(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, plainMemberCtx(tenant))
-	setParams(c, "id", tenant.String())
-	h.PutTenantRole(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// Test Case ID:      P29-AUTH-03
-// Feature:           P-29 · Cross-tenant → 403
-// Scenario ID:       P29-AUTH-03
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestPutTenantRoleMappings_CrossTenant(t *testing.T) {
-	h := &GroupMappingHandler{}
-	c, w := buildCtx(http.MethodPut, "/", `{"mappings":[]}`, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", uuid.New().String())
-	h.PutTenantRole(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

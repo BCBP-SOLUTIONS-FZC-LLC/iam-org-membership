@@ -37,6 +37,31 @@ func cacheKeyGDM(tenantID uuid.UUID) string {
 	return fmt.Sprintf("om:gdm:%s", tenantID)
 }
 
+// cacheKeyGTRM builds om:gtrm:{tenant} — closes a pre-existing gap
+// (Document 3 §6.4): group_tenant_role_mappings was queried on every JIT
+// resolution with no cache entry at all before Stage 2 of the Group
+// Mapping Service cutover.
+func cacheKeyGTRM(tenantID uuid.UUID) string {
+	return fmt.Sprintf("om:gtrm:%s", tenantID)
+}
+
+// cacheKeyGRMStale/GDMStale/GTRMStale build the 24h stale-if-error
+// fallbacks for the three group-mapping resolution keys above — same
+// posture as cacheKeyDepartmentsStale/cacheKeyPlansStale: populated on
+// every successful cache-miss refresh, read only when the primary key
+// has expired and the live GroupMappingClient call also fails.
+func cacheKeyGRMStale(tenantID uuid.UUID) string {
+	return fmt.Sprintf("om:grm:stale:%s", tenantID)
+}
+
+func cacheKeyGDMStale(tenantID uuid.UUID) string {
+	return fmt.Sprintf("om:gdm:stale:%s", tenantID)
+}
+
+func cacheKeyGTRMStale(tenantID uuid.UUID) string {
+	return fmt.Sprintf("om:gtrm:stale:%s", tenantID)
+}
+
 func cacheKeyDeptMembers(tenantID, deptID uuid.UUID) string {
 	return fmt.Sprintf("om:dept_members:%s:%s", tenantID, deptID)
 }

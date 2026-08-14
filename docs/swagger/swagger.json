@@ -331,6 +331,29 @@
                 }
             }
         },
+        "/healthz": {
+            "get": {
+                "description": "Unauthenticated. Always 200 once the process has started; does not check downstream dependencies (see /readyz for that).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "infra"
+                ],
+                "summary": "Liveness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/internal/tenants": {
             "post": {
                 "security": [
@@ -1144,6 +1167,26 @@
                 }
             }
         },
+        "/metrics": {
+            "get": {
+                "description": "Unauthenticated. Exposition-format Prometheus metrics.",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "infra"
+                ],
+                "summary": "Prometheus metrics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/operator/tenants/{id}/feature-flags": {
             "patch": {
                 "security": [
@@ -1287,6 +1330,38 @@
                         "description": "invalid_owner_candidate",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/readyz": {
+            "get": {
+                "description": "Unauthenticated. 503 if Postgres, Valkey, or the outbox runner are not ready.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "infra"
+                ],
+                "summary": "Readiness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
                         }
                     }
                 }
@@ -1846,291 +1921,6 @@
                     },
                     "409": {
                         "description": "workflow_resolution_required (§8.8.4)",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/tenants/{id}/group-mappings/department-roles": {
-            "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "Any active tenant member may read.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "groups"
-                ],
-                "summary": "P-14 — List Keycloak-group → dept-role mappings",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptRoleMappingsResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "put": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "AUTH-2. Full replacement — anything not in the payload is deleted.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "groups"
-                ],
-                "summary": "P-15 — Full-replacement of Keycloak-group → dept-role mappings",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Desired mappings",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptRoleMappingsRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptRoleMappingsResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/tenants/{id}/group-mappings/departments": {
-            "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "Any active tenant member may read.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "groups"
-                ],
-                "summary": "P-16 — List Keycloak-group → department mappings",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptMappingsResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "put": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "AUTH-2. Full replacement — anything not in the payload is deleted.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "groups"
-                ],
-                "summary": "P-17 — Full-replacement of Keycloak-group → department mappings",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Desired mappings",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptMappingsRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupDeptMappingsResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/tenants/{id}/group-mappings/tenant-roles": {
-            "put": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "AUTH-2. GTRM-6: 'member' barred at both service and DB layer.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "groups"
-                ],
-                "summary": "P-29 — Full-replacement of Keycloak-group → tenant-role mappings (§16 A25)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Desired mappings",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupTenantRoleMappingsRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.GroupTenantRoleMappingsResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "invalid_role (member barred)",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -3076,7 +2866,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "members"
+                    "resolution"
                 ],
                 "summary": "P-26 — Resolve blocked user removal",
                 "parameters": [
@@ -3530,105 +3320,6 @@
                     "type": "array",
                     "items": {
                         "type": "string"
-                    }
-                }
-            }
-        },
-        "http.GroupDeptMappingWire": {
-            "type": "object",
-            "properties": {
-                "department_id": {
-                    "type": "string"
-                },
-                "keycloak_group_name": {
-                    "type": "string"
-                }
-            }
-        },
-        "http.GroupDeptMappingsRequest": {
-            "type": "object",
-            "properties": {
-                "mappings": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.GroupDeptMappingWire"
-                    }
-                }
-            }
-        },
-        "http.GroupDeptMappingsResponse": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.GroupDeptMappingWire"
-                    }
-                }
-            }
-        },
-        "http.GroupDeptRoleMappingWire": {
-            "type": "object",
-            "properties": {
-                "keycloak_group_name": {
-                    "type": "string"
-                },
-                "role_code": {
-                    "type": "string"
-                }
-            }
-        },
-        "http.GroupDeptRoleMappingsRequest": {
-            "type": "object",
-            "properties": {
-                "mappings": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.GroupDeptRoleMappingWire"
-                    }
-                }
-            }
-        },
-        "http.GroupDeptRoleMappingsResponse": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.GroupDeptRoleMappingWire"
-                    }
-                }
-            }
-        },
-        "http.GroupTenantRoleMappingWire": {
-            "type": "object",
-            "properties": {
-                "keycloak_group_name": {
-                    "type": "string"
-                },
-                "role_code": {
-                    "type": "string"
-                }
-            }
-        },
-        "http.GroupTenantRoleMappingsRequest": {
-            "type": "object",
-            "properties": {
-                "mappings": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.GroupTenantRoleMappingWire"
-                    }
-                }
-            }
-        },
-        "http.GroupTenantRoleMappingsResponse": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.GroupTenantRoleMappingWire"
                     }
                 }
             }
@@ -4422,10 +4113,6 @@
         {
             "name": "roles",
             "description": "Dept-role labels (P-12, P-13)"
-        },
-        {
-            "name": "groups",
-            "description": "SAML group mappings (P-14..P-17, P-29)"
         },
         {
             "name": "delegations",

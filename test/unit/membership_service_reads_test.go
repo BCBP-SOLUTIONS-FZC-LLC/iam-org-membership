@@ -111,8 +111,8 @@ func (f *fakeDeptMemListByUser) ListByUser(ctx context.Context, tenantID, userID
 func (f *fakeDeptMemListByUser) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
-func (f *fakeDeptMemListByUser) Assign(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, domain.DeptRole, uuid.UUID) (*domain.DeptMembership, error) {
-	return nil, nil
+func (f *fakeDeptMemListByUser) Assign(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, domain.DeptRole, uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
+	return nil, nil, nil
 }
 func (f *fakeDeptMemListByUser) Remove(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*domain.DeptMembership, error) {
 	return nil, nil

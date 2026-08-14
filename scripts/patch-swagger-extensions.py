@@ -34,7 +34,6 @@ TAGS = [
     {"name": "departments", "description": "Department activation (P-3, P-9, P-10, P-11, P-24, P-25)"},
     {"name": "members",     "description": "Membership management (P-4..P-8, P-27, P-28)"},
     {"name": "roles",       "description": "Dept-role labels (P-12, P-13)"},
-    {"name": "groups",      "description": "SAML group mappings (P-14..P-17, P-29)"},
     {"name": "delegations", "description": "OOO delegations (P-18, P-19, P-20)"},
     {"name": "acl",         "description": "Tender ACL overlays (P-21, P-22, P-23)"},
     {"name": "invitations", "description": "Two-step invite→accept (P-6, P-30, P-31)"},

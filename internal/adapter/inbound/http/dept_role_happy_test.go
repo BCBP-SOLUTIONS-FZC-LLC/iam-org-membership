@@ -119,11 +119,12 @@ func (f *drhDeptMemRepo) ListByDepartment(ctx context.Context, tid, did uuid.UUI
 	}
 	return nil, nil
 }
-func (f *drhDeptMemRepo) Assign(ctx context.Context, tid, uid, did, mid uuid.UUID, l domain.DeptRole, gb uuid.UUID) (*domain.DeptMembership, error) {
+func (f *drhDeptMemRepo) Assign(ctx context.Context, tid, uid, did, mid uuid.UUID, l domain.DeptRole, gb uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
 	if f.assignFn != nil {
-		return f.assignFn(ctx, tid, uid, did, mid, l, gb)
+		out, err := f.assignFn(ctx, tid, uid, did, mid, l, gb)
+		return out, nil, err
 	}
-	return &domain.DeptMembership{TenantID: tid, UserID: uid, DepartmentID: did, RoleLevel: l, RecordVersion: 1}, nil
+	return &domain.DeptMembership{TenantID: tid, UserID: uid, DepartmentID: did, RoleLevel: l, RecordVersion: 1}, nil, nil
 }
 func (f *drhDeptMemRepo) Remove(ctx context.Context, tid, uid, did uuid.UUID) (*domain.DeptMembership, error) {
 	if f.removeFn != nil {

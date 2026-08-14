@@ -53,9 +53,18 @@ COMMIT → DEL om:memberships:{tenant}:{user}, om:dept_members:{tenant}:{dept}
 ## 8.5 SAML Group Assertion → JIT
 
 Event Consumer → `POST /internal/tenants/:id/dept-memberships` (I-10) with `{user_id, groups[]}`.
+
+Resolution (ADR-0007 Wave 2 — no longer a local join; `group_dept_mappings`/
+`group_dept_role_mappings`/`group_tenant_role_mappings` now live in Group
+Mapping Service):
 ```
-SELECT group_dept_mappings, group_dept_role_mappings, group_tenant_role_mappings
-  WHERE keycloak_group_name = ANY($groups) AND tenant_id=$1
+MGET om:grm:{tenant}, om:gdm:{tenant}, om:gtrm:{tenant}
+  all 3 hit → use cached resolution
+  any miss → GroupMappingClient.ResolveGroups(tenant, groups[]) [GM-I1, mesh-only]
+    success → SET om:grm/gdm/gtrm TTL=600s + om:*:stale TTL=24h, use resolution
+    failure → MGET om:grm:stale/gdm:stale/gtrm:stale
+      all 3 hit → use stale resolution (tagged distinctly for observability)
+      miss → fail OPEN: empty resolution, I-10 still returns 200 (never fail the SAML login)
 RunInTx:
   For each resolved (dept, role_level) → UPSERT dept_memberships (same rule as §8.4)
   For each resolved role_code → INSERT tenant_roles ON CONFLICT DO NOTHING (GTRM-4, additive-only)

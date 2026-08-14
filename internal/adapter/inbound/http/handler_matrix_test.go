@@ -393,57 +393,6 @@ func TestACLRevoke_InvalidUserID(t *testing.T) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// P-16 / P-17 · GroupMappingHandler (dept-role, dept, tenant-role)
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P9-P16-001
-// Feature:           P-16 · Cross-tenant list dept-role mappings → 403
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestListDeptRoleMappings_CrossTenant(t *testing.T) {
-	h := &GroupMappingHandler{}
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", uuid.New().String())
-	h.ListDeptRole(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// Test Case ID:      P9-P17-001
-// Feature:           P-17 · Malformed body → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestPutDeptRoleMappings_MalformedBody(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{`, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String())
-	h.PutDeptRole(c)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-// Test Case ID:      P9-P17-002
-// Feature:           P-17 · PutDept malformed body → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestPutDeptMappings_MalformedBody(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{`, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String())
-	h.PutDept(c)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-// Test Case ID:      P9-P17-003
-// Feature:           P-17 · PutTenantRole malformed body → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestPutTenantRoleMappings_MalformedBody(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPut, "/", `{`, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String())
-	h.PutTenantRole(c)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-// ═════════════════════════════════════════════════════════════════════════
 // O-4 · OperatorHandler.SetFeatureFlags
 // ═════════════════════════════════════════════════════════════════════════
 

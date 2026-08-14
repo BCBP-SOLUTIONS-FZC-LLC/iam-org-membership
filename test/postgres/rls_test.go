@@ -151,11 +151,12 @@ func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
 	_, rawPool := setupTestDB(t)
 	ctx := context.Background()
 
-	// The 12 tenant-scoped tables per LLD §4.3.
+	// The 9 tenant-scoped tables remaining per LLD §4.3 — group_dept_role_mappings/
+	// group_tenant_role_mappings/group_dept_mappings were dropped (ADR-0007
+	// Wave 2, moved to Group Mapping Service).
 	expected := []string{
 		"tenants", "tenant_departments", "tenant_memberships", "tenant_roles",
 		"dept_memberships", "dept_role_labels",
-		"group_dept_role_mappings", "group_tenant_role_mappings", "group_dept_mappings",
 		"delegations", "tender_acl_entries", "pending_invitations",
 	}
 	rows, err := rawPool.Query(ctx, `

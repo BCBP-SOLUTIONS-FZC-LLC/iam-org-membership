@@ -294,69 +294,6 @@ definitions:
           type: string
         type: array
     type: object
-  http.GroupDeptMappingWire:
-    properties:
-      department_id:
-        type: string
-      keycloak_group_name:
-        type: string
-    type: object
-  http.GroupDeptMappingsRequest:
-    properties:
-      mappings:
-        items:
-          $ref: '#/definitions/http.GroupDeptMappingWire'
-        type: array
-    type: object
-  http.GroupDeptMappingsResponse:
-    properties:
-      items:
-        items:
-          $ref: '#/definitions/http.GroupDeptMappingWire'
-        type: array
-    type: object
-  http.GroupDeptRoleMappingWire:
-    properties:
-      keycloak_group_name:
-        type: string
-      role_code:
-        type: string
-    type: object
-  http.GroupDeptRoleMappingsRequest:
-    properties:
-      mappings:
-        items:
-          $ref: '#/definitions/http.GroupDeptRoleMappingWire'
-        type: array
-    type: object
-  http.GroupDeptRoleMappingsResponse:
-    properties:
-      items:
-        items:
-          $ref: '#/definitions/http.GroupDeptRoleMappingWire'
-        type: array
-    type: object
-  http.GroupTenantRoleMappingWire:
-    properties:
-      keycloak_group_name:
-        type: string
-      role_code:
-        type: string
-    type: object
-  http.GroupTenantRoleMappingsRequest:
-    properties:
-      mappings:
-        items:
-          $ref: '#/definitions/http.GroupTenantRoleMappingWire'
-        type: array
-    type: object
-  http.GroupTenantRoleMappingsResponse:
-    properties:
-      items:
-        items:
-          $ref: '#/definitions/http.GroupTenantRoleMappingWire'
-        type: array
-    type: object
   http.InternalAddMemberRequest:
     properties:
       email:
@@ -1104,6 +1041,22 @@ paths:
       summary: P-33 — Reassign delegation to a new delegate
       tags:
       - delegations
+  /healthz:
+    get:
+      description: Unauthenticated. Always 200 once the process has started; does
+        not check downstream dependencies (see /readyz for that).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Liveness probe
+      tags:
+      - infra
   /internal/tenants:
     post:
       consumes:
@@ -1632,6 +1585,19 @@ paths:
       summary: 'I-8 — HOT PATH: full membership projection (AuthZ Enrichment)'
       tags:
       - internal
+  /metrics:
+    get:
+      description: Unauthenticated. Exposition-format Prometheus metrics.
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Prometheus metrics
+      tags:
+      - infra
   /operator/tenants/{id}/feature-flags:
     patch:
       consumes:
@@ -1727,6 +1693,28 @@ paths:
       summary: O-7 — Recover ownerless tenant (grants tenant_owner, clears ownerless_since)
       tags:
       - operator
+  /readyz:
+    get:
+      description: Unauthenticated. 503 if Postgres, Valkey, or the outbox runner
+        are not ready.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Readiness probe
+      tags:
+      - infra
   /tenants/{id}:
     get:
       description: 'AUTH-1: any active member of the target tenant.'
@@ -2089,181 +2077,6 @@ paths:
       summary: P-10 — Assign user to department at level
       tags:
       - departments
-  /tenants/{id}/group-mappings/department-roles:
-    get:
-      description: Any active tenant member may read.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-14 — List Keycloak-group → dept-role mappings
-      tags:
-      - groups
-    put:
-      consumes:
-      - application/json
-      description: AUTH-2. Full replacement — anything not in the payload is deleted.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Desired mappings
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/http.GroupDeptRoleMappingsRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.GroupDeptRoleMappingsResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-15 — Full-replacement of Keycloak-group → dept-role mappings
-      tags:
-      - groups
-  /tenants/{id}/group-mappings/departments:
-    get:
-      description: Any active tenant member may read.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.GroupDeptMappingsResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-16 — List Keycloak-group → department mappings
-      tags:
-      - groups
-    put:
-      consumes:
-      - application/json
-      description: AUTH-2. Full replacement — anything not in the payload is deleted.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Desired mappings
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/http.GroupDeptMappingsRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.GroupDeptMappingsResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-17 — Full-replacement of Keycloak-group → department mappings
-      tags:
-      - groups
-  /tenants/{id}/group-mappings/tenant-roles:
-    put:
-      consumes:
-      - application/json
-      description: 'AUTH-2. GTRM-6: ''member'' barred at both service and DB layer.'
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Desired mappings
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/http.GroupTenantRoleMappingsRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.GroupTenantRoleMappingsResponse'
-        "400":
-          description: invalid_role (member barred)
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-29 — Full-replacement of Keycloak-group → tenant-role mappings (§16
-        A25)
-      tags:
-      - groups
   /tenants/{id}/invitations:
     get:
       description: AUTH-2. Returns pending_invitations rows for the tenant (invite→accept
@@ -2900,7 +2713,7 @@ paths:
       - TenantRoles: []
       summary: P-26 — Resolve blocked user removal
       tags:
-      - members
+      - resolution
 tags:
 - description: In-mesh service-to-service (I-1..I-13)
   name: internal
@@ -2914,8 +2727,6 @@ tags:
   name: members
 - description: Dept-role labels (P-12, P-13)
   name: roles
-- description: SAML group mappings (P-14..P-17, P-29)
-  name: groups
 - description: OOO delegations (P-18, P-19, P-20)
   name: delegations
 - description: Tender ACL overlays (P-21, P-22, P-23)

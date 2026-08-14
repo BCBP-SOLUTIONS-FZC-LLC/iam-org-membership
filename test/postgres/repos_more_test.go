@@ -201,7 +201,15 @@ func TestP8Deleg004_ListExpiringBefore(t *testing.T) {
 		`UPDATE delegations SET ends_at = now() - interval '1 hour' WHERE id = $1`, created.ID)
 	require.NoError(t, err)
 
-	expiring, err := repo.ListExpiringBefore(ctx, time.Now().UTC(), 100)
+	// ListExpiringBefore's WHERE clause carries no tenant filter (by design,
+	// it's meant to be a cross-tenant reconciler query) — but org_membership_app
+	// is RLS-scoped, so it must be called under this test's OWN tenant GUC
+	// (tctx), not a bare ctx. Without a GUCSet in ctx, pgcommon's PrepareConn
+	// hook leaves app.tenant_id at whatever a previous, unrelated checkout of
+	// the same pooled connection last set it to — nondeterministic under
+	// concurrent test load (this made the test genuinely flaky, not just
+	// timing-sensitive).
+	expiring, err := repo.ListExpiringBefore(tctx, time.Now().UTC(), 100)
 	require.NoError(t, err)
 	require.NotEmpty(t, expiring)
 	found := false
@@ -212,160 +220,6 @@ func TestP8Deleg004_ListExpiringBefore(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "backdated row must appear in ListExpiringBefore")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// GroupMappingRepository — full-replace semantics on all 3 tables
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P8-GMAP-001
-// Module:            iam-org-membership · Persistence
-// Feature:           group_dept_role_mappings · Replace happy
-// API:               PUT /api/v1/tenants/{id}/group-mappings/department-roles
-// Scenario:          Full-replacement of dept-role mappings
-// Preconditions:     Empty tenant
-// Test Steps:
-//  1. Replace with 2 mappings
-//  2. Replace with 1 mapping
-//  3. List
-//
-// Expected Result:
-//   - Second replace narrows to 1 row (old mappings removed)
-//
-// Priority:          P1
-// Severity:          Major
-// Automation Status: Automated
-func TestP8GMap001_ReplaceDeptRoleMappings(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
-	ctx := context.Background()
-	tenantID := seedTenant(t, ctx, rawPool, "gmap-001")
-	tctx := withTenant(ctx, tenantID)
-
-	repo := pgadapter.NewGroupMappingRepository(appPool)
-	_, err := repo.ReplaceDeptRoleMappings(tctx, tenantID, []domain.GroupDeptRoleMapping{
-		{TenantID: tenantID, KeycloakGroupName: "gA", RoleCode: domain.DeptReviewer},
-		{TenantID: tenantID, KeycloakGroupName: "gB", RoleCode: domain.DeptApprover},
-	})
-	require.NoError(t, err)
-
-	_, err = repo.ReplaceDeptRoleMappings(tctx, tenantID, []domain.GroupDeptRoleMapping{
-		{TenantID: tenantID, KeycloakGroupName: "gA", RoleCode: domain.DeptApprover},
-	})
-	require.NoError(t, err)
-
-	list, err := repo.ListDeptRoleMappings(tctx, tenantID)
-	require.NoError(t, err)
-	assert.Len(t, list, 1)
-	assert.Equal(t, "gA", list[0].KeycloakGroupName)
-	assert.Equal(t, domain.DeptApprover, list[0].RoleCode)
-}
-
-// Test Case ID:      P8-GMAP-002
-// Module:            iam-org-membership · Persistence
-// Feature:           group_tenant_role_mappings · Replace happy
-// API:               PUT /api/v1/tenants/{id}/group-mappings/tenant-roles
-// Scenario:          Full-replacement, elevated codes only
-// Preconditions:     Empty tenant
-// Test Steps:
-//  1. Replace with tender_admin + tenant_admin mapping
-//  2. List
-//
-// Expected Result:
-//   - Both mappings present
-//
-// Priority:          P1
-// Severity:          Major
-// Automation Status: Automated
-func TestP8GMap002_ReplaceTenantRoleMappings(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
-	ctx := context.Background()
-	tenantID := seedTenant(t, ctx, rawPool, "gmap-002")
-	tctx := withTenant(ctx, tenantID)
-
-	repo := pgadapter.NewGroupMappingRepository(appPool)
-	_, err := repo.ReplaceTenantRoleMappings(tctx, tenantID, []domain.GroupTenantRoleMapping{
-		{TenantID: tenantID, KeycloakGroupName: "leads", RoleCode: domain.RoleTenderAdmin},
-		{TenantID: tenantID, KeycloakGroupName: "admins", RoleCode: domain.RoleTenantAdmin},
-	})
-	require.NoError(t, err)
-
-	list, err := repo.ListTenantRoleMappings(tctx, tenantID)
-	require.NoError(t, err)
-	assert.Len(t, list, 2)
-}
-
-// Test Case ID:      P8-GMAP-003
-// Module:            iam-org-membership · Persistence
-// Feature:           group_dept_mappings · Replace happy
-// API:               PUT /api/v1/tenants/{id}/group-mappings/departments
-// Scenario:          Full-replacement with catalog dept id
-// Preconditions:     Dept catalog row exists
-// Test Steps:
-//  1. Insert catalog dept
-//  2. Replace with (group, dept) mapping
-//  3. List
-//
-// Expected Result:
-//   - Mapping present, department_id matches
-//
-// Priority:          P1
-// Severity:          Major
-// Automation Status: Automated
-func TestP8GMap003_ReplaceDeptMappings(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
-	ctx := context.Background()
-	tenantID := seedTenant(t, ctx, rawPool, "gmap-003")
-	deptID := seedNonSystemDept(t, ctx, nil, "GMAP_DEPT_003", "Dept")
-	tctx := withTenant(ctx, tenantID)
-
-	repo := pgadapter.NewGroupMappingRepository(appPool)
-	_, err := repo.ReplaceDeptMappings(tctx, tenantID, []domain.GroupDeptMapping{
-		{TenantID: tenantID, KeycloakGroupName: "eng", DepartmentID: deptID},
-	})
-	require.NoError(t, err)
-
-	list, err := repo.ListDeptMappings(tctx, tenantID)
-	require.NoError(t, err)
-	require.Len(t, list, 1)
-	assert.Equal(t, deptID, list[0].DepartmentID)
-}
-
-// Test Case ID:      P8-GMAP-004
-// Module:            iam-org-membership · Persistence
-// Feature:           Empty-slice replace clears all mappings
-// API:               Same as above
-// Scenario:          Boundary — Replace with empty slice
-// Preconditions:     3 existing dept-role mappings
-// Test Steps:
-//  1. Seed 3 mappings
-//  2. Replace with []
-//  3. List
-//
-// Expected Result:
-//   - List returns empty slice
-//
-// Priority:          P2
-// Severity:          Major
-// Automation Status: Automated
-func TestP8GMap004_ReplaceWithEmptyClearsAll(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
-	ctx := context.Background()
-	tenantID := seedTenant(t, ctx, rawPool, "gmap-004")
-	tctx := withTenant(ctx, tenantID)
-
-	repo := pgadapter.NewGroupMappingRepository(appPool)
-	_, err := repo.ReplaceDeptRoleMappings(tctx, tenantID, []domain.GroupDeptRoleMapping{
-		{TenantID: tenantID, KeycloakGroupName: "a", RoleCode: domain.DeptReviewer},
-		{TenantID: tenantID, KeycloakGroupName: "b", RoleCode: domain.DeptApprover},
-	})
-	require.NoError(t, err)
-
-	_, err = repo.ReplaceDeptRoleMappings(tctx, tenantID, []domain.GroupDeptRoleMapping{})
-	require.NoError(t, err)
-
-	list, err := repo.ListDeptRoleMappings(tctx, tenantID)
-	require.NoError(t, err)
-	assert.Empty(t, list, "empty desired must clear all mappings")
 }
 
 // ═════════════════════════════════════════════════════════════════════════

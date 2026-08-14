@@ -29,8 +29,8 @@ func (f *fakeDeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]d
 func (f *fakeDeptMemRepo) ListByDepartment(ctx context.Context, tenantID, departmentID uuid.UUID) ([]domain.DeptMembership, error) {
 	return f.listByDeptFn(ctx, tenantID, departmentID)
 }
-func (f *fakeDeptMemRepo) Assign(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, domain.DeptRole, uuid.UUID) (*domain.DeptMembership, error) {
-	return nil, errors.New("not used")
+func (f *fakeDeptMemRepo) Assign(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, domain.DeptRole, uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
+	return nil, nil, errors.New("not used")
 }
 func (f *fakeDeptMemRepo) Remove(ctx context.Context, tenantID, userID, departmentID uuid.UUID) (*domain.DeptMembership, error) {
 	return f.removeFn(ctx, tenantID, userID, departmentID)
@@ -439,8 +439,8 @@ func (r *fullDeptMemRepo) ListByUser(_ context.Context, _, _ uuid.UUID) ([]domai
 	}
 	return nil, nil
 }
-func (r *fullDeptMemRepo) Assign(_ context.Context, tid, uid, did, memID uuid.UUID, level domain.DeptRole, actorID uuid.UUID) (*domain.DeptMembership, error) {
-	return &domain.DeptMembership{TenantID: tid, UserID: uid, DepartmentID: did, RoleLevel: level, RecordVersion: 1}, nil
+func (r *fullDeptMemRepo) Assign(_ context.Context, tid, uid, did, memID uuid.UUID, level domain.DeptRole, actorID uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
+	return &domain.DeptMembership{TenantID: tid, UserID: uid, DepartmentID: did, RoleLevel: level, RecordVersion: 1}, r.existing, nil
 }
 func (r *fullDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil

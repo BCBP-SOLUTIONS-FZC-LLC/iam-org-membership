@@ -78,31 +78,3 @@ func TestMembershipPatch_InvalidStatus(t *testing.T) {
 	h.Patch(c)
 	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
 }
-
-// ── GroupMappingHandler.ListDept (P-16) — early-return matrix ─────────
-
-func TestGroupMappingListDept_InvalidTenantID(t *testing.T) {
-	h := &GroupMappingHandler{}
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", "not-a-uuid")
-	h.ListDept(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-func TestGroupMappingListDept_MissingIdentity(t *testing.T) {
-	h := &GroupMappingHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodGet, "/", ``, nil)
-	setParams(c, "id", tenant.String())
-	h.ListDept(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
-}
-
-func TestGroupMappingListDept_CrossTenant(t *testing.T) {
-	tenantA := uuid.New()
-	h := &GroupMappingHandler{}
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", tenantA.String())
-	h.ListDept(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
