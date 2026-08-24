@@ -18,8 +18,10 @@ type Codec interface {
 }
 
 // NoopCodec returns payloads unchanged. Used in dev/test environments where
-// no Glue registry is configured. When GLUE_REGISTRY_NAME is unset the
-// composition root wires this codec.
+// no Glue registry is configured. The composition root wires this codec
+// for the outbox-enqueue-time validation stage (always — see
+// ValidatingCodec) and, independently, per-topic at SNS-publish time
+// whenever that topic's GLUE_REGISTRY_*_NAME env var is unset.
 type NoopCodec struct{}
 
 // Encode passes payload through untouched. Schema version ID is empty so

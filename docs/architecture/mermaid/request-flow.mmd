@@ -25,13 +25,13 @@ sequenceDiagram
 
     alt cache hit (SLO-1 hit path, p99 15 ms)
         Cache -->> H: JSON I-8 response bytes
-        Note over H: decode → inject derived member role<br/>(resp.Roles = union(["member"], resp.Roles) — TR-7/§16 A29)<br/>iam_membership_lookup_latency_seconds{result="hit"} observed
+        Note over H: decode → inject derived member role<br/>(resp.Roles = union(["member"], resp.Roles) — TR-7/§16 A29)
     else cache miss (SLO-1 miss path, p99 30 ms)
         Cache -->> H: nil
 
         H ->>+ SVC: GetMemberships(ctx, tenantID, userID)
-        SVC ->>+ DB: Single joined SELECT over<br/>tenant_memberships + tenants + tenant_roles<br/>+ dept_memberships + delegations<br/>WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.deleted_at IS NULL
-        Note over DB: RLS policy on app.tenant_id — fails closed (0 rows) on missing GUC<br/>array_agg(...) FILTER (...) + COALESCE(...,'{}') so departments/active_delegations<br/>always []-typed, never null (I8-4)
+        SVC ->>+ DB: Four-table joined SELECT over<br/>tenant_memberships + tenants + tenant_roles + dept_memberships<br/>WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.deleted_at IS NULL<br/>(NO delegations join — dropped under ADR-0008 Option C, one fewer table than before)
+        Note over DB: RLS policy on app.tenant_id — fails closed (0 rows) on missing GUC<br/>array_agg(...) FILTER (...) + COALESCE(...,'{}') so departments[]<br/>always []-typed, never null (I8-4). No active_delegations field exists any more.
         DB -->>- SVC: aggregated row (or empty → 404 I8-3)
 
         SVC -->>- H: *domain.MembershipView
@@ -41,8 +41,8 @@ sequenceDiagram
     end
     deactivate Cache
 
-    H -->>- AUTH: 200 MembershipResponse{tenant, roles[], departments[], active_delegations[]}
+    H -->>- AUTH: 200 MembershipResponse{status, plan, default_locale, roles[], departments[]}
     AUTH -->>- OBS: return
     OBS -->>- GW: return
-    Note over OBS: http_request log (Info/Warn/Error by class)<br/>OTel span ended · iam_membership_lookup_latency_seconds observed
+    Note over OBS: http_request log (Info/Warn/Error by class) · OTel span ended
     GW -->>- AuthZ: 200 + X-Trace-ID + X-Request-ID

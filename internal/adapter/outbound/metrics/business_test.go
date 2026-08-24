@@ -44,7 +44,6 @@ func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	assert.NotNil(t, SeatLimitReached, "SeatLimitReached must be initialised")
 	assert.NotNil(t, InviteThrottled, "InviteThrottled must be initialised")
 	assert.NotNil(t, RealmSyncFailed, "RealmSyncFailed must be initialised")
-	assert.NotNil(t, DelegationExpiryDeferred, "DelegationExpiryDeferred must be initialised")
 	assert.NotNil(t, DelegateRemovalBlocked, "DelegateRemovalBlocked must be initialised")
 	assert.NotNil(t, DelegateReassignment, "DelegateReassignment must be initialised")
 	assert.NotNil(t, ProcessedEventsDuplicates, "ProcessedEventsDuplicates must be initialised")
@@ -75,7 +74,6 @@ func TestMetricNamesStable(t *testing.T) {
 	SeatLimitReached.WithLabelValues("stability-check").Inc()
 	InviteThrottled.WithLabelValues("stability-check").Inc()
 	RealmSyncFailed.WithLabelValues("stability-check").Inc()
-	DelegationExpiryDeferred.WithLabelValues("stability-check").Inc()
 	DelegateRemovalBlocked.WithLabelValues("stability-check").Inc()
 	DelegateReassignment.WithLabelValues("stability-check").Inc()
 	ProcessedEventsDuplicates.WithLabelValues("stability-check").Inc()
@@ -93,7 +91,6 @@ func TestMetricNamesStable(t *testing.T) {
 		"iam_seat_limit_reached_total",
 		"iam_invite_throttled_total",
 		"iam_realm_sync_failed_total",
-		"iam_delegation_expiry_deferred_total",
 		"iam_delegate_removal_blocked_total",
 		"iam_delegate_reassignment_total",
 		"iam_processed_events_duplicates_total",
@@ -206,7 +203,6 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 		"iam_seat_overage_started_total":            "SEAT-5",
 		"iam_seat_limit_reached_total":              "SEAT-1",
 		"iam_tenant_ownerless_escalated_total":      "TM-12",
-		"iam_delegation_expiry_deferred_total":      "DEL-6",
 		"iam_processed_events_duplicates_total":     "IDEMP-4",
 		"iam_realm_sync_pending":                    "T-15",
 	}

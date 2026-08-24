@@ -1,29 +1,35 @@
 graph LR
     main(["cmd/server/main.go"])
-    reconciler(["cmd/reconciler/main.go\n--job=<name> dispatcher (8 CronJobs)"])
+    reconciler(["cmd/reconciler/main.go\n--job=<name> dispatcher (7 CronJobs)"])
 
     http_h(["adapter/inbound/http"])
     consumer(["adapter/inbound/consumer"])
 
     postgres(["adapter/outbound/postgres"])
     valkey(["adapter/outbound/valkey"])
-    eventbus(["adapter/outbound/eventbus\n(RoutingPublisher — 2 topics)"])
-    userprofile(["adapter/outbound/userprofile"])
+    eventbus(["adapter/outbound/eventbus\n(RoutingPublisher — 2 topics, 2 GlueCodecs)"])
     workflow(["adapter/outbound/workflow"])
     realmprovisioner(["adapter/outbound/realmprovisioner"])
+    catalogadmin(["adapter/outbound/catalogadmin"])
+    groupmappingclient(["adapter/outbound/groupmappingclient"])
+    delegationcheck(["adapter/outbound/delegationcheck"])
     metrics(["adapter/outbound/metrics\n(observability)"])
 
     tenant_svc(["core/service — TenantService"])
     dept_svc(["core/service — DepartmentService"])
+    deptmem_svc(["core/service — DeptMembershipService\n(§8.8.4 dept-scope gating)"])
     mem_svc(["core/service — MembershipService\n(§8.8 RemoveUser, §8.10 Invite/Accept, SEAT-1)"])
-    role_svc(["core/service — RoleService"])
-    gm_svc(["core/service — GroupMappingService"])
-    del_svc(["core/service — DelegationService\n(§8.6/§8.7 UP coordination)"])
-    acl_svc(["core/service — ACLService"])
+    rolelabel_svc(["core/service — RoleLabelService"])
+    invitation_svc(["core/service — InvitationService"])
+    provisioning_svc(["core/service — ProvisioningService\n(§8.1 trial signup)"])
+    operator_svc(["core/service — OperatorService (O-4/O-7)"])
+    authz_svc(["core/service — AuthZService (I-8)"])
+    catalog_svc(["core/service — CatalogService\n(client-side read-through, not table owner)"])
+    gm_svc(["core/service — GroupMappingService\n(client-side resolve, not table owner)"])
 
     port(["core/port"])
     domain(["core/domain"])
-    eventschema(["adapter/outbound/eventbus/schemas\n(embedded JSON Schema)"])
+    eventschema(["adapter/outbound/eventbus/schemas\n(embedded JSON Schema, CLOSED — additionalProperties:false)"])
     requestctx(["pkg/requestctx"])
 
     main        --> http_h
@@ -31,32 +37,39 @@ graph LR
     main        --> postgres
     main        --> valkey
     main        --> eventbus
-    main        --> userprofile
     main        --> workflow
     main        --> realmprovisioner
+    main        --> catalogadmin
+    main        --> groupmappingclient
+    main        --> delegationcheck
     main        --> metrics
     main        --> tenant_svc
     main        --> dept_svc
+    main        --> deptmem_svc
     main        --> mem_svc
-    main        --> role_svc
+    main        --> rolelabel_svc
+    main        --> invitation_svc
+    main        --> provisioning_svc
+    main        --> operator_svc
+    main        --> authz_svc
+    main        --> catalog_svc
     main        --> gm_svc
-    main        --> del_svc
-    main        --> acl_svc
 
     http_h      --> tenant_svc
     http_h      --> dept_svc
+    http_h      --> deptmem_svc
     http_h      --> mem_svc
-    http_h      --> role_svc
-    http_h      --> gm_svc
-    http_h      --> del_svc
-    http_h      --> acl_svc
+    http_h      --> rolelabel_svc
+    http_h      --> invitation_svc
+    http_h      --> operator_svc
+    http_h      --> authz_svc
     http_h      --> port
     http_h      --> domain
     http_h      --> requestctx
     http_h      --> metrics
 
-    consumer    --> tenant_svc
-    consumer    --> mem_svc
+    consumer    --> provisioning_svc
+    consumer    --> port
 
     reconciler  --> postgres
     reconciler  --> eventbus
@@ -68,26 +81,35 @@ graph LR
     tenant_svc  --> requestctx
     dept_svc    --> port
     dept_svc    --> domain
+    deptmem_svc --> port
+    deptmem_svc --> domain
     mem_svc     --> port
     mem_svc     --> domain
     mem_svc     --> requestctx
-    role_svc    --> port
-    role_svc    --> domain
+    rolelabel_svc --> port
+    rolelabel_svc --> domain
+    invitation_svc --> port
+    invitation_svc --> domain
+    provisioning_svc --> port
+    provisioning_svc --> domain
+    operator_svc --> port
+    operator_svc --> domain
+    authz_svc   --> port
+    authz_svc   --> domain
+    catalog_svc --> port
+    catalog_svc --> domain
     gm_svc      --> port
     gm_svc      --> domain
-    del_svc     --> port
-    del_svc     --> domain
-    del_svc     --> requestctx
-    acl_svc     --> port
-    acl_svc     --> domain
 
     postgres    --> port
     postgres    --> domain
     valkey      --> port
     eventbus    --> port
     eventbus    --> eventschema
-    userprofile --> port
     workflow    --> port
     realmprovisioner --> port
+    catalogadmin --> port
+    groupmappingclient --> port
+    delegationcheck --> port
 
     port        --> domain

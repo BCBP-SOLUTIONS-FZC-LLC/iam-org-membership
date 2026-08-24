@@ -30,7 +30,7 @@ func TestPublishBatch_MembershipPublisherError_Propagates(t *testing.T) {
 	spy := &spyPublisher{failNext: true}
 	rp := NewRoutingPublisher(spy, &spyPublisher{})
 	err := rp.PublishBatch(context.Background(),
-		[]events.Envelope[json.RawMessage]{mkRouterEnv(domain.EventDelegationStarted)})
+		[]events.Envelope[json.RawMessage]{mkRouterEnv(domain.EventMembershipRevoked)})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spy: forced failure")
 }

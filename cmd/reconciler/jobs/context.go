@@ -12,23 +12,23 @@ package jobs
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Context is the dependency bag every reconciler function accepts.
 // Populated by cmd/reconciler/main.go from env + Postgres/AWS clients.
 type Context struct {
 	Pool             *pgcommon.Pool
-	SysPool          *pgxpool.Pool               // BYPASSRLS pool (§4.4)
+	SysPool          *pgcommon.Pool              // BYPASSRLS pool (§4.4) — no GUCProvider, sees across every tenant
 	OutboxPublisher  port.EventPublisher         // for jobs that emit events (SEAT-5 pair, DEL-7 delegate_removed)
 	TxRunner         port.TxRunner               // for atomic state + event emit
 	RealmProvisioner port.RealmProvisionerClient // PI-9 DeleteUser, T-15 PatchRealmConfig
-	UserProfile      port.UserProfileClient      // DEL-6 SetAvailability pointer-clear
-	Logger           *slog.Logger
+	// Logger is the shared gincommon-backed Logger, wrapped for slog-style
+	// call sites (Warn/Info(msg, "key", val, ...)) — every job file calls it
+	// exactly as it called *slog.Logger before this switch.
+	Logger port.SlogStyleLogger
 
 	BatchLimit             int
 	SeatOverageGraceDays   int // SEAT-5 grace_ends_at = overage_since + N days

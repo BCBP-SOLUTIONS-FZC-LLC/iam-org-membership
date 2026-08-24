@@ -3,9 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
@@ -27,13 +27,14 @@ import (
 //     pattern in this codebase (no prior stale-if-error cache existed).
 //
 // If both tiers are empty and the client call fails, Departments/Plans
-// return domain.ErrCatalogServiceUnavailable — callers decide whether to
+// return domain.ErrCatalogUnavailable — callers decide whether to
 // propagate that (department_service.go, provisioning_service.go do) or
 // swallow it (authz_service.go does, preserving its pre-existing
 // swallow-on-error behavior on the I-8 hot path).
 type CatalogService struct {
 	client port.CatalogAdminClient
 	cache  port.Cache
+	log    port.SlogStyleLogger // optional — see WithLogger
 }
 
 var (
@@ -43,6 +44,15 @@ var (
 
 func NewCatalogService(client port.CatalogAdminClient, cache port.Cache) *CatalogService {
 	return &CatalogService{client: client, cache: cache}
+}
+
+// WithLogger injects the shared gincommon-backed Logger so this service's
+// stale-if-error fallback warnings flow through the same sink as HTTP/
+// consumer/outbound-client logs instead of slog.Default(). Optional — the
+// zero value falls back to the top-level slog functions.
+func (s *CatalogService) WithLogger(log port.Logger) *CatalogService {
+	s.log = port.NewSlogStyleLogger(log)
+	return s
 }
 
 const (
@@ -58,11 +68,12 @@ func (s *CatalogService) Departments(ctx context.Context) ([]domain.Department, 
 	depts, err := s.client.Departments(ctx)
 	if err != nil {
 		if stale := s.getCachedDepartments(ctx, cacheKeyDepartmentsStale()); stale != nil {
-			slog.WarnContext(ctx, "catalogadmin: Departments live call failed — serving stale-if-error fallback",
+			metrics.IncXsvcError("catalog", "departments", "fallback_served")
+			s.log.WarnContext(ctx, "catalogadmin: Departments live call failed — serving stale-if-error fallback",
 				"error", err.Error())
 			return stale, nil
 		}
-		return nil, domain.NewError(domain.ErrCatalogServiceUnavailable, "catalog service unavailable and no cached department data")
+		return nil, domain.NewError(domain.ErrCatalogUnavailable, "catalog service unavailable and no cached department data")
 	}
 	out := make([]domain.Department, len(depts))
 	for i, d := range depts {
@@ -100,11 +111,12 @@ func (s *CatalogService) Plans(ctx context.Context) ([]domain.Plan, error) {
 	plans, err := s.client.Plans(ctx)
 	if err != nil {
 		if stale := s.getCachedPlans(ctx, cacheKeyPlansStale()); stale != nil {
-			slog.WarnContext(ctx, "catalogadmin: Plans live call failed — serving stale-if-error fallback",
+			metrics.IncXsvcError("catalog", "plans", "fallback_served")
+			s.log.WarnContext(ctx, "catalogadmin: Plans live call failed — serving stale-if-error fallback",
 				"error", err.Error())
 			return stale, nil
 		}
-		return nil, domain.NewError(domain.ErrCatalogServiceUnavailable, "catalog service unavailable and no cached plan data")
+		return nil, domain.NewError(domain.ErrCatalogUnavailable, "catalog service unavailable and no cached plan data")
 	}
 	out := make([]domain.Plan, len(plans))
 	for i, p := range plans {

@@ -99,8 +99,7 @@ func TestP10Router003_MembershipEventsRouteToMembership(t *testing.T) {
 		domain.EventDepartmentMembershipGranted,
 		domain.EventDepartmentMembershipRevoked,
 		domain.EventDepartmentMembershipLevelChanged,
-		domain.EventDelegationStarted,
-		domain.EventDelegationEnded,
+		domain.EventMembershipRevoked,
 		domain.EventTenderAssigneeOverridden,
 		domain.EventTenantSeatOverageStarted,
 		domain.EventTenantSeatOverageResolved,
@@ -158,11 +157,11 @@ func TestP10Router007_PublishBatchGroupsByTopic(t *testing.T) {
 		mkRouterEnv(domain.EventTenantCreated),
 		mkRouterEnv(domain.EventTenantRoleGranted),
 		mkRouterEnv(domain.EventTrialStarted),
-		mkRouterEnv(domain.EventDelegationStarted),
+		mkRouterEnv(domain.EventMembershipRevoked),
 	}
 	require.NoError(t, rp.PublishBatch(context.Background(), envs))
 	assert.Equal(t, 2, tenant.count(), "TenantCreated + TrialStarted → tenant lane")
-	assert.Equal(t, 2, membership.count(), "role + delegation → membership lane")
+	assert.Equal(t, 2, membership.count(), "role + MembershipRevoked → membership lane")
 }
 
 // Test Case ID:      P10-ROUTER-008

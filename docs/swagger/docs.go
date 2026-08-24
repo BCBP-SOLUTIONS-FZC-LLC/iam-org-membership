@@ -10,11 +10,11 @@ const docTemplate = `{
     "tags": [
         {
             "name": "internal",
-            "description": "In-mesh service-to-service (I-1..I-13)"
+            "description": "In-mesh service-to-service (I-1..I-15)"
         },
         {
             "name": "operator",
-            "description": "Platform operator (O-1..O-7)"
+            "description": "Platform operator (O-4, O-7 — O-1/O-2/O-3/O-5/O-6 retired ADR-0007 Wave 1, moved to iam-catalog-admin)"
         },
         {
             "name": "tenant",
@@ -31,14 +31,6 @@ const docTemplate = `{
         {
             "name": "roles",
             "description": "Dept-role labels (P-12, P-13)"
-        },
-        {
-            "name": "delegations",
-            "description": "OOO delegations (P-18, P-19, P-20)"
-        },
-        {
-            "name": "acl",
-            "description": "Tender ACL overlays (P-21, P-22, P-23)"
         },
         {
             "name": "invitations",
@@ -68,325 +60,9 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/delegations": {
-            "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "Returns active delegations for the caller's tenant (RLS-scoped).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "delegations"
-                ],
-                "summary": "P-18 — List active delegations",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationListResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "§8.6 availability-first — calls UP SetAvailability BEFORE inserting delegations row. On UP failure returns 422 invalid_delegate.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "delegations"
-                ],
-                "summary": "P-19 — Create OOO delegation (self-service, AUTH-4)",
-                "parameters": [
-                    {
-                        "description": "Delegation payload",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationCreateRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "invalid_delegate | delegate_unavailable | self_delegation | delegation_window_inverted | scope_id_required | delegation_start_in_past",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/delegations/{id}": {
-            "delete": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "§8.7 pointer-clear: calls UP with {delegate_id: null} first, then flips status to 'cancelled'. Self-service; admin can cancel any.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "delegations"
-                ],
-                "summary": "P-20 — Cancel delegation",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Delegation UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Optimistic-lock version",
-                        "name": "record_version",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "409": {
-                        "description": "record_version mismatch (CONC-4)",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/delegations/{id}/extend": {
-            "post": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "Pushes review_due_at forward by extend_days (1..180, §16 A71). Defaults to tenant's delegation_review_window_days when omitted. Only valid for open-ended delegations (DEL-13).",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "delegations"
-                ],
-                "summary": "P-32 — Extend delegation review window",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Delegation UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "extend_days + record_version",
-                        "name": "request",
-                        "in": "body",
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationExtendRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "409": {
-                        "description": "optimistic_lock_conflict",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "delegation_not_open_ended | extend_days_out_of_range",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/delegations/{id}/reassign": {
-            "post": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "Ends the current delegation and creates a new one with the same scope but a different delegate.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "delegations"
-                ],
-                "summary": "P-33 — Reassign delegation to a new delegate",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Delegation UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "New delegate",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationReassignRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/http.DelegationResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "invalid_delegate | delegate_unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/healthz": {
             "get": {
-                "description": "Unauthenticated. Always 200 once the process has started; does not check downstream dependencies (see /readyz for that).",
+                "description": "Always returns ok if the process can answer HTTP at all. Never inspects dependencies.",
                 "produces": [
                     "application/json"
                 ],
@@ -898,6 +574,61 @@ const docTemplate = `{
                 }
             }
         },
+        "/internal/tenants/{id}/members/{user_id}/exists": {
+            "get": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "Returns ` + "`" + `{active, tenant_membership_id}` + "`" + ` — tenant_membership_id is populated only when active is true. Never 404.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "Membership existence/active-status check (iam-tender-acl grant-time dependency)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User UUID",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.MemberExistsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/internal/tenants/{id}/mfa-freshness": {
             "get": {
                 "security": [
@@ -987,75 +718,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/http.SeatUsageResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/tenants/{id}/tenders/{tender_id}/acl/{user_id}": {
-            "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "Returns ` + "`" + `{has_access, access_level}` + "`" + ` — access_level is populated only when has_access is true.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "internal"
-                ],
-                "summary": "I-12 — Tender ACL check (active grant, TAE-3)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tender UUID",
-                        "name": "tender_id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "User UUID",
-                        "name": "user_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.InternalTenderACLCheckResponse"
                         }
                     },
                     "403": {
@@ -1220,26 +882,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/metrics": {
-            "get": {
-                "description": "Unauthenticated. Exposition-format Prometheus metrics.",
-                "produces": [
-                    "text/plain"
-                ],
-                "tags": [
-                    "infra"
-                ],
-                "summary": "Prometheus metrics",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
         "/operator/tenants/{id}/feature-flags": {
             "patch": {
                 "security": [
@@ -1390,7 +1032,7 @@ const docTemplate = `{
         },
         "/readyz": {
             "get": {
-                "description": "Unauthenticated. 503 if Postgres, Valkey, or the outbox runner are not ready.",
+                "description": "Checks Postgres, Valkey, and the outbox runner. Returns 503 if any dependency is not ready.",
                 "produces": [
                     "application/json"
                 ],
@@ -1403,18 +1045,14 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "additionalProperties": true
                         }
                     },
                     "503": {
                         "description": "Service Unavailable",
                         "schema": {
                             "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -2700,207 +2338,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/tenants/{id}/tenders/{tender_id}/acl": {
-            "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "AUTH-3 tender_admin/tenant_admin/owner. Returns all non-revoked grants (TAE-7): active AND passively expired (expires_at in past but not explicitly revoked). Expired entries are visible so admins can explicitly revoke them via P-23. Check expires_at in response to distinguish active vs expired.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "acl"
-                ],
-                "summary": "P-21 — List ACL entries for a tender (active + passively expired)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tender UUID",
-                        "name": "tender_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.TenderACLListResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "AUTH-3 tender_admin/tenant_admin/owner. Optional expires_at (future-only).",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "acl"
-                ],
-                "summary": "P-22 — Grant tender ACL (view/edit/approve)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tender UUID",
-                        "name": "tender_id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Grant payload",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.TenderACLGrantRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/http.TenderACLResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "invalid_access_level (bad enum value)",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "invalid_expires_at (past timestamp)",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/tenants/{id}/tenders/{tender_id}/acl/{user_id}": {
-            "delete": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
-                "description": "AUTH-3 tender_admin/tenant_admin/owner. Soft-deletes the ACL row.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "acl"
-                ],
-                "summary": "P-23 — Revoke tender ACL",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tenant UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Tender UUID",
-                        "name": "tender_id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "User UUID",
-                        "name": "user_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/http.TenderACLRevokeResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/tenants/{id}/users/{user_id}/removal-resolution": {
             "post": {
                 "security": [
@@ -3082,104 +2519,6 @@ const docTemplate = `{
                 "validated": {
                     "type": "boolean",
                     "example": true
-                }
-            }
-        },
-        "http.DelegationCreateRequest": {
-            "type": "object",
-            "properties": {
-                "delegate_id": {
-                    "type": "string"
-                },
-                "ends_at": {
-                    "type": "string"
-                },
-                "reason": {
-                    "description": "DEL-10: stored in delegations.reason AND sent to UP as note",
-                    "type": "string"
-                },
-                "scope": {
-                    "type": "string"
-                },
-                "scope_id": {
-                    "type": "string"
-                },
-                "starts_at": {
-                    "type": "string"
-                }
-            }
-        },
-        "http.DelegationExtendRequest": {
-            "type": "object",
-            "properties": {
-                "extend_days": {
-                    "type": "integer"
-                },
-                "record_version": {
-                    "type": "integer"
-                }
-            }
-        },
-        "http.DelegationListResponse": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.DelegationResponse"
-                    }
-                }
-            }
-        },
-        "http.DelegationReassignRequest": {
-            "type": "object",
-            "properties": {
-                "delegate_id": {
-                    "type": "string"
-                },
-                "record_version": {
-                    "type": "integer"
-                }
-            }
-        },
-        "http.DelegationResponse": {
-            "type": "object",
-            "properties": {
-                "delegate_id": {
-                    "type": "string"
-                },
-                "delegator_id": {
-                    "type": "string"
-                },
-                "ends_at": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "reason": {
-                    "type": "string"
-                },
-                "record_version": {
-                    "type": "integer"
-                },
-                "review_due_at": {
-                    "type": "string"
-                },
-                "review_window_days": {
-                    "type": "integer"
-                },
-                "scope": {
-                    "type": "string"
-                },
-                "scope_id": {
-                    "type": "string"
-                },
-                "starts_at": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
                 }
             }
         },
@@ -3588,23 +2927,6 @@ const docTemplate = `{
                 }
             }
         },
-        "http.InternalTenderACLCheckResponse": {
-            "type": "object",
-            "properties": {
-                "access_level": {
-                    "type": "string",
-                    "enum": [
-                        "view",
-                        "edit",
-                        "approve"
-                    ]
-                },
-                "has_access": {
-                    "type": "boolean",
-                    "example": true
-                }
-            }
-        },
         "http.InvitationCreateRequest": {
             "type": "object",
             "properties": {
@@ -3671,6 +2993,19 @@ const docTemplate = `{
             "properties": {
                 "record_version": {
                     "type": "integer"
+                }
+            }
+        },
+        "http.MemberExistsResponse": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "tenant_membership_id": {
+                    "type": "string",
+                    "format": "uuid"
                 }
             }
         },
@@ -3969,14 +3304,6 @@ const docTemplate = `{
                 "default_locale": {
                     "type": "string"
                 },
-                "delegation_max_duration_days": {
-                    "description": "§16 A71, DEL-14: 1..180",
-                    "type": "integer"
-                },
-                "delegation_review_window_days": {
-                    "description": "§16 A71, DEL-14: 1..180",
-                    "type": "integer"
-                },
                 "local_accounts_enabled": {
                     "type": "boolean"
                 },
@@ -3996,12 +3323,6 @@ const docTemplate = `{
             "properties": {
                 "default_locale": {
                     "type": "string"
-                },
-                "delegation_max_duration_days": {
-                    "type": "integer"
-                },
-                "delegation_review_window_days": {
-                    "type": "integer"
                 },
                 "feature_flags": {
                     "type": "object",
@@ -4060,67 +3381,6 @@ const docTemplate = `{
                 }
             }
         },
-        "http.TenderACLGrantRequest": {
-            "type": "object",
-            "properties": {
-                "access_level": {
-                    "type": "string"
-                },
-                "expires_at": {
-                    "type": "string"
-                },
-                "reason": {
-                    "type": "string"
-                },
-                "user_id": {
-                    "type": "string"
-                }
-            }
-        },
-        "http.TenderACLListResponse": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.TenderACLResponse"
-                    }
-                }
-            }
-        },
-        "http.TenderACLResponse": {
-            "type": "object",
-            "properties": {
-                "access_level": {
-                    "type": "string"
-                },
-                "expires_at": {
-                    "type": "string"
-                },
-                "granted_by": {
-                    "type": "string"
-                },
-                "reason": {
-                    "type": "string"
-                },
-                "user_id": {
-                    "type": "string"
-                }
-            }
-        },
-        "http.TenderACLRevokeResponse": {
-            "type": "object",
-            "properties": {
-                "revoked": {
-                    "type": "boolean",
-                    "example": true
-                },
-                "user_id": {
-                    "type": "string",
-                    "format": "uuid"
-                }
-            }
-        },
         "http.ValidationError": {
             "type": "object",
             "properties": {
@@ -4171,7 +3431,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/api/v1",
 	Schemes:          []string{},
 	Title:            "IAM Org & Membership API",
-	Description:      "Organizational layer of the IAM subsystem — owns tenants, departments, memberships, tenant-level roles, delegations, invitations, ACL overlays, and group→role mappings.\n\n**Tenant isolation.** Every resource is scoped by `x-tenant-id`; cross-tenant reads are blocked by row-level security (RLS-1..RLS-6). The hot path `GET /internal/users/:id/memberships` is the enrichment source for AuthZ (SLO 15 ms cache-hit / 30 ms cache-miss).\n\n**Route prefixes.**  `/api/v1/*` — authenticated tenant users (JWT via gateway).  `/api/v1/internal/*` — in-mesh services (mTLS, `iam-system` role).  `/api/v1/operator/*` — platform operators (`platform_operator` role).\n\nEvery mutation echoes `record_version` for optimistic-locking round-trip (CONC-4).",
+	Description:      "Organizational layer of the IAM subsystem — owns tenants, departments, memberships, tenant-level roles, and invitations.\n\n**Tenant isolation.** Every resource is scoped by `x-tenant-id`; cross-tenant reads are blocked by row-level security (RLS-1..RLS-6). The hot path `GET /internal/users/:id/memberships` is the enrichment source for AuthZ (SLO 15 ms cache-hit / 30 ms cache-miss).\n\n**Route prefixes.**  `/api/v1/*` — authenticated tenant users (JWT via gateway).  `/api/v1/internal/*` — in-mesh services (mTLS, `iam-system` role).  `/api/v1/operator/*` — platform operators (`platform_operator` role).\n\nEvery mutation echoes `record_version` for optimistic-locking round-trip (CONC-4).",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 }

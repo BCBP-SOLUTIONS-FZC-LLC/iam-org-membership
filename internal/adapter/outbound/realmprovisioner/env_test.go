@@ -51,11 +51,11 @@ func TestEnvDurationMs_NegativeIntFallsBackToDefault(t *testing.T) {
 func TestNew_ReadsEnvAndConstructs(t *testing.T) {
 	t.Setenv("REALM_PROVISIONER_BASE_URL", "http://rp.local")
 	t.Setenv("REALM_PROVISIONER_TIMEOUT_MS", "500")
-	assert.NotNil(t, New())
+	assert.NotNil(t, New(nil))
 }
 
 func TestNew_UnconfiguredStillReturnsClient(t *testing.T) {
 	_ = os.Unsetenv("REALM_PROVISIONER_BASE_URL")
 	_ = os.Unsetenv("REALM_PROVISIONER_TIMEOUT_MS")
-	assert.NotNil(t, New())
+	assert.NotNil(t, New(nil))
 }

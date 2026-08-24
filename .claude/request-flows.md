@@ -74,45 +74,17 @@ COMMIT → DEL om:memberships, DEL om:dept_members per affected dept
 
 **Additive-only rule (GTRM-4):** JIT **never revokes** — a group no longer including a previously-granted role does NOT remove the grant. Revocation is explicit admin action only (P-28). Mirrors DM-1/SEAT-3/DEL-5's passive-trigger philosophy.
 
-## 8.6 OOO Delegation Create (Full Coordination)
+## 8.6 Delegation — Moved to Delegation Service
 
-```
-POST /delegations {delegate_id, scope, ends_at, ooo_note}
+The full OOO delegation lifecycle previously documented in this section and §8.7 — create with User Profile availability coordination, the 5-minute expiry sweep, the `delegation-review` CronJob's review-window nudges, and P-32/P-33 extend/reassign — no longer exists in this repo. It moved in its entirety to the standalone **Delegation Service** (`iam-delegation`, ADR-0008), along with the `delegations` table (+ its two ENUMs) and `tenants.delegation_max_duration_days`/`delegation_review_window_days`. The `port.UserProfileClient`/`userprofile` outbound adapter that this flow used is also gone — it became dead code (zero remaining call sites) once the coordination flow left, and has been deleted (LLD §16 OQ-5). See the Delegation Service's own LLD for its equivalent flow documentation.
 
-Pre-flight: delegate is active member of same tenant?
-  no → 422 invalid_delegate (DEL-1)
+**Core's only remaining delegation touchpoints** are both synchronous, read-only, and off the I-8 hot path:
+1. The delegate-impact gate on user removal (§8.8) via `port.WorkflowClient` — this talks to the **Workflow** Service, not Delegation, and is completely unaffected by the decomposition.
+2. The department-scope precision lookup on the admin dept-membership Assign/Remove path (§8.8.4) via `port.DelegationCheckClient` → `GET {DELEGATION_BASE_URL}/internal/delegations/dept-delegate`, which replaces the local `delegations` table lookup Core lost. On a Delegation Service outage this degrades to tenant-wide impact scoping (still correct, less precise) — never a hard failure.
 
-Call User Profile: PUT /internal/users/{delegator_id}/availability
-  {status:ooo, delegate_id, ooo_note, ends_at}
-  4xx  → 422 invalid_delegate (delegate became invalid mid-request — race)
-  5xx/timeout → 503 user_profile_unavailable (retryable, NO DB write)
-  200  ↓
+## 8.7 (removed — see §8.6)
 
-RunInTx: INSERT delegations + outbox.Enqueue(DelegationStarted)
-COMMIT → DEL om:memberships:{tenant}:{delegator_id}
-201 → SNS: DelegationStarted → iam.membership.events → Workflow reroutes pending tickets
-```
-
-**Ordering guarantee (CONS-2):** `DelegationStarted` never enqueued without a committed User Profile update.
-
-## 8.7 Delegation Expiry (CronJob every 5 min)
-
-```
-SELECT id, tenant_id, delegator_id FROM delegations
-  WHERE deleted_at IS NULL AND status='active' AND ends_at <= now()
-  LIMIT 50
-
-For each:
-  Call User Profile: PUT /internal/users/{delegator_id}/availability {delegate_id: null}
-                     (clear pointer only, NOT status — §16 A49/J2)
-    200  → RunInTx: UPDATE delegations SET status='ended', deleted_at=now();
-                    outbox.Enqueue(DelegationEnded); COMMIT
-                    DEL om:memberships:{tenant}:{delegator_id}
-    5xx/timeout → leave status='active' (retries next run — DEL-6);
-                  iam_delegation_expiry_deferred_total++
-```
-
-**Why pointer-only, not `available` (§16 A49/J2):** ending a delegation ≠ delegator returning. An early termination (delegate removed via §8.8, admin cancel) with delegator still in OOO window must leave them `ooo` (still away, no delegate), never flip to `available`. The `ooo → available` transition is owned **solely by User Profile** (its `ooo_until` sweep or user's explicit "I'm back"). On natural co-expiry, UP's sweep resets the whole row within ≤60 s.
+Delegation expiry and the review-window flow formerly documented here moved to the Delegation Service along with the rest of the delegation lifecycle.
 
 ## 8.8 User Removal — Delegate-Impact Resolution (resolves §16 C2)
 
@@ -166,15 +138,17 @@ DELETE /tenants/:id/members/:user_id (P-8) OR /internal/tenants/:id/members/:use
 1. `WorkflowClient.CancelByDelegate(tenant, userID)` → `iam_delegate_workflow_cancel_total++`.
 2. Re-check + cascade as above.
 
-**On cascade:** `DelegationEnded {ended_reason: 'delegate_removed'}` emitted for each delegation where this user was delegate (DEL-7 path-independent emission — delegator-side delegation ending in same tx still emits no event, documented asymmetry).
+**On cascade:** Core no longer owns a `delegations` table or a delegation-specific event. It emits a single `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2, unconditional — not gated on whether the user held any delegation rows), consumed asynchronously by the Delegation Service (which ends this user's delegation rows, including any where they were delegate) and the Tender-ACL Service (which soft-deletes their ACL overlay rows). See §8.8's cascade step and §15.2 for the full event.
 
 ### 8.8.4 Department-Level Extension (P-10 decrease / P-11)
 
-Same gate, scoped to `scope='department'` delegations for `(user, dept)`:
+Same gate, now backed by the Delegation Service's dept-delegate lookup instead of a local `delegations` table query (ADR-0008 §6.4 — Core lost that table):
+- **Pre-filter:** `port.DelegationCheckClient.DeptDelegate(tenant, user, dept)` → `GET {DELEGATION_BASE_URL}/internal/delegations/dept-delegate` returns the id of the active `scope='department'` delegation where this user is delegate for `(user, dept)`, or none. On a Delegation Service error/timeout this degrades to a nil id (`deptDelegateOrDegrade`) rather than failing the request — Assign/Remove is never blocked by this dependency.
 - **P-10 promotion or unchanged** → check is **skipped entirely** (WFI-12, mock `AssertNotCalled`).
-- **P-10 decrease or P-11** → O&M pre-filter selects matching `scope='department'` delegation rows for `(user, scope_id=dept)`. If none → proceed unchanged. If matching row(s) → `WorkflowClient.GetDelegateImpact(tenant, user, delegation_id=<row.id>)`.
+- **P-10 decrease** → if the pre-filter yields no id (none found, or degraded on outage) → proceed unchanged, `WorkflowClient.GetDelegateImpact` is not called. If it yields an id → `WorkflowClient.GetDelegateImpact(tenant, user, delegation_id=<id>)`.
+- **P-11** → always calls `WorkflowClient.GetDelegateImpact(tenant, user, delegation_id)` with whatever the pre-filter returned — a specific id, or nil (which the Workflow Service's contract treats as tenant-wide, §8.8.1 — still correct, less precise, never a hard failure).
 - `active_workflows > 0` → `409 workflow_resolution_required` (`trigger=dept_demotion`/`dept_removal`).
-- `scope='all'` delegations are **specifically excluded** from the pre-filter (WFI-10) — they still gate full removal, not dept demotion.
+- `scope='all'` delegations remain outside this dept-scoped pre-filter (WFI-10) — they still gate full removal (§8.8), not dept demotion.
 
 ### 8.8.5 Suspension Advisory (§16 C3, WFI-13, fail-open)
 
@@ -221,7 +195,7 @@ Event Consumer → POST /internal/tenants/:id/members {user_id, email} (I-3)
 
 **Seat-hold coupling (T-8/SEAT-1):** `INVITATION_EXPIRY_DAYS = 7` must equal Keycloak invite action-token lifespan (HLD §8.2.2's 7-day link) — divergence would either strand a seat past a dead link or free a seat while the link still works.
 
-**Revoke/expiry (PI-5/PI-6):** P-31 revoke → `status=revoked` AND `kc_cleanup_pending=true` **atomically**; `invitation-expiry` CronJob past `expires_at` → same. Both trigger the `invitation-kc-cleanup` reconciler (PI-9) which idempotently calls `RealmProvisioner.DeleteUser`. `invitation-cleanup` monthly hard-delete only runs where `kc_cleanup_pending=false` (never strand a KC orphan).
+**Revoke/expiry (PI-5/PI-6):** P-31 revoke → `status=revoked` AND `kc_cleanup_pending=true` **atomically**; `invitation-expiry` CronJob past `expires_at` → same. Both trigger the `invitation-kc-cleanup` reconciler (PI-9) which idempotently calls `RealmProvisioner.DeleteUser`. There is no monthly hard-delete job for terminal `pending_invitations` rows in this repo — no `invitation-cleanup` CronJob exists (see §15.7); terminal rows persist until tenant offboarding cascade or an explicit GDPR erasure-by-email (§15.8).
 
 ## 9. Concurrency, Consistency, Failure
 
@@ -249,10 +223,8 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 
 | Scenario | Detection | Recovery |
 |---|---|---|
-| User Profile 5xx during delegation | client returns non-200 | 422/503, no delegation row, no outbox entry |
 | DB commit OK, Valkey DEL fails | logged | TTL self-heals (≤300 s) |
 | Outbox crashes after publish, before mark | lease expires, re-claimed | Consumer `processed_events` dedups |
-| Delegation expiry mid-batch | CronJob restarts | At-least-once expiry; `UPDATE WHERE status='active'` idempotent |
 | DELETE cascade invoked twice | `processed_events` insert-or-ignore | Second is no-op |
 | RLS GUC unset | `rls_check_tenant` slow path → violation log | 0 rows, CloudWatch alarm |
 | SNS throttle during outbox publish | platform-events retryable | Auto retry; DLQ on permanent failure |
@@ -267,7 +239,7 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 ### 9.4 Consistency (CONS-1..4)
 
 - **CONS-1** — Business write + integration event(s) committed together via transactional outbox (EVT-10). No event without state; no state without event.
-- **CONS-2** — Availability-first delegation. `delegations` updated only after UP `200` (both create §8.6 and expiry §8.7/DEL-6).
+- **CONS-2** — *(retired from Core, ADR-0008)* Availability-first delegation coordination (`delegations` updated only after User Profile's `200`) now lives entirely in the Delegation Service — Core has no `delegations` table, no `UserProfileClient`, and no write path to protect. See that service's own LLD for its consistency invariants.
 - **CONS-3** — JIT membership per-request atomic. All resolved `(dept, role)` in one `RunInTx`; no partial assignment.
 - **CONS-4** — Advisory display vs transactional hard limit. Seat cap enforced transactionally with `SELECT ... FOR UPDATE`, never from `om:seat_usage` cache.
 
@@ -284,7 +256,7 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 
 ### 15.2 User Deletion
 
-**Cross-service pattern:** Keycloak hard-deletes; User Profile scrubs its per-user PII (`display_name`, `phone`, `job_title`, `credentials`, signature, availability); O&M sets membership `status='left'` + `deleted_at`; cascade soft-deletes `tenant_roles`/`dept_memberships`/`delegations`/`tender_acl_entries`.
+**Cross-service pattern:** Keycloak hard-deletes; User Profile scrubs its per-user PII (`display_name`, `phone`, `job_title`, `credentials`, signature, availability); O&M sets membership `status='left'` + `deleted_at`; cascade soft-deletes `tenant_roles`/`dept_memberships` (the two tables Core still owns) and emits one `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2). O&M no longer owns `delegations`/`tender_acl_entries` and does not touch them directly — the Delegation Service and Tender-ACL Service each run their own async cascade off that shared `MembershipRevoked` signal, ending delegation rows and soft-deleting ACL overlays respectively in their own databases. (This used to be two separate emissions — `MembershipRevoked` plus a `TenantMembershipRemoved` aimed at Tender-ACL — now consolidated into the one shared event per the LLD.)
 
 **§16 A45 / TR-9:** removal soft-deletes ALL `tenant_roles` rows for the user (symmetric with dept_memberships); one `TenantRoleRevoked` emitted per revoked elevated grant. Suspend (P-7) leaves `tenant_roles` untouched (frozen, M-1).
 
@@ -326,21 +298,24 @@ Billing owns status transitions; O&M and RP react. Sequence `cancelled → suspe
 
 O&M wipe on `TenantOffboarded`:
 1. `UPDATE tenants SET status='offboarded', deleted_at=now(), <PII scrubbed>`.
-2. `ON DELETE CASCADE` propagates.
-3. Invalidate `om:*:{tenant_id}:*` Valkey keys (CACHE-8).
+2. `ON DELETE CASCADE` propagates to O&M's own retained tenant-scoped tables.
+3. Emit `TenantMembershipsPurged{tenant_id, actor_id}` on `iam.membership.events` so the Delegation, Tender-ACL, and Group-Mapping services — whose tables live in separate databases, out of reach of O&M's own cascade — can run their own tenant-scoped cascade-deletes.
+4. Invalidate `om:*:{tenant_id}:*` Valkey keys (CACHE-8).
 
-Idempotent via `processed_events`; not an outbox emission (O&M never re-emits `TenantOffboarded`).
+**Naming note:** `TenantMembershipsPurged` was previously named `TenantOffboarded` and routed on `iam.tenant.events` — that was wrong, since `TenantOffboarded` is Realm Provisioner's own terminal event, which O&M only *consumes*; having O&M also emit an event of the same name would violate one-producer-per-event-name. This pass renamed O&M's own fan-out signal to `TenantMembershipsPurged` on `iam.membership.events`. O&M's *consumption* of RP's real `TenantOffboarded` (step 1 above) is unchanged.
+
+Idempotent via `processed_events`. The whole wipe (steps 1–3) commits as one transactional-outbox unit; O&M never re-emits RP's `TenantOffboarded` verbatim, only its own distinctly-named `TenantMembershipsPurged` downstream signal.
 
 ### 15.7 Data Retention (Operational)
 
 | Table | Retention | Mechanism |
 |---|---|---|
-| `processed_events` | 8 d | Hourly CronJob (IDEMP-4 window; > 7-d SQS lifetime) |
+| `processed_events` | 8 d | `processed-events-prune` CronJob (IDEMP-4 window; > 7-d SQS lifetime) |
 | `rls_violation_log` | 30 d | Hourly CronJob |
-| `outbox_events` (published) | Daily prune | `outbox.Runner.PrunePublished` |
-| `delegations` (ended/cancelled) | 90 d soft, then hard | Monthly CronJob |
-| `tender_acl_entries` (deleted) | 90 d soft, then hard | Monthly CronJob |
-| `pending_invitations` (terminal) | 90 d then hard | Monthly `invitation-cleanup` (only rows with `kc_cleanup_pending=false`) |
+| `outbox_events` (published) | Daily prune | `outbox-prune` CronJob (`outbox.Runner.PrunePublished`) |
+| `pending_invitations` (terminal) | not hard-deleted by any job | No `invitation-cleanup` CronJob exists in this repo — terminal rows (`accepted`/`expired`/`revoked`) persist until tenant offboarding cascade (`ON DELETE CASCADE`) or an explicit GDPR erasure-by-email (§15.8) |
+
+**Removed from this table (ADR-0008/ADR-0007):** `delegations` and `tender_acl_entries` retention rows — Core owns neither table any more; their soft-delete-then-hard-delete retention is now the Delegation Service's and Tender-ACL Service's own concern in their respective databases.
 
 ### 15.8 PII Boundary
 
@@ -348,7 +323,7 @@ O&M stores **no PII beyond opaque UUIDs for members** — `user_id` (Keycloak su
 
 **One exception — `pending_invitations` (§16 A38):** invitee has no Keycloak/UP identity yet, so `pending_invitations` holds `email` (citext) + `full_name` until acceptance. Erasure handling:
 - **Tenant offboarding** — `fk_pi_tenant ... ON DELETE CASCADE` scrubs.
-- **Terminal rows** — hard-deleted after 90 d.
+- **Terminal rows** — no automated hard-delete CronJob exists for these in this repo (§15.7); they persist until tenant offboarding cascade or explicit person-level erasure below.
 - **Person-level GDPR erasure** for an invited-but-never-accepted person — scrub `pending_invitations` **by email** (`citext` case-insensitive). Explicit erasure-runbook step; no `user_id` exists. Any not-yet-activated Keycloak shell via `kc_cleanup_pending` (PI-9).
 
 **Only table whose GDPR treatment is keyed on email, not `user_id`.**

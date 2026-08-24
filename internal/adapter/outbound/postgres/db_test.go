@@ -8,23 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// ── envOrDB ────────────────────────────────────────────────────────────
-
-func TestEnvOrDB_ReturnsValueWhenSet(t *testing.T) {
-	t.Setenv("PG_TEST_KEY_1", "custom")
-	assert.Equal(t, "custom", envOrDB("PG_TEST_KEY_1", "default"))
-}
-
-func TestEnvOrDB_ReturnsDefaultWhenUnset(t *testing.T) {
-	_ = os.Unsetenv("PG_TEST_KEY_UNSET")
-	assert.Equal(t, "default", envOrDB("PG_TEST_KEY_UNSET", "default"))
-}
-
-func TestEnvOrDB_EmptyStringTreatedAsUnset(t *testing.T) {
-	t.Setenv("PG_TEST_KEY_2", "")
-	assert.Equal(t, "fallback", envOrDB("PG_TEST_KEY_2", "fallback"))
-}
-
 // ── DSNFromEnv ─────────────────────────────────────────────────────────
 
 func TestDSNFromEnv_UsesDatabaseURLShortcutWhenSet(t *testing.T) {
@@ -67,14 +50,31 @@ func TestDSNFromEnv_URLEscapesSlashInUser(t *testing.T) {
 		"slash in username must be url-escaped so the DSN parses correctly")
 }
 
-func TestDSNFromEnv_DefaultsWhenNothingSet(t *testing.T) {
-	// Unset every input — DSN should use the coded defaults.
+func TestDSNFromEnv_EmptyWhenUserAndDBNameUnset(t *testing.T) {
+	// pgcommon.ConfigFromEnv requires PG_USER + PG_DBNAME to build a DSN —
+	// unlike the old hand-rolled builder, there is no "org_membership"
+	// fallback database name. An empty DSN lets NewPool fail fast with a
+	// clear connection error instead of silently connecting to the wrong
+	// database.
 	_ = os.Unsetenv("DATABASE_URL")
 	_ = os.Unsetenv("PG_HOST")
 	_ = os.Unsetenv("PG_PORT")
 	_ = os.Unsetenv("PG_USER")
 	_ = os.Unsetenv("PG_PASSWORD")
 	_ = os.Unsetenv("PG_DBNAME")
+	_ = os.Unsetenv("PG_SSLMODE")
+	_ = os.Unsetenv("PG_STATEMENT_TIMEOUT")
+
+	assert.Empty(t, DSNFromEnv())
+}
+
+func TestDSNFromEnv_DefaultsHostPortSSLModeWhenUnset(t *testing.T) {
+	_ = os.Unsetenv("DATABASE_URL")
+	_ = os.Unsetenv("PG_HOST")
+	_ = os.Unsetenv("PG_PORT")
+	t.Setenv("PG_USER", "org_membership_app")
+	t.Setenv("PG_PASSWORD", "secret")
+	t.Setenv("PG_DBNAME", "org_membership")
 	_ = os.Unsetenv("PG_SSLMODE")
 	_ = os.Unsetenv("PG_STATEMENT_TIMEOUT")
 
@@ -86,6 +86,8 @@ func TestDSNFromEnv_DefaultsWhenNothingSet(t *testing.T) {
 
 func TestDSNFromEnv_AppendsStatementTimeoutWhenSet(t *testing.T) {
 	_ = os.Unsetenv("DATABASE_URL")
+	t.Setenv("PG_USER", "org_membership_app")
+	t.Setenv("PG_DBNAME", "org_membership")
 	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
 	dsn := DSNFromEnv()
 	// Encoded as options=-c statement_timeout=5000 (ms).
@@ -95,6 +97,8 @@ func TestDSNFromEnv_AppendsStatementTimeoutWhenSet(t *testing.T) {
 
 func TestDSNFromEnv_InvalidStatementTimeoutIgnored(t *testing.T) {
 	_ = os.Unsetenv("DATABASE_URL")
+	t.Setenv("PG_USER", "org_membership_app")
+	t.Setenv("PG_DBNAME", "org_membership")
 	t.Setenv("PG_STATEMENT_TIMEOUT", "not-a-duration")
 	dsn := DSNFromEnv()
 	assert.NotContains(t, dsn, "statement_timeout",
@@ -103,6 +107,8 @@ func TestDSNFromEnv_InvalidStatementTimeoutIgnored(t *testing.T) {
 
 func TestDSNFromEnv_ZeroStatementTimeoutIgnored(t *testing.T) {
 	_ = os.Unsetenv("DATABASE_URL")
+	t.Setenv("PG_USER", "org_membership_app")
+	t.Setenv("PG_DBNAME", "org_membership")
 	t.Setenv("PG_STATEMENT_TIMEOUT", "0s")
 	dsn := DSNFromEnv()
 	assert.NotContains(t, dsn, "statement_timeout",

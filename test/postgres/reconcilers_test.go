@@ -15,7 +15,6 @@ package postgres_test
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"testing"
 
 	"github.com/google/uuid"
@@ -58,7 +57,7 @@ func (r *recFakeRP) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error 
 // old-published + 3 recent-published + 2 unpublished; assert only the 3
 // old rows disappear after OutboxPrune with retention_days=8.
 func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "outbox-prune-018")
 
@@ -70,8 +69,7 @@ func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
 	unpubIDs := insertOutboxRows(t, ctx, rawPool, tenantID, 2, "-30 days", false)
 
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
-		SysPool:             rawPool,
-		Logger:              slog.Default(),
+		SysPool:             sysPool,
 		OutboxRetentionDays: 8,
 	})
 	require.NoError(t, err)
@@ -92,11 +90,10 @@ func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
 // TestREC_OUTBOX_002_EmptyTableIsNoOp — prune against a clean
 // outbox_events table returns Attempted=Succeeded=0, no error.
 func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
-		SysPool:             rawPool,
-		Logger:              slog.Default(),
+		SysPool:             sysPool,
 		OutboxRetentionDays: 8,
 	})
 	require.NoError(t, err)
@@ -110,7 +107,7 @@ func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
 // tenant with trial_ends_at past grace hard-deletes; one within grace and
 // one non-trial-expired both survive.
 func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
 	past := seedTenantStatus(t, ctx, rawPool, "trial-past-018", "trial_expired", "-30 days")
@@ -118,8 +115,7 @@ func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 	activeTrial := seedTenantStatus(t, ctx, rawPool, "trial-active-018", "trial", "+15 days")
 
 	res, err := jobs.TrialCleanup(ctx, &jobs.Context{
-		SysPool:        rawPool,
-		Logger:         slog.Default(),
+		SysPool:        sysPool,
 		TrialGraceDays: 15,
 	})
 	require.NoError(t, err)
@@ -136,7 +132,7 @@ func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 // realm_sync_pending=true is swept, RP.PatchRealmConfig is called with
 // the current LocalAccountsEnabled value, and the marker is cleared.
 func TestREC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "realm-sync-018")
@@ -147,8 +143,7 @@ func TestREC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
 
 	rp := &recFakeRP{}
 	res, err := jobs.RealmConfigSync(ctx, &jobs.Context{
-		SysPool:          rawPool,
-		Logger:           slog.Default(),
+		SysPool:          sysPool,
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -171,7 +166,7 @@ func TestREC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
 // TestREC_REALM_002_MarkerRemainsOnRPFailure — RP.PatchRealmConfig
 // returns an error → marker stays set for next tick.
 func TestREC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "realm-sync-fail-018")
@@ -181,8 +176,7 @@ func TestREC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
 
 	rp := &recFakeRP{patchErr: errors.New("simulated RP outage")}
 	res, err := jobs.RealmConfigSync(ctx, &jobs.Context{
-		SysPool:          rawPool,
-		Logger:           slog.Default(),
+		SysPool:          sysPool,
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -204,7 +198,7 @@ func TestREC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
 // kc_cleanup_pending=true and a keycloak_user_id → RP.DeleteUser called,
 // marker cleared.
 func TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "kc-cleanup-018")
@@ -213,8 +207,7 @@ func TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
 
 	rp := &recFakeRP{}
 	res, err := jobs.InvitationKCCleanup(ctx, &jobs.Context{
-		SysPool:          rawPool,
-		Logger:           slog.Default(),
+		SysPool:          sysPool,
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -233,7 +226,7 @@ func TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
 // set but keycloak_user_id IS NULL clears the marker without calling
 // RP (nothing to delete on Keycloak side).
 func TestREC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "kc-cleanup-null-018")
@@ -241,8 +234,7 @@ func TestREC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
 
 	rp := &recFakeRP{}
 	res, err := jobs.InvitationKCCleanup(ctx, &jobs.Context{
-		SysPool:          rawPool,
-		Logger:           slog.Default(),
+		SysPool:          sysPool,
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -261,7 +253,7 @@ func TestREC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
 // TestREC_KC_003_MarkerRemainsOnRPFailure — DEL-6 fail-open: RP
 // returns an error → marker stays set, no crash, res.Failed = 1.
 func TestREC_KC_003_MarkerRemainsOnRPFailure(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "kc-cleanup-fail-018")
@@ -270,8 +262,7 @@ func TestREC_KC_003_MarkerRemainsOnRPFailure(t *testing.T) {
 
 	rp := &recFakeRP{deleteUserErr: errors.New("simulated RP outage")}
 	res, err := jobs.InvitationKCCleanup(ctx, &jobs.Context{
-		SysPool:          rawPool,
-		Logger:           slog.Default(),
+		SysPool:          sysPool,
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})

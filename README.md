@@ -4,31 +4,25 @@ Service that owns the **organizational layer** of the IAM subsystem — how user
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`
 **Module:** Go 1.26.5+ · private module · deployed as a containerised microservice (HPA 2–8 replicas)
-**Design:** Refines **IAM HLD v1.39 §5.6**; LLD v1.61 (Draft, 4799 lines). Where LLD and HLD disagree, HLD is authoritative.
+**Design:** Refines **IAM HLD v1.41 §5.6**; LLD v2.0 (`docs/lld/iam-lld-org-membership-service.md`). Where LLD and HLD disagree, HLD is authoritative.
 
 ---
 
 ## Mental model
 
-This service is the authoritative store for the **business-layer organisation model** that sits between Keycloak's identity records and the workflow/tender domain.
+This service is the authoritative store for the **business-layer organisation model** that sits between Keycloak's identity records and the workflow/tender domain. It's mid-way through a four-part service decomposition: departments/plans catalogs, group→role/department JIT mapping, tender ACL overlays, and delegation have each moved to their own sibling service. This repo is what's left after those four extractions.
 
-| Layer | What it owns | What it does NOT own |
-|-------|-------------|----------------------|
-| **Tenants** | `plan`, subscription status, trial metadata, realm identity/type/shard, MFA freshness, `local_accounts_enabled`, licensed seats, ownerless/overage/realm-sync markers | JWT issuance, MFA enforcement — owned by Keycloak; `default_currency`, pricing — owned by Billing |
-| **Plans catalogue** | Global operator-editable per-tier entitlements (`workflow_template_limit`, `tender_limit`, `sso_enabled`, `custom_branding`, `feature_set`, `trial_duration_days`) | Metered quota counters — owned by Usage & Metering (HLD §10.6) |
-| **Departments** | Global operator catalog (`is_system`, `is_active`, never physically deleted) + per-tenant activation | Nothing internal |
-| **Tenant memberships** | Lifecycle only, no role data (§16 A14) | Display identity, signature, OOO presentation flag — owned by User Profile |
-| **Tenant-level role grants** | `tenant_owner`/`tenant_admin`/`tender_admin` only; `member` **derived at read time**, never persisted (TR-7, §16 A29) | Credentials, JWT — Keycloak |
-| **Department memberships** | User↔department↔role-level (`preparator`/`reviewer`/`approver`) + tenant-customizable `dept_role_labels` | Tender content or bids — Tender Service |
-| **Delegations** | Authoritative record for workflow rerouting (scope: all/department/tender; hard time bounds) | `user_availability` presentation — owned by User Profile |
-| **Tender ACL overlays** | Additive `view`/`edit`/`approve` grants (§16 A32(c)) | `assignee_overrides` state — owned by Workflow Service (§16 A32(d), OVR-1) |
-| **Pending invitations** | Two-step invite→accept staging; **one PII exception** — `email` + `full_name` until acceptance (§16 A38) | Notification delivery — Notification Service |
+| Service | Owns |
+|---|---|
+| **Org & Membership** (this service) | Tenants (plan/subscription/trial/realm/seats), tenant memberships (lifecycle only), tenant-level role grants (`tenant_owner`/`tenant_admin`/`tender_admin`; `member` derived at read time, TR-7), department memberships + role labels, per-tenant department **activation** (not the catalog itself), pending invitations, plan/feature-flag overrides (validated against the Catalog Service's data) |
+| **Catalog / Admin Config** (`iam-catalog-admin`) | Global departments catalog, plans entitlement catalog |
+| **Group Mapping / JIT Config** (`iam-group-mapping`) | SAML/OIDC group→department/role mapping tables and their admin CRUD |
+| **Tender ACL** (`iam-tender-acl`) | Tender ACL overlay grants (additive `view`/`edit`/`approve`) |
+| **Delegation** (`iam-delegation`) | Delegation records, OOO coordination with User Profile, delegation review/expiry policy |
 
 **Source of truth for one platform-wide contract:** `GET /api/v1/internal/users/:id/memberships` (I-8) — the hot-path membership projection consumed by AuthZ Enrichment on every authenticated request.
 
-**Does NOT own:** credentials / MFA enforcement / JWT issuance (Keycloak); display identity / signature / OOO presentation flag (User Profile); realm or Keycloak Admin API mutations (Realm Provisioner — this service **never** calls the Keycloak Admin API); workflow template authoring or `assignee_overrides` state (Workflow Service); audit records (Audit Log); tender content / bids (Tender Service); metered quota consumption (Usage & Metering); pricing / currency / seat enforcement past grace (Billing); group→role/department mapping config (`group_dept_role_mappings`/`group_tenant_role_mappings`/`group_dept_mappings` and their admin CRUD — Group Mapping Service, ADR-0007 Wave 2; this service only *reads* the resolved result via `GroupMappingClient` for I-10 JIT resolution).
-
-**Ownership split with User Profile — delegation:** `delegations` (here) is authoritative for workflow rerouting. `user_availability` (User Profile) is presentation-only. The coordination pattern (§8.6, CONS-2) validates the delegate → calls User Profile's `PUT /internal/users/:id/availability` → waits for 200 → **only then** inserts `delegations` + outbox event in one `RunInTx`. `DelegationStarted` is never enqueued without a committed User Profile update.
+**Does NOT own:** credentials / MFA enforcement / JWT issuance (Keycloak); display identity / signature / OOO presentation flag (User Profile); realm or Keycloak Admin API mutations (Realm Provisioner — this service **never** calls the Keycloak Admin API); workflow template authoring or `assignee_overrides` state (Workflow Service); audit records (Audit Log); tender content / bids (Tender Service); metered quota consumption (Usage & Metering); pricing / currency / seat enforcement past grace (Billing); the departments/plans catalogs, group→role mapping config, tender ACL overlays, or delegation records — each now lives in its own sibling service per the table above. This service has **no outbound call to User Profile at all** any more — the OOO coordination that used to drive it lives entirely in the Delegation Service now.
 
 ---
 
@@ -50,13 +44,13 @@ This service **centralises** the tenant / membership / role model behind a singl
 All endpoints require `x-user-id` and `x-tenant-id` headers injected by the API gateway (or the mesh for internal calls).
 Base path: `/api/v1` · Developer tools (non-production only): Swagger UI at `/swagger` · AsyncAPI viewer at `/asyncapi`
 
-**51 endpoints** across three route prefixes with distinct auth models:
+**34 endpoints** across three route prefixes with distinct auth models — down from the pre-decomposition count now that group-mapping admin CRUD, delegation, and tender-ACL routes have moved to their own services (IDs are never reused, so the numbering has gaps):
 
 | Prefix | Callers | Auth | Ingress |
 |---|---|---|---|
-| `/api/v1/*` (31 endpoints, P-1..P-31) | Authenticated tenant users | Gateway-injected identity headers | Public Envoy |
-| `/api/v1/internal/*` (13 endpoints, I-1..I-13) | In-mesh services (RP, Event Consumer, LLM, Signup BFF, Workflow, Billing, AuthZ) | Mesh mTLS + NetworkPolicy; **no JWT** | Internal Envoy only |
-| `/api/v1/operator/*` (7 endpoints, O-1..O-7) | Human operators | Gateway validates JWT, asserts `platform_operator` claim | Separate operator ingress (§16 C1, AUTH-7) |
+| `/api/v1/*` (18 endpoints, P-1..13/24-28/30-31) | Authenticated tenant users | Gateway-injected identity headers | Public Envoy |
+| `/api/v1/internal/*` (12 endpoints, I-1..5/8-11/13-15) | In-mesh services (RP, Event Consumer, Signup BFF, Workflow, Billing, AuthZ, Tender ACL, Delegation) | Mesh mTLS + NetworkPolicy; **no JWT** | Internal Envoy only |
+| `/api/v1/operator/*` (2 endpoints, O-4/O-7) | Human operators | Gateway validates JWT, asserts `platform_operator` claim | Separate operator ingress (§16 C1, AUTH-7) |
 
 ### Public routes (highlights)
 
@@ -68,9 +62,7 @@ Base path: `/api/v1` · Developer tools (non-production only): Swagger UI at `/s
 | P-6 | `POST /tenants/:id/members` | **Invite** — two-step invite→accept (§16 A11); SEAT-1 gated |
 | P-7 | `PATCH /tenants/:id/members/:user_id` | Suspend / reactivate |
 | P-8 | `DELETE /tenants/:id/members/:user_id` | Remove — **delegate-impact gated** (§8.8); `409 workflow_resolution_required` |
-| P-10 | `PUT /tenants/:id/departments/:dept_id/members/:user_id` | Assign to dept at level; decrease is dept-scope delegate-impact gated (§8.8.4) |
-| P-18/P-19/P-20 | `/delegations[/:id]` | List/create/cancel delegation (POST also coordinates User Profile) |
-| P-21/P-22/P-23 | `/tenants/:id/tenders/:tender_id/acl` | Tender ACL grants |
+| P-10 | `PUT /tenants/:id/departments/:dept_id/members/:user_id` | Assign to dept at level; decrease is dept-scope delegate-impact gated (§8.8.4, precision lookup now via the Delegation Service) |
 | P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve blocked removal — `replace_delegate` or `stop_workflows` |
 | P-27 | `GET /tenants/:id/seat-usage` | `{active_users, pending_invitations, licensed_seats, over_cap, overage_since, grace_ends_at}` |
 | P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement multi-role reconcile (TM-8 last-owner guard) |
@@ -88,6 +80,7 @@ Base path: `/api/v1` · Developer tools (non-production only): Swagger UI at `/s
 | I-10 | `POST /tenants/:id/dept-memberships` | Event Consumer | SAML group assertion → JIT dept memberships + additive tenant roles (GTRM-4) |
 | I-11 | `GET /tenants/:id/seat-usage` | Billing | Pre-check before seat reduction |
 | I-13 | `POST /tenants/:id/tenders/:tender_id/assignee-override` | Workflow Service | Validate-and-emit; O&M persists nothing (OVR-1) |
+| I-15 | `GET /tenants/:id/members/:user_id/exists` | Tender ACL Service, Delegation Service | New — grant-time membership-existence check, replacing the composite FKs both services lost when their tables moved to separate databases |
 
 ### Operator routes
 
@@ -101,7 +94,7 @@ tables have been dropped, and `OperatorService`/`OperatorHandler` now only imple
 | O-4 | `PATCH /tenants/:id/feature-flags` | Full-replacement of override delta (§16 A18, T-9) |
 | O-7 | `POST /tenants/:id/reassign-owner` | Recover ownerless tenant (§16 A39, TM-12/T-13) |
 
-Full endpoint catalogue with authZ, cache invalidation, and status-code table: [`.claude/api-caching-events.md § 5.3`](.claude/api-caching-events.md) and `api/openapi.yaml`.
+Full endpoint catalogue with authZ, cache invalidation, and status-code table: [`.claude/api-caching-events.md § 5.3`](.claude/api-caching-events.md) and `docs/swagger/swagger.yaml` (generated via `make swag`).
 
 ---
 
@@ -113,62 +106,82 @@ Clean Architecture — dependencies point inward; outer layers never import inne
 iam-org-membership/
 ├── cmd/
 │   ├── server/                       # Composition root: wiring, pool setup, middleware, exporter goroutines
-│   └── reconciler/                   # Single-binary reconciler dispatched by --job=<name>; drives 8 CronJobs
+│   └── reconciler/                   # Single-binary reconciler dispatched by --job=<name>; drives 7 CronJobs
+│       └── jobs/                     # One file per job (invitation-expiry, seat-overage-reconcile, ...)
 ├── internal/
 │   ├── core/
 │   │   ├── domain/                   # Entities, value objects, DomainError catalogue (no external deps)
-│   │   ├── port/                     # Interfaces: repositories, cache, EventPublisher,
-│   │   │                             #   UserProfileClient, WorkflowClient, RealmProvisionerClient
+│   │   ├── port/                     # Interfaces: repositories, cache, EventPublisher, Logger,
+│   │   │                             #   IdempotencyStore, WorkflowClient, RealmProvisionerClient,
+│   │   │                             #   CatalogAdminClient, GroupMappingClient, DelegationCheckClient
 │   │   └── service/                  # Use cases + pure input validators
 │   └── adapter/
 │       ├── inbound/
-│       │   ├── http/                 # Gin handlers, DTOs, middleware
+│       │   ├── http/                 # Gin handlers, DTOs, middleware, router, AsyncAPI/Swagger doc pages
 │       │   └── consumer/             # SQS consumer for tenant-orgm-q + billing-orgm-q
 │       └── outbound/
-│           ├── postgres/             # Repository impls + golang-migrate migrations
+│           ├── postgres/             # Repository impls + golang-migrate migrations + gincommon Logger adapter
+│           │   ├── idempotency_repository.go # IdempotencyStore impl — processed_events, shared by both SQS consumers
+│           │   └── migrations/       # Single consolidated migration (000000_initial_schema) — never deployed pre-decomposition
 │           ├── valkey/               # Cache (go-redis/v9) — advisory only
-│           ├── eventbus/             # RoutingPublisher (2 topics) + ValidatingCodec + outbox runner
+│           ├── eventbus/             # RoutingPublisher (2 topics) + ValidatingCodec + GlueCodec + outbox runner
 │           │   └── schemas/*.json    # Embedded JSON Schema Draft-07 (source of truth for schema-gov)
-│           ├── userprofile/          # HTTP client — SetAvailability (delegation coordination §8.6)
 │           ├── workflow/             # HTTP client — GetDelegateImpact/Reassign/Cancel (§8.8)
 │           ├── realmprovisioner/     # HTTP client — CreateInvitedUser/DeleteUser/PatchRealmConfig/RevokeUserSessions
+│           ├── catalogadmin/         # HTTP client — read-only departments/plans lookup (Catalog Service)
+│           ├── groupmappingclient/   # HTTP client — group→dept/role JIT resolution (Group Mapping Service)
+│           ├── delegationcheck/      # HTTP client — dept-scoped delegate lookup (Delegation Service)
 │           └── metrics/              # Custom Prometheus counters (iam_*)
 ├── pkg/requestctx/                   # Typed RequestContext{UserID, TenantID, Roles, ClientIP, UserAgent}
 ├── api/
-│   ├── openapi.yaml                  # OpenAPI 3.0 — REST contract (P-*/I-*/O-*)
-│   └── asyncapi.yaml                 # AsyncAPI 3.0 — two channels
+│   ├── asyncapi.yaml                 # AsyncAPI 3.0 — two channels — design-time source of truth
+│   └── embed.go                      # //go:embed asyncapi.yaml — single source served by docs.go/asyncapi.go
+├── docs/
+│   ├── swagger/                      # Generated via `make swag` (not hand-authored) — the REST contract
+│   ├── architecture/                 # Narrative diagrams (mermaid)
+│   └── lld/                          # Low-Level Design doc (v2.0)
 ├── deploy/
-│   ├── helm/                         # Helm chart (Deployment + 8 CronJobs)
+│   ├── helm/                         # Helm chart (Deployment + 7 CronJobs)
 │   ├── iam/                          # IRSA policies
 │   └── monitoring/                   # Prometheus alert rules
-├── scripts/                          # Local dev + build tooling
+├── scripts/                          # Local dev + build tooling (init-db.sql, init-localstack.sh, swagger patch, coverage merge)
 └── test/
     ├── unit/                         # Fast unit tests — no Docker required
     ├── postgres/                     # RLS + DB integration (testcontainers-go); Case 5 canonical
     ├── integration/                  # Cross-layer tests (LocalStack for SNS/SQS)
-    ├── e2e/                          # End-to-end
-    └── fixtures/                     # Shared fakes
+    └── e2e/                          # End-to-end
 ```
 
-Smoke tests (`make test-smoke`) drive the full-stack provisioning → member add → dept assign → delegation → expiry path against a staging deploy — not a Go test suite.
+`api/openapi.yaml` has been deleted — the REST contract is now generated into `docs/swagger/*` via `make swag`, not hand-authored. There is no dedicated fixtures directory; test doubles live inline alongside the tests that use them.
+
+Smoke tests (`make test-smoke` / CI `smoke` job, `.github/scripts/smoke-tests.sh`) are not a functional or staging test at all — they check the CI-built Docker image's size (≤200 MB) and that the container exits non-zero on missing required env vars (proving `validateRequiredEnv` fires). Not a Go test suite, and no provisioning/member/department flow is exercised.
 
 ### Dependency rules (enforced by `go-arch-lint` in CI)
 
-| Package | May import |
-|---------|-----------|
-| `core/domain` | Nothing outside itself |
-| `core/port` | `core/domain` only |
-| `core/service` | `core/domain` + `core/port` + `pkg/requestctx` |
-| `adapter/*` | Implements `core/port`; nothing in `core/` imports `adapter/` |
+| Component | In | May import |
+|---------|-----------|-----------|
+| `domain` | `internal/core/domain` | Nothing internal |
+| `port` | `internal/core/port` | `domain` |
+| `requestctx` | `pkg/requestctx` | Nothing internal |
+| `eventschema` | `internal/adapter/outbound/eventbus/schemas` | Nothing internal (embedded assets) |
+| `apispec` | `api` | Nothing internal (embedded `asyncapi.yaml`) |
+| `observability` | `internal/adapter/outbound/metrics` | Nothing internal |
+| `docs_swagger` | `docs/swagger` | Nothing internal (generated assets) |
+| `service` | `internal/core/service` | `domain`, `port`, `requestctx`, `observability` |
+| `adapters_inbound` | `internal/adapter/inbound/{http,consumer}` | `service`, `port`, `domain`, `requestctx`, `observability`, `apispec` |
+| `adapters_outbound` | `internal/adapter/outbound/{postgres,valkey,eventbus,workflow,realmprovisioner,catalogadmin,groupmappingclient,delegationcheck}` | `port`, `domain`, `eventschema`, `observability` |
+| `cmd` | `cmd/{server,reconciler}` | Everything above |
+
+`test/`, `scripts/`, and `deploy/` are excluded from lint scope — they aren't part of the runtime architecture.
 
 ### Storage and messaging
 
 | Concern | Technology | Notes |
 |---------|-----------|-------|
-| **Primary store** | PostgreSQL 17 | 15 tables. RLS on all 12 tenant-scoped tables (`FORCE ROW LEVEL SECURITY`); GUC `app.tenant_id` set **transaction-locally** per checkout (RLS-6). `record_version` optimistic lock on 14 tables |
+| **Primary store** | PostgreSQL 17 | 8 domain tables (down from 10 — `departments`/`plans`/group-mapping/`tender_acl_entries`/`delegations` moved to sibling-service databases) plus `rls_violation_log`, a 9th, RLS-disabled audit table written by the sampled `log_rls_violation()` trigger function (Layer 3 detection). RLS on all 7 tenant-scoped domain tables (`FORCE ROW LEVEL SECURITY`); GUC `app.tenant_id` set **transaction-locally** per checkout (RLS-6). `record_version` optimistic lock on all 7 (all domain tables except `processed_events`) |
 | **Connection pooling** | PgBouncer transaction mode | App connects via PgBouncer; migrations connect direct-to-Postgres via `MIGRATION_DATABASE_URL` (CONFIG-2) |
 | **Cache** | Valkey (Redis-compatible) | Advisory-only (CACHE-2/9); 50 ms operation timeout = miss |
-| **Events (outbound)** | AWS SNS + transactional outbox | Two topics: `iam.membership.events` (11 event types), `iam.tenant.events` (2 — `TenantCreated`, `TrialStarted`) |
+| **Events (outbound)** | AWS SNS + transactional outbox | Two topics: `iam.membership.events` (11 event types — `DelegationStarted`/`DelegationEnded` moved to Delegation Service's own topic, `TenantMembershipsPurged` added), `iam.tenant.events` (2 — `TenantCreated`, `TrialStarted`) |
 | **Events (inbound)** | AWS SQS | Two queues: `tenant-orgm-q` (RP lifecycle), `billing-orgm-q` (plan/seat/status). DLQ `maxReceiveCount=5` |
 | **Schema registry** | AWS Glue | Two registries (`iam-membership-events`, `iam-tenant-events`); governed by `platform-schemagov` |
 
@@ -177,8 +190,8 @@ Smoke tests (`make test-smoke`) drive the full-stack provisioning → member add
 | Library | Version | Purpose |
 |---------|---------|---------|
 | `platform-gincommon` | v1.2.0 | HTTP middleware, Zap logging, OTel tracing, Prometheus metrics, `RequestContext`, `PropagateHeaders` |
-| `platform-pgcommon` | v1.1.1 | pgx/v5 pool, RLS GUC injection (`GUCSetFromContext`), `RunInTx`, migrations, error helpers |
-| `platform-events` | v1.3.0 | Transactional outbox, `RoutingPublisher`, SQS consumer, CloudEvents envelope |
+| `platform-pgcommon` | v1.2.1 | pgx/v5 pool, RLS GUC injection (`GUCSetFromContext`), `RunInTx`, migrations, error helpers, public `domain.Logger` |
+| `platform-events` | v1.4.0 | Transactional outbox, `RoutingPublisher`, SQS consumer, CloudEvents envelope, `WithCodec`/Glue Schema Registry hook |
 | `platform-schemagov` | v0.4 | Python 3.12 CLI (not a Go module); schema-registry governance via `docker run` in CI |
 
 ---
@@ -242,9 +255,9 @@ x-tenant-id:     <tenant UUID>
 x-tenant-roles:  iam-system
 ```
 
-Response is a joined view over `tenant_memberships` + `tenants` + `tenant_roles` + `dept_memberships` + `delegations` (LLD §6.2), with:
+Response is a joined view over `tenant_memberships` + `tenants` + `tenant_roles` + `dept_memberships` (LLD §6.2) — one fewer table than before the delegation extraction; there is no `delegations` join and no `active_delegations[]` field any more (Delegation Service owns that data now), with:
 
-- `departments[]` and `active_delegations[]` always arrays, never `null` (I8-4)
+- `departments[]` always an array, never `null` (I8-4)
 - Derived `member` role injected at projection layer (`resp.Roles = union(["member"], resp.Roles)` — TR-7 / §16 A29). The role is never stored in `tenant_roles`.
 - `mfa_freshness_seconds` sourced from the tenant cache (`om:tenant`), evicted by P-2 writes — **not** from the frozen per-user snapshot (§16 A52, T-10)
 
@@ -252,20 +265,17 @@ Caching: the response is cached in Valkey under `om:memberships:{tenant}:{user}`
 
 SLO: **15 ms p99 cache hit, 30 ms p99 cache miss.**
 
-### 4. Delegation coordination — Org & Membership as the driver
+### 4. Catalog, Group Mapping & Delegation — new outbound dependencies
 
-When a user sets OOO with a delegate through O&M, O&M **drives the User Profile write** with strict ordering:
+Three cross-service calls were added by the decomposition (departments/plans → Catalog, group mapping → Group Mapping, delegation → Delegation). None of them sits on the I-8 hot path:
 
-1. O&M validates delegate is an active same-tenant member (`422 invalid_delegate` on DEL-1 failure).
-2. O&M calls User Profile: `PUT /internal/users/{delegator_id}/availability` with `{status: ooo, delegate_id, ooo_note, ends_at}`.
-   - 4xx → `422 invalid_delegate` (delegate raced to inactive)
-   - 5xx/timeout → `503 user_profile_unavailable` (retryable, no DB write)
-   - 200 → continue
-3. **Only if step 2 succeeds** does O&M commit `delegations` + emit `DelegationStarted` in one `RunInTx`.
+- **Catalog (`iam-catalog-admin`)** — `GET /internal/plans` and `GET /internal/departments`, cached as `om:plans` / `om:departments`. **Not** fail-open: an unconfigured or failed call with a cold cache surfaces `503 catalog_unavailable`.
+- **Group Mapping (`iam-group-mapping`)** — `POST /internal/tenants/:id/group-resolution` on SAML/OIDC JIT login (I-10), cached with a 24 h stale-if-error fallback. Fails **open** (empty resolution, login still succeeds) if the cache is cold and the call fails.
+- **Delegation (`iam-delegation`)** — `GET /internal/delegations/dept-delegate` on the admin dept-membership Assign/Remove path (§8.8.4), a department-scoped precision lookup for the delegate-impact check. Fails **open** to tenant-wide impact scoping on outage — never blocks the request.
 
-This ordering guarantees no `DelegationStarted` event without a matching `user_availability` record (CONS-2, §8.6).
+Delegation Service and Tender ACL Service, in turn, call back into O&M's `GET /internal/tenants/:id/members/:user_id/exists` (I-15) to replace the composite membership FKs they lost when their tables moved to separate databases.
 
-On **expiry** (`delegation-expiry` CronJob every 5 min), O&M calls UP's availability endpoint with `{delegate_id: null}` **only** — never `{status: available}` (§16 A49/J2 pointer-clear semantics). Ending a delegation is not the same as the delegator returning; the `ooo → available` transition is UP-owned (its `ooo_until` sweep or user's explicit "I'm back").
+O&M's own OOO/delegation record-keeping — including the coordination call to User Profile — now lives entirely in the Delegation Service. This service has **no outbound call to User Profile** any more.
 
 ### 5. Event Consumer — user lifecycle
 
@@ -325,12 +335,14 @@ O&M publishes to **two** SNS topics via a transactional outbox and `RoutingPubli
 | `DepartmentMembershipLevelChanged` | `user_id`, `department_id`, `previous_level`, `new_level` | AuthZ cache invalidation |
 | `TenantRoleGranted` | `user_id`, `role_code`, `actor_id` (one event per role) | AuthZ cache; RP `requires-mfa` realm role for admin/owner |
 | `TenantRoleRevoked` (§16 A14) | `user_id`, `role_code`, `actor_id` | AuthZ cache; symmetric with granted |
-| `DelegationStarted` | `delegation_id`, `delegator_id`, `delegate_id`, `scope`, `scope_id`, `ends_at` | Workflow: reroute pending tickets |
-| `DelegationEnded` | above + `ended_reason ∈ {expired, cancelled, delegate_removed}` (DEL-7) | Workflow: reroute back |
+| `MembershipRevoked` | `tenant_id`, `user_id`, `actor_id` | Shared cascade signal on user removal — consumed by both the Delegation Service (ends the user's delegations) and the Tender ACL Service (soft-deletes the user's ACL overlays) |
 | `TenderAssigneeOverridden` | `tender_id`, `user_id`, `actor_id` | Workflow node reassignment (I-13 validate-and-emit) |
 | `TenantSeatOverageStarted` | `tenant_id`, `licensed_seats`, `active_users`, `pending_invitations`, `overage_since` | Billing / CSM banner |
 | `TenantSeatOverageResolved` | `tenant_id`, `resolved_at` | Billing / CSM banner |
 | `TenantStateChanged` (§16 A61 relay) | `status`, `previous_status`, `plan`, `previous_plan`, `changed_at`, `cause` | Workflow (pause/resume/route without a direct tenant/billing subscription) |
+| `TenantMembershipsPurged` | `tenant_id`, `actor_id` | Emitted when a tenant transitions to `offboarded`; consumed by Delegation, Tender ACL, and Group Mapping services to run their own tenant-scoped cascade-deletes |
+
+`DelegationStarted`/`DelegationEnded` have moved to the Delegation Service's own `iam.delegation.events` topic — their schemas are gone from this repo.
 
 **`iam.tenant.events`:** O&M produces only `TenantCreated` and `TrialStarted` on this topic. The other lifecycle events (`TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `TrialExpired`, `TenantSuspended`, `TenantOffboarded`, …) are Realm-Provisioner-produced.
 
@@ -349,7 +361,7 @@ Service-specific error codes worth special handling:
 - **`workflow_resolution_required` (409, §8.8)** — body carries `active_workflows`, `workflow_ids[]`, `delegate_user_id`, `allowed_actions: [replace_delegate, stop_workflows]`. Present the two options to the admin; call P-26 with the chosen action.
 - **`seat_limit_reached` (409, SEAT-1)** — body carries `licensed_seats`, `active_users`, `pending_invitations`. This is a **product signal, not an incident** — route to CSM/Billing (§20.6), not on-call.
 - **`optimistic_lock_conflict` (409, CONC-4)** — response echoes current `record_version` and `updated_at`. Re-read and retry.
-- **`user_profile_unavailable` (503)** — retryable; no DB write happened (§8.6).
+- **`catalog_unavailable` (503)** — Catalog Service call failed with no usable cache; department/plan validation could not complete.
 - **`workflow_service_unavailable` (503)** — retryable; no DB write happened (WFI-8).
 - **`realm_provisioner_unavailable` (503)** — retryable; no invitation created (§8.10).
 
@@ -413,13 +425,13 @@ Run `make help` for the full list. Highlights:
 | `make vet` / `make lint` | Static analysis |
 | `make mod-verify` | `go mod verify` — check module download integrity |
 | `make vuln-check` | `govulncheck ./internal/...` |
-| `make test` | All tests (unit + postgres + integration + e2e; requires Docker) |
+| `make test` | Unit + postgres + integration tests, run in parallel (requires Docker; e2e is separate — `make test-e2e`) |
 | `make test-ci` | Unit + postgres + integration with `-race` + coverage (used in CI) |
 | `make test-unit` | Unit tests only — no Docker |
 | `make test-postgres` | Postgres + RLS integration via testcontainers-go |
 | `make test-integration` | Cross-layer integration tests (SNS/SQS via LocalStack) |
 | `make test-e2e` | End-to-end tests |
-| `make test-smoke` | Staging smoke path: provision → member add → dept assign → delegation → expiry |
+| `make test-smoke` | CI image gate: Docker image size ≤200 MB + startup-gate check (server exits non-zero on missing env vars) — not a functional test |
 | `make race` | All tests with `-race` |
 | `make cover` / `make cover-func` | Coverage HTML report / per-function summary |
 | `make ci` | `tidy + fmt-check + vet + lint + test-ci + build` (full CI pipeline) |
@@ -432,16 +444,16 @@ Run `make help` for the full list. Highlights:
 | `make extract-schemas` | Derive `internal/adapter/outbound/eventbus/schemas/*.json` from `api/asyncapi.yaml` (Docker) |
 | `make schema-validate` | Validate AsyncAPI + event schemas via `schema-gov validate` |
 | `make schema-diff CURRENT=… PROPOSED=…` | Show compatibility diff between two schema files |
-| `make schema-register` | Register event schemas to Glue (requires `GLUE_REGISTRY_NAME_*`) |
+| `make schema-register` | Register event schemas to Glue (requires `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_TENANT_NAME`) |
 | `make schema-verify` | Pre-deploy check that every expected PascalCase Glue schema exists |
 | `make schema-prune` | Dry-run: list orphaned Glue schemas |
 
 ### Running a single test
 
 ```bash
-go test ./test/unit/membership_service/... -run TestRemoveUserDelegateImpact -v
-go test ./test/postgres/... -run TestRLSPolicyEnforcement -v
-go test ./test/integration/... -run TestEVT14RecencyGuard -v
+go test ./test/unit/... -run TestMembership_RemovalResolution_ReplaceDelegate_HappyPath -v
+go test ./test/postgres/... -run TestRLS_Case5_NoCrossTenantLeakAcrossPool -v
+go test ./test/postgres/... -tags=integration -run TestConsumerEVT14_StaleEventSkipped -v
 ```
 
 ### Calling the API locally
@@ -508,7 +520,7 @@ make docker-up
 
 | Resource | Type | Notes |
 |---|---|---|
-| `iam-membership-events` | SNS topic | 11 event types |
+| `iam-membership-events` | SNS topic | 11 event types (delegation events moved to the Delegation Service's own topic) |
 | `iam-tenant-events` | SNS topic | O&M produces only `TenantCreated` / `TrialStarted` |
 | `tenant-orgm-q` | SQS queue | Subscribed to `iam-tenant-events` (RP-produced lifecycle) |
 | `billing-orgm-q` | SQS queue | Subscribed to `billing.events` (plan/seat/status) |
@@ -597,7 +609,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `outbox_events` row has `last_error` `404 NotFound` | Topic ARN mismatch | Verify `SNS_TOPIC_MEMBERSHIP_ARN` / `SNS_TOPIC_TENANT_ARN` in `.env` |
 | `outbox_events` empty after a write | Row published + pruned, **or** the write failed | Re-check the HTTP response code |
 | Messages reappear after `receive-message` | Normal — visibility timeout. Use `delete-message` to remove permanently |
-| `GLUE_REGISTRY_NAME` set + inserts fail with `invalid input syntax for type json` | Glue-encoded bytes are not valid JSONB. **Always leave `GLUE_REGISTRY_NAME_*` empty in local dev.** Under `PG_BOUNCER_MODE=true` the 18-byte Glue header corrupts `outbox_events.payload`. |
+| SNS publish fails with a schema-version lookup error after setting `GLUE_REGISTRY_MEMBERSHIP_NAME`/`GLUE_REGISTRY_TENANT_NAME` | The named registry or one of its expected schemas doesn't exist yet | Run `make schema-verify`, or `make schema-register` to register the embedded schemas |
 
 ---
 
@@ -605,20 +617,20 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 
 - Tests live under **`test/`** (separate package tree from `internal/`).
 - **Testcontainers:** PostgreSQL, Valkey, and LocalStack integration tests spin up real containers. Docker must be running. Pass `-short` to skip them without Docker.
-- **`test/fixtures/`** provides shared fakes for all three outbound HTTP clients (`FakeWorkflowClient`, `FakeUserProfileClient`, `FakeRealmProvisionerClient`), plus DB helpers and event assertions.
+- There is no dedicated fixtures directory — test doubles (fakes for Workflow, Realm Provisioner, Catalog, Group Mapping, Delegation Check; no User Profile client any more, removed as dead code) live inline in the test files that use them, e.g. `test/postgres/helpers_extra_test.go`.
 
 ### Canonical tests (do not break)
 
 | Test | Invariant |
 |---|---|
-| `test/postgres/rls_test.go::TestCase5_NoCrossTenantLeakAcrossPooledBackend` | RLS-6 — transaction-local GUC binding under PgBouncer |
-| `test/unit/membership_service/TestRemoveUserDelegateImpact` | §8.8 pre-check + 409 body shape (WFI-3) |
-| `test/postgres/TestOptimisticLockConflict` | CONC-3/4 — 409 echoes current `record_version` + `updated_at` |
-| `test/integration/TestEVT14RecencyGuard` | Stale event silently skipped, still records `processed_events` |
-| `test/integration/TestEVT15FutureTimeClamp` | Poison-pill DLQ, not recorded in `processed_events` |
-| `test/integration/TestEVT16TenantStateRelay` | `TenantStateChanged` emitted in same tx as projection UPDATE |
-| `test/integration/TestSeatCap_Concurrent` | Concurrent P-6 with 1 remaining seat → exactly one succeeds (row-lock) |
-| `test/integration/TestTM12LastOwnerEscalation` | I-5 sets `ownerless_since`; only O-7 clears |
+| `test/postgres/rls_test.go::TestRLS_Case5_NoCrossTenantLeakAcrossPool` | RLS-6 — transaction-local GUC binding under PgBouncer |
+| `test/unit/membership_removeuser_test.go::TestMembership_RemoveUser_ActiveWorkflowsBlockWithResolutionRequired` | §8.8 pre-check + 409 body shape (WFI-3) |
+| `test/postgres/repos_more_test.go::TestP8LabelR003_UpdateOptimisticLock` | CONC-3/4 — 409 echoes current `record_version` + `updated_at` |
+| `test/postgres/consumer_evt_test.go::TestConsumerEVT14_StaleEventSkipped` | Stale event silently skipped, still records `processed_events` |
+| `test/postgres/consumer_evt_test.go::TestConsumerEVT15_FutureTimeClamp` | Poison-pill DLQ, not recorded in `processed_events` |
+| `test/postgres/consumer_evt_test.go::TestConsumerEVT16_StatusChangeEnqueuesRelay` | `TenantStateChanged` emitted in same tx as projection UPDATE |
+| `test/postgres/concurrency_test.go::TestSEAT1_ConcurrencyRace` | Concurrent invite with 1 remaining seat → exactly one succeeds (row-lock) |
+| `test/postgres/services_test.go::TestTM12Escalation_IncrementsCounter` | I-5 sets `ownerless_since` on last-owner removal; only O-7 clears it |
 
 ### Coverage
 
@@ -639,7 +651,8 @@ The service will not start without the variables marked **required** (`cmd/serve
 |----------|---------|---------|---------|
 | `APP_NAME` | `iam-org-membership` | `iam-org-membership` | Prometheus label, OTel service name |
 | `APP_ENV` | `dev` / `prod` | `dev` | Zap log format; controls whether dev tools (`/swagger`, `/asyncapi`) are served |
-| `APP_PORT` | `8080` | `8080` | HTTP listen port |
+| `APP_PORT` | `8080` | `8080` | HTTP listen port (API) |
+| `METRICS_PORT` | `9090` | `9090` | `/metrics` listen port — a separate `http.Server` from `APP_PORT`, so a NetworkPolicy can grant Prometheus scrape access without also granting API access |
 | `DATABASE_URL` | `postgres://...` | **required** | Full DSN (overrides individual `PG_*` vars); pool connects here via PgBouncer |
 | `MIGRATION_DATABASE_URL` | `postgres://...@localhost:5534/...` | **required** | **Direct Postgres DSN for migrations** (bypasses PgBouncer — advisory locks are session-scoped, DDL incompatible with transaction pooling, CONFIG-2/MIG-3). In local dev use host port 5534; in deployed environments use the in-cluster Postgres service on 5432. **Must NOT point at PgBouncer.** |
 | `SYSTEM_DATABASE_URL` | `postgres://org_membership_migrator:...@postgres:5432/...` | *(fallback to `DATABASE_URL` in dev with warning)* | **BYPASSRLS pool** for reconciler jobs + cross-tenant metric exporters (RLS-4). In prod must target `org_membership_migrator`. In dev falls back to `DATABASE_URL` and cross-tenant queries are RLS-filtered to 0 rows |
@@ -647,8 +660,7 @@ The service will not start without the variables marked **required** (`cmd/serve
 | `PG_MAX_CONNS` | `15` | `20` | Pool max connections per pod |
 | `PG_MIN_CONNS` | `0` | `0` | Pool min idle connections |
 | `PG_SLOW_QUERY_THRESHOLD` | `200ms` | `200ms` | Log queries slower than this (WARN, `tenant_id` redacted) |
-| `VALKEY_URL` | `rediss://valkey:6379` / `localhost:6380` | **required** | ElastiCache / Valkey endpoint. **Must use `rediss://` in production/staging** |
-| `VALKEY_TIMEOUT_MS` | `50` | `50` | Cache operation timeout (miss on timeout, CONFIG-3) |
+| `VALKEY_URL` | `rediss://valkey:6379` / `localhost:6380` | **required** | ElastiCache / Valkey endpoint. **Must use `rediss://` in production/staging**. Operation timeout (50 ms read/write, 100 ms dial) is hardcoded in `valkey.New`'s client options — there is no env var for it (miss on timeout either way, CONFIG-3) |
 | `SNS_TOPIC_MEMBERSHIP_ARN` | `arn:aws:sns:...:iam-membership-events` | **required** | `iam.membership.events` topic ARN |
 | `SNS_TOPIC_TENANT_ARN` | `arn:aws:sns:...:iam-tenant-events` | **required** | `iam.tenant.events` topic ARN |
 | `SQS_TENANT_ORGM_QUEUE_URL` | `https://sqs...tenant-orgm-q` | **required** | Inbound queue for RP lifecycle events |
@@ -657,12 +669,16 @@ The service will not start without the variables marked **required** (`cmd/serve
 | `AWS_ACCESS_KEY_ID` | `localstack` | — | AWS credentials (use IRSA in production) |
 | `AWS_SECRET_ACCESS_KEY` | `localstack` | — | AWS credentials |
 | `AWS_ENDPOINT_URL` | `http://localhost:4567` | — | LocalStack endpoint (leave unset in production) |
-| `GLUE_REGISTRY_NAME_MEMBERSHIP` | `iam-membership-events` | — | Glue registry for membership events (omit in dev — `NoopCodec` fallback) |
-| `GLUE_REGISTRY_NAME_TENANT` | `iam-tenant-events` | — | Glue registry for tenant events |
-| `USER_PROFILE_SERVICE_BASE_URL` | `http://user-profile:8080` | **required** | User Profile base URL (delegation coordination §8.6) |
-| `USER_PROFILE_TIMEOUT_MS` | `3000` | `3000` | User Profile HTTP timeout |
+| `GLUE_REGISTRY_MEMBERSHIP_NAME` | `iam-membership-events` | — | Glue registry for the `iam-membership-events` topic (omit in dev — `NoopCodec` fallback, plain JSON) |
+| `GLUE_REGISTRY_TENANT_NAME` | `iam-tenant-events` | — | Glue registry for the `iam-tenant-events` topic (omit in dev — `NoopCodec` fallback, plain JSON) |
 | `WORKFLOW_SERVICE_BASE_URL` | `http://workflow:8080` | **required** | Workflow Service base URL (§8.8 delegate-impact) |
 | `WORKFLOW_TIMEOUT_MS` | `3000` | `3000` | Workflow HTTP timeout |
+| `CATALOG_ADMIN_BASE_URL` | `http://catalog-admin:8080` | **required** | Catalog Service base URL — departments/plans (`om:plans`/`om:departments`). Not fail-open |
+| `CATALOG_ADMIN_TIMEOUT_MS` | `3000` | `3000` | Catalog Service HTTP timeout |
+| `GROUP_MAPPING_BASE_URL` | `http://group-mapping:8080` | — | Group Mapping Service base URL — SAML/OIDC JIT resolution (I-10). Fails open (empty resolution) if unset/unreachable |
+| `GROUP_MAPPING_TIMEOUT_MS` | `300` | `300` | Group Mapping HTTP timeout |
+| `DELEGATION_BASE_URL` | `http://delegation:8080` | — | Delegation Service base URL — dept-scoped delegate lookup (§8.8.4). Fails open to tenant-wide impact scoping if unset/unreachable |
+| `DELEGATION_TIMEOUT_MS` | `300` | `300` | Delegation Service HTTP timeout |
 | `REALM_PROVISIONER_BASE_URL` | `http://realm-provisioner:8080` | **required** | Realm Provisioner base URL (invite create/delete, realm config, session revoke) |
 | `REALM_PROVISIONER_TIMEOUT_MS` | `3000` | `3000` | Realm Provisioner HTTP timeout |
 | `INVITATION_EXPIRY_DAYS` | `7` | `7` | Pending invitation window. **Must equal Keycloak invite action-token lifespan** — divergence strands seats or frees them while the link still works |
@@ -678,7 +694,7 @@ The service will not start without the variables marked **required** (`cmd/serve
 | `OUTBOX_STARTUP_JITTER` | `2s` | `2s` | Random delay before first outbox poll (HPA thundering-herd) |
 | `OUTBOX_CLAIM_LEASE_DURATION` | `10m` | `10m` | Lease duration before another runner may re-claim a batch |
 | `PROCESSED_EVENTS_TTL_DAYS` | `8` | `8` | `processed_events` retention (PE-1: strictly > 7-day SQS lifetime; IDEMP-4 backstop window) |
-| `CACHE_TTL_SECONDS` | `300` | `300` | Base TTL for `om:*` cache keys (actual TTL = base ± jitter) |
+| `CACHE_TTL_SECONDS` | `300` | *(declared, not read)* | Present in `.env-example` but **not read by any Go code today** — every `om:*` cache TTL is a hardcoded constant in its owning service file (e.g. `catalog_service.go`'s 600 s primary / 24 h stale-if-error), not driven by this var |
 | `OTEL_SERVICE_NAME` | `iam-org-membership` | `APP_NAME` | OTel `service.name` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `otel-collector:4317` | — | OTLP/gRPC collector |
 | `OTEL_EXPORTER_OTLP_INSECURE` | `true` / `false` | `true` (dev) | Plaintext OTLP |
@@ -693,7 +709,7 @@ The service will not start without the variables marked **required** (`cmd/serve
 | Topic | Guidance |
 |---|---|
 | **Trust boundary** | `x-user-id`, `x-tenant-id`, `x-tenant-roles` must be injected by a **trusted API gateway** after authentication. Never allow clients to set these headers directly. The gateway strips client-supplied `x-tenant-roles` and sources `platform_operator` claim only from the operator IdP (AUTH-7, gateway/platform-security team contract) |
-| **Row-Level Security** | Every PostgreSQL query runs with `app.tenant_id` GUC set **transaction-locally**. RLS `FORCE` policies + `REVOKE ALL FROM PUBLIC` on 12 tenant-scoped tables. Missing / mismatched GUC fails closed (RLS-1..6). `tenants` policy uses `id = current_setting('app.tenant_id')::uuid` (single-row visibility). Cross-tenant admin needs the `BYPASSRLS` role `org_membership_migrator`, never the app role `org_membership_app` (CI-verified via MIG-3/MIG-5) |
+| **Row-Level Security** | Every PostgreSQL query runs with `app.tenant_id` GUC set **transaction-locally**. RLS `FORCE` policies + `REVOKE ALL FROM PUBLIC` on all 7 tenant-scoped tables. Missing / mismatched GUC fails closed (RLS-1..6). `tenants` policy uses `id = current_setting('app.tenant_id')::uuid` (single-row visibility). Cross-tenant admin needs the `BYPASSRLS` role `org_membership_migrator`, never the app role `org_membership_app` (CI-verified via MIG-3/MIG-5) |
 | **Operator route defense-in-depth (AUTH-7)** | Three layers: (1) NetworkPolicy blocks public network from reaching operator ingress; (2) handler re-checks `platform_operator` from `rc.Roles` before any DB access (AUTH-6); (3) gateway strips client-supplied `x-tenant-roles` and sources `platform_operator` claim from operator IdP only |
 | **Session revocation (AUTH-8)** | Privilege reduction (P-7 suspend, P-8 removal, P-28 de-privilege) commits O&M state first, then makes a **best-effort, fail-open** `RevokeUserSessions` call to Realm Provisioner. Guaranteed cutoff falls back to TTL backstop (≤ access-token lifetime + 300 s `om:memberships` cache). Sustained `iam_session_revoke_failed_total` rate pages |
 | **Input validation** | `slug`: `^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$`, immutable after set (T-1, `trg_tenant_slug_immutable`). `default_locale`: BCP-47. `keycloak_group_name`: ≤200 chars, `^[a-zA-Z0-9_./-]+$`. All UUIDs validated at handler layer. `mfa_freshness_seconds ∈ [60, 900]` (T-10) |
@@ -714,11 +730,9 @@ The service will not start without the variables marked **required** (`cmd/serve
 | I-8 cache hit | 15 ms |
 | I-8 cache miss | 30 ms |
 | P-6 invite (incl. SEAT-1 `FOR UPDATE` + RP call) | 100 ms |
-| P-19 delegation create (incl. UP call) | 200 ms |
 | P-8 removal (incl. `GetDelegateImpact`) | 200 ms |
 | P-26 removal-resolution (reassign/cancel + re-check) | 350 ms |
 | Outbound event publish half (outbox commit → SNS) | 1 s |
-| `DelegationStarted` end-to-end (→ Workflow reroute) | 5 s joint (O&M owns publish half only) |
 | Inbound lifecycle projection freshness (producer publish → `tenants` reflects) | 30 s |
 
 **SLO-3** is the primary drift signal — EVT-14 skips stale events **silently**, so the lag gauge is the drift signal, not DLQ depth.
@@ -727,51 +741,48 @@ The service will not start without the variables marked **required** (`cmd/serve
 
 All Prometheus metric names carry a `job` label to disambiguate emitting service (§16 A50/J4). Cardinality-bounded — `tenant_id` capped at tenant count (~1500–2000 target); no unbounded / user-supplied labels (§16 A48).
 
-Load-bearing metrics:
+Load-bearing metrics (verified against `internal/adapter/outbound/metrics/business.go` — a larger metric surface, including `iam_membership_lookup_latency_seconds` and `iam_memberships_cache_hit_ratio`, is a Phase-6 target per that file's own header comment and does not exist yet):
 
-- `iam_membership_lookup_latency_seconds{result=hit|miss}` — I-8 latency, source for SLO-1
-- `iam_memberships_cache_hit_ratio` — HPA input signal
-- `iam_delegate_removal_blocked_total{trigger=full_removal|dept_demotion|dept_removal}` — 409 `workflow_resolution_required` rate
-- `iam_seat_limit_reached_total` — P-6 refused; **product signal, not an incident**
-- `iam_stale_lifecycle_event_skipped_total` — EVT-14 stale skip (post-DLQ-redrive spikes expected)
-- `iam_future_lifecycle_event_rejected_total` — EVT-15 clamp; **any nonzero pages** (producer clock skew)
+- `iam_delegate_removal_blocked_total{scope}` — 409 `workflow_resolution_required` rate
+- `iam_seat_limit_reached_total{plan}` — P-6 refused; **product signal, not an incident**
+- `iam_stale_lifecycle_event_skipped_total{event_type}` — EVT-14 stale skip (post-DLQ-redrive spikes expected)
+- `iam_future_lifecycle_event_rejected_total{event_type}` — EVT-15 clamp; **any nonzero pages** (producer clock skew)
 - `iam_tenant_ownerless` — `count(*) WHERE ownerless_since IS NOT NULL`; **any nonzero pages `platform_operator`** (O-7 required)
 - `iam_realm_sync_pending` — `count(*) WHERE realm_sync_pending`; sustained beyond ~10 min pages (T-15)
-- `iam_session_revoke_failed_total` — sustained rate pages (AUTH-8 fast-kill degraded)
-- `iam_lifecycle_consumer_lag_seconds` — SLO-3 primary drift signal
-- `iam_delegation_expiry_deferred_total` — sustained rate warns (UP degraded)
+- `iam_session_revoke_failed_total{reason}` — sustained rate pages (AUTH-8 fast-kill degraded)
+- `iam_lifecycle_consumer_lag_seconds{event_type}` — histogram, SLO-3 primary drift signal
+- `iam_xsvc_call_latency_seconds{service,endpoint}` / `iam_xsvc_call_errors_total{service,endpoint,outcome}` — the three cross-service clients (Catalog, Group Mapping, Delegation)
 
 Full catalogue and alert routing: [`.claude/operations.md § 11.2`](.claude/operations.md).
 
 ### Tracing and logs
 
-`platform-gincommon.InitTracingFromEnv()` + `platform-pgcommon.NewOTelQueryTracer`. W3C `traceparent` propagated via `gincommon.PropagateHeaders` on every outbound call (User Profile, Workflow, Realm Provisioner). Delegation flow has parent span `delegation.create` with child spans for UP HTTP + DB write.
+`platform-gincommon.InitTracingFromEnv()` + `platform-pgcommon.NewOTelQueryTracer`. W3C `traceparent` propagated via `gincommon.PropagateHeaders` on every outbound call (Workflow, Realm Provisioner, Catalog, Group Mapping, Delegation).
 
-Zap structured logs: slow queries > 200 ms at WARN (`tenant_id` redacted); RLS violations at ERROR (1% sampled); delegation lifecycle at INFO; `tenant_ownerless_escalation` at ERROR (durable, page-worthy from I-5).
+Zap structured logs: slow queries > 200 ms at WARN (`tenant_id` redacted); RLS violations at ERROR (1% sampled); `tenant_ownerless_escalation` at ERROR (durable, page-worthy from I-5).
 
 ---
 
 ## Deployment
 
-The Helm chart in `deploy/helm/` renders a single `Deployment` (server) plus 8 `CronJob` resources, all sharing the same image with a `command: ["/reconciler", "--job=<name>"]` override:
+The Helm chart in `deploy/helm/` renders a single `Deployment` (server) plus 7 `CronJob` resources, all sharing the same image with a `command: ["/reconciler", "--job=<name>"]` override. (`delegation-expiry`, `delegation-review`, `delegation-cleanup`, and `acl-cleanup` moved to the Delegation and Tender ACL services respectively.)
 
 | CronJob | Schedule | Purpose |
 |---|---|---|
-| `delegation-expiry` | `*/5 * * * *` | Expire past `ends_at`; defers on UP 5xx (DEL-6) |
-| `invitation-expiry` | `*/15 * * * *` | Past-`expires_at` pending → `expired` + `kc_cleanup_pending=true` (PI-5) |
+| `invitation-expiry` | `*/5 * * * *` | Past-`expires_at` pending → `expired` + `kc_cleanup_pending=true` (PI-5) |
 | `invitation-kc-cleanup` | `*/10 * * * *` | Saga-compensation (PI-9): sweep `kc_cleanup_pending`, call `RP.DeleteUser`, clear flag |
-| `realm-config-sync` | `*/2 * * * *` | T-15 reconciler; disables prioritised (security-tightening) |
-| `seat-overage-reconcile` | `0 * * * *` | Seat-overage marker backstop (SEAT-5); drives past-grace alert |
+| `realm-config-sync` | `*/10 * * * *` | T-15 reconciler; disables prioritised (security-tightening) |
+| `seat-overage-reconcile` | `0 */6 * * *` | Seat-overage marker backstop (SEAT-5); drives past-grace alert |
 | `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor: soft-delete + PII-scrub for `trial_expired` past 15-d grace (§15.3) |
-| `outbox-prune` | `0 1 * * *` | `outbox.Runner.PrunePublished(24h, 10000)` |
-| `processed-events-prune` | `0 * * * *` | Delete `processed_events > 8 days` (PE-1 / IDEMP-4) |
+| `outbox-prune` | `0 3 * * *` | `outbox.Runner.PrunePublished(24h, 10000)` |
+| `processed-events-prune` | `0 4 * * *` | Delete `processed_events > 8 days` (PE-1 / IDEMP-4) |
 
-**HPA:** 2–8 replicas on CPU + `iam_memberships_cache_hit_ratio`.
+**HPA:** 2–8 replicas on CPU (70%) + memory (75%), plus an optional RPS-per-replica metric gated behind a prometheus-adapter rule.
 **PDB:** `minAvailable: 1`.
 **Resources:** CPU 100m/500m, Memory 128Mi/384Mi.
 **terminationGracePeriodSeconds:** `75` (drains the outbox and in-flight consumer messages).
 
-The 4 metric exporters (`iam_tenant_ownerless`, `iam_realm_sync_pending`, `iam_seat_overage_tenants`, `iam_pending_invitations`) run as **ticker goroutines inside `cmd/server`**, not as CronJobs — matches the sibling `iam-user-profile2` pattern.
+The 4 metric exporters (`iam_tenant_ownerless`, `iam_realm_sync_pending`, `iam_seat_overage_active`, `iam_pending_invitations_stale`) run as **ticker goroutines inside `cmd/server`**, not as CronJobs — matches the sibling `iam-user-profile2` pattern.
 
 ### CI
 
@@ -814,7 +825,7 @@ Two-stage Dockerfile: Go builder → `gcr.io/distroless/static-debian12:nonroot`
 | `valkey` | `valkey/valkey:8-alpine` | `6380` | Cache |
 | `localstack` | `localstack/localstack:4.4.0` | `4567` | S3, SNS, SQS (community); Glue + KMS require Pro |
 
-> **LocalStack community vs Pro:** the default `docker-compose.yml` uses the community image (S3, SNS, SQS). Glue Schema Registry and KMS are Pro-only. `GLUE_REGISTRY_NAME_*` must be **unset** in local dev — the service falls back to `NoopCodec` (plain JSON, no Glue wire-format header). Setting `GLUE_REGISTRY_NAME_*` under `PG_BOUNCER_MODE=true` will corrupt `outbox_events.payload` because the 18-byte Glue header is not valid JSONB. Use `make docker-up-pro` and set `LOCALSTACK_AUTH_TOKEN` in `.env` for Glue.
+> **LocalStack community vs Pro:** the default `docker-compose.yml` uses the community image (S3, SNS, SQS). Glue Schema Registry and KMS are Pro-only. Leave `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_TENANT_NAME` **unset** in local dev — the service falls back to `NoopCodec` (plain JSON, no Glue wire-format header) on that topic. This is independent of `PG_BOUNCER_MODE` either way: the Glue codec only runs at SNS-publish time, never against `outbox_events`. Use `make docker-up-pro` and set `LOCALSTACK_AUTH_TOKEN` in `.env` for Glue.
 
 ### Building the service image
 
@@ -845,7 +856,6 @@ For write operations, O&M availability = O&M × dependency (except fail-open). *
 | Operation | Sync dependency | Posture | On failure |
 |---|---|---|---|
 | Invite (P-6) | RP `CreateInvitedUser` | **fail-closed** | `503 realm_provisioner_unavailable`, no invitation, retryable |
-| Delegation create (P-19) | UP `SetAvailability` | **fail-closed** | `503 user_profile_unavailable`, no delegation, retryable |
 | User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow `GetDelegateImpact` | **fail-closed** | `503 workflow_service_unavailable`, no change (WFI-8) |
 | Removal resolution (P-26) | Workflow reassign/cancel + re-check | **fail-closed** | `503`, no DB write |
 | Suspension (P-7) | Workflow `GetDelegateImpact` (advisory) | **fail-open** | suspend commits, advisory omitted |
@@ -853,8 +863,10 @@ For write operations, O&M availability = O&M × dependency (except fail-open). *
 | Invite compensation / revoke / expiry KC-cleanup | RP `DeleteUser` | **async + durable reconcile** | `kc_cleanup_pending=true`, PI-9 reconciler converges |
 | Session revoke (AUTH-8) | RP `RevokeUserSessions` | **fail-open (TTL backstop)** | O&M commits, TTL bounds effective cutoff |
 | Plan-defaults on I-8 miss | Catalog Service `PlanByCode` (via `catalogReader`, `om:plans` cache) | **fail-open (swallowed)** | I-8 proceeds with no plan-default merge — never a hard failure on the hot path |
+| Dept-membership Assign/Remove (P-10/P-11) | Delegation Service dept-delegate lookup | **fail-open** | degrades to tenant-wide delegate-impact scoping, never blocks the request |
+| SAML/OIDC JIT dept resolution (I-10) | Group Mapping Service group-resolution | **fail-open** | empty resolution returned, login still succeeds |
 
-Three fail-closed calls (invite, delegation, removal/resolution) stop completing during the respective dependency's outage; none corrupts state. Fail-open + durable reconcile chosen for security-critical and high-value paths.
+Three fail-closed calls (invite, removal, removal-resolution) stop completing during the respective dependency's outage; none corrupts state. Fail-open + durable reconcile chosen for security-critical and high-value paths.
 
 ---
 
@@ -873,6 +885,10 @@ This service does **not** handle:
 | Metered quota consumption (tokens, requests) | Usage & Metering (HLD §10.6) |
 | Pricing, currency, seat enforcement past grace | Billing (`default_currency` is deliberately not stored here — §16 A32(b) / T-3) |
 | Notification delivery | Notification Service |
+| Global departments/plans catalog | Catalog / Admin Config Service (`iam-catalog-admin`) |
+| Group→dept/role JIT mapping tables + admin CRUD | Group Mapping / JIT Config Service (`iam-group-mapping`) |
+| Tender ACL overlay grants | Tender ACL Service (`iam-tender-acl`) |
+| Delegation records, OOO coordination, delegation review/expiry policy | Delegation Service (`iam-delegation`) |
 
 ---
 
@@ -886,12 +902,12 @@ Detailed reference docs in `.claude/` — consumed by Claude Code when working i
 |----------|-------------|
 | [`.claude/CLAUDE.md`](.claude/CLAUDE.md) | Service pitch, key files, ownership boundaries |
 | [`.claude/architecture.md`](.claude/architecture.md) | Clean Architecture layout, shared library integration |
-| [`.claude/database-schema.md`](.claude/database-schema.md) | 15-table schema, RLS/tenant/seat invariants |
+| [`.claude/database-schema.md`](.claude/database-schema.md) | 8-table schema, RLS/tenant/seat invariants |
 | [`.claude/api-caching-events.md`](.claude/api-caching-events.md) | Endpoint catalogue, cache keys, event catalogue, EVT-14/15/16 |
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegation, invite→accept, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, deployment, CI/CD, dependency matrix |
 
-Full LLD (v1.61 Draft, 4799 lines) lives at `iam-lld-org-membership-Final.md` in the repo root.
+Full LLD (v2.0) lives at [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md).
 
 For the detailed architecture narrative with diagrams see [ARCHITECTURE.md](ARCHITECTURE.md).
 

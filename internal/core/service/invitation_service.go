@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -32,12 +31,15 @@ type InvitationService struct {
 	rp               port.RealmProvisionerClient
 	cache            port.Cache
 	txRunner         port.TxRunner
-	logger           *slog.Logger
+	logger           port.SlogStyleLogger
 	expiryDays       int
 	reinviteCooldown time.Duration // PI-11: 0 = disabled
 	maxPerHour       int           // PI-12: 0 = disabled
 }
 
+// NewInvitationService builds an InvitationService. logger may be nil — see
+// NewMembershipService's doc comment for the fallback/production-wiring
+// contract, which applies identically here.
 func NewInvitationService(
 	inv port.InvitationRepository,
 	m port.MembershipRepository,
@@ -47,18 +49,16 @@ func NewInvitationService(
 	rp port.RealmProvisionerClient,
 	cache port.Cache,
 	txRunner port.TxRunner,
-	logger *slog.Logger,
+	logger port.Logger,
 	expiryDays int,
 ) *InvitationService {
 	if expiryDays <= 0 {
 		expiryDays = 7
 	}
-	if logger == nil {
-		logger = slog.Default()
-	}
 	return &InvitationService{
 		invites: inv, memberships: m, roles: roles, deptMems: deptMems,
-		tenants: t, rp: rp, cache: cache, txRunner: txRunner, logger: logger, expiryDays: expiryDays,
+		tenants: t, rp: rp, cache: cache, txRunner: txRunner,
+		logger: port.NewSlogStyleLogger(logger), expiryDays: expiryDays,
 	}
 }
 
@@ -164,10 +164,14 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 
 	// SEAT-1/TM-13 (LLD line 815, 40): transactional cap re-check under
 	// SELECT ... FOR UPDATE on the tenants row so two concurrent Invite
-	// calls cannot both slip past a stale under-cap count. Compensating
-	// RP DeleteUser on race (CONS-2 §8.10) — best-effort; on RP failure
-	// mark for the invitation-kc-cleanup reconciler (PI-9).
+	// calls cannot both slip past a stale under-cap count. On a lost race,
+	// PI-9: commit a terminal 'revoked' row carrying the already-created
+	// keycloak_user_id with kc_cleanup_pending=true, rather than rolling
+	// back and losing the only reference to that Keycloak user — the
+	// invitation-kc-cleanup reconciler then durably converges the delete
+	// even if the inline best-effort attempt below (or the pod) fails.
 	var created *domain.PendingInvitation
+	var seatLimitErr *domain.DomainError
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
 		tx, ok := pgadapterTxFromContext(txCtx)
 		if !ok {
@@ -185,11 +189,28 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 			return err
 		}
 		if active+pending >= licensedSeats {
-			return domain.NewError(domain.ErrSeatLimitReached, "seat limit reached").WithDetails(map[string]any{
+			orphan := &domain.PendingInvitation{
+				TenantID:       tenantID,
+				Email:          req.Email,
+				FullName:       req.FullName,
+				InvitedBy:      actorID,
+				KeycloakUserID: &rpResp.KeycloakUserID,
+				Status:         domain.InviteRevoked,
+				ExpiresAt:      time.Now().UTC(),
+			}
+			row, ierr := s.invites.Insert(txCtx, orphan)
+			if ierr != nil {
+				return ierr
+			}
+			if ierr := s.invites.SetKCCleanupPending(txCtx, tenantID, row.ID, true, row.RecordVersion); ierr != nil {
+				return ierr
+			}
+			seatLimitErr = domain.NewError(domain.ErrSeatLimitReached, "seat limit reached").WithDetails(map[string]any{
 				"licensed_seats":      licensedSeats,
 				"active_users":        active,
 				"pending_invitations": pending,
 			})
+			return nil // commit the durable orphan-cleanup row
 		}
 		inv := &domain.PendingInvitation{
 			TenantID:            tenantID,
@@ -210,17 +231,26 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 		return nil
 	})
 	if err != nil {
-		// Compensating cleanup: the KC user was created but we didn't stage
-		// a pending_invitations row, so nothing points to it — best-effort
-		// delete it now. PI-9 kc_cleanup_pending is the durable analogue
-		// (would need a persistent orphan-KC-users tombstone table to hold
-		// the reference; not modeled today, so a fail-open RP DeleteUser
-		// is the current compensation).
+		// The KC user was created but no pending_invitations row exists to
+		// point at it (the tx failed before either commit branch above ran,
+		// e.g. a connectivity error) — best-effort delete it now. There is
+		// no durable marker for this case.
 		if delErr := s.rp.DeleteUser(ctx, tenantID, rpResp.KeycloakUserID); delErr != nil {
-			s.logger.Warn("SEAT-1 lost race — compensating RP DeleteUser failed",
+			s.logger.Warn("Invite tx failed — compensating RP DeleteUser failed",
 				"tenant_id", tenantID, "keycloak_user_id", rpResp.KeycloakUserID, "error", delErr.Error())
 		}
 		return nil, err
+	}
+	if seatLimitErr != nil {
+		// Durable kc_cleanup_pending row already committed above (PI-9) —
+		// this immediate attempt is just a latency optimization, not the
+		// correctness mechanism. Its failure is expected to be swept by
+		// the invitation-kc-cleanup reconciler, so it only logs at Warn.
+		if delErr := s.rp.DeleteUser(ctx, tenantID, rpResp.KeycloakUserID); delErr != nil {
+			s.logger.Warn("SEAT-1 lost race — immediate RP DeleteUser failed, durable kc_cleanup_pending will retry",
+				"tenant_id", tenantID, "keycloak_user_id", rpResp.KeycloakUserID, "error", delErr.Error())
+		}
+		return nil, seatLimitErr
 	}
 
 	if s.cache != nil {

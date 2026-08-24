@@ -27,10 +27,10 @@ TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/inbound/consumer/... \
                       ./internal/adapter/outbound/eventbus/... \
                       ./internal/adapter/outbound/postgres/... \
-                      ./internal/adapter/outbound/userprofile/... \
                       ./internal/adapter/outbound/workflow/... \
                       ./internal/adapter/outbound/realmprovisioner/... \
                       ./internal/adapter/outbound/catalogadmin/... \
+                      ./internal/adapter/outbound/groupmappingclient/... \
                       ./internal/adapter/outbound/metrics/... \
                       ./internal/adapter/outbound/valkey/... \
                       ./internal/core/service/... \
@@ -94,10 +94,9 @@ help:
 	@echo "  make test-ci         - test with race detector + coverage (used in CI)"
 	@echo "  make test-unit       - unit tests only (no Docker required)"
 	@echo "  make test-postgres   - Postgres + RLS integration tests (requires Docker)"
-	@echo "  make test-integration- cross-layer integration tests (SNS/SQS via LocalStack)"
-	@echo "  make test-e2e        - end-to-en
-	d tests (requires Docker)"
-	@echo "  make test-smoke      - smoke tests against a running APP_URL"
+	@echo "  make test-integration - cross-layer integration tests (SNS/SQS via LocalStack)"
+	@echo "  make test-e2e        - end-to-end tests (requires Docker)"
+	@echo "  make test-smoke      - CI-only image gate: size <=200MB + startup-gate check (requires a local docker image tagged iam-org-membership-ci-test)"
 	@echo "  make race            - all tests with -race flag"
 	@echo "  make run             - run the server locally (go run)"
 	@echo "  make build           - compile both binaries to bin/"
@@ -237,7 +236,7 @@ test-e2e:
 
 .PHONY: test-smoke
 test-smoke:
-	APP_URL="$${APP_URL:-http://localhost:8080}" bash .github/scripts/smoke-tests.sh
+	bash .github/scripts/smoke-tests.sh
 
 .PHONY: race
 race:
@@ -343,36 +342,89 @@ schema-diff:
 	  --proposed    "$(PROPOSED)" \
 	  --schema-name "$(or $(SCHEMA_NAME),$(notdir $(basename $(PROPOSED))))"
 
+# schema-register: register event schemas to BOTH Glue registries (SCHEMA-7 —
+# unlike single-registry iam-user-profile, org-membership backs two SNS
+# topics with two registries). Requires AWS credentials or LocalStack; set
+# AWS_ENDPOINT_URL=http://localhost:4567 in .env for LocalStack.
 .PHONY: schema-register
 schema-register:
-	@test -n "$(GLUE_REGISTRY_NAME)" || { \
-	  echo "GLUE_REGISTRY_NAME is not set — add it to .env"; \
+	@test -n "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" || { \
+	  echo "GLUE_REGISTRY_MEMBERSHIP_NAME is not set — add it to .env"; \
 	  exit 1; \
 	}
-	docker run --rm \
-	  -v "$(CURDIR)":/workspace \
-	  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
-	  -e AWS_REGION="$(AWS_REGION)" \
-	  -e AWS_ENDPOINT_URL="$(AWS_ENDPOINT_URL)" \
-	  "$(SCHEMA_GOV_IMAGE)" register \
-	  --registry   "$(GLUE_REGISTRY_NAME)" \
-	  --schema-dir internal/adapter/outbound/eventbus/schemas
+	@test -n "$(GLUE_REGISTRY_TENANT_NAME)" || { \
+	  echo "GLUE_REGISTRY_TENANT_NAME is not set — add it to .env"; \
+	  exit 1; \
+	}
+	@for registry in $(GLUE_REGISTRY_MEMBERSHIP_NAME) $(GLUE_REGISTRY_TENANT_NAME); do \
+	  echo "Registering schemas -> $$registry"; \
+	  docker run --rm \
+	    -v "$(CURDIR)":/workspace \
+	    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+	    -e AWS_REGION="$(AWS_REGION)" \
+	    -e AWS_ENDPOINT_URL="$(AWS_ENDPOINT_URL)" \
+	    "$(SCHEMA_GOV_IMAGE)" register \
+	    --registry   "$$registry" \
+	    --schema-dir internal/adapter/outbound/eventbus/schemas || exit 1; \
+	done
 
+# schema-verify: fail if any of the 13 expected PascalCase schema names is
+# missing from its Glue registry (11 in GLUE_REGISTRY_MEMBERSHIP_NAME, 2 —
+# TenantCreated/TrialStarted — in GLUE_REGISTRY_TENANT_NAME per SCHEMA-7).
+# Names match domain.TopicForEvent's routing + the LLD §7.3.1 registry-layout
+# table. Surfaces a mismatch pre-deploy rather than at first-event publish.
+# Requires GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME and AWS
+# credentials.
 .PHONY: schema-verify
 schema-verify:
-	@test -n "$(GLUE_REGISTRY_NAME)" || { echo "GLUE_REGISTRY_NAME is not set"; exit 1; }
-	@echo "Phase 3 fills in the expected schema-name checklist."
+	@test -n "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" || { \
+	  echo "GLUE_REGISTRY_MEMBERSHIP_NAME is not set — add it to .env"; \
+	  exit 1; \
+	}
+	@test -n "$(GLUE_REGISTRY_TENANT_NAME)" || { \
+	  echo "GLUE_REGISTRY_TENANT_NAME is not set — add it to .env"; \
+	  exit 1; \
+	}
+	@missing=""; \
+	for name in DepartmentMembershipGranted DepartmentMembershipLevelChanged DepartmentMembershipRevoked MembershipRevoked TenantMembershipsPurged TenantRoleGranted TenantRoleRevoked TenantSeatOverageResolved TenantSeatOverageStarted TenantStateChanged TenderAssigneeOverridden; do \
+	  if ! aws glue get-schema \
+	      --schema-id "RegistryName=$(GLUE_REGISTRY_MEMBERSHIP_NAME),SchemaName=$$name" \
+	      --region "$(AWS_REGION)" >/dev/null 2>&1; then \
+	    missing="$$missing $(GLUE_REGISTRY_MEMBERSHIP_NAME):$$name"; \
+	  fi; \
+	done; \
+	for name in TenantCreated TrialStarted; do \
+	  if ! aws glue get-schema \
+	      --schema-id "RegistryName=$(GLUE_REGISTRY_TENANT_NAME),SchemaName=$$name" \
+	      --region "$(AWS_REGION)" >/dev/null 2>&1; then \
+	    missing="$$missing $(GLUE_REGISTRY_TENANT_NAME):$$name"; \
+	  fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "FAIL: missing Glue schemas:$$missing"; \
+	  echo "     run 'make schema-register' to create them"; \
+	  exit 1; \
+	fi; \
+	echo "OK: all 13 schemas present across both registries"
 
+# schema-prune: dry-run scan for orphaned Glue schemas in BOTH registries
+# (exist in Glue, not in repo). Pass EXECUTE=true to archive and delete:
+# make schema-prune EXECUTE=true. Requires GLUE_REGISTRY_MEMBERSHIP_NAME/
+# GLUE_REGISTRY_TENANT_NAME and AWS credentials.
 .PHONY: schema-prune
 schema-prune:
-	@test -n "$(GLUE_REGISTRY_NAME)" || { echo "GLUE_REGISTRY_NAME is not set"; exit 1; }
-	docker run --rm \
-	  -v "$(CURDIR)":/workspace \
-	  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
-	  -e AWS_REGION="$(AWS_REGION)" \
-	  "$(SCHEMA_GOV_IMAGE)" prune \
-	  --registry "$(GLUE_REGISTRY_NAME)" \
-	  $(if $(filter true,$(EXECUTE)),--execute,)
+	@test -n "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" || { echo "GLUE_REGISTRY_MEMBERSHIP_NAME is not set"; exit 1; }
+	@test -n "$(GLUE_REGISTRY_TENANT_NAME)" || { echo "GLUE_REGISTRY_TENANT_NAME is not set"; exit 1; }
+	@for registry in $(GLUE_REGISTRY_MEMBERSHIP_NAME) $(GLUE_REGISTRY_TENANT_NAME); do \
+	  echo "Pruning orphaned schemas -> $$registry"; \
+	  docker run --rm \
+	    -v "$(CURDIR)":/workspace \
+	    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+	    -e AWS_REGION="$(AWS_REGION)" \
+	    "$(SCHEMA_GOV_IMAGE)" prune \
+	    --registry "$$registry" \
+	    $(if $(filter true,$(EXECUTE)),--execute,) || exit 1; \
+	done
 
 # -----------------------------
 # CLEAN
@@ -389,24 +441,23 @@ clean:
 # -----------------------------
 # DOCS
 # -----------------------------
-# Both OpenAPI and AsyncAPI specs are hand-maintained under api/. The service
-# binary embeds them via //go:embed (internal/adapter/inbound/http/{openapi,
-# asyncapi}.yaml — copies of the source-of-truth files under api/) and serves:
+# OpenAPI and AsyncAPI specs have different sources of truth:
+#   - OpenAPI (docs/swagger/{docs.go,swagger.json,swagger.yaml}) is GENERATED
+#     from swag `@Summary`/`@Tags`/`@Router` annotations on handler functions
+#     via `make swag` — never hand-edited. `docs.go`'s init() registers it
+#     for ginSwagger.WrapHandler to serve; there is no raw-file embed.
+#   - AsyncAPI (api/asyncapi.yaml) IS hand-maintained; the service binary
+#     embeds it directly via //go:embed in api/embed.go (apispec.AsyncAPISpec) —
+#     no synced duplicate copy, so there is nothing to fall out of sync.
+# Serves:
 #   /              landing page (linking both doc surfaces)
 #   /docs          same landing page
-#   /swagger       Swagger UI rendering /openapi.yaml (REST — Try it out enabled)
+#   /swagger       Swagger UI rendering the generated OpenAPI spec (REST — Try it out enabled)
 #   /asyncapi      AsyncAPI Studio rendering /asyncapi.yaml (Events — read-only)
-#   /openapi.yaml  raw spec
 #   /asyncapi.yaml raw spec
 #
-# `make docs-sync` re-copies api/*.yaml into internal/adapter/inbound/http/ and
-# docs/swagger/ so the embed and the on-disk mirror both stay current after
-# editing api/openapi.yaml or api/asyncapi.yaml.
-.PHONY: docs-sync
-docs-sync:
-	@echo "Syncing api/asyncapi.yaml → internal/adapter/inbound/http/asyncapi.yaml (for //go:embed)"
-	@cp api/asyncapi.yaml internal/adapter/inbound/http/asyncapi.yaml
-	@echo "Done. The OpenAPI spec is generated from handler annotations via 'make swag'."
+# Run `make swag` after changing handler annotations; api/asyncapi.yaml takes
+# effect on the next build/run since it's a direct compile-time embed.
 
 # swag: generate the OpenAPI/Swagger 2.0 spec from // @… annotations on handlers
 # under cmd/server and internal/adapter/inbound/http. Mirrors iam-user-profile2's

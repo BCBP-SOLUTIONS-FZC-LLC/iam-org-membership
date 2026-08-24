@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -21,7 +22,7 @@ const exporterInterval = 5 * time.Minute
 // Every exporter emits once at startup (populates the gauge before the
 // first Prometheus scrape), then on a 5-minute ticker. Errors are logged
 // at Warn — a scrape returning stale data is preferable to a panic.
-func runBusinessExporters(ctx context.Context, sysPool *pgxpool.Pool, log Logger) {
+func runBusinessExporters(ctx context.Context, sysPool *pgcommon.Pool, log Logger) {
 	go runGaugeExporter(ctx, sysPool, log,
 		"tenant_ownerless",
 		`SELECT count(*) FROM tenants WHERE ownerless_since IS NOT NULL AND deleted_at IS NULL`,
@@ -40,10 +41,13 @@ func runBusinessExporters(ctx context.Context, sysPool *pgxpool.Pool, log Logger
 		func(v int) { metrics.PendingInvitationsStale.Set(float64(v)) })
 }
 
-func runGaugeExporter(ctx context.Context, pool *pgxpool.Pool, log Logger, name, sql string, set func(int)) {
+func runGaugeExporter(ctx context.Context, pool *pgcommon.Pool, log Logger, name, sql string, set func(int)) {
 	emit := func() {
 		var n int
-		if err := pool.QueryRow(ctx, sql).Scan(&n); err != nil {
+		err := pool.WithConn(ctx, func(ctx context.Context, conn *pgxpool.Conn) error {
+			return conn.QueryRow(ctx, sql).Scan(&n)
+		})
+		if err != nil {
 			log.Warn("gauge exporter query failed", map[string]interface{}{"gauge": name, "error": err.Error()})
 			return
 		}

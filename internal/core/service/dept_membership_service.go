@@ -15,10 +15,11 @@ type DeptMembershipService struct {
 	memberships     port.MembershipRepository
 	tenantDepts     port.TenantDepartmentRepository
 	catalog         port.DepartmentCatalogReader // global catalog — D-5/TD-6 retired check
-	delegations     port.DelegationRepository
+	delegationCheck port.DelegationCheckClient   // ADR-0008 v2 §6.4: Core→Delegation DLG-I3 call, replaces the local FindActiveDeptDelegateForUser lookup
 	workflow        port.WorkflowClient
 	cache           port.Cache
 	txRunner        port.TxRunner
+	log             port.SlogStyleLogger // optional — see WithLogger
 }
 
 func NewDeptMembershipService(
@@ -26,14 +27,40 @@ func NewDeptMembershipService(
 	m port.MembershipRepository,
 	td port.TenantDepartmentRepository,
 	catalog port.DepartmentCatalogReader,
-	del port.DelegationRepository,
+	delegationCheck port.DelegationCheckClient,
 	wf port.WorkflowClient,
 	cache port.Cache,
 	txRunner port.TxRunner,
 ) *DeptMembershipService {
 	return &DeptMembershipService{
-		deptMemberships: dm, memberships: m, tenantDepts: td, catalog: catalog, delegations: del, workflow: wf, cache: cache, txRunner: txRunner,
+		deptMemberships: dm, memberships: m, tenantDepts: td, catalog: catalog, delegationCheck: delegationCheck, workflow: wf, cache: cache, txRunner: txRunner,
 	}
+}
+
+// WithLogger injects the shared gincommon-backed Logger so this service's
+// degraded-path warnings flow through the same sink as HTTP/consumer/
+// outbound-client logs instead of slog.Default(). Optional — the zero value
+// falls back to the top-level slog functions.
+func (s *DeptMembershipService) WithLogger(log port.Logger) *DeptMembershipService {
+	s.log = port.NewSlogStyleLogger(log)
+	return s
+}
+
+// deptDelegateOrDegrade calls the Delegation Service's DLG-I3 dept-delegate
+// lookup and, on failure, degrades to nil (tenant-wide impact) rather than
+// failing the whole Assign/Remove — LLD §11.5: "on a Delegation outage the
+// gate degrades to tenant-wide impact (still correct, less precise)".
+func (s *DeptMembershipService) deptDelegateOrDegrade(ctx context.Context, tenantID, userID, deptID uuid.UUID) *uuid.UUID {
+	if s.delegationCheck == nil {
+		return nil
+	}
+	id, err := s.delegationCheck.DeptDelegate(ctx, tenantID, userID, deptID)
+	if err != nil {
+		s.log.WarnContext(ctx, "deptmembership: DeptDelegate call failed — degrading to tenant-wide impact",
+			"tenant_id", tenantID, "user_id", userID, "dept_id", deptID, "error", err.Error())
+		return nil
+	}
+	return id
 }
 
 // ListByDepartment is P-9 — dept members by level.
@@ -104,13 +131,10 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 		// WFI-10: scope='all' delegations are excluded (handled by GetDelegateImpact
 		// taking an optional delegation_id; we pass the specific dept delegation).
 		// WFI-12: promotions (higher or equal level) never trigger.
-		if preflightPrevious != nil && level.Rank() < preflightPrevious.RoleLevel.Rank() && s.delegations != nil && s.workflow != nil {
-			delg, err := s.delegations.FindActiveDeptDelegateForUser(txCtx, tenantID, userID, deptID)
-			if err != nil {
-				return err
-			}
-			if delg != nil {
-				impact, err := s.workflow.GetDelegateImpact(txCtx, tenantID, userID, &delg.ID)
+		if preflightPrevious != nil && level.Rank() < preflightPrevious.RoleLevel.Rank() && s.workflow != nil {
+			delegationID := s.deptDelegateOrDegrade(txCtx, tenantID, userID, deptID)
+			if delegationID != nil {
+				impact, err := s.workflow.GetDelegateImpact(txCtx, tenantID, userID, delegationID)
 				if err != nil {
 					// WFI-9 fail-open: workflow unavailable → allow level decrease
 					_ = err
@@ -181,17 +205,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 // A `nil` delegation_id preserves today's tenant-wide behavior (§8.8 full
 // removal), which is not what we want here.
 func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, deptID uuid.UUID, actorID uuid.UUID) (*domain.DeptMembership, error) {
-	var delegationID *uuid.UUID
-	if s.delegations != nil {
-		d, err := s.delegations.FindActiveDeptDelegateForUser(ctx, tenantID, userID, deptID)
-		if err != nil {
-			return nil, err
-		}
-		if d != nil {
-			id := d.ID
-			delegationID = &id
-		}
-	}
+	delegationID := s.deptDelegateOrDegrade(ctx, tenantID, userID, deptID)
 	impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, delegationID)
 	if err == nil && impact.ActiveWorkflows > 0 {
 		return nil, domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").

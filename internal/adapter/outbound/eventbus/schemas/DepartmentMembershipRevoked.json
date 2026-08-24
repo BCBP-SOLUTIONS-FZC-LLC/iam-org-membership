@@ -3,7 +3,7 @@
   "$id": "DepartmentMembershipRevoked",
   "title": "DepartmentMembershipRevoked",
   "type": "object",
-  "required": ["user_id", "tenant_id", "department_id"],
+  "required": ["user_id", "tenant_id", "department_id", "actor_id"],
   "properties": {
     "user_id":       { "type": "string", "format": "uuid" },
     "tenant_id":     { "type": "string", "format": "uuid" },

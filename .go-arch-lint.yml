@@ -36,6 +36,12 @@ components:
   eventschema:
     in: internal/adapter/outbound/eventbus/schemas
 
+  # Embedded AsyncAPI spec asset (api/asyncapi.yaml, api/embed.go) — single
+  # source of truth for the event contract, embedded directly rather than a
+  # synced duplicate under internal/adapter/inbound/http.
+  apispec:
+    in: api
+
   # Cross-cutting Prometheus counters/histograms. Imported by both inbound
   # handlers and outbound adapters (SQS consumer, reconciler binary).
   observability:
@@ -51,9 +57,11 @@ components:
       - internal/adapter/outbound/postgres
       - internal/adapter/outbound/valkey
       - internal/adapter/outbound/eventbus
-      - internal/adapter/outbound/userprofile
       - internal/adapter/outbound/workflow
       - internal/adapter/outbound/realmprovisioner
+      - internal/adapter/outbound/catalogadmin
+      - internal/adapter/outbound/groupmappingclient
+      - internal/adapter/outbound/delegationcheck
 
   # Generated Swagger docs — output of `make swag` (swaggo/swag). Declared as a
   # component so arch-lint doesn't fail on the blank import in cmd/server/main.go.
@@ -75,12 +83,16 @@ deps:
     mayDependOn:
       - domain
 
-  # service: domain + port + requestctx.
+  # service: domain + port + requestctx + observability (membership_service.go,
+  # catalog_service.go, group_mapping_service.go, provisioning_service.go all
+  # import internal/adapter/outbound/metrics directly — see that component's
+  # own comment above).
   service:
     mayDependOn:
       - domain
       - port
       - requestctx
+      - observability
 
   # requestctx: no internal deps.
   requestctx:
@@ -90,11 +102,16 @@ deps:
   eventschema:
     anyVendorDeps: true
 
+  # apispec: pure embedded asset, no internal deps.
+  apispec:
+    anyVendorDeps: true
+
   # observability: instrumentation only.
   observability:
     anyVendorDeps: true
 
-  # inbound adapters: service + port + domain + requestctx + observability.
+  # inbound adapters: service + port + domain + requestctx + observability +
+  # apispec (docs.go/asyncapi.go embed and serve api/asyncapi.yaml directly).
   adapters_inbound:
     mayDependOn:
       - service
@@ -102,6 +119,7 @@ deps:
       - domain
       - requestctx
       - observability
+      - apispec
 
   # outbound adapters: port + domain + eventschema + observability.
   adapters_outbound:

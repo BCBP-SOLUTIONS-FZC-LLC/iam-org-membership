@@ -26,8 +26,8 @@
 **AUTH-1..AUTH-8:**
 - **AUTH-1** — Tenant-level reads require **active** membership in target tenant.
 - **AUTH-2** — Tenant-admin mutations (add/remove/change roles/group mappings/dept activation) require `tenant_admin` OR `tenant_owner`.
-- **AUTH-3** — Tender ACL management requires `tender_admin`, `tenant_admin`, or `tenant_owner`.
-- **AUTH-4** — Delegation create is self-service; cancelling **another user's** delegation requires `tenant_admin`/`tenant_owner`. Both delegator and delegate must be active members (DEL-1).
+- **AUTH-3** — *Retired* — tender-ACL management authz moved to the Tender ACL Service (`iam-tender-acl`, ADR-0007 Wave 3) along with the ACL endpoints themselves (P-21/22/23, I-12).
+- **AUTH-4** — *Retired* — delegation create/cancel authz moved to the standalone Delegation Service (`iam-delegation`, ADR-0008) along with the delegation endpoints themselves (P-18/19/20/32/33).
 - **AUTH-5** — System principal (`iam-system`, `…00a1`) accepted only on `/api/v1/internal/*`.
 - **AUTH-6** — Every operator route re-checks `platform_operator` from `rc.Roles` **before any DB access**. DB role stays `org_membership_app`.
 - **AUTH-7** — `platform_operator` defended in depth: (1) network isolation (operator ingress only, §10.2); (2) handler re-check (AUTH-6); (3) gateway header hygiene (strips client-supplied `x-tenant-roles`, sources `platform_operator` claim only from operator IdP — the gateway/platform-security team's contract, not O&M's enforcement).
@@ -53,8 +53,8 @@
 | P-12 | `GET /tenants/:id/roles` | Role catalog (`dept_role_labels`) | member | yes |
 | P-13 | `PATCH /tenants/:id/roles/:role_code` | Update `display_name` only | tenant_admin/owner | invalidates |
 | P-14/P-15/P-16/P-17/P-29 | *retired* | — | Group→role/department mapping CRUD moved to Group Mapping Service (`group-mapping-jit-config`, ADR-0007 Wave 2), along with `group_dept_role_mappings`/`group_tenant_role_mappings`/`group_dept_mappings` themselves — see `database-schema.md`. IDs never reused. |
-| P-18/P-19/P-20 | `GET`/`POST`/`DELETE /delegations[/:id]` | List/create/cancel delegation (POST also coordinates User Profile) | self / self+admin | see caching |
-| P-21/P-22/P-23 | `GET`/`POST`/`DELETE /tenants/:id/tenders/:tender_id/acl[/:user_id]` | List/grant/revoke tender ACL (accepts optional `reason`, `expires_at`) | tender_admin/tenant_admin/tenant_owner | yes/invalidates |
+| P-18/P-19/P-20/P-32/P-33 | *retired* | — | List/create/cancel/extend/reassign delegation moved to the standalone Delegation Service (`iam-delegation`, ADR-0008) — DLG-1..5, along with the `delegations` table itself and `tenants.delegation_max_duration_days`/`delegation_review_window_days` — see `database-schema.md`. IDs never reused. |
+| P-21/P-22/P-23 | *retired* | — | List/grant/revoke tender ACL moved to the Tender ACL Service (`iam-tender-acl`, ADR-0007 Wave 3) — TAC-1/2/3, along with `tender_acl_entries` (+ `tender_acl_level` ENUM) — see `database-schema.md`. IDs never reused. |
 | P-24/P-25 | `POST`/`PATCH /tenants/:id/departments[/:dept_id]` | Activate/deactivate/reactivate tenant department | tenant_admin/owner | invalidates |
 | P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve blocked removal/demotion — `replace_delegate` or `stop_workflows` (§8.8.3/§8.8.4) | tenant_admin/owner | invalidates |
 | P-27 | `GET /tenants/:id/seat-usage` | `{active_users, pending_invitations, licensed_seats, over_cap, overage_since, grace_ends_at}` | tenant_admin/owner | yes (30 s TTL) |
@@ -75,8 +75,9 @@
 | I-9 | `GET /tenants/:id/locale` | LLM Service | Tenant default locale for prompt assembly |
 | I-10 | `POST /tenants/:id/dept-memberships` | Event Consumer | SAML group assertion → dept memberships **+ additive tenant-role grants** (§8.5, GTRM-4) |
 | I-11 | `GET /tenants/:id/seat-usage` | Billing | Same handler as P-27; pre-check before seat reduction |
-| I-12 | `GET /tenants/:id/tenders/:tender_id/acl/:user_id` | Tender Service / AuthZ | Service-to-service tender-ACL check: `{has_access, access_level}` for active grant (TAE-3) |
+| I-12 | *retired* | — | Tender-ACL check moved to the Tender ACL Service (`iam-tender-acl`, ADR-0007 Wave 3) — TAC-4. ID never reused. |
 | I-13 | `POST /tenants/:id/tenders/:tender_id/assignee-override` | Workflow Service | Validate-and-emit for node reassignment. Body `{new_user_id, department_id, required_level, actor_id}`. Checks actor holds `tender_admin` (`403 insufficient_role`) and new assignee is active member at `required_level` in `department_id` (`422 assignee_ineligible`). Emits `TenderAssigneeOverridden` on pass. **O&M persists nothing** (OVR-1). |
+| I-15 | `GET /tenants/:id/members/:user_id/exists` | Tender ACL Service, Delegation Service | **NEW** — grant-time membership-existence check, replacing the composite membership FKs both services lost when their tables moved to separate databases; response `{active, tenant_membership_id}` (`tenant_membership_id` populated only when active); never 404s |
 
 **Internal API invariants (IAPI-1..5):**
 - **IAPI-1** — Internal routes callable only by mTLS-authenticated in-mesh services; external ingress blocked.
@@ -102,14 +103,14 @@ Per `gincommon.ErrorResponse` `{code, message, request_id, trace_id, details}`. 
 | Code | Meaning | Triggers |
 |---|---|---|
 | 200 / 201 / 202 / 204 | Success | 202 = P-6 invite staged |
-| 400 | Validation | `invalid_uuid`, `invalid_locale`, `invalid_slug`, `invalid_role_level`, `invalid_role` (incl. `member`, TR-7), `invalid_delegation_scope`, `invalid_access_level` (view/edit/approve, §16 A32(c)), `invalid_limit`, `invalid_cursor`, `unknown_feature_flag` (O-4 allow-list), `invalid_feature_value` (non-scalar, PLAN-6(d)), `invalid_mfa_freshness_seconds` (T-10) |
+| 400 | Validation | `invalid_uuid`, `invalid_locale`, `invalid_slug`, `invalid_role_level`, `invalid_role` (incl. `member`, TR-7), `invalid_limit`, `invalid_cursor`, `unknown_feature_flag` (O-4 allow-list), `invalid_feature_value` (non-scalar, PLAN-6(d)), `invalid_mfa_freshness_seconds` (T-10) |
 | 401 | `missing_identity_headers` |
 | 403 | `insufficient_role`, `cannot_remove_owner` |
-| 404 | `tenant_not_found`, `member_not_found`, `department_not_found`, `delegation_not_found`, `invitation_not_found` (revoke on non-pending) |
+| 404 | `tenant_not_found`, `member_not_found`, `department_not_found`, `invitation_not_found` (revoke on non-pending) |
 | 409 | Conflict/optimistic-lock/race | `slug_already_taken`, `member_already_exists`, `dept_membership_already_exists`, `optimistic_lock_conflict` (echoes current `record_version`), **`workflow_resolution_required`** (§8.8/§8.8.4 — body has `active_workflows`, `workflow_ids`, `allowed_actions: [replace_delegate, stop_workflows]`, WFI-3), **`seat_limit_reached`** (SEAT-1 — body has `licensed_seats`, `active_users`, `pending_invitations`), `invitation_already_exists` (PI-1), `tenant_offboarded` (O-7 on terminal) |
-| 422 | Domain rule | `self_delegation`, `invalid_delegate` (DEL-1 or User Profile 4xx race), `delegation_window_inverted`, `scope_id_required`, `cannot_delete_system_department`, `department_not_active_for_tenant`, `invalid_replacement` (§8.8 WFI-5), `invalid_owner_candidate` (O-7 not active member), `invalid_expires_at`, `assignee_ineligible` (I-13 — `422`, not `409`, per §16 A62), `field_immutable`, `system_name_immutable`, `system_department_cannot_be_retired`, `last_owner_removal` (TM-8 — actor path P-8/P-28) |
+| 422 | Domain rule | `cannot_delete_system_department`, `department_not_active_for_tenant`, `invalid_replacement` (§8.8 WFI-5), `invalid_owner_candidate` (O-7 not active member), `assignee_ineligible` (I-13 — `422`, not `409`, per §16 A62), `field_immutable`, `system_name_immutable`, `system_department_cannot_be_retired`, `last_owner_removal` (TM-8 — actor path P-8/P-28) |
 | 429 | Invite abuse only (§16 A41) | `reinvite_too_soon` (PI-11, `INVITE_REINVITE_COOLDOWN_MINUTES`), `invite_rate_limited` (PI-12, `INVITE_MAX_PER_TENANT_PER_HOUR`). Body includes `retry_after_seconds`. **Quota/API-rate 429 remains gateway + Usage & Metering** (HLD §10.6) |
-| 503 | Dependency | `db_unavailable`, `cache_unavailable` (degraded — cache advisory), `user_profile_unavailable` (delegation), `workflow_service_unavailable` (delegate-impact/resolution, WFI-8), `realm_provisioner_unavailable` (P-6 invite, §8.10) |
+| 503 | Dependency | `db_unavailable`, `cache_unavailable` (degraded — cache advisory), `workflow_service_unavailable` (delegate-impact/resolution, WFI-8), `realm_provisioner_unavailable` (P-6 invite, §8.10), `catalog_unavailable` (Catalog Service departments/plans read-through — `om:plans`/`om:departments` cache empty and the live call also failed; not fail-open), `group_mapping_unavailable` (declared per LLD §17, but `GroupMappingService.resolveMappings` deliberately fails **open** on a cold-cache-plus-live-call-failure per ADR-0007 Action Item 4 — returns an empty resolution, HTTP 200 — so this code is declared but not currently returned by I-10 in practice) |
 
 ## 6. Caching
 
@@ -139,13 +140,13 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 
 ### 6.2 I-8 Hot-Path Query
 
-Single joined query over `tenant_memberships` + `tenants` + `tenant_roles` + `dept_memberships` + `delegations`, filtered `WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.deleted_at IS NULL`. Uses `array_agg(...) FILTER (WHERE ... IS NOT NULL)` + `COALESCE(..., '{}')` so `departments`/`active_delegations` are **always arrays, never null** (I8-4). Derived `member` role injected via set-union at projection layer (`resp.Roles = union(["member"], resp.Roles)` — TR-7/§16 A29). `DISTINCT` in `tenant_roles`' `array_agg` is defensive against future join-restructuring.
+Single joined query over `tenant_memberships` + `tenants` + `tenant_roles` + `dept_memberships` — a **four-table join**, one fewer table than pre-decomposition (`delegations` dropped; response no longer carries `active_delegations[]`) — filtered `WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.deleted_at IS NULL`. Uses `array_agg(...) FILTER (WHERE ... IS NOT NULL)` + `COALESCE(..., '{}')` so `departments` is **always an array, never null** (I8-4). Derived `member` role injected via set-union at projection layer (`resp.Roles = union(["member"], resp.Roles)` — TR-7/§16 A29). `DISTINCT` in `tenant_roles`' `array_agg` is defensive against future join-restructuring.
 
 **I8 invariants (I8-1..5):**
 - **I8-1** — Authoritative membership projection for AuthZ Enrichment.
 - **I8-2** — Cache miss/timeout/outage always resolves from Postgres (CACHE-2).
 - **I8-3** — Only active membership returns a result; else `404` (AuthZ treats as "no context → deny").
-- **I8-4** — `departments` / `active_delegations` normalized to `[]`.
+- **I8-4** — `departments` normalized to `[]`.
 - **I8-5** — Successful lookup cached 300 s ± 30 s; invalidated on any membership/role/dept write for that user.
 
 ### 6.5 Cache Invariants
@@ -188,12 +189,14 @@ Both queues: DLQ with `maxReceiveCount=5`, `processed_events` dedup, PgBouncer-s
 | `DepartmentMembershipLevelChanged` | Level changed | `user_id`, `tenant_id`, `department_id`, `previous_level`, `new_level`, `actor_id` |
 | `TenantRoleGranted` | Elevated tenant role granted (init, P-28, or JIT GTRM-4). **One event per role_code**, not bulk | `user_id`, `tenant_id`, `role_code`, `actor_id` |
 | `TenantRoleRevoked` (§16 A14) | Elevated tenant role revoked (P-28 or removal cascade TR-9). One event per revoked role | `user_id`, `tenant_id`, `role_code`, `actor_id` |
-| `DelegationStarted` | Delegation created | `delegation_id`, `tenant_id`, `delegator_id`, `delegate_id`, `scope`, `scope_id`, `ends_at`, `actor_id` |
-| `DelegationEnded` | Expired, cancelled, **or delegate removed** (DEL-7) | above + `ended_reason ∈ {expired, cancelled, delegate_removed}` |
+| `MembershipRevoked` (§15.2.2) | User removed from tenant — emitted unconditionally by `MembershipService.RemoveUser` (P-8/I-5) and `ProvisioningService.DeleteMember`'s underlying path. **Consolidated in this pass**: a second, separate `TenantMembershipRemoved` event previously existed for the Tender-ACL Service alone — that's gone. This one shared event is now consumed by **both** the Delegation Service's cascade queue (ends the departed user's delegation rows) and the Tender-ACL Service's cascade queue (soft-deletes the departed user's ACL overlays) | `tenant_id`, `user_id`, `actor_id` |
 | `TenderAssigneeOverridden` | I-13 validate-and-emit — Workflow Service call | `tender_id`, `tenant_id`, `user_id`, `actor_id` |
 | `TenantSeatOverageStarted` | `overage_since` NULL→set (SEAT-5) | `tenant_id`, `licensed_seats`, `active_users`, `pending_invitations`, `overage_since` |
 | `TenantSeatOverageResolved` | `overage_since` set→NULL | `tenant_id`, `resolved_at` |
 | `TenantStateChanged` (§16 A61) | Post-EVT-14 status/plan change | `tenant_id`, `status`, `previous_status`, `plan`, `previous_plan`, `changed_at`, `cause` |
+| `TenantMembershipsPurged` | Tenant genuinely transitions to `offboarded` (i.e. RP's consumed `TenantOffboarded` actually changes `tenants.status`, post-EVT-14) — emitted by `membership_event_consumer.go` so the Delegation, Tender-ACL, and Group-Mapping services can run their own tenant-scoped cascade-deletes (their rows live in separate databases, out of reach of O&M's own `ON DELETE CASCADE`). **Renamed in this pass** from a prior signal that was (incorrectly) also called `TenantOffboarded` and routed on `iam.tenant.events` — that violated "one producer per event name," since the real `TenantOffboarded` is RP's own terminal event, which O&M only *consumes* (unchanged — still `tenant-orgm-q`/`iam.tenant.events`, §7.1). Only O&M's own outbound relay was renamed and moved topics | `tenant_id`, `actor_id` |
+
+**Removed from this topic in this pass** (moved to the standalone Delegation Service's own topic `iam.delegation.events`): `DelegationStarted`, `DelegationEnded`, `DelegationReviewRequested`. Their JSON schemas are deleted from `internal/adapter/outbound/eventbus/schemas/`.
 
 **`iam.tenant.events`:**
 
@@ -206,7 +209,9 @@ O&M publishes **only these two** on `iam.tenant.events`. Lifecycle events O&M co
 
 ### 7.3.2 SNS→SQS Fan-out (§16 A60)
 
-`iam.membership.events` consumers: `membership-audit-q` (Audit — no filter, catch-all); `membership-authz-q` (AuthZ — dept/tenant role events for cache eviction); `membership-realm-q` (RP — approver make/unmake + admin/owner for `requires-mfa` realm role); `membership-notification-q` (Notification — user/admin emails + seat-overage banner); `membership-workflow-q` (Workflow — delegation/override/`TenantStateChanged`); `membership-billing-q` (Billing — `TenantSeatOverage*` only, filter policy).
+`iam.membership.events` consumers: `membership-audit-q` (Audit — no filter, catch-all); `membership-authz-q` (AuthZ — dept/tenant role events for cache eviction); `membership-realm-q` (RP — approver make/unmake + admin/owner for `requires-mfa` realm role); `membership-notification-q` (Notification — user/admin emails + seat-overage banner); `membership-workflow-q` (Workflow — `override`/`TenantStateChanged`; no longer carries delegation events); `membership-billing-q` (Billing — `TenantSeatOverage*` only, filter policy).
+
+Three new cross-service queues, added in this pass, consume the cascade signals introduced above (informational — these queues live in the *other* services, not this repo): `delegation-cascade-q` (Delegation Service — filters `MembershipRevoked` + `TenantMembershipsPurged`), the Tender-ACL Service's equivalent queue (same two event types), and the Group-Mapping Service's equivalent queue (filters `TenantMembershipsPurged` only).
 
 `iam.tenant.events` consumers: `tenant-audit-q`, `tenant-notification-q` (welcome/trial-start emails). O&M's own `tenant-orgm-q` is separate — produce/consume disjoint.
 
@@ -214,7 +219,7 @@ Every subscribing queue: `-dlq`, `maxReceiveCount=5`, `processed_events` dedup.
 
 ### 7.4 CloudEvents Envelope
 
-`{id (UUID v7), source, tenant_id, trace_id, specversion, time, subject, actor, dataschema, data}`. Governed by `platform-schemagov` — `api/asyncapi.yaml` is design-time source of truth; `internal/eventschema/*.json` derived via `schema-gov extract`; Glue Schema Registry runtime enforcement (ap-south-1). CI: `docker run ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:v0.3.0` for extract → validate → enforce-lifecycle → diff (PR) / register (main).
+`{id (UUID v7), source, tenant_id, trace_id, specversion, time, subject, actor, dataschema, data}`. Governed by `platform-schemagov` — `api/asyncapi.yaml` is design-time source of truth; `schema-gov extract` writes the Draft-07 files directly into `internal/adapter/outbound/eventbus/schemas/*.json` (there is no separate `internal/eventschema/` workspace — this one directory is both the schema-gov output and the `//go:embed`-ed runtime copy); Glue Schema Registry runtime enforcement (ap-south-1). CI: `docker run ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4` for extract → validate → enforce-lifecycle → diff (PR) / register (main).
 
 ### 7.5 Event Invariants
 

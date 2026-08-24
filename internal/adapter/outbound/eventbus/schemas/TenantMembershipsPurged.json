@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "TenantMembershipsPurged",
+  "title": "TenantMembershipsPurged",
+  "type": "object",
+  "required": ["tenant_id"],
+  "properties": {
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "actor_id":  { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": false
+}

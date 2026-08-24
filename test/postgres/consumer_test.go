@@ -5,24 +5,24 @@
 //
 // Coverage focus:
 //
-//   N5 — TenantSubscriptionCancelled uses COALESCE(cancelled_at, now())
-//        so replaying the event never resets the §15.5 retention clock.
-//   TenantSuspended replay parity — same COALESCE guarantee.
-//   TenantOffboarded replay parity — cancelled_at preserved AND
-//        deleted_at preserved on replay (PAID-1 terminal state).
-//   B17 — invitation_expiry reconciler respects jctx.BatchLimit; a
-//        backlog wave never produces a single unbounded UPDATE.
+//	N5 — TenantSubscriptionCancelled uses COALESCE(cancelled_at, now())
+//	     so replaying the event never resets the §15.5 retention clock.
+//	TenantSuspended replay parity — same COALESCE guarantee.
+//	TenantOffboarded replay parity — cancelled_at preserved AND
+//	     deleted_at preserved on replay (PAID-1 terminal state).
+//	B17 — invitation_expiry reconciler respects jctx.BatchLimit; a
+//	     backlog wave never produces a single unbounded UPDATE.
 package postgres_test
 
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -34,12 +34,12 @@ import (
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestN5_TenantSubscriptionCancelled_ReplayPreservesCancelledAt(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "n5-cancel-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	// First delivery — sets cancelled_at.
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
@@ -71,12 +71,12 @@ func TestN5_TenantSubscriptionCancelled_ReplayPreservesCancelledAt(t *testing.T)
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "suspend-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
 	env1 := mkEnvelope(t, "TenantSuspended", tenantID, firstTS, map[string]string{})
@@ -103,12 +103,12 @@ func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestConsumer_TenantOffboarded_ReplayPreservesTimestamps(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "offboard-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
 	env1 := mkEnvelope(t, "TenantOffboarded", tenantID, firstTS, map[string]string{})
@@ -145,9 +145,9 @@ func TestConsumer_TenantOffboarded_ReplayPreservesTimestamps(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestInvitationExpiry_RespectsBatchLimit(t *testing.T) {
-	jctx, _, _ := newJobContext(t, context.Background())
+	jctx, _, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
-	tenantID := seedTenant(t, ctx, jctx.SysPool, "b17-batch")
+	tenantID := seedTenant(t, ctx, rawPool, "b17-batch")
 
 	// Insert-with-future + backdate to bypass G5 trigger. Seed a backlog of
 	// 25 pending invitations, all past-expiry.
@@ -155,7 +155,7 @@ func TestInvitationExpiry_RespectsBatchLimit(t *testing.T) {
 	inviteIDs := make([]uuid.UUID, total)
 	for i := 0; i < total; i++ {
 		inviteIDs[i] = uuid.New()
-		_, err := jctx.SysPool.Exec(ctx, `
+		_, err := rawPool.Exec(ctx, `
 			INSERT INTO pending_invitations
 			  (id, tenant_id, email, full_name, invited_by, status, expires_at)
 			VALUES ($1, $2, $3, 'Backlog', gen_random_uuid(), 'pending', now() + interval '1 hour')`,
@@ -165,7 +165,7 @@ func TestInvitationExpiry_RespectsBatchLimit(t *testing.T) {
 		require.NoError(t, err)
 	}
 	// Backdate everything.
-	_, err := jctx.SysPool.Exec(ctx,
+	_, err := rawPool.Exec(ctx,
 		`UPDATE pending_invitations SET expires_at = now() - interval '1 hour'
 		 WHERE tenant_id = $1 AND status = 'pending'`,
 		tenantID)
@@ -197,12 +197,12 @@ func TestInvitationExpiry_RespectsBatchLimit(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestConsumer_TenantReactivated_FromCancelled_ClearsCancelledAt(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "reactivate")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	// Cancel first.
 	env1 := mkEnvelope(t, "TenantSubscriptionCancelled", tenantID,
@@ -223,12 +223,12 @@ func TestConsumer_TenantReactivated_FromCancelled_ClearsCancelledAt(t *testing.T
 }
 
 func TestConsumer_TenantReactivated_FromOffboarded_Rejected(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "reactivate-offboarded")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	// Offboard first — PAID-1 terminal state.
 	env1 := mkEnvelope(t, "TenantOffboarded", tenantID,

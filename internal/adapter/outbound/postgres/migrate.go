@@ -5,6 +5,7 @@ import (
 	"embed"
 	"io/fs"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 )
 
@@ -19,9 +20,19 @@ var migrationsFS embed.FS
 // RunMigrations applies all pending domain migrations against dsn. Uses the
 // direct Postgres DSN (bypassing PgBouncer, CONFIG-2) because the runner
 // acquires a pg_advisory_lock which is session-scoped.
-func RunMigrations(ctx context.Context, dsn string) error {
+//
+// log is optional (variadic so every existing call site keeps compiling
+// unchanged) — when provided, each migration step is logged through it via
+// LoggerAdapter instead of going nowhere (pgmigrate.Runner.Logger, like
+// pgcommon.Config.Logger, only became externally implementable in
+// pgcommon v1.2.0).
+func RunMigrations(ctx context.Context, dsn string, log ...port.Logger) error {
 	// fs.Sub on an embedded FS with a known directory path is infallible;
 	// an error here would be a build-time programming mistake.
 	sub, _ := fs.Sub(migrationsFS, "migrations")
-	return (&pgmigrate.Runner{FS: sub, DSN: dsn}).Up(ctx)
+	runner := &pgmigrate.Runner{FS: sub, DSN: dsn}
+	if len(log) > 0 && log[0] != nil {
+		runner.Logger = NewLoggerAdapter(log[0])
+	}
+	return runner.Up(ctx)
 }

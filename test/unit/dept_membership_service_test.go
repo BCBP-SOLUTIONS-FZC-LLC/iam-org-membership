@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -44,50 +43,19 @@ func (f *fakeDeptMemRepo) SoftDeleteAllForDept(context.Context, uuid.UUID, uuid.
 
 var _ port.DeptMembershipRepository = (*fakeDeptMemRepo)(nil)
 
-// ── DelegationRepository stub ──────────────────────────────────────────
+// ── DelegationCheckClient stub (ADR-0008 v2 — replaces the local
+//    DelegationRepository.FindActiveDeptDelegateForUser lookup with a
+//    Core → Delegation Service DLG-I3 call) ─────────────────────────────
 
-type fakeDelegationRepo struct {
-	findActiveDeptDelegateFn func(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*domain.Delegation, error)
-}
-
-func (f *fakeDelegationRepo) List(context.Context, uuid.UUID) ([]domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) ListByDelegator(context.Context, uuid.UUID, uuid.UUID) ([]domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) FindByID(context.Context, uuid.UUID, uuid.UUID) (*domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) Insert(context.Context, *domain.Delegation) (*domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) End(context.Context, uuid.UUID, uuid.UUID, domain.DelegationStatus, int64) (*domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) ListExpiringBefore(context.Context, time.Time, int) ([]domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) SoftDeleteForUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) FindActiveDeptDelegateForUser(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*domain.Delegation, error) {
-	return f.findActiveDeptDelegateFn(ctx, tenantID, userID, deptID)
-}
-func (f *fakeDelegationRepo) ExtendReview(context.Context, uuid.UUID, uuid.UUID, int, int64) (*domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) FindOpenEndedForReview(context.Context, time.Time, int) ([]domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) FindOpenEndedForWarning(context.Context, time.Time, int) ([]domain.Delegation, error) {
-	return nil, nil
-}
-func (f *fakeDelegationRepo) MarkReviewNoticeSent(context.Context, uuid.UUID, uuid.UUID, int64) error {
-	return nil
+type fakeDelegationCheckClient struct {
+	deptDelegateFn func(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*uuid.UUID, error)
 }
 
-var _ port.DelegationRepository = (*fakeDelegationRepo)(nil)
+func (f *fakeDelegationCheckClient) DeptDelegate(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*uuid.UUID, error) {
+	return f.deptDelegateFn(ctx, tenantID, userID, deptID)
+}
+
+var _ port.DelegationCheckClient = (*fakeDelegationCheckClient)(nil)
 
 // ── WorkflowClient stub ────────────────────────────────────────────────
 
@@ -180,25 +148,41 @@ func TestDeptMembership_ListByDepartment_PropagatesRepoError(t *testing.T) {
 
 // ── Remove (P-11) — WFI-11 department-scoped delegate impact ───────────
 
-func TestDeptMembership_Remove_DelegationLookupErrorSurfaces(t *testing.T) {
-	repoErr := errors.New("delegation read failed")
-	delRepo := &fakeDelegationRepo{
-		findActiveDeptDelegateFn: func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*domain.Delegation, error) {
-			return nil, repoErr
+// ADR-0008 v2 (LLD §11.5): a DelegationCheckClient failure must degrade to
+// a nil delegation id (tenant-wide impact, still correct, less precise) —
+// never fail the whole Remove. This replaces the old
+// TestDeptMembership_Remove_DelegationLookupErrorSurfaces, whose
+// expectation (the error propagates) was the pre-split, local-repository
+// behavior.
+func TestDeptMembership_Remove_DelegationCheckErrorDegradesToNilDelegationID(t *testing.T) {
+	delClient := &fakeDelegationCheckClient{
+		deptDelegateFn: func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*uuid.UUID, error) {
+			return nil, errors.New("delegation service unavailable")
 		},
 	}
-	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delRepo, &fakeWorkflowClient{}, nil, nil)
+	wf := &fakeWorkflowClient{
+		getDelegateImpactFn: func(_ context.Context, _, _ uuid.UUID, delegationID *uuid.UUID) (*port.DelegateImpact, error) {
+			assert.Nil(t, delegationID, "DeptDelegate error → degrade to nil delegation_id (tenant-wide fallback)")
+			return &port.DelegateImpact{}, nil
+		},
+	}
+	repo := &fakeDeptMemRepo{
+		removeFn: func(_ context.Context, _, _, _ uuid.UUID) (*domain.DeptMembership, error) {
+			return &domain.DeptMembership{ID: uuid.New()}, nil
+		},
+	}
+	svc := service.NewDeptMembershipService(repo, nil, nil, nil, delClient, wf, nil, &passthroughTxRunner{})
 
 	_, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
-	assert.ErrorIs(t, err, repoErr)
+	require.NoError(t, err, "a Delegation Service outage must not block removal")
 }
 
 func TestDeptMembership_Remove_ReturnsWorkflowResolutionRequiredWhenImpactPositive(t *testing.T) {
 	// WFI-11: department-scoped GetDelegateImpact returns active_workflows > 0
 	// → 409 workflow_resolution_required (must be resolved via P-26 first).
 	workflowID := uuid.New()
-	delRepo := &fakeDelegationRepo{
-		findActiveDeptDelegateFn: func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*domain.Delegation, error) {
+	delClient := &fakeDelegationCheckClient{
+		deptDelegateFn: func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*uuid.UUID, error) {
 			return nil, nil // no active delegation → nil delegation_id passed through
 		},
 	}
@@ -208,7 +192,7 @@ func TestDeptMembership_Remove_ReturnsWorkflowResolutionRequiredWhenImpactPositi
 			return &port.DelegateImpact{ActiveWorkflows: 3, WorkflowIDs: []uuid.UUID{workflowID}}, nil
 		},
 	}
-	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delRepo, wf, nil, nil)
+	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delClient, wf, nil, nil)
 
 	_, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
 
@@ -226,12 +210,12 @@ func TestDeptMembership_Remove_ScopesDelegationIDWhenActiveDelegationExists(t *t
 	// count is dept-scoped, not tenant-wide (WFI-11).
 	tenantID, userID, deptID := uuid.New(), uuid.New(), uuid.New()
 	delegationID := uuid.New()
-	delRepo := &fakeDelegationRepo{
-		findActiveDeptDelegateFn: func(_ context.Context, tt, uu, dd uuid.UUID) (*domain.Delegation, error) {
+	delClient := &fakeDelegationCheckClient{
+		deptDelegateFn: func(_ context.Context, tt, uu, dd uuid.UUID) (*uuid.UUID, error) {
 			assert.Equal(t, tenantID, tt)
 			assert.Equal(t, userID, uu)
 			assert.Equal(t, deptID, dd)
-			return &domain.Delegation{ID: delegationID}, nil
+			return &delegationID, nil
 		},
 	}
 	wf := &fakeWorkflowClient{
@@ -246,7 +230,7 @@ func TestDeptMembership_Remove_ScopesDelegationIDWhenActiveDelegationExists(t *t
 			return &domain.DeptMembership{ID: uuid.New()}, nil
 		},
 	}
-	svc := service.NewDeptMembershipService(repo, nil, nil, nil, delRepo, wf, nil, &passthroughTxRunner{})
+	svc := service.NewDeptMembershipService(repo, nil, nil, nil, delClient, wf, nil, &passthroughTxRunner{})
 
 	_, err := svc.Remove(context.Background(), tenantID, userID, deptID, uuid.New())
 	require.NoError(t, err)
@@ -267,7 +251,7 @@ func TestDeptMembership_Remove_WorkflowFailOpenProceedsWithRemoval(t *testing.T)
 			return &domain.DeptMembership{ID: uuid.New()}, nil
 		},
 	}
-	// delegations==nil path: skip pre-lookup entirely.
+	// delegationCheck==nil path: skip pre-lookup entirely.
 	svc := service.NewDeptMembershipService(repo, nil, nil, nil, nil, wf, nil, &passthroughTxRunner{})
 
 	got, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
@@ -300,12 +284,12 @@ func TestDeptMembership_Remove_ActiveDeptDelegationWithPositiveImpact_409(t *tes
 	delegationID := uuid.New()
 	workflowID := uuid.New()
 
-	delRepo := &fakeDelegationRepo{
-		findActiveDeptDelegateFn: func(_ context.Context, tt, uu, dd uuid.UUID) (*domain.Delegation, error) {
+	delClient := &fakeDelegationCheckClient{
+		deptDelegateFn: func(_ context.Context, tt, uu, dd uuid.UUID) (*uuid.UUID, error) {
 			assert.Equal(t, tenantID, tt)
 			assert.Equal(t, userID, uu)
 			assert.Equal(t, deptID, dd)
-			return &domain.Delegation{ID: delegationID, Scope: domain.ScopeDepartment}, nil
+			return &delegationID, nil
 		},
 	}
 	wf := &fakeWorkflowClient{
@@ -315,7 +299,7 @@ func TestDeptMembership_Remove_ActiveDeptDelegationWithPositiveImpact_409(t *tes
 			return &port.DelegateImpact{ActiveWorkflows: 1, WorkflowIDs: []uuid.UUID{workflowID}}, nil
 		},
 	}
-	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delRepo, wf, nil, nil)
+	svc := service.NewDeptMembershipService(&fakeDeptMemRepo{}, nil, nil, nil, delClient, wf, nil, nil)
 
 	_, err := svc.Remove(context.Background(), tenantID, userID, deptID, uuid.New())
 

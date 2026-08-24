@@ -188,31 +188,33 @@ func TestP9I11001_GetSeatUsage_InvalidTenantID(t *testing.T) {
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// I-6 · InternalHandler.CheckTenderAccess
-// ═════════════════════════════════════════════════════════════════════════
+// I-6 (InternalHandler.CheckTenderAccess) — retired ADR-0007 Wave 3 Phase 6,
+// moved to iam-tender-acl's TAC-4. ID never reused.
 
-// Test Case ID:      P9-I6-001
-// Feature:           I-6 · Invalid tender UUID → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9I6001_CheckTenderAccess_InvalidTenderID(t *testing.T) {
+// ═════════════════════════════════════════════════════════════════════════
+// InternalHandler.CheckMemberExists — ADR-0007 Wave 3 Phase 3
+// (iam-tender-acl grant-time membershipcheck dependency)
+// ═════════════════════════════════════════════════════════════════════════
+//
+// Only input-validation branches are covered here, matching this file's
+// convention for every other internal handler method — full business-logic
+// coverage (found+active/found+inactive/not-found/repo-error) lives at the
+// service level in test/unit/membership_service_reads_test.go
+// (TestMembership_CheckActiveMembership_*).
+
+func TestCheckMemberExists_InvalidTenantID(t *testing.T) {
 	h := &InternalHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
-	setParams(c, "id", uuid.New().String(),
-		"tender_id", "bogus", "user_id", uuid.New().String())
-	h.CheckTenderAccess(c)
+	setParams(c, "id", "bogus", "user_id", uuid.New().String())
+	h.CheckMemberExists(c)
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 
-// Test Case ID:      P9-I6-002
-// Feature:           I-6 · Invalid user UUID → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestP9I6002_CheckTenderAccess_InvalidUserID(t *testing.T) {
+func TestCheckMemberExists_InvalidUserID(t *testing.T) {
 	h := &InternalHandler{}
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
-	setParams(c, "id", uuid.New().String(),
-		"tender_id", uuid.New().String(), "user_id", "bogus")
-	h.CheckTenderAccess(c)
+	setParams(c, "id", uuid.New().String(), "user_id", "bogus")
+	h.CheckMemberExists(c)
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }
 

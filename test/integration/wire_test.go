@@ -300,21 +300,21 @@ func TestBillingQueueOnlyOverage(t *testing.T) {
 // ── P12-FILTER-002 ──────────────────────────────────────────────────────────
 
 // TestWorkflowQueueDropsOverage — the membership-workflow-q
-// filter policy accepts delegation/override/membership/relay events. An
-// overage event must be dropped.
+// filter policy accepts membership-revocation/override/membership/relay
+// events. An overage event must be dropped.
 func TestWorkflowQueueDropsOverage(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
 	workflowQ := e.createQueue(t, "membership-workflow-q", "", 0)
 
-	filter := `{"EventType":["DelegationStarted","DelegationEnded","TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged"]}`
+	filter := `{"EventType":["MembershipRevoked","TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged"]}`
 	e.subscribeQueue(t, topic, workflowQ, filter)
 
-	// Should reach workflow queue — DelegationStarted is on the accept list.
-	e.publishEnvelope(t, topic, domain.EventDelegationStarted,
-		mustMarshal(t, map[string]string{"delegator": uuid.NewString()}), nil)
+	// Should reach workflow queue — MembershipRevoked is on the accept list.
+	e.publishEnvelope(t, topic, domain.EventMembershipRevoked,
+		mustMarshal(t, map[string]string{"user_id": uuid.NewString()}), nil)
 	got := e.receiveMessages(t, workflowQ, 1, 10*time.Second)
-	require.Len(t, got, 1, "P12-FILTER-002: DelegationStarted must reach workflow queue")
+	require.Len(t, got, 1, "P12-FILTER-002: MembershipRevoked must reach workflow queue")
 
 	// Should NOT reach workflow queue — overage is off the accept list.
 	e.publishEnvelope(t, topic, domain.EventTenantSeatOverageStarted,
@@ -326,7 +326,7 @@ func TestWorkflowQueueDropsOverage(t *testing.T) {
 // ── P12-FILTER-003 ──────────────────────────────────────────────────────────
 
 // TestAuthzQueueOnlyMembershipRoles — membership-authz-q's
-// filter accepts dept-membership + tenant-role events; must drop DelegationStarted.
+// filter accepts dept-membership + tenant-role events; must drop MembershipRevoked.
 func TestAuthzQueueOnlyMembershipRoles(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
@@ -341,11 +341,11 @@ func TestAuthzQueueOnlyMembershipRoles(t *testing.T) {
 	got := e.receiveMessages(t, authzQ, 1, 10*time.Second)
 	require.Len(t, got, 1, "P12-FILTER-003: TenantRoleGranted must reach authz queue")
 
-	// Should NOT reach — DelegationStarted is off the authz filter list.
-	e.publishEnvelope(t, topic, domain.EventDelegationStarted,
-		mustMarshal(t, map[string]string{"delegator": uuid.NewString()}), nil)
+	// Should NOT reach — MembershipRevoked is off the authz filter list.
+	e.publishEnvelope(t, topic, domain.EventMembershipRevoked,
+		mustMarshal(t, map[string]string{"user_id": uuid.NewString()}), nil)
 	extra := e.drainQueue(t, authzQ, 3*time.Second)
-	assert.Empty(t, extra, "P12-FILTER-003: DelegationStarted must NOT reach authz queue")
+	assert.Empty(t, extra, "P12-FILTER-003: MembershipRevoked must NOT reach authz queue")
 }
 
 // ── P12-FILTER-004 ──────────────────────────────────────────────────────────
@@ -398,18 +398,15 @@ func TestPublisherStampsEventTypeAttribute(t *testing.T) {
 
 	tenantID := uuid.New()
 	enqueueDomainEvent(t, e, &domain.DomainEvent{
-		Type:       domain.EventDelegationStarted,
+		Type:       domain.EventMembershipRevoked,
 		TenantID:   tenantID,
 		Subject:    uuid.NewString(),
 		Actor:      uuid.NewString(),
 		OccurredAt: time.Now().UTC(),
-		Data: domain.DelegationStartedPayload{
-			DelegationID: uuid.New(),
-			TenantID:     tenantID,
-			DelegatorID:  uuid.New(),
-			DelegateID:   uuid.New(),
-			Scope:        domain.ScopeAll,
-			ActorID:      uuid.New(),
+		Data: domain.MembershipRevokedPayload{
+			TenantID: tenantID,
+			UserID:   uuid.New(),
+			ActorID:  uuid.New(),
 		},
 	})
 
@@ -419,7 +416,7 @@ func TestPublisherStampsEventTypeAttribute(t *testing.T) {
 	attr, ok := msgs[0].MessageAttributes["EventType"]
 	require.True(t, ok, "P12-ATTR-001: EventType MessageAttribute missing — filter policies would fail")
 	require.NotNil(t, attr.StringValue)
-	assert.Equal(t, domain.EventDelegationStarted, *attr.StringValue,
+	assert.Equal(t, domain.EventMembershipRevoked, *attr.StringValue,
 		"P12-ATTR-001: EventType attribute must equal event Type")
 }
 

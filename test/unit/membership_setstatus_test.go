@@ -69,16 +69,46 @@ func (noOwnerRoleRepo) SoftDeleteAllForUser(context.Context, uuid.UUID, uuid.UUI
 
 var _ port.TenantRoleRepository = noOwnerRoleRepo{}
 
+// fakeMembershipRepo is a minimal MembershipRepository stub (only
+// FindByUserID/SetStatus configurable) shared across several test files in
+// this package.
+type fakeMembershipRepo struct {
+	findByUserIDFn func(ctx context.Context, tenantID, userID uuid.UUID) (*domain.TenantMembership, error)
+	setStatusFn    func(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, expectedVersion int64) (*domain.TenantMembership, error)
+}
+
+func (f *fakeMembershipRepo) List(ctx context.Context, tenantID uuid.UUID, cursor *domain.MembershipListCursor, limit int) (*domain.MembershipListPage, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakeMembershipRepo) FindByUserID(ctx context.Context, tenantID, userID uuid.UUID) (*domain.TenantMembership, error) {
+	return f.findByUserIDFn(ctx, tenantID, userID)
+}
+func (f *fakeMembershipRepo) Insert(ctx context.Context, tm *domain.TenantMembership) (*domain.TenantMembership, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakeMembershipRepo) SetStatus(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, expectedVersion int64) (*domain.TenantMembership, error) {
+	if f.setStatusFn == nil {
+		return nil, errors.New("not used")
+	}
+	return f.setStatusFn(ctx, tenantID, userID, status, expectedVersion)
+}
+func (f *fakeMembershipRepo) SoftDelete(ctx context.Context, tenantID, userID uuid.UUID, expectedVersion int64) error {
+	return errors.New("not used")
+}
+func (f *fakeMembershipRepo) CountActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return 0, errors.New("not used")
+}
+
+var _ port.MembershipRepository = (*fakeMembershipRepo)(nil)
+
 func buildMembershipSvcForSetStatus(m port.MembershipRepository, cache port.Cache, rp port.RealmProvisionerClient, wf port.WorkflowClient) *service.MembershipService {
-	return service.NewMembershipService(m, noOwnerRoleRepo{}, nil, nil, nil, nil, nil, cache, rp, wf, nil, nil, 30)
+	return service.NewMembershipService(m, noOwnerRoleRepo{}, nil, nil, nil, cache, rp, wf, nil, nil, 30)
 }
 
 // ── SetStatus — reactivate path (no side-effects) ──────────────────────
 
 func TestMembership_SetStatus_ReactivateDoesNotCallRPOrWorkflow(t *testing.T) {
 	m := &fakeMemRepoFull{}
-	// Reuse the extended fakeMembershipRepo from tender_acl_service_test —
-	// but with a fresh instance so setStatusFn is configurable.
 	setStatusOnly := &fakeMembershipRepo{
 		setStatusFn: func(_ context.Context, tt, uu uuid.UUID, st domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
 			assert.Equal(t, domain.MembershipActive, st)
@@ -264,7 +294,7 @@ var _ port.TenantRoleRepository = (*ownerRoleRepo)(nil)
 func TestMembership_SetStatus_SuspendLastOwner_422LastOwnerRemoval(t *testing.T) {
 	roles := &ownerRoleRepo{countFn: func(context.Context, uuid.UUID) (int, error) { return 1, nil }}
 	svc := service.NewMembershipService(
-		&fakeMembershipRepo{}, roles, nil, nil, nil, nil, nil,
+		&fakeMembershipRepo{}, roles, nil, nil, nil,
 		nil, &fakeRPClient{}, nil, &ruTxRunner{tx: &ruFakeTx{}}, nil, 30,
 	)
 
@@ -284,7 +314,7 @@ func TestMembership_SetStatus_SuspendOwnerWithOtherOwnersAllowed(t *testing.T) {
 		},
 	}
 	svc := service.NewMembershipService(
-		m, roles, nil, nil, nil, nil, nil,
+		m, roles, nil, nil, nil,
 		nil, &fakeRPClient{}, nil, &ruTxRunner{tx: &ruFakeTx{}}, nil, 30,
 	)
 

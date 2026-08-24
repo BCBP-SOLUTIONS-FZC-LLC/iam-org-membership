@@ -13,11 +13,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
+
+	apispec "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/api"
 )
 
 // asyncSpecCache holds the parsed AsyncAPI spec after the first successful
-// request. Spec is embedded via //go:embed asyncapi.yaml — same binary
-// carries its own event contract. Cache invalidates only on pod restart.
+// request. Spec is embedded via api/embed.go (apispec.AsyncAPISpec) — same
+// binary carries its own event contract. Cache invalidates only on pod restart.
 var (
 	asyncSpecOnce sync.Once
 	asyncSpecVal  *asyncSpec
@@ -26,7 +28,7 @@ var (
 
 func loadAsyncSpec() (*asyncSpec, error) {
 	asyncSpecOnce.Do(func() {
-		asyncSpecVal, asyncSpecErr = readAsyncSpec(asyncapiYAML)
+		asyncSpecVal, asyncSpecErr = readAsyncSpec(apispec.AsyncAPISpec)
 	})
 	return asyncSpecVal, asyncSpecErr
 }
@@ -64,12 +66,27 @@ type asyncComponents struct {
 }
 
 type asyncMessage struct {
-	Name        string    `yaml:"name"`
-	Title       string    `yaml:"title"`
-	Summary     string    `yaml:"summary"`
-	ContentType string    `yaml:"contentType"`
-	Payload     asyncRef  `yaml:"payload"`
-	Bindings    yaml.Node `yaml:"bindings"`
+	Name        string     `yaml:"name"`
+	Title       string     `yaml:"title"`
+	Summary     string     `yaml:"summary"`
+	ContentType string     `yaml:"contentType"`
+	Tags        []asyncRef `yaml:"tags"`
+	Payload     asyncRef   `yaml:"payload"`
+	Bindings    yaml.Node  `yaml:"bindings"`
+}
+
+// isConsumed reports whether msg carries the components.tags.consumed tag
+// (action: receive — this service is the consumer of tenant-orgm-q /
+// billing-orgm-q). Anything else, including a message with no tags at all,
+// is treated as published/send — the default every message in this spec had
+// before the two inbound queues were documented (§7.1).
+func (m *asyncMessage) isConsumed() bool {
+	for _, t := range m.Tags {
+		if strings.HasSuffix(t.Ref, "/consumed") {
+			return true
+		}
+	}
+	return false
 }
 
 type asyncRef struct {
@@ -262,8 +279,14 @@ html[data-theme="light"] mark.search-mark{background:rgba(132,38,176,.2)}
 	w.WriteString(`<div style="padding:.75rem 1rem .25rem"><input id="search" placeholder="Search..." autocomplete="off" style="width:100%;padding:6px 10px;background:#0d0d0d;border:1px solid var(--border);color:#fff;border-radius:6px;font-size:.8rem;outline:none"></div>`)
 	w.WriteString(`<div class="sidebar-group"><div class="sidebar-label">Overview</div>`)
 	w.WriteString(`<a href="#info">Info</a><a href="#servers">Servers</a></div>`)
-	w.WriteString(`<div class="sidebar-group"><div class="sidebar-label">Messages</div>`)
-	for _, name := range sortedKeys(s.Comps.Messages) {
+	publishedNames, consumedNames := splitMessagesByDirection(s.Comps.Messages)
+	w.WriteString(`<div class="sidebar-group"><div class="sidebar-label">Published Messages</div>`)
+	for _, name := range publishedNames {
+		fmt.Fprintf(w, `<a href="#msg-%s">%s</a>`, name, html.EscapeString(name))
+	}
+	w.WriteString(`</div>`)
+	w.WriteString(`<div class="sidebar-group"><div class="sidebar-label">Consumed Messages</div>`)
+	for _, name := range consumedNames {
 		fmt.Fprintf(w, `<a href="#msg-%s">%s</a>`, name, html.EscapeString(name))
 	}
 	w.WriteString(`</div>`)
@@ -291,10 +314,22 @@ html[data-theme="light"] mark.search-mark{background:rgba(132,38,176,.2)}
 	// Servers
 	renderServers(w, &s.Servers)
 
-	// Messages — 13 events across 2 topics (iam.membership.events +
-	// iam.tenant.events). Rendered alphabetically; sidebar deep-links.
-	w.WriteString(`<div class="section" id="messages"><div class="section-title">Messages</div>`)
-	for _, name := range sortedKeys(s.Comps.Messages) {
+	// Messages — published (this service is the producer, on
+	// iam-membership-events/iam-tenant-events) and consumed (this service is
+	// the subscriber, on tenant-orgm-q/billing-orgm-q, §7.1) render as two
+	// separate sections, not one combined list, so a reader can tell at a
+	// glance which direction each message flows. Both loops walk every entry
+	// in s.Comps.Messages (via splitMessagesByDirection, computed once above
+	// for the sidebar) rather than a hand-maintained name list.
+	w.WriteString(`<div class="section" id="messages-published"><div class="section-title">Published Messages</div>`)
+	for _, name := range publishedNames {
+		msg := s.Comps.Messages[name]
+		renderMessage(w, name, &msg, &s.Comps)
+	}
+	w.WriteString(`</div>`)
+
+	w.WriteString(`<div class="section" id="messages-consumed"><div class="section-title">Consumed Messages</div>`)
+	for _, name := range consumedNames {
 		msg := s.Comps.Messages[name]
 		renderMessage(w, name, &msg, &s.Comps)
 	}
@@ -513,15 +548,20 @@ func renderMessage(w *bytes.Buffer, name string, msg *asyncMessage, comps *async
 	// Find SNS event_type from bindings
 	eventType := snsEventType(&msg.Bindings)
 
+	badgeClass, badgeLabel := "m-send", "SEND"
+	if msg.isConsumed() {
+		badgeClass, badgeLabel = "m-recv", "RECEIVE"
+	}
+
 	fmt.Fprintf(w, `<div class="card" id="msg-%s">
 <div class="card-header">
-  <span class="badge m-send">SEND</span>
+  <span class="badge %s">%s</span>
   <span class="card-title">%s</span>
   %s
   <button class="toggle-btn" type="button" tabindex="-1" aria-hidden="true">▸</button>
 </div>
 <div class="card-body" style="display:none">
-`, name, html.EscapeString(title),
+`, name, badgeClass, badgeLabel, html.EscapeString(title),
 		func() string {
 			if eventType != "" {
 				return fmt.Sprintf(`<span class="sns-attr">event_type: %s</span>`, html.EscapeString(eventType))
@@ -646,6 +686,21 @@ func renderPropsTable(w *bytes.Buffer, sc *asyncSchema, schemaID string) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// splitMessagesByDirection partitions messages into published (send) and
+// consumed (receive) name lists, each sorted alphabetically — used by both
+// the sidebar nav and the main-content Messages sections.
+func splitMessagesByDirection(messages map[string]asyncMessage) (published, consumed []string) {
+	for _, name := range sortedKeys(messages) {
+		msg := messages[name]
+		if msg.isConsumed() {
+			consumed = append(consumed, name)
+		} else {
+			published = append(published, name)
+		}
+	}
+	return published, consumed
+}
 
 func sortedKeys[T any](m map[string]T) []string {
 	keys := make([]string, 0, len(m))

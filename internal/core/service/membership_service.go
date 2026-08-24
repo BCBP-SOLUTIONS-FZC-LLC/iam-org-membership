@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -20,42 +19,39 @@ type MembershipService struct {
 	memberships     port.MembershipRepository
 	roles           port.TenantRoleRepository
 	deptMemberships port.DeptMembershipRepository
-	delegations     port.DelegationRepository
-	acls            port.TenderACLRepository
 	tenants         port.TenantRepository
 	invitations     port.InvitationRepository
 	cache           port.Cache
 	rp              port.RealmProvisionerClient
 	workflow        port.WorkflowClient
 	txRunner        port.TxRunner
-	logger          *slog.Logger
+	logger          port.SlogStyleLogger
 	seatOverageDays int
 }
 
+// NewMembershipService builds a MembershipService. logger may be nil — it
+// then falls back to the top-level log/slog functions (port.SlogStyleLogger's
+// zero-value behavior), preserving pre-injection behavior for callers/tests
+// that don't wire one in. Production wiring (cmd/server/main.go) passes the
+// same gincommon-backed Logger used for HTTP/consumer/outbound-client logs.
 func NewMembershipService(
 	memberships port.MembershipRepository,
 	roles port.TenantRoleRepository,
 	deptMemberships port.DeptMembershipRepository,
-	delegations port.DelegationRepository,
-	acls port.TenderACLRepository,
 	tenants port.TenantRepository,
 	invitations port.InvitationRepository,
 	cache port.Cache,
 	rp port.RealmProvisionerClient,
 	workflow port.WorkflowClient,
 	txRunner port.TxRunner,
-	logger *slog.Logger,
+	logger port.Logger,
 	seatOverageDays int,
 ) *MembershipService {
-	if logger == nil {
-		logger = slog.Default()
-	}
 	return &MembershipService{
 		memberships: memberships, roles: roles, deptMemberships: deptMemberships,
-		delegations: delegations, acls: acls,
 		tenants: tenants, invitations: invitations,
 		cache: cache, rp: rp, workflow: workflow, txRunner: txRunner,
-		logger: logger, seatOverageDays: seatOverageDays,
+		logger: port.NewSlogStyleLogger(logger), seatOverageDays: seatOverageDays,
 	}
 }
 
@@ -107,6 +103,19 @@ func (s *MembershipService) List(ctx context.Context, tenantID uuid.UUID, cursor
 		mem.Departments = views
 	}
 	return page, nil
+}
+
+// CheckActiveMembership backs the new internal GET
+// /tenants/:id/members/:user_id/exists route, added for iam-tender-acl's
+// grant-time membership-existence check (that service's ADR-0007 Wave 3
+// extraction, Phase 3 — see iam-tender-acl/O_AND_M_DELTA.md §4). It is
+// deliberately a thin FindByUserID wrapper, not a call to Get(): Get()
+// also resolves tenant roles and department memberships, which this
+// existence check has no use for and which iam-tender-acl calls
+// synchronously on every ACL grant (LLD §7.6.2's ≤50ms-p99 budget) —
+// the extra queries Get() performs are pure overhead here.
+func (s *MembershipService) CheckActiveMembership(ctx context.Context, tenantID, userID uuid.UUID) (*domain.TenantMembership, error) {
+	return s.memberships.FindByUserID(ctx, tenantID, userID)
 }
 
 // Get is P-5 — single member with roles + dept memberships.
@@ -413,10 +422,11 @@ const (
 //     concurrent owner-removals serialize on the same row (§16 A44).
 //  3. TM-8: inside the lock, refuse 422 last_owner_removal if this would
 //     drop active tenant_owner count to zero on the actor path (P-8).
-//  4. Cascade: soft-delete tenant_roles, dept_memberships, delegations
-//     (both directions), tender_acl_entries; emit TenantRoleRevoked +
-//     DepartmentMembershipRevoked + DelegationEnded(delegate_removed, DEL-7)
-//     for every affected row atomically (EVT-10).
+//  4. Cascade: soft-delete tenant_roles, dept_memberships; emit
+//     TenantRoleRevoked + DepartmentMembershipRevoked for every affected
+//     row, plus one MembershipRevoked signal (ADR-0008 §6.4, LLD §15.2.2)
+//     so the Delegation and Tender-ACL services asynchronously end this
+//     user's rows in their own databases — atomically (EVT-10).
 //  5. Soft-delete tenant_memberships.
 //  6. AUTH-8: post-commit best-effort RP RevokeUserSessions (fail-open).
 func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, actorID uuid.UUID) error {
@@ -520,29 +530,26 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 				}
 			}
 		}
-		endedDelegations, err := s.delegations.SoftDeleteForUser(txCtx, tenantID, userID)
-		if err != nil {
-			return err
-		}
-		for _, d := range endedDelegations {
-			if pub != nil {
-				if err := pub.EnqueueCtx(txCtx, &domain.DomainEvent{
-					Type: domain.EventDelegationEnded, TenantID: tenantID,
-					Subject: d.ID.String(), Actor: actorID.String(),
-					IPAddress: rcIP, UserAgent: rcUA,
-					Data: domain.DelegationEndedPayload{
-						DelegationID: d.ID, TenantID: tenantID,
-						DelegatorID: d.DelegatorID, DelegateID: d.DelegateID,
-						Scope: d.Scope, ScopeID: d.ScopeID,
-						EndedReason: domain.EndReasonDelegateRemoved,
-					},
-				}); err != nil {
-					return err
-				}
+		// ADR-0008 (§6.4): the delegation and tender-ACL cascades that used
+		// to run inline here (s.delegations.SoftDeleteForUser + per-row
+		// DelegationEnded{delegate_removed}; s.acls.SoftDeleteForUser)
+		// moved to the Delegation Service's and Tender-ACL Service's own
+		// async consumers, both of which subscribe to this single shared
+		// MembershipRevoked emission (LLD §15.2.2) and run their own
+		// cascades. Emitted unconditionally — not gated on whether the
+		// user actually held any delegation/ACL rows; both consumers are
+		// idempotent regardless.
+		if pub != nil {
+			if err := pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				Type: domain.EventMembershipRevoked, TenantID: tenantID,
+				Subject: userID.String(), Actor: actorID.String(),
+				IPAddress: rcIP, UserAgent: rcUA,
+				Data: domain.MembershipRevokedPayload{
+					TenantID: tenantID, UserID: userID, ActorID: actorID,
+				},
+			}); err != nil {
+				return err
 			}
-		}
-		if _, err := s.acls.SoftDeleteForUser(txCtx, tenantID, userID); err != nil {
-			return err
 		}
 		// Step 5 — the membership row itself.
 		if err := s.memberships.SoftDelete(txCtx, tenantID, userID, mem.RecordVersion); err != nil {

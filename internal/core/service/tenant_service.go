@@ -66,8 +66,7 @@ func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *do
 	// Empty body — no fields to update; return current tenant as a no-op.
 	// P-2 LLD has no detailed spec for this case; treat as idempotent read.
 	if patch.Name == nil && patch.DefaultLocale == nil &&
-		patch.LocalAccountsEnabled == nil && patch.MFAFreshnessSeconds == nil &&
-		patch.DelegationMaxDurationDays == nil && patch.DelegationReviewWindowDays == nil {
+		patch.LocalAccountsEnabled == nil && patch.MFAFreshnessSeconds == nil {
 		t, err := s.tenants.FindByID(ctx, tenantID)
 		return t, false, err
 	}
@@ -77,21 +76,6 @@ func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *do
 		if v < 60 || v > 900 {
 			return nil, false, domain.NewError(domain.ErrValidation, "mfa_freshness_seconds must be between 60 and 900").
 				WithDetails(map[string]any{"code": "invalid_mfa_freshness_seconds"})
-		}
-	}
-	// DEL-14/§16 A71: delegation cap fields must be in [1, 180].
-	if patch.DelegationMaxDurationDays != nil {
-		v := *patch.DelegationMaxDurationDays
-		if v < 1 || v > 180 {
-			return nil, false, domain.NewError(domain.ErrValidation, "delegation_max_duration_days must be between 1 and 180").
-				WithDetails(map[string]any{"code": "invalid_delegation_max_duration_days"})
-		}
-	}
-	if patch.DelegationReviewWindowDays != nil {
-		v := *patch.DelegationReviewWindowDays
-		if v < 1 || v > 180 {
-			return nil, false, domain.NewError(domain.ErrValidation, "delegation_review_window_days must be between 1 and 180").
-				WithDetails(map[string]any{"code": "invalid_delegation_review_window_days"})
 		}
 	}
 	// BCP-47 sanity: for Phase 2 we accept anything non-empty and defer

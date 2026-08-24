@@ -10,6 +10,7 @@ package postgres_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -239,6 +240,88 @@ func TestInvite_SeatCapExact_Returns409(t *testing.T) {
 		FullName: "Overflow",
 	}, actorID)
 	assert.ErrorIs(t, err, domain.ErrSeatLimitReached, "SEAT-1: at cap → 409")
+}
+
+// ── P6-SEAT-LOSTRACE-01 ──────────────────────────────────────────────
+
+// Test Case ID:      P6-SEAT-LOSTRACE-01
+// Feature:           P-6 · seat-limit lost race durably records the orphaned
+//
+//	Keycloak user rather than rolling back and losing the reference (PI-9).
+//
+// Priority: P1 · Severity: Major · Automation Status: Automated
+//
+// Invite's cheap preflight check (outside any tx) only catches an
+// already-exhausted cap — it does not lock anything, so two concurrent
+// Invite calls that both observe "one seat free" can both proceed to
+// RealmProvisioner.CreateInvitedUser and only serialize at the tx-level
+// `SELECT ... FOR UPDATE`. This test drives that real race with two
+// goroutines rather than pre-exhausting the cap, so the loser actually
+// exercises the lost-race branch instead of being rejected by preflight.
+func TestInvite_SeatCapLostRace_CommitsDurableCleanupRow(t *testing.T) {
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, "p6-lostrace")
+
+	// Owner already consumes 1 seat; licensed_seats=2 leaves exactly one
+	// seat free for the two racers to contend over.
+	_, err := fx.rawPool.Exec(ctx,
+		`UPDATE tenants SET licensed_seats = 2 WHERE id = $1`, tenantID)
+	require.NoError(t, err)
+
+	emails := []string{"racer-a@example.com", "racer-b@example.com"}
+	results := make([]error, len(emails))
+	var wg sync.WaitGroup
+	for i, email := range emails {
+		wg.Add(1)
+		go func(idx int, email string) {
+			defer wg.Done()
+			_, results[idx] = fx.Invitation.Invite(withSystemAndTenant(ctx, tenantID), tenantID, service.InvitationInput{
+				Email:    email,
+				FullName: "Racer",
+			}, actorID)
+		}(i, email)
+	}
+	wg.Wait()
+
+	var winners, losers int
+	var loserEmail string
+	for i, err := range results {
+		if err == nil {
+			winners++
+			continue
+		}
+		require.ErrorIs(t, err, domain.ErrSeatLimitReached, "the only expected failure is the seat cap")
+		losers++
+		loserEmail = emails[i]
+	}
+	require.Equal(t, 1, winners, "exactly one racer must win the last seat")
+	require.Equal(t, 1, losers, "exactly one racer must lose the race")
+
+	// The loser's Keycloak user was already created by the fake RP before
+	// the tx-level check ran. The lost-race path must NOT roll back and
+	// lose that reference — it must commit a terminal 'revoked' row
+	// carrying keycloak_user_id with kc_cleanup_pending=true, so the
+	// invitation-kc-cleanup reconciler durably converges the delete even
+	// if the immediate best-effort attempt (or the pod) fails.
+	var status string
+	var kcPending bool
+	var kcUserID *uuid.UUID
+	err = fx.rawPool.QueryRow(ctx,
+		`SELECT status, kc_cleanup_pending, keycloak_user_id FROM pending_invitations
+		 WHERE tenant_id = $1 AND email = $2`,
+		tenantID, loserEmail).Scan(&status, &kcPending, &kcUserID)
+	require.NoError(t, err, "the lost-race row must exist — it must be committed, not rolled back")
+	assert.Equal(t, string(domain.InviteRevoked), status)
+	assert.True(t, kcPending, "kc_cleanup_pending must be true so the reconciler sweeps this row")
+	require.NotNil(t, kcUserID, "the row must carry the orphaned Keycloak user's id")
+
+	// The revoked row must not count against SEAT-1 (only 'pending' rows do).
+	var pendingCount int
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT count(*) FROM pending_invitations WHERE tenant_id = $1 AND status = 'pending' AND expires_at > now()`,
+		tenantID).Scan(&pendingCount))
+	assert.Equal(t, 1, pendingCount, "only the winner's row should hold a seat")
 }
 
 // ── P10-HAPPY-01 ──────────────────────────────────────────────────────
@@ -509,51 +592,38 @@ func TestDeptSetActive_Deactivate_MembershipsRemain(t *testing.T) {
 // Test Case ID:      P10-ROLE-DECREASE-GAP-01
 // Feature:           P-10 · approver→preparator with active delegation → 409 (GAP-P10-3 / WFI-9 fix)
 // Priority: P1 · Severity: High · Automation Status: Automated
-func TestDeptMembershipAssign_LevelDecrease_WithActiveDelegation_Returns409(t *testing.T) {
+// TestDeptMembershipAssign_LevelDecrease_DelegationCheckDegrades_NoBlock covers
+// the §8.8.4 WFI-9 gate on a dept-level decrease when no port.DelegationCheckClient
+// is wired (this fixture's DeptMembershipService has none, matching a Delegation
+// Service outage) — deptDelegateOrDegrade degrades to nil and the decrease is
+// never blocked. The dept-scoped delegate lookup itself now lives in the
+// standalone Delegation Service (ADR-0008); this repo no longer has a local
+// `delegations` table to seed. The 409 path (an active delegate with
+// active_workflows > 0) is covered by the unit test below via a fake
+// DelegationCheckClient + fake WorkflowClient.
+func TestDeptMembershipAssign_LevelDecrease_DelegationCheckDegrades_NoBlock(t *testing.T) {
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
-	tenantID, delegatorID := seedTenantWithOwner(t, ctx, fx, "p10-wfi9")
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p10-wfi9")
 	delegateID := uuid.New()
 	deptID := seedActiveDept(t, ctx, fx, tenantID)
 
 	// Add delegate as an active member.
-	var delegateMemID uuid.UUID
 	require.NoError(t, fx.rawPool.QueryRow(ctx,
 		`INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
 		 VALUES (gen_random_uuid(), $1, $2, 'active') RETURNING id`,
-		tenantID, delegateID).Scan(&delegateMemID))
+		tenantID, delegateID).Scan(new(uuid.UUID)))
 
 	// Assign delegate as approver.
 	svcCtx := withSystemAndTenant(ctx, tenantID)
 	_, err := fx.DeptMembership.Assign(svcCtx, tenantID, delegateID, deptID, domain.DeptApprover, uuid.Nil)
 	require.NoError(t, err)
 
-	// Create a dept-scoped active delegation (delegatorID → delegateID, scope=department, scope_id=deptID).
-	var delegatorMemID uuid.UUID
-	require.NoError(t, fx.rawPool.QueryRow(ctx,
-		`SELECT id FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2 AND deleted_at IS NULL`,
-		tenantID, delegatorID).Scan(&delegatorMemID))
-	require.NoError(t, fx.rawPool.QueryRow(ctx, `
-		INSERT INTO delegations
-		  (id, tenant_id, delegator_id, delegate_id,
-		   delegator_membership_id, delegate_membership_id,
-		   scope, scope_id, starts_at, status)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5,
-		        'department', $6, now(), 'active')
-		RETURNING id`,
-		tenantID, delegatorID, delegateID, delegatorMemID, delegateMemID, deptID).Scan(new(uuid.UUID)))
-
-	// Downgrade delegate from approver → preparator — WFI-9 should fire.
+	// Downgrade delegate from approver → preparator — WFI-9 gate runs but
+	// deptDelegateOrDegrade returns nil (no DelegationCheckClient wired), so
+	// WorkflowClient.GetDelegateImpact is never even called.
 	_, err = fx.DeptMembership.Assign(svcCtx, tenantID, delegateID, deptID, domain.DeptPreparator, uuid.Nil)
-
-	// With fakeWorkflow (returns empty impact), the 409 won't fire in test env.
-	// But we verify the delegation check path was reached (no panic, proper handling).
-	// In production with a real Workflow Service returning active_workflows > 0 → 409.
-	// Test confirms WFI-9 code path executes without error (fail-open when workflow unavailable).
-	assert.NoError(t, err, "WFI-9 fail-open: fakeWorkflow returns empty impact → level decrease allowed")
-
-	// Note: To fully test the 409 path, configure fakeWorkflow to return active_workflows > 0.
-	// That is tested via the unit test below.
+	assert.NoError(t, err, "WFI-9 degrade: no DelegationCheckClient → level decrease allowed")
 }
 
 // seedNonSystemDeptForTenant creates a non-system dept and activates it for the tenant.

@@ -27,18 +27,20 @@
 | Remove (P-8), suspend/reactivate (P-7) | `tenant_admin`, `tenant_owner` |
 | Grant/revoke tenant-level role (P-28) | `tenant_admin`, `tenant_owner`; last-owner protected (TM-8) |
 | Assign user to dept (P-10/P-11) | `tenant_admin`, `tenant_owner` |
-| Create/cancel own delegation | Any tenant member |
-| Cancel another user's delegation | `tenant_admin`, `tenant_owner` |
-| Grant tender ACL (P-22) | `tender_admin`, `tenant_admin`, `tenant_owner` |
+| Membership-existence check (I-15) | Internal service only (NetworkPolicy) — Tender ACL Service, Delegation Service |
 | Provision tenant (I-1) | Internal service only (NetworkPolicy) |
-| Create/update system departments (O-1/O-2) | `platform_operator` only |
-| Read/edit plan catalog (O-5/O-6) | `platform_operator` only — PATCH-only (PLAN-4/OP-7) |
 | Activate/deactivate tenant dept (P-24/P-25) | `tenant_admin`, `tenant_owner` |
 | Resolve blocked removal/demotion (P-26) | `tenant_admin`, `tenant_owner` (WFI-4) |
 | View seat usage (P-27/I-11) | `tenant_admin`, `tenant_owner`; Billing internally |
 | Change `licensed_seats` | Billing only via `TenantSeatsChanged` — no O&M endpoint (SEAT-4) |
 | Set/clear `feature_flags` overrides (O-4) | `platform_operator` only (T-9/OP-6) |
 | Reassign owner of ownerless tenant (O-7) | `platform_operator` only (T-13) |
+
+Delegation create/cancel/reassign authorization (formerly "any tenant member" / `tenant_admin`+`tenant_owner`)
+and tender-ACL grant authorization (formerly `tender_admin`+`tenant_admin`+`tenant_owner`) now belong to the
+Delegation Service's and Tender-ACL Service's own LLDs — those routes are retired here (P-18/19/20/32/33,
+P-21/22/23). System-department CRUD (O-1/O-2) and plan-catalog read/edit (O-5/O-6) authorization likewise
+moved to the Catalog / Admin Config Service's own LLD (those operator routes are retired here too).
 
 ## 11. Observability
 
@@ -50,12 +52,10 @@
 | I-8 cache miss | 30 ms |
 | `GET /tenants/:id/members` | 30 ms |
 | `POST /tenants/:id/members` (P-6, incl. SEAT-1 `FOR UPDATE`) | 100 ms |
-| `POST /delegations` (incl. User Profile call) | 200 ms |
 | `DELETE /tenants/:id/members/:user_id` (incl. `GetDelegateImpact`) | 200 ms |
 | `POST .../removal-resolution` (reassign/cancel + re-validation, 2 round trips) | 350 ms |
 | P-7 suspend (incl. advisory `GetDelegateImpact`, fail-open) | 150 ms |
 | **Outbound event publish half** (outbox commit → SNS publish) — **O&M-owned** | 1 s |
-| `DelegationStarted` **end-to-end** (→ Workflow reroute) — joint, consume half Workflow-owned | 5 s |
 | **Inbound lifecycle projection freshness** (producer publish → `tenants` reflects) | 30 s |
 
 - **SLO-1** — Latency measured at API boundary, includes all synchronous work (cache/DB + any downstream call blocked on).
@@ -70,13 +70,13 @@ All `iam_`-prefixed. Cardinality-bounded: `tenant_id` labels capped by tenant co
 |---|---|---|---|
 | `iam_membership_joins_total` | Counter | `tenant_id`, `source` | Members added |
 | `iam_membership_leaves_total` | Counter | `tenant_id`, `reason` | Members removed |
-| `iam_delegation_created_total` | Counter | `tenant_id`, `scope` | Delegations created |
-| `iam_delegation_expired_total` | Counter | `tenant_id` | Delegations expired by cron |
-| `iam_delegation_expiry_deferred_total` | Counter | `tenant_id` | Expiry runs deferred (UP 5xx/timeout, DEL-6) |
 | `iam_memberships_cache_hit_ratio` | Gauge | — | Valkey hit rate for `om:memberships:*` |
 | `iam_membership_lookup_latency_seconds` | Histogram | `result (hit\|miss)` | I-8 latency; source for SLO-1 |
 | `iam_processed_events_duplicates_total` | Counter | `consumer` | Duplicates skipped (IDEMP-2) |
 | `iam_lifecycle_consumer_lag_seconds` | Gauge | `queue` | SQS `ApproximateAgeOfOldestMessage` — SLO-3 primary drift signal |
+| `iam_xsvc_call_latency_seconds` | Histogram | `service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint` | Latency of the three synchronous cross-service client calls added by the ADR-0007/ADR-0008 decomposition |
+| `iam_xsvc_call_errors_total` | Counter | `service`, `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failures; `fallback_served` recorded by the calling `CatalogService`/`GroupMappingService`, not the client |
+| `iam_membership_exists_check_total` | Counter | `caller`, `result` (`active`\|`inactive`) | I-15 grant-time membership-existence checks served (Delegation Service, Tender ACL Service) |
 | `outbox_dead_letters_total` | Counter | `event_type` | Dead letters |
 | `iam_delegate_removal_blocked_total` | Counter | `tenant_id`, `trigger (full_removal\|dept_demotion\|dept_removal)` | `409 workflow_resolution_required` |
 | `iam_delegate_reassignment_total` | Counter | `tenant_id` | Successful `replace_delegate` |
@@ -108,7 +108,6 @@ All `iam_`-prefixed. Cardinality-bounded: `tenant_id` labels capped by tenant co
 - `iam_realm_sync_pending > 0` sustained beyond ~10 min OR any un-applied disable → page (T-15)
 - Sustained `iam_realm_sync_failed_total` → page
 - Sustained `iam_invite_throttled_total` for one tenant → warn (email abuse / bad client)
-- Sustained `iam_delegation_expiry_deferred_total` → warn (UP degraded)
 - Sustained `iam_delegate_removal_blocked_total` without matching `_reassignment_total`/`_workflow_cancel_total` → warn (admins hitting block, not completing resolution)
 - Spike in `iam_seat_limit_reached_total` for a tenant → **informational Slack to CSM/Billing** (not on-call — genuine "buy more seats" signal)
 - Tenant `overage_since` older than `SEAT_OVERAGE_GRACE_DAYS` → notify Billing (enforcement owner)
@@ -119,11 +118,11 @@ All `iam_`-prefixed. Cardinality-bounded: `tenant_id` labels capped by tenant co
 
 ### 11.3 OTel Tracing
 
-`platform-gincommon.InitTracingFromEnv()` + `platform-pgcommon.NewOTelQueryTracer`. Delegation flow: parent span `delegation.create` with child spans for UP HTTP + DB write. W3C `traceparent` propagated via `gincommon.PropagateHeaders`.
+`platform-gincommon.InitTracingFromEnv()` + `platform-pgcommon.NewOTelQueryTracer`. Cross-service client spans (`catalogadmin`/`groupmappingclient`/`delegationcheck`) carry child spans for the outbound HTTP call + DB write where applicable. W3C `traceparent` propagated via `gincommon.PropagateHeaders`.
 
 ### 11.4 Structured Logs (Zap)
 
-Slow queries > 200 ms at WARN (`tenant_id` redacted). RLS violations at ERROR (1% sampled). Delegation lifecycle at INFO with `delegation_id`/`tenant_id`/`scope`. Delegate-impact events at INFO. `tenant_ownerless_escalation` at ERROR (durable, page-worthy record from I-5 cascade); `tenant_owner_reassigned` at INFO (O-7 clear side).
+Slow queries > 200 ms at WARN (`tenant_id` redacted). RLS violations at ERROR (1% sampled). Delegate-impact events at INFO. `tenant_ownerless_escalation` at ERROR (durable, page-worthy record from I-5 cascade); `tenant_owner_reassigned` at INFO (O-7 clear side).
 
 ## 12. Configuration
 
@@ -139,9 +138,11 @@ Slow queries > 200 ms at WARN (`tenant_id` redacted). RLS violations at ERROR (1
 | `SNS_TOPIC_ARN_TENANT` | (required) | `iam.tenant.events` |
 | `SQS_QUEUE_URL_TENANT_EVENTS` | (required) | `tenant-orgm-q` |
 | `SQS_QUEUE_URL_BILLING_EVENTS` | (required) | `billing-orgm-q` |
-| `USER_PROFILE_BASE_URL` / `_TIMEOUT_MS` | required / 3000 | UP internal API |
 | `WORKFLOW_SERVICE_BASE_URL` / `_TIMEOUT_MS` | required / 3000 | §8.8 delegate-impact/reassign/cancel |
 | `REALM_PROVISIONER_BASE_URL` / `_TIMEOUT_MS` | required / 3000 | Invited-user create/delete, realm-config patch, session revoke |
+| `CATALOG_ADMIN_BASE_URL` / `_TIMEOUT_MS` | required / 3000 | Catalog / Admin Config Service (ADR-0007 Wave 1) — `om:plans`/`om:departments` source. **Not fail-open**: an unconfigured/failed call with no cache surfaces `catalog_unavailable` (503) |
+| `GROUP_MAPPING_BASE_URL` / `_TIMEOUT_MS` | required / 300 | Group Mapping / JIT Config Service (ADR-0007 Wave 2) — I-10 SAML group→dept/role resolution. Fails **open** (ADR-0007 Action Item 4): cold-cache-plus-failure serves an empty resolution rather than blocking login |
+| `DELEGATION_BASE_URL` / `_TIMEOUT_MS` | required / 300 | Delegation Service (ADR-0008) — §8.8.4 dept-scope delegate pre-filter on admin Assign/Remove. Fails **open**: degrades to tenant-wide delegate-impact scoping, never blocks the operation. (Previously missing from `.env-example`/Helm values — a real bug, fixed in the ADR-0007/ADR-0008 decomposition pass: the client always failed to construct and every call silently degraded to tenant-wide scoping in every environment.) |
 | `INVITATION_EXPIRY_DAYS` | `7` | Pending invitation window; **must equal Keycloak invite action-token lifespan** |
 | `INVITE_REINVITE_COOLDOWN_MINUTES` | `60` | Per-email cooldown (PI-11); `0` disables |
 | `INVITE_MAX_PER_TENANT_PER_HOUR` | `200` | Per-tenant hourly ceiling (PI-12); `0` disables |
@@ -152,8 +153,8 @@ Slow queries > 200 ms at WARN (`tenant_id` redacted). RLS violations at ERROR (1
 | `OUTBOX_MAX_ATTEMPTS` | `5` | DLQ threshold (EVT-5) |
 | `OUTBOX_DRAIN_TIMEOUT_S` | `30` | Shutdown drain |
 | `OUTBOX_STARTUP_JITTER_S` | `7` | HPA scaling jitter |
-| `GLUE_REGISTRY_NAME_MEMBERSHIP` | (required) | `iam-membership-events` |
-| `GLUE_REGISTRY_NAME_TENANT` | (required) | `iam-tenant-events` |
+| `GLUE_REGISTRY_MEMBERSHIP_NAME` | (required) | `iam-membership-events` — omit for `NoopCodec` (plain JSON) on that topic |
+| `GLUE_REGISTRY_TENANT_NAME` | (required) | `iam-tenant-events` — omit for `NoopCodec` (plain JSON) on that topic |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (required) | OTLP collector |
 | `BUILD_VERSION` | (required) | CI-injected |
 
@@ -167,22 +168,15 @@ Helm chart mirrors `iam-user-profile`. `terminationGracePeriodSeconds = 75`. HPA
 
 | CronJob | Schedule | Purpose |
 |---|---|---|
-| `delegation-expiry` | `*/5 * * * *` | Expire past `ends_at`; defers on UP 5xx (DEL-6, `iam_delegation_expiry_deferred_total`) |
 | `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor: soft-delete + PII-scrub for `trial_expired` past 15-d grace (§15.3) |
 | `processed-events-prune` | `0 * * * *` | Delete `processed_events > 8 days` |
-| `rls-violation-prune` | `0 3 * * *` | Delete `rls_violation_log > 30 days` |
-| `delegation-cleanup` | `0 4 1 * *` | Hard-delete soft-deleted delegations > 90 days |
-| `acl-cleanup` | `0 4 2 * *` | Hard-delete soft-deleted ACL entries > 90 days |
 | `invitation-expiry` | `*/15 * * * *` | Past-`expires_at` pending → `expired` + `kc_cleanup_pending=true` (PI-5/PI-9) |
 | `invitation-kc-cleanup` | `*/10 * * * *` | Saga-compensation reconciler (PI-9): sweep `kc_cleanup_pending`, call `RealmProvisioner.DeleteUser`, clear flag |
 | `seat-overage-reconcile` | `0 * * * *` | Seat-overage marker backstop (SEAT-5): recompute `overage_since`; also drives past-grace alert |
 | `realm-config-sync` | `*/2 * * * *` | Realm-config reconciler (T-15): sweep `realm_sync_pending`, call idempotent `PatchRealmConfig`; **prioritises disables** (security-tightening) |
-| `invitation-cleanup` | `0 4 3 * *` | Hard-delete terminal `pending_invitations > 90 days` (only where `kc_cleanup_pending=false`) |
 | `outbox-prune` | `0 1 * * *` | `outbox.Runner.PrunePublished(24h, 10000)` |
 
-`quota-reset` and `quota-utilization-metrics` **removed** (§16 A26 — moved to Usage & Metering).
-
-**Operational note — deferred expirations:** repeatedly-deferred delegation expirations indicate a **User Profile dependency problem, not a CronJob fault** — job behaves correctly by deferring rather than creating "ended-but-still-OOO" split-brain. Rising `deferred_count` with healthy UP → investigate 3 s availability-call timeout (B1).
+Exactly **7** CronJobs, dispatched via `cmd/reconciler/main.go --job=<name>` (verified against `cmd/reconciler/jobs/` and `main.go`'s `registry` map). `quota-reset` and `quota-utilization-metrics` **removed** (§16 A26 — moved to Usage & Metering). `delegation-expiry`, `delegation-review`, `delegation-cleanup` (→ Delegation Service) and `acl-cleanup` (→ Tender ACL Service) **removed** by the ADR-0007/ADR-0008 decomposition — those tables and their lifecycle no longer live in this database.
 
 ### 13.3 Migration Safety
 
@@ -190,7 +184,7 @@ Rolling deploy, 3 replicas. `migrate.Runner` `lock_timeout=30s`. Additive change
 
 ## 14. Testing Strategy
 
-- **§14.1 Unit** (`testify/mock` for `port.WorkflowClient`/`UserProfileClient`/`RealmProvisionerClient`): delegation pre-flight, group-mapping resolution, seat-cap arithmetic (SEAT-1), idempotency keys, §8.8 delegate-impact resolution (blocked/proceed/replacement-validate/re-check), §8.8.5 fail-open advisory, §8.8.4 department extension (level increase never calls Workflow — `AssertNotCalled`, `scope='all'` specifically excluded WFI-10), §16 A11 invitation flow (stages-not-adds, lost-race compensation, duplicate detection, acceptance materialization, revoke frees + reconciles, throttling before RP call PI-11/PI-12).
+- **§14.1 Unit** (`testify/mock` for `port.WorkflowClient`/`RealmProvisionerClient`/`CatalogAdminClient`/`GroupMappingClient`/`DelegationCheckClient`): group-mapping resolution (incl. fail-open empty-resolution path), catalog read-through + stale-if-error fallback (incl. fail-closed `catalog_unavailable`), seat-cap arithmetic (SEAT-1), idempotency keys, §8.8 delegate-impact resolution (blocked/proceed/replacement-validate/re-check), §8.8.5 fail-open advisory, §8.8.4 department extension (level increase never calls Workflow — `AssertNotCalled`, `scope='all'` specifically excluded WFI-10; dept-scope delegate pre-filter fail-open to tenant-wide scoping on `DelegationCheckClient` failure), §16 A11 invitation flow (stages-not-adds, lost-race compensation, duplicate detection, acceptance materialization, revoke frees + reconciles, throttling before RP call PI-11/PI-12). No `port.UserProfileClient` — that adapter was deleted as dead code once delegation's OOO coordination moved to the standalone Delegation Service.
 
 - **§14.2 Integration (testcontainers-go, real PG + Valkey, full migration suite):**
   - RLS fail-closed (missing GUC / cross-tenant write / malformed GUC — all 0 rows or policy violation).
@@ -209,20 +203,15 @@ Rolling deploy, 3 replicas. `migrate.Runner` `lock_timeout=30s`. Additive change
   - **§16 A10 seat-cap** — 3rd invite at `licensed_seats=2` → `409 seat_limit_reached` with body fields matching P-27/I-11 response shape; concurrent P-6 with 1 remaining seat → exactly one succeeds (row-lock serializes); P-27 and I-11 return identical bodies.
   - **§16 A11 invitation flow** — pending counts toward cap; full invite→accept round-trip (`member` never stored, TR-7); revoke frees + `kc_cleanup_pending` reconciler; expiry frees seat before sweep; re-invite after terminal (PI-1 `uq_pi_pending` allows); duplicate live pending → `409 invitation_already_exists`.
 
-- **§14.3 Contract tests** — Verify `port.WorkflowClient`/`UserProfileClient`/`RealmProvisionerClient` HTTP shapes exactly; cover 5xx/timeout → `*_unavailable` mapping.
+- **§14.3 Contract tests** — Verify `port.WorkflowClient`/`RealmProvisionerClient`/`CatalogAdminClient`/`GroupMappingClient`/`DelegationCheckClient` HTTP shapes exactly; cover 5xx/timeout → `*_unavailable` mapping (Catalog fail-closed) and fail-open degradation (Group Mapping, Delegation-check).
 
-- **§14.4 E2E / smoke (staging):** Full-stack tenant provisioning → member add → dept assign → delegation → expiry. Events on `iam.membership.events` within 5 s p99. Extended path covers §8.8/§8.8.4/§16 A10 end-to-end.
+- **§14.4 E2E / smoke (staging):** Full-stack tenant provisioning → member add → dept assign. Events on `iam.membership.events` within 5 s p99. Extended path covers §8.8/§8.8.4/§16 A10 end-to-end.
 
 - **§14.5 RLS Case 5 (canonical, critical):** No cross-tenant GUC leak across a pooled PgBouncer backend. Pool pinned to single backend (`MaxConns=1`), tenant A tx → return connection → tenant B tx on same backend → assert B sees 0 of A's rows. Step 3 is decisive: even a mis-written non-transactional read must fail closed (0 rows), never inherit A's stale session GUC. CI additionally greps for non-`LOCAL` `SET app.tenant_id` as forbidden pattern.
 
 ## 18. Integration Points
 
-### 18.1 `iam-user-profile`
-
-- O&M → UP: `PUT /internal/users/:id/availability` (delegation OOO coordination §8.6/§8.7).
-- Event Consumer → O&M: `DELETE /internal/tenants/:t/users/:u` (user-deletion cascade — synchronous; O&M does not subscribe to `iam.user.events`).
-
-`port.UserProfileClient` interface: `SetAvailability(ctx, userID, tenantID, req)` — implemented by `adapter/outbound/userprofile/http_client.go` with `gincommon.PropagateHeaders`, 3 s timeout.
+There is no `port.UserProfileClient`/`adapter/outbound/userprofile` integration in this repo any more. The old `SetAvailability` OOO-coordination flow was dead code once delegation's OOO coordination moved to the standalone Delegation Service (zero remaining call sites), and the adapter plus its `USER_PROFILE_SERVICE_BASE_URL`/`USER_PROFILE_TIMEOUT_MS` env vars have been deleted (LLD §16 OQ-5).
 
 ### 18.2 `authz-enrichment`
 
@@ -264,7 +253,7 @@ Deliberately **event-driven, not synchronous** for write; O&M exposes no synchro
 
 ### 20.5 Workflow Service Dependency Health
 
-Every user-removal, department-demotion/removal, resolution synchronously blocks on `WorkflowClient` (WFI-7). A Workflow outage doesn't corrupt state (WFI-8: clean `503`, no DB write) but **stops admin-initiated removals/demotions across the service** until recovery. **No cached fallback, no retry-and-defer** (contrast delegation-expiry DEL-6) — caller retries.
+Every user-removal, department-demotion/removal, resolution synchronously blocks on `WorkflowClient` (WFI-7). A Workflow outage doesn't corrupt state (WFI-8: clean `503`, no DB write) but **stops admin-initiated removals/demotions across the service** until recovery. **No cached fallback, no retry-and-defer** — caller retries. (Contrast the fail-open `DelegationCheckClient` dept-scope pre-filter in §20.7, which degrades to tenant-wide scoping rather than blocking.)
 
 ### 20.6 Seat-Limit Signal, Not an Incident
 
@@ -272,25 +261,25 @@ Every user-removal, department-demotion/removal, resolution synchronously blocks
 
 ### 20.7 Synchronous Cross-Service Dependency & Degradation Matrix (§16 A35)
 
-For write operations, O&M availability = O&M × dependency (except fail-open). **Reads (I-8 hot path, list endpoints) have NO synchronous cross-service dependency** — Postgres+Valkey only — so authN/authZ stays available even when every write dependency is down.
+For write operations, O&M availability = O&M × dependency (except fail-open). **Reads (I-8 hot path, list endpoints) have NO synchronous cross-service dependency** — Postgres+Valkey only — so authN/authZ stays available even when every write dependency is down. **None of the three ADR-0007/ADR-0008 dependencies below (Catalog, Group Mapping, Delegation) sit on the I-8 hot read path** — they fire only on admin writes, group-assertion login, and admin department-membership changes, all with far larger latency budgets than I-8's 15/30 ms SLO.
 
 | Operation | Sync dependency | Posture | On failure | Ref |
 |---|---|---|---|---|
 | Invite (P-6) | RP `CreateInvitedUser` | **fail-closed** | `503 realm_provisioner_unavailable`, no invitation, retryable | §8.10, A11 |
-| Delegation create (P-19) | UP `SetAvailability` | **fail-closed** | `503 user_profile_unavailable`, no delegation, retryable | §8.6 |
 | User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow `GetDelegateImpact` | **fail-closed** | `503 workflow_service_unavailable`, no change (WFI-8) | §8.8/§8.8.4 |
 | Removal resolution (P-26) | Workflow reassign/cancel + re-check | **fail-closed** | `503`, no DB write | §8.8.3 |
 | Suspension (P-7) | Workflow `GetDelegateImpact` (advisory) | **fail-open** | suspend commits, advisory omitted | §8.8.5, C3 |
 | `local_accounts_enabled` change (P-2) | RP `PatchRealmConfig` | **fail-open + durable reconcile** | commits, `realm_sync_pending`, 202, reconciler converges | §4.2, A7 |
 | Invite compensation / revoke / expiry KC-cleanup | RP `DeleteUser` | **async + durable reconcile** | `kc_cleanup_pending`, reconciler converges (PI-9) | §13.1, A34 |
-| Plan-defaults on I-8 miss | *(none — local `plans`/`om:plans`)* | n/a | served from cache/DB | §6.2, A19 |
+| Plan-defaults / department validity (I-8 `om:plans`/`om:departments` miss; dept-activation writes) | Catalog `GET /internal/plans`\|`/internal/departments` | **fail-closed** (not fail-open) | `503 catalog_unavailable` when cache + live call both fail | §11 (ADR-0007 Wave 1) |
+| SAML/OIDC JIT group resolution (I-10) | Group Mapping `POST /internal/tenants/:id/group-resolution` | **fail-open** | cold-cache-plus-failure serves an empty resolution (login still succeeds); `group_mapping_unavailable` is declared but never actually returned (ADR-0007 Action Item 4) | §11 (ADR-0007 Wave 2) |
+| Dept-scope delegate pre-filter (admin dept Assign/Remove, §8.8.4) | Delegation `GET /internal/delegations/dept-delegate` | **fail-open** | degrades to tenant-wide delegate-impact scoping — never blocks the Assign/Remove | §11 (ADR-0008) |
 
-Three fail-closed calls (invite, delegation, removal/resolution) stop completing during the respective dependency's outage; none corrupts state. Fail-open + durable reconcile chosen to keep security-critical / high-value paths available or eventually-consistent.
+Three fail-closed calls on the classic write paths (invite, removal, removal-resolution) plus one new one (Catalog) stop completing during the respective dependency's outage; none corrupts state. Fail-open + durable reconcile / fail-open degrade chosen to keep security-critical, high-value, or login-critical paths available or eventually-consistent.
 
 ## 21. Performance
 
 - **§21.1 Hot path** — Cache hit < 1 ms (Valkey GET + deserialize). Cache miss < 30 ms: single 4-table join covered by partial indexes. PgBouncer tx pooling: 4 replicas × 15 conns = 60 concurrent DB slots → ~4000 RPS at 15 ms avg, well above 500 RPS SLO.
 - **§21.2 List endpoints** — P-4 keyset-paginated. `ORDER BY created_at, id LIMIT $limit + 1` (fetch-ahead row = `next_cursor`), index-covered by `idx_tm_tenant_created (tenant_id, created_at, id) WHERE deleted_at IS NULL`. Seek cost constant regardless of page depth.
-- **§21.3 Group-mapping JIT** — `WHERE keycloak_group_name = ANY($groups)` on `idx_gdm_group`. Typical ≤ 20 mappings. Cached in `om:gdm:{tenant}` (600 s).
-- **§21.4 Delegation index** — `idx_delegations_delegator (tenant_id, delegator_id) WHERE deleted_at IS NULL AND status='active'` for I-8 hot-path join. `idx_delegations_ends_at (ends_at) WHERE deleted_at IS NULL AND status='active' AND ends_at IS NOT NULL` for expiry. All four `delegations` indexes partial on the active predicate.
+- **§21.3 Group-mapping JIT** — the `group_dept_role_mappings`/`group_tenant_role_mappings`/`group_dept_mappings` tables (and their `idx_gdm_group`-style indexes) no longer live in this database (moved to Group Mapping Service, ADR-0007 Wave 2). I-10 resolves via `POST /internal/tenants/:id/group-resolution` and caches the result as `om:grm`/`om:gdm`/`om:gtrm` (600 s) with a `:stale` 24 h fallback — not a local index scan.
 - **§21.5 Seat-cap count** — SEAT-1's `SELECT count(*) FROM tenant_memberships WHERE tenant_id=$1 AND deleted_at IS NULL AND status='active'` covered by the pre-existing `idx_tm_status (tenant_id, status) WHERE deleted_at IS NULL`. No new index needed for A10.

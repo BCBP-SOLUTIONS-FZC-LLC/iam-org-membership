@@ -127,11 +127,11 @@ func (f *fakeDeptMemListByUser) SoftDeleteAllForDept(context.Context, uuid.UUID,
 var _ port.DeptMembershipRepository = (*fakeDeptMemListByUser)(nil)
 
 // buildMembershipSvc wires MembershipService with the collaborators used
-// by List/Get/SeatUsage. Others (delegations, acls, rp, workflow, txRunner)
-// stay nil.
+// by List/Get/SeatUsage. Others (delegations, rp, workflow, txRunner) stay
+// nil.
 func buildMembershipSvc(m port.MembershipRepository, r port.TenantRoleRepository, dm port.DeptMembershipRepository, t port.TenantRepository, inv port.InvitationRepository, cache port.Cache) *service.MembershipService {
 	return service.NewMembershipService(
-		m, r, dm, nil, nil, t, inv,
+		m, r, dm, t, inv,
 		cache, nil, nil, nil, nil, 30,
 	)
 }
@@ -294,6 +294,64 @@ func TestMembership_Get_DeptFetchErrorAborts(t *testing.T) {
 	}
 	_, err := buildMembershipSvc(m, r, dm, nil, nil, nil).Get(context.Background(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, deptErr)
+}
+
+// ── CheckActiveMembership (ADR-0007 Wave 3 Phase 3 — backs the new GET
+// /tenants/:id/members/:user_id/exists route iam-tender-acl depends on) ──
+//
+// Deliberately a thin FindByUserID wrapper (see the method's own doc
+// comment): these tests confirm it does NOT touch roles/dept memberships
+// at all, unlike Get() — a nil roles/dept repo must never be dereferenced.
+
+func TestMembership_CheckActiveMembership_ActiveMember_ReturnsMembership(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	membershipID := uuid.New()
+	m := &fakeMemRepoFull{
+		findByUserFn: func(_ context.Context, tt, uu uuid.UUID) (*domain.TenantMembership, error) {
+			assert.Equal(t, tenantID, tt)
+			assert.Equal(t, userID, uu)
+			return &domain.TenantMembership{ID: membershipID, TenantID: tt, UserID: uu, Status: domain.MembershipActive}, nil
+		},
+	}
+	got, err := buildMembershipSvc(m, nil, nil, nil, nil, nil).CheckActiveMembership(context.Background(), tenantID, userID)
+	require.NoError(t, err)
+	assert.Equal(t, membershipID, got.ID)
+	assert.Equal(t, domain.MembershipActive, got.Status)
+}
+
+func TestMembership_CheckActiveMembership_SuspendedMember_ReturnsMembershipWithNonActiveStatus(t *testing.T) {
+	// The service returns the membership as-is, whatever its status —
+	// the caller (CheckMemberExists handler) is responsible for the
+	// active-vs-not-active decision, not this method.
+	m := &fakeMemRepoFull{
+		findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{ID: uuid.New(), Status: domain.MembershipSuspended}, nil
+		},
+	}
+	got, err := buildMembershipSvc(m, nil, nil, nil, nil, nil).CheckActiveMembership(context.Background(), uuid.New(), uuid.New())
+	require.NoError(t, err)
+	assert.Equal(t, domain.MembershipSuspended, got.Status)
+}
+
+func TestMembership_CheckActiveMembership_NotFoundSurfaces(t *testing.T) {
+	m := &fakeMemRepoFull{
+		findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+			return nil, domain.NewError(domain.ErrMemberNotFound, "no such member")
+		},
+	}
+	_, err := buildMembershipSvc(m, nil, nil, nil, nil, nil).CheckActiveMembership(context.Background(), uuid.New(), uuid.New())
+	assert.ErrorIs(t, err, domain.ErrMemberNotFound)
+}
+
+func TestMembership_CheckActiveMembership_RepoErrorSurfaces(t *testing.T) {
+	repoErr := errors.New("db down")
+	m := &fakeMemRepoFull{
+		findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+			return nil, repoErr
+		},
+	}
+	_, err := buildMembershipSvc(m, nil, nil, nil, nil, nil).CheckActiveMembership(context.Background(), uuid.New(), uuid.New())
+	assert.ErrorIs(t, err, repoErr)
 }
 
 // ── SeatUsage (P-27) ───────────────────────────────────────────────────

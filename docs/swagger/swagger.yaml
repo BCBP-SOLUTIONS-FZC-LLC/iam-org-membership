@@ -86,70 +86,6 @@ definitions:
         example: true
         type: boolean
     type: object
-  http.DelegationCreateRequest:
-    properties:
-      delegate_id:
-        type: string
-      ends_at:
-        type: string
-      reason:
-        description: 'DEL-10: stored in delegations.reason AND sent to UP as note'
-        type: string
-      scope:
-        type: string
-      scope_id:
-        type: string
-      starts_at:
-        type: string
-    type: object
-  http.DelegationExtendRequest:
-    properties:
-      extend_days:
-        type: integer
-      record_version:
-        type: integer
-    type: object
-  http.DelegationListResponse:
-    properties:
-      items:
-        items:
-          $ref: '#/definitions/http.DelegationResponse'
-        type: array
-    type: object
-  http.DelegationReassignRequest:
-    properties:
-      delegate_id:
-        type: string
-      record_version:
-        type: integer
-    type: object
-  http.DelegationResponse:
-    properties:
-      delegate_id:
-        type: string
-      delegator_id:
-        type: string
-      ends_at:
-        type: string
-      id:
-        type: string
-      reason:
-        type: string
-      record_version:
-        type: integer
-      review_due_at:
-        type: string
-      review_window_days:
-        type: integer
-      scope:
-        type: string
-      scope_id:
-        type: string
-      starts_at:
-        type: string
-      status:
-        type: string
-    type: object
   http.DepartmentListResponse:
     properties:
       items:
@@ -443,18 +379,6 @@ definitions:
         format: uuid
         type: string
     type: object
-  http.InternalTenderACLCheckResponse:
-    properties:
-      access_level:
-        enum:
-        - view
-        - edit
-        - approve
-        type: string
-      has_access:
-        example: true
-        type: boolean
-    type: object
   http.InvitationCreateRequest:
     properties:
       email:
@@ -502,6 +426,15 @@ definitions:
     properties:
       record_version:
         type: integer
+    type: object
+  http.MemberExistsResponse:
+    properties:
+      active:
+        example: true
+        type: boolean
+      tenant_membership_id:
+        format: uuid
+        type: string
     type: object
   http.MemberItemResponse:
     properties:
@@ -708,12 +641,6 @@ definitions:
     properties:
       default_locale:
         type: string
-      delegation_max_duration_days:
-        description: '§16 A71, DEL-14: 1..180'
-        type: integer
-      delegation_review_window_days:
-        description: '§16 A71, DEL-14: 1..180'
-        type: integer
       local_accounts_enabled:
         type: boolean
       mfa_freshness_seconds:
@@ -727,10 +654,6 @@ definitions:
     properties:
       default_locale:
         type: string
-      delegation_max_duration_days:
-        type: integer
-      delegation_review_window_days:
-        type: integer
       feature_flags:
         additionalProperties: {}
         type: object
@@ -769,46 +692,6 @@ definitions:
       updated_at:
         type: string
     type: object
-  http.TenderACLGrantRequest:
-    properties:
-      access_level:
-        type: string
-      expires_at:
-        type: string
-      reason:
-        type: string
-      user_id:
-        type: string
-    type: object
-  http.TenderACLListResponse:
-    properties:
-      items:
-        items:
-          $ref: '#/definitions/http.TenderACLResponse'
-        type: array
-    type: object
-  http.TenderACLResponse:
-    properties:
-      access_level:
-        type: string
-      expires_at:
-        type: string
-      granted_by:
-        type: string
-      reason:
-        type: string
-      user_id:
-        type: string
-    type: object
-  http.TenderACLRevokeResponse:
-    properties:
-      revoked:
-        example: true
-        type: boolean
-      user_id:
-        format: uuid
-        type: string
-    type: object
   http.ValidationError:
     properties:
       code:
@@ -830,7 +713,7 @@ info:
     email: sharmila.dayalan@bcbpsolutions.com
     name: BCBP Solutions
   description: |-
-    Organizational layer of the IAM subsystem — owns tenants, departments, memberships, tenant-level roles, delegations, invitations, ACL overlays, and group→role mappings.
+    Organizational layer of the IAM subsystem — owns tenants, departments, memberships, tenant-level roles, and invitations.
 
     **Tenant isolation.** Every resource is scoped by `x-tenant-id`; cross-tenant reads are blocked by row-level security (RLS-1..RLS-6). The hot path `GET /internal/users/:id/memberships` is the enrichment source for AuthZ (SLO 15 ms cache-hit / 30 ms cache-miss).
 
@@ -842,209 +725,10 @@ info:
   title: IAM Org & Membership API
   version: "1.0"
 paths:
-  /delegations:
-    get:
-      description: Returns active delegations for the caller's tenant (RLS-scoped).
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.DelegationListResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-18 — List active delegations
-      tags:
-      - delegations
-    post:
-      consumes:
-      - application/json
-      description: §8.6 availability-first — calls UP SetAvailability BEFORE inserting
-        delegations row. On UP failure returns 422 invalid_delegate.
-      parameters:
-      - description: Delegation payload
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/http.DelegationCreateRequest'
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            $ref: '#/definitions/http.DelegationResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "422":
-          description: invalid_delegate | delegate_unavailable | self_delegation |
-            delegation_window_inverted | scope_id_required | delegation_start_in_past
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-19 — Create OOO delegation (self-service, AUTH-4)
-      tags:
-      - delegations
-  /delegations/{id}:
-    delete:
-      description: '§8.7 pointer-clear: calls UP with {delegate_id: null} first, then
-        flips status to ''cancelled''. Self-service; admin can cancel any.'
-      parameters:
-      - description: Delegation UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Optimistic-lock version
-        in: query
-        name: record_version
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.DelegationResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "409":
-          description: record_version mismatch (CONC-4)
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-20 — Cancel delegation
-      tags:
-      - delegations
-  /delegations/{id}/extend:
-    post:
-      consumes:
-      - application/json
-      description: Pushes review_due_at forward by extend_days (1..180, §16 A71).
-        Defaults to tenant's delegation_review_window_days when omitted. Only valid
-        for open-ended delegations (DEL-13).
-      parameters:
-      - description: Delegation UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: extend_days + record_version
-        in: body
-        name: request
-        schema:
-          $ref: '#/definitions/http.DelegationExtendRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.DelegationResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "409":
-          description: optimistic_lock_conflict
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "422":
-          description: delegation_not_open_ended | extend_days_out_of_range
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-32 — Extend delegation review window
-      tags:
-      - delegations
-  /delegations/{id}/reassign:
-    post:
-      consumes:
-      - application/json
-      description: Ends the current delegation and creates a new one with the same
-        scope but a different delegate.
-      parameters:
-      - description: Delegation UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: New delegate
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/http.DelegationReassignRequest'
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            $ref: '#/definitions/http.DelegationResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "422":
-          description: invalid_delegate | delegate_unavailable
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-33 — Reassign delegation to a new delegate
-      tags:
-      - delegations
   /healthz:
     get:
-      description: Unauthenticated. Always 200 once the process has started; does
-        not check downstream dependencies (see /readyz for that).
+      description: Always returns ok if the process can answer HTTP at all. Never
+        inspects dependencies.
       produces:
       - application/json
       responses:
@@ -1376,6 +1060,42 @@ paths:
       summary: I-4 — Keycloak lifecycle status update
       tags:
       - internal
+  /internal/tenants/{id}/members/{user_id}/exists:
+    get:
+      description: Returns `{active, tenant_membership_id}` — tenant_membership_id
+        is populated only when active is true. Never 404.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.MemberExistsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: Membership existence/active-status check (iam-tender-acl grant-time
+        dependency)
+      tags:
+      - internal
   /internal/tenants/{id}/mfa-freshness:
     get:
       description: Returns mfa_freshness_seconds from the om:tenant cache (same key
@@ -1441,51 +1161,6 @@ paths:
       - TenantID: []
       - TenantRoles: []
       summary: I-11 — Seat-usage S2S (Billing pre-check)
-      tags:
-      - internal
-  /internal/tenants/{id}/tenders/{tender_id}/acl/{user_id}:
-    get:
-      description: Returns `{has_access, access_level}` — access_level is populated
-        only when has_access is true.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Tender UUID
-        format: uuid
-        in: path
-        name: tender_id
-        required: true
-        type: string
-      - description: User UUID
-        format: uuid
-        in: path
-        name: user_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.InternalTenderACLCheckResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: I-12 — Tender ACL check (active grant, TAE-3)
       tags:
       - internal
   /internal/tenants/{id}/tenders/{tender_id}/assignee-override:
@@ -1585,19 +1260,6 @@ paths:
       summary: 'I-8 — HOT PATH: full membership projection (AuthZ Enrichment)'
       tags:
       - internal
-  /metrics:
-    get:
-      description: Unauthenticated. Exposition-format Prometheus metrics.
-      produces:
-      - text/plain
-      responses:
-        "200":
-          description: OK
-          schema:
-            type: string
-      summary: Prometheus metrics
-      tags:
-      - infra
   /operator/tenants/{id}/feature-flags:
     patch:
       consumes:
@@ -1695,22 +1357,20 @@ paths:
       - operator
   /readyz:
     get:
-      description: Unauthenticated. 503 if Postgres, Valkey, or the outbox runner
-        are not ready.
+      description: Checks Postgres, Valkey, and the outbox runner. Returns 503 if
+        any dependency is not ready.
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            additionalProperties:
-              type: string
+            additionalProperties: true
             type: object
         "503":
           description: Service Unavailable
           schema:
-            additionalProperties:
-              type: string
+            additionalProperties: true
             type: object
       summary: Readiness probe
       tags:
@@ -2541,136 +2201,6 @@ paths:
       summary: P-27 — Seat-usage projection
       tags:
       - members
-  /tenants/{id}/tenders/{tender_id}/acl:
-    get:
-      description: 'AUTH-3 tender_admin/tenant_admin/owner. Returns all non-revoked
-        grants (TAE-7): active AND passively expired (expires_at in past but not explicitly
-        revoked). Expired entries are visible so admins can explicitly revoke them
-        via P-23. Check expires_at in response to distinguish active vs expired.'
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Tender UUID
-        format: uuid
-        in: path
-        name: tender_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.TenderACLListResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-21 — List ACL entries for a tender (active + passively expired)
-      tags:
-      - acl
-    post:
-      consumes:
-      - application/json
-      description: AUTH-3 tender_admin/tenant_admin/owner. Optional expires_at (future-only).
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Tender UUID
-        format: uuid
-        in: path
-        name: tender_id
-        required: true
-        type: string
-      - description: Grant payload
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/http.TenderACLGrantRequest'
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            $ref: '#/definitions/http.TenderACLResponse'
-        "400":
-          description: invalid_access_level (bad enum value)
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "422":
-          description: invalid_expires_at (past timestamp)
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-22 — Grant tender ACL (view/edit/approve)
-      tags:
-      - acl
-  /tenants/{id}/tenders/{tender_id}/acl/{user_id}:
-    delete:
-      description: AUTH-3 tender_admin/tenant_admin/owner. Soft-deletes the ACL row.
-      parameters:
-      - description: Tenant UUID
-        format: uuid
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Tender UUID
-        format: uuid
-        in: path
-        name: tender_id
-        required: true
-        type: string
-      - description: User UUID
-        format: uuid
-        in: path
-        name: user_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/http.TenderACLRevokeResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/http.ErrorResponse'
-      security:
-      - UserID: []
-      - TenantID: []
-      - TenantRoles: []
-      summary: P-23 — Revoke tender ACL
-      tags:
-      - acl
   /tenants/{id}/users/{user_id}/removal-resolution:
     post:
       consumes:
@@ -2715,9 +2245,9 @@ paths:
       tags:
       - resolution
 tags:
-- description: In-mesh service-to-service (I-1..I-13)
+- description: In-mesh service-to-service (I-1..I-15)
   name: internal
-- description: Platform operator (O-1..O-7)
+- description: Platform operator (O-4, O-7 — O-1/O-2/O-3/O-5/O-6 retired ADR-0007 Wave 1, moved to iam-catalog-admin)
   name: operator
 - description: Tenant CRUD (P-1, P-2)
   name: tenant
@@ -2727,10 +2257,6 @@ tags:
   name: members
 - description: Dept-role labels (P-12, P-13)
   name: roles
-- description: OOO delegations (P-18, P-19, P-20)
-  name: delegations
-- description: Tender ACL overlays (P-21, P-22, P-23)
-  name: acl
 - description: Two-step invite→accept (P-6, P-30, P-31)
   name: invitations
 - description: Removal-resolution (P-26)

@@ -9,7 +9,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -18,9 +17,10 @@ import (
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
-	userprofileclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/userprofile"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var registry = map[string]jobs.Func{
@@ -28,8 +28,6 @@ var registry = map[string]jobs.Func{
 	"invitation-kc-cleanup":  jobs.InvitationKCCleanup,
 	"realm-config-sync":      jobs.RealmConfigSync,
 	"seat-overage-reconcile": jobs.SeatOverageReconcile,
-	"delegation-expiry":      jobs.DelegationExpiry,
-	"delegation-review":      jobs.DelegationReview,
 	"trial-cleanup":          jobs.TrialCleanup,
 	"outbox-prune":           jobs.OutboxPrune,
 	"processed-events-prune": jobs.ProcessedEventsPrune,
@@ -48,7 +46,15 @@ func main() {
 		die("unknown job %q — valid: %v", jobName, registryNames())
 	}
 
-	slog.Info("reconciler starting", "job", jobName)
+	// Same Zap-backed Logger as cmd/server/main.go — every reconciler job's
+	// logs flow through the identical gincommon sink instead of slog.Default().
+	rawLog, err := logger.NewLogger(envOr("APP_ENV", "dev"))
+	if err != nil {
+		panic("init logger: " + err.Error())
+	}
+	log := port.NewSlogStyleLogger(rawLog)
+
+	log.Info("reconciler starting", "job", jobName)
 
 	timeout := 5 * time.Minute
 	if s := os.Getenv("RECONCILER_TIMEOUT"); s != "" {
@@ -59,19 +65,30 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	pool, err := pgcommon.NewPool(ctx, pgcommon.Config{
-		DSN:           pgadapter.DSNFromEnv(),
-		MaxConns:      4,
-		MinConns:      0,
-		PGBouncerMode: os.Getenv("PG_BOUNCER_MODE") == "true",
-		GUCProvider:   pgcommon.GUCSetFromContext,
-	})
+	// pgcommon.ConfigFromEnv reads DATABASE_URL/PG_* directly — same source
+	// of truth cmd/server/main.go uses, so pool sizing/DSN assembly never
+	// drifts between the two binaries.
+	pgCfg, pgWarnings := pgcommon.ConfigFromEnv()
+	for _, w := range pgWarnings {
+		log.Warn("postgres config warning", "key", w.Key, "reason", w.Reason)
+	}
+	pgCfg.DSN = pgadapter.DSNFromEnv()
+	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
+	pgCfg.Logger = pgadapter.NewLoggerAdapter(rawLog)
+	pool, err := pgcommon.NewPool(ctx, pgCfg)
 	if err != nil {
 		die("connect to postgres: %v", err)
 	}
 	defer pool.Close()
 
-	sysPool, err := pgxpool.New(ctx, pgadapter.SystemDSNFromEnv())
+	// *pgcommon.Pool (not a raw pgxpool.Pool), deliberately with no
+	// GUCProvider — same rationale as cmd/server/main.go's sysPool — wired
+	// with the same Logger so slow cross-tenant queries are traced through
+	// the same structured sink instead of nowhere.
+	sysPool, err := pgcommon.NewPool(ctx, pgcommon.Config{
+		DSN:    pgadapter.SystemDSNFromEnv(),
+		Logger: pgadapter.NewLoggerAdapter(rawLog),
+	})
 	if err != nil {
 		die("connect sysPool: %v", err)
 	}
@@ -82,16 +99,15 @@ func main() {
 	if err != nil {
 		die("init validating codec: %v", err)
 	}
-	outboxPublisher := eventbusadapter.New("iam-org-membership-reconciler", codec)
+	outboxPublisher := eventbusadapter.New("iam-org-membership-reconciler", codec).WithLogger(rawLog)
 
 	jctx := &jobs.Context{
 		Pool:                   pool,
 		SysPool:                sysPool,
 		OutboxPublisher:        outboxPublisher,
 		TxRunner:               pgadapter.NewTxRunner(pool, outboxPublisher),
-		RealmProvisioner:       realmprovisionerclient.New(),
-		UserProfile:            userprofileclient.New(),
-		Logger:                 slog.Default(),
+		RealmProvisioner:       realmprovisionerclient.New(rawLog),
+		Logger:                 log,
 		BatchLimit:             envInt("RECONCILER_BATCH_LIMIT", 500),
 		SeatOverageGraceDays:   envInt("SEAT_OVERAGE_GRACE_DAYS", 30),
 		TrialGraceDays:         envInt("TRIAL_GRACE_DAYS", 15),
@@ -101,11 +117,13 @@ func main() {
 
 	res, err := fn(ctx, jctx)
 	if err != nil {
-		slog.Error("reconciler job failed", "job", jobName, "error", err.Error())
+		log.Error("reconciler job failed", "job", jobName, "error", err.Error())
+		_ = gincommon.Shutdown(rawLog)
 		os.Exit(1)
 	}
-	slog.Info("reconciler complete", "job", jobName,
+	log.Info("reconciler complete", "job", jobName,
 		"attempted", res.Attempted, "succeeded", res.Succeeded, "failed", res.Failed, "skipped", res.Skipped)
+	_ = gincommon.Shutdown(rawLog)
 }
 
 func registryNames() []string {
@@ -114,6 +132,13 @@ func registryNames() []string {
 		names = append(names, k)
 	}
 	return names
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func envInt(key string, def int) int {

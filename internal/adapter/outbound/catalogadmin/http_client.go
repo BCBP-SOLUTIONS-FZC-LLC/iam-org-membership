@@ -29,20 +29,33 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
 )
 
+// xsvcService is this client's iam_xsvc_call_* label value (LLD §11.2).
+const xsvcService = "catalog"
+
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  *slog.Logger
+	logger  Logger
+}
+
+// Logger is the structured logging interface this client uses (Warn only).
+// *slog.Logger satisfies it directly (existing tests keep working
+// unchanged); so does port.SlogStyleLogger, which New() passes in from
+// main.go so these warnings flow through the same gincommon-backed sink as
+// the rest of the service instead of slog.Default().
+type Logger interface {
+	Warn(msg string, args ...any)
 }
 
 var _ port.CatalogAdminClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger *slog.Logger) *HTTPClient {
+func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -64,11 +77,12 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger *slog.Logger) *
 }
 
 // New preserves the sibling clients' factory-name convention so main.go's
-// wiring reads the same way for every outbound client.
-func New() *HTTPClient {
+// wiring reads the same way for every outbound client. log is the shared
+// gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
+func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("CATALOG_ADMIN_BASE_URL", "")
 	timeout := envDurationMs("CATALOG_ADMIN_TIMEOUT_MS", 3*time.Second)
-	return NewHTTPClient(baseURL, timeout, slog.Default())
+	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
 }
 
 // catalogDepartmentsResponse mirrors catalog-admin-config's
@@ -103,6 +117,7 @@ type catalogPlansResponse struct {
 }
 
 func (c *HTTPClient) Departments(ctx context.Context) ([]port.CatalogDepartment, error) {
+	const endpoint = "departments"
 	if c.baseURL == "" {
 		return nil, errors.New("catalogadmin: baseURL not configured — CATALOG_ADMIN_BASE_URL must be set")
 	}
@@ -113,13 +128,19 @@ func (c *HTTPClient) Departments(ctx context.Context) ([]port.CatalogDepartment,
 	}
 	c.setInternalHeaders(req)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveXsvcLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncXsvcError(xsvcService, endpoint, metrics.XsvcOutcome(err))
 		c.logger.Warn("catalogadmin: Departments transport error", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= 500 {
+			metrics.IncXsvcError(xsvcService, endpoint, "5xx")
+		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("catalogadmin: Departments returned %d: %s", resp.StatusCode, string(msg))
 	}
@@ -138,6 +159,7 @@ func (c *HTTPClient) Departments(ctx context.Context) ([]port.CatalogDepartment,
 }
 
 func (c *HTTPClient) Plans(ctx context.Context) ([]port.CatalogPlan, error) {
+	const endpoint = "plans"
 	if c.baseURL == "" {
 		return nil, errors.New("catalogadmin: baseURL not configured — CATALOG_ADMIN_BASE_URL must be set")
 	}
@@ -148,13 +170,19 @@ func (c *HTTPClient) Plans(ctx context.Context) ([]port.CatalogPlan, error) {
 	}
 	c.setInternalHeaders(req)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveXsvcLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncXsvcError(xsvcService, endpoint, metrics.XsvcOutcome(err))
 		c.logger.Warn("catalogadmin: Plans transport error", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= 500 {
+			metrics.IncXsvcError(xsvcService, endpoint, "5xx")
+		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("catalogadmin: Plans returned %d: %s", resp.StatusCode, string(msg))
 	}

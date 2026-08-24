@@ -65,7 +65,6 @@ func TestTrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
 	assert.Contains(t, proj.Roles, domain.RoleTenantOwner, "I-8 must project owner grant")
 	assert.Contains(t, proj.Roles, domain.RoleMember, "TR-7 derived 'member' present")
 	assert.Empty(t, proj.Departments, "no dept memberships at signup")
-	assert.Empty(t, proj.ActiveDelegations)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

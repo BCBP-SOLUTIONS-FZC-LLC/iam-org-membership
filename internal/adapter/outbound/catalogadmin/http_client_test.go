@@ -67,7 +67,7 @@ func TestDepartments_EmptyBaseURL_ErrorsNotFailOpen(t *testing.T) {
 	// Unlike realmprovisioner/userprofile/workflow, this client must NOT
 	// fabricate a safe default when unconfigured — fabricating catalog
 	// data is worse than an explicit error.
-	c := New()
+	c := New(nil)
 	_, err := c.Departments(context.Background())
 	require.Error(t, err)
 }
@@ -100,7 +100,7 @@ func TestPlans_Happy(t *testing.T) {
 }
 
 func TestPlans_EmptyBaseURL_ErrorsNotFailOpen(t *testing.T) {
-	c := New()
+	c := New(nil)
 	_, err := c.Plans(context.Background())
 	require.Error(t, err)
 }

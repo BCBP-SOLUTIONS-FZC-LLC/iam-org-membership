@@ -19,12 +19,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/google/uuid"
@@ -87,12 +87,12 @@ func mkEnvelope(t *testing.T, eventType string, tenantID uuid.UUID, ts time.Time
 // ErrPoisonPill, NO processed_events row is written (the DLQ path skips
 // dedup so the poison message can be re-delivered from DLQ investigation).
 func TestConsumerEVT15_FutureTimeClamp(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt15-clamp")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	future := time.Now().UTC().Add(10 * time.Minute) // > 5min skew
 	env := mkEnvelope(t, "TrialExpired", tenantA, future, map[string]string{})
@@ -120,12 +120,12 @@ func TestConsumerEVT15_FutureTimeClamp(t *testing.T) {
 // TestConsumerEVT15_WithinSkewApplied — event.time = now() + skew - 1s
 // (just inside the window) → projection runs normally.
 func TestConsumerEVT15_WithinSkewApplied(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt15-boundary")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	// 4m59s in the future — inside the 5-min skew window.
 	ts := time.Now().UTC().Add(5*time.Minute - time.Second)
@@ -144,7 +144,7 @@ func TestConsumerEVT15_WithinSkewApplied(t *testing.T) {
 // TestConsumerEVT14_FirstEventApplied — last_event_at IS NULL initially →
 // first event's projection applies and last_event_at is stamped.
 func TestConsumerEVT14_FirstEventApplied(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt14-first")
 
@@ -155,7 +155,7 @@ func TestConsumerEVT14_FirstEventApplied(t *testing.T) {
 	require.Nil(t, pre, "precondition: last_event_at must start NULL")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-1 * time.Minute)
 	env := mkEnvelope(t, "TrialExpired", tenantA, ts, map[string]string{})
@@ -174,7 +174,7 @@ func TestConsumerEVT14_FirstEventApplied(t *testing.T) {
 // → projection is BYPASSED (status stays put) but processed_events IS
 // inserted so SQS never redelivers it.
 func TestConsumerEVT14_StaleEventSkipped(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt14-stale")
 
@@ -187,7 +187,7 @@ func TestConsumerEVT14_StaleEventSkipped(t *testing.T) {
 	require.NoError(t, err)
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	// Stale event: timestamp BEFORE last_event_at.
 	staleTS := high.Add(-1 * time.Minute)
@@ -221,7 +221,7 @@ func TestConsumerEVT14_StaleEventSkipped(t *testing.T) {
 // The guard is `!env.Timestamp.After(*lastEventAt)`, which treats equal as
 // stale (defensive against clock-tie duplicate emissions).
 func TestConsumerEVT14_EqualTimeSkipped(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt14-equal")
 
@@ -233,7 +233,7 @@ func TestConsumerEVT14_EqualTimeSkipped(t *testing.T) {
 	require.NoError(t, err)
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	env := mkEnvelope(t, "TrialExpired", tenantA, high, map[string]string{})
 	require.NoError(t, c.Handle(ctx, env))
@@ -249,12 +249,12 @@ func TestConsumerEVT14_EqualTimeSkipped(t *testing.T) {
 // TestConsumerEVT16_StatusChangeEnqueuesRelay — a TenantSuspended that flips
 // status trial→suspended must enqueue a TenantStateChanged relay.
 func TestConsumerEVT16_StatusChangeEnqueuesRelay(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt16-status")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-10 * time.Second)
 	env := mkEnvelope(t, "TrialExpired", tenantA, ts, map[string]string{})
@@ -274,12 +274,12 @@ func TestConsumerEVT16_StatusChangeEnqueuesRelay(t *testing.T) {
 // TestConsumerEVT16_NoRelayOnNoStateChange — TenantSeatsChanged does NOT
 // touch status or plan → no relay enqueued.
 func TestConsumerEVT16_NoRelayOnNoStateChange(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt16-noop")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-10 * time.Second)
 	env := mkEnvelope(t, "TenantSeatsChanged", tenantA, ts, map[string]int{"licensed_seats": 50})
@@ -295,12 +295,12 @@ func TestConsumerEVT16_NoRelayOnNoStateChange(t *testing.T) {
 // TestConsumerEVT16_PlanChangeEnqueuesRelay — TenantPlanChanged that flips
 // plan starter→enterprise must enqueue a TenantStateChanged with previous_plan.
 func TestConsumerEVT16_PlanChangeEnqueuesRelay(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "evt16-plan")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-5 * time.Second)
 	env := mkEnvelope(t, "TenantPlanChanged", tenantA, ts, map[string]string{"plan": "enterprise"})
@@ -323,12 +323,12 @@ func TestConsumerEVT16_PlanChangeEnqueuesRelay(t *testing.T) {
 // TestConsumerIdempotency — same event delivered twice is a no-op the
 // second time. Projection runs once; status doesn't get double-applied.
 func TestConsumerIdempotency(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "idemp-dup")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-10 * time.Second)
 	env := mkEnvelope(t, "TrialExpired", tenantA, ts, map[string]string{})
@@ -349,12 +349,12 @@ func TestConsumerIdempotency(t *testing.T) {
 // TestConsumerUnknownEventSilentAck — an event type this consumer doesn't
 // know about is silently ack'd + recorded in processed_events (forward-compat).
 func TestConsumerUnknownEventSilentAck(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "unknown-ack")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-1 * time.Second)
 	env := mkEnvelope(t, "FutureEventTypeThatWeShouldHandleSomeday", tenantA, ts, map[string]any{"anything": "goes"})
@@ -375,4 +375,3 @@ func TestConsumerUnknownEventSilentAck(t *testing.T) {
 
 	assert.Equal(t, 0, outbox.count(), "unknown event MUST NOT enqueue relay")
 }
-

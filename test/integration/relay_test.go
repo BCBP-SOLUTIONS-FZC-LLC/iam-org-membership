@@ -22,7 +22,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,8 +30,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
+	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
@@ -69,7 +69,7 @@ func TestEVT16_001_TenantStateChangedRelayThroughWire(t *testing.T) {
 	require.NoError(t, err)
 	outboxPub := eventbusadapter.New("iam-org-membership-test", codec)
 
-	memConsumer := consumer.NewMembershipEventConsumer(appPool, outboxPub, 5*time.Minute, slog.Default())
+	memConsumer := consumer.NewMembershipEventConsumer(appPool, outboxPub, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	// Topics + queues.
 	tenantTopic := e.createTopic(t, "iam-tenant-events")
@@ -80,7 +80,7 @@ func TestEVT16_001_TenantStateChangedRelayThroughWire(t *testing.T) {
 
 	workflowQ := e.createQueue(t, "membership-workflow-q", "", 0)
 	e.subscribeQueue(t, membershipTopic, workflowQ,
-		`{"EventType":["TenantStateChanged","DelegationStarted"]}`)
+		`{"EventType":["TenantStateChanged","MembershipRevoked"]}`)
 
 	// Publishers for the outbox runner (only membership lane matters — the
 	// relay we care about is TenantStateChanged, which routes there).
@@ -163,7 +163,7 @@ func TestTwoTenantsIndependentProjection(t *testing.T) {
 	tenantB := seedTenantForConsumer(t, e, "multi-tenant-b")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)
@@ -233,19 +233,15 @@ func TestOUTBOX_RETRY_001_TransientPublisherFailureRetried(t *testing.T) {
 
 	tenantID := uuid.New()
 	enqueueDomainEvent(t, e, &domain.DomainEvent{
-		Type:       domain.EventDelegationEnded,
+		Type:       domain.EventMembershipRevoked,
 		TenantID:   tenantID,
 		Subject:    uuid.NewString(),
 		Actor:      uuid.NewString(),
 		OccurredAt: time.Now().UTC(),
-		Data: domain.DelegationEndedPayload{
-			DelegationID: uuid.New(),
-			TenantID:     tenantID,
-			DelegatorID:  uuid.New(),
-			DelegateID:   uuid.New(),
-			Scope:        domain.ScopeAll,
-			EndedReason:  domain.EndReasonCancelled,
-			ActorID:      uuid.New(),
+		Data: domain.MembershipRevokedPayload{
+			TenantID: tenantID,
+			UserID:   uuid.New(),
+			ActorID:  uuid.New(),
 		},
 	})
 

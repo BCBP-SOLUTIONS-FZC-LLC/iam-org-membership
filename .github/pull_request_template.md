@@ -39,26 +39,29 @@ Provide a clear description of the changes.
 - [ ] AsyncAPI spec updated if a new event type or payload field was added (`api/asyncapi.yaml`)
 - [ ] Event schema JSON files updated to match (`internal/adapter/outbound/eventbus/schemas/*.json`)
 - [ ] Contract tests updated (`test/unit/events/contract_test.go`)
-- [ ] `"additionalProperties": true` is set on every modified or new schema in `internal/adapter/outbound/eventbus/schemas/`
-      (CI Pass 5 enforces this; the item is a pre-review reminder)
+- [ ] `"additionalProperties": false` is set on every modified or new schema in `internal/adapter/outbound/eventbus/schemas/`
+      (this service's schemas are CLOSED, not open — a deliberate contract choice, LLD §16 OQ-6 / `api/asyncapi.yaml § x-forward-compatibility`; the item is a pre-review reminder)
 
-### Consumer Forward-Compatibility
+### Consumer Forward-Compatibility (CLOSED schemas — no free forward-compatibility)
 *Complete only when `internal/adapter/outbound/eventbus/schemas/` changed.*
 
-Backward-compatible changes (new fields, widened enums) do not require a consumer migration cycle,
-but consumers must be configured for lenient deserialization or they will crash on the new fields.
+This service's event schemas are CLOSED (`additionalProperties: false`). Unlike an open-schema
+service, **every payload change — even adding an optional field — requires a coordinated rollout**:
+a new Glue schema version, updated validating consumers, and only then the producer change. There
+is no such thing as a backward-compatible addition that consumers can silently ignore at the wire-
+contract level.
 
-- [ ] **Consumer lenient-parsing confirmed** — All known consumers of this event type are configured
-      to ignore unknown fields. Required per-language settings:
+- [ ] **Rollout order followed**: (1) new Glue schema version registered, (2) all validating consumers
+      deployed with the updated schema, (3) only then does the producer start emitting the change.
+      See `api/asyncapi.yaml § x-forward-compatibility.rollout-sequence` for the canonical order.
+- [ ] **Consumer lenient-parsing enabled as defense-in-depth** (recommended, not a substitute for the
+      rollout order above) — protects a consumer replica that hasn't yet picked up the new Glue schema
+      during a rolling deploy from crashing on an unknown field:
       - **Go (encoding/json):** do NOT call `json.Decoder.DisallowUnknownFields()` — silently ignored by default.
       - **Go (sonic):** use `sonic.ConfigDefault` or `sonic.ConfigFastest`, NOT `sonic.ConfigStrict`.
       - **Java (Jackson):** `mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)` or `@JsonIgnoreProperties(ignoreUnknown=true)`.
       - **Python (Pydantic v2):** `model_config = ConfigDict(extra='ignore')` on every payload model.
       - **Kotlin (kotlinx.serialization):** `Json { ignoreUnknownKeys = true }`.
-- [ ] **Deploy order followed for non-breaking additions** — Consumers deployed first, then producer.
-      New fields in the payload reach consumers before the producer starts sending them. Consumers
-      that haven't been updated yet will receive the new field as an ignored unknown — no crash.
-      See `api/asyncapi.yaml § x-forward-compatibility.rollout-sequence` for the canonical order.
 
 ### Event Schema Semantic Evolution
 *Complete only when `api/asyncapi.yaml` or `internal/adapter/outbound/eventbus/schemas/` changed.*
@@ -92,7 +95,7 @@ encoding, or business meaning can change without any JSON Schema difference.
 ### Security
 - [ ] No secrets or DSNs hardcoded
 - [ ] GUC values are not logged (no credential leakage in slow-query output)
-- [ ] `GLUE_REGISTRY_NAME` and `PG_BOUNCER_MODE=true` not set simultaneously (mutually exclusive — startup panics if both are set)
+- [ ] `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_TENANT_NAME` set correctly per topic (safe to combine with `PG_BOUNCER_MODE=true` — the Glue codec runs at SNS-publish time, never against `outbox_events`)
 - [ ] New config fields documented in README env-vars table and `validateRequiredEnv`
 
 ### Documentation

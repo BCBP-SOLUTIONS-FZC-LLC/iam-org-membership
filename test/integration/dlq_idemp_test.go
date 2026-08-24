@@ -18,7 +18,6 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
@@ -137,7 +137,7 @@ func TestMaxReceiveCountRoutesToDLQ(t *testing.T) {
 	// cleanly — the assertion downstream checks wire.Type.
 	envelope := events.Envelope[json.RawMessage]{
 		ID:        uuid.NewString(),
-		Type:      domain.EventDelegationStarted,
+		Type:      domain.EventMembershipRevoked,
 		Source:    "iam.membership.events",
 		TenantID:  uuid.NewString(),
 		Subject:   uuid.NewString(),
@@ -159,7 +159,7 @@ func TestMaxReceiveCountRoutesToDLQ(t *testing.T) {
 
 	var wire events.Envelope[json.RawMessage]
 	require.NoError(t, json.Unmarshal([]byte(*dlqMsgs[0].Body), &wire))
-	assert.Equal(t, domain.EventDelegationStarted, wire.Type,
+	assert.Equal(t, domain.EventMembershipRevoked, wire.Type,
 		"P12-DLQ-001: DLQ payload must be the failed envelope")
 }
 
@@ -183,7 +183,7 @@ func TestProcessedEventsDedupOnRedelivery(t *testing.T) {
 	tenantID := seedTenantForConsumer(t, e, "idemp-dup-wire")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)
@@ -253,7 +253,7 @@ func TestSecondConsumerReceivesIndependently(t *testing.T) {
 	tenantID := seedTenantForConsumer(t, e, "idemp-multi-consumer")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, 5*time.Minute, slog.Default())
+	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)

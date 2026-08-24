@@ -164,7 +164,6 @@ func buildTrialProvisioningSvc(catalogDepts port.DepartmentCatalogReader) (*serv
 		nil,                                                         // pool — unused by TrialSignup directly
 		&ptdTenantRepo{}, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil, /* deptMems: unused by TrialSignup */
 		&ptdLabelRepo{}, tenantDepts, catalogDepts,
-		nil, nil, /* delegations, acls: unused by TrialSignup */
 		&ptdCatalogPlans{},
 		&passthroughTxRunner{}, nil /* cache */, nil, /* rp: unused by TrialSignup */
 	)
@@ -306,7 +305,7 @@ func TestTrialSignup_PlanLookupError_NeverReachesDepartmentFetch(t *testing.T) {
 	tenantDepts := &ptdTenantDeptRepo{}
 	svc := service.NewProvisioningService(
 		nil, &ptdTenantRepo{}, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil,
-		&ptdLabelRepo{}, tenantDepts, catalog, nil, nil,
+		&ptdLabelRepo{}, tenantDepts, catalog,
 		&ptdCatalogPlans{planByCodeFn: func(context.Context, domain.TenantPlan) (*domain.Plan, error) {
 			return nil, planErr
 		}},
@@ -332,7 +331,7 @@ func TestTrialSignup_IdempotentReplay_SkipsDepartmentActivation(t *testing.T) {
 	tenants := &ptdTenantRepoReplay{}
 	svc := service.NewProvisioningService(
 		nil, tenants, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil,
-		&ptdLabelRepo{}, tenantDepts, catalog, nil, nil,
+		&ptdLabelRepo{}, tenantDepts, catalog,
 		&ptdCatalogPlans{}, &passthroughTxRunner{}, nil, nil,
 	)
 

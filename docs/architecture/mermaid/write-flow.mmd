@@ -31,7 +31,7 @@ sequenceDiagram
         Note over SVC: Event selection (state-dependent, §8.4):<br/>  new / reactivated → DepartmentMembershipGranted<br/>  active + level changed → DepartmentMembershipLevelChanged<br/>  active + level unchanged → NO EVENT (TRG-3 no-op)
 
         TX ->>+ Codec: Encode(ctx, event.Type, jsonPayload)
-        Note over Codec: ValidatingCodec runs schema-gov Draft-07 validation<br/>against embedded schemas/*.json (fail-closed).<br/>On invalid/unknown type → error → TX rolls back (nothing persisted).<br/>GlueCodec prepends 18-byte header from Glue registry version ID.<br/>NoopCodec pass-through in dev (GLUE_REGISTRY_NAME_* unset).
+        Note over Codec: ValidatingCodec runs schema-gov Draft-07 validation<br/>against embedded schemas/*.json (fail-closed, CLOSED schemas — additionalProperties:false).<br/>On invalid/unknown type → error → TX rolls back (nothing persisted).<br/>GlueCodec prepends 18-byte header from Glue registry version ID.<br/>NoopCodec pass-through in dev (GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME unset).
         Codec -->>- TX: (encoded bytes, schemaVersionID)
 
         TX ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type, payload JSONB envelope,<br/>  source ('iam.membership.events' for RoutingPublisher key),<br/>  tenant_id, trace_id, created_at, scheduled_at<br/>)
@@ -50,7 +50,7 @@ sequenceDiagram
 
     SVC -->>- H: updated *domain.DeptMembership
 
-    Note over Runner: Outbox runner polls every OUTBOX_POLL_INTERVAL_MS (500 ms)
+    Note over Runner: Outbox runner polls every OUTBOX_POLL_INTERVAL (500 ms, Go duration string)
     Runner ->>+ OB: SELECT ... WHERE published_at IS NULL<br/>LIMIT OUTBOX_BATCH_SIZE (50) FOR UPDATE SKIP LOCKED
     OB -->>- Runner: unpublished events batch
 

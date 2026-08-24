@@ -43,13 +43,37 @@ const (
 	EventDepartmentMembershipLevelChanged = "DepartmentMembershipLevelChanged"
 	EventTenantRoleGranted                = "TenantRoleGranted"
 	EventTenantRoleRevoked                = "TenantRoleRevoked"
-	EventDelegationStarted                = "DelegationStarted"
-	EventDelegationEnded                  = "DelegationEnded"
-	EventDelegationReviewRequested        = "DelegationReviewRequested"
 	EventTenderAssigneeOverridden         = "TenderAssigneeOverridden"
 	EventTenantSeatOverageStarted         = "TenantSeatOverageStarted"
 	EventTenantSeatOverageResolved        = "TenantSeatOverageResolved"
 	EventTenantStateChanged               = "TenantStateChanged"
+	// EventMembershipRevoked replaces two cascades RemoveUser/DeleteMember
+	// used to perform synchronously, in the same DB transaction, via
+	// DelegationRepository.SoftDeleteForUser and
+	// TenderACLRepository.SoftDeleteForUser (P-8/I-5). Once `delegations`
+	// and `tender_acl_entries` moved into the Delegation Service's and
+	// Tender-ACL Service's own databases those same-transaction calls
+	// became impossible; per LLD §15.2.2 both services' consumers subscribe
+	// to this single shared event instead and run their own asynchronous
+	// cascades (ADR-0008 §6.4). Emitted unconditionally, not gated on
+	// whether the removed user actually held any delegation/ACL rows —
+	// both consumers are idempotent regardless.
+	EventMembershipRevoked = "MembershipRevoked"
+
+	// EventTenantMembershipsPurged is Core's own tenant-level cascade
+	// signal on a real suspended/whatever→offboarded transition
+	// (EVT-16-adjacent — emitted only on the real transition, from the
+	// same tx as the projection UPDATE). The Delegation, Tender-ACL, and
+	// Group-Mapping services consume this to run their own asynchronous
+	// tenant-scoped cascade-deletes (LLD §15.5, ADR-0008 §6.4 pattern).
+	// Distinct from the generic EventTenantStateChanged relay (which also
+	// fires on this transition) — this one exists specifically so a
+	// downstream service can filter on it without matching every other
+	// status/plan change. Lives on iam.membership.events, NOT
+	// iam.tenant.events — Core never re-emits the Realm-Provisioner-
+	// produced `TenantOffboarded` event it only consumes (LLD §16 OQ-1:
+	// "one producer per event name").
+	EventTenantMembershipsPurged = "TenantMembershipsPurged"
 
 	// iam.tenant.events
 	EventTenantCreated = "TenantCreated"

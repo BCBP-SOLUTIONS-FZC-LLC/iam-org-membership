@@ -32,7 +32,7 @@ func TestUpDownUpRoundTrips(t *testing.T) {
 	// pool's connection string, plus applies migrations up. Grab the DSN
 	// from an env-hosted assertion by re-running setup with a distinct
 	// call so we can drive the migrate.Runner ourselves.
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	dsn := os.Getenv("PHASE18_MIG_DSN")

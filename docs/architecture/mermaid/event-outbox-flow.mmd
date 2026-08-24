@@ -25,7 +25,7 @@ sequenceDiagram
         SVC -->>- TX: error
         TX ->> DB: ROLLBACK (business row change discarded)
     else validation passes
-        Note over Codec: GlueCodec prepends 18-byte header {0x03, 0x00, schema_version_UUID}<br/>Version IDs prefetched from two Glue registries at startup:<br/>  GLUE_REGISTRY_NAME_MEMBERSHIP (iam-membership-events)<br/>  GLUE_REGISTRY_NAME_TENANT     (iam-tenant-events)<br/>NoopCodec pass-through in dev (registry env vars unset).
+        Note over Codec: GlueCodec prepends 18-byte header {0x03, 0x00, schema_version_UUID}<br/>Version IDs prefetched from two Glue registries at startup:<br/>  GLUE_REGISTRY_MEMBERSHIP_NAME (iam-membership-events)<br/>  GLUE_REGISTRY_TENANT_NAME     (iam-tenant-events)<br/>NoopCodec pass-through in dev (registry env vars unset).
         Codec -->> SVC: (encoded bytes, schemaVersionID)
         SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  source ('iam.membership.events' | 'iam.tenant.events'),<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)
         OB -->>- SVC: inserted
@@ -37,7 +37,7 @@ sequenceDiagram
 
     Note over Runner,Consumer: Phase 2 — Outbox polling + routed SNS publish (at-least-once, FAIL-3)
 
-    loop every OUTBOX_POLL_INTERVAL_MS (500 ms)
+    loop every OUTBOX_POLL_INTERVAL (500 ms, Go duration string)
         Runner ->>+ OB: SELECT * FROM outbox_events<br/>WHERE published_at IS NULL<br/>ORDER BY created_at<br/>LIMIT OUTBOX_BATCH_SIZE (50) FOR UPDATE SKIP LOCKED
         OB -->>- Runner: unpublished batch
 
@@ -47,7 +47,7 @@ sequenceDiagram
 
             alt envelope.Source == 'iam.membership.events'
                 Router ->>+ SNS_M: Publish(TopicArn=SNS_TOPIC_ARN_MEMBERSHIP,<br/>MessageAttributes{EventType, TenantID, Source, EventID, Subject})
-                Note over SNS_M: 11 event types produced (§7.3):<br/>DepartmentMembershipGranted/Revoked/LevelChanged<br/>TenantRoleGranted · TenantRoleRevoked (§16 A14)<br/>DelegationStarted · DelegationEnded (with ended_reason)<br/>TenderAssigneeOverridden (I-13 validate-and-emit)<br/>TenantSeatOverageStarted/Resolved (SEAT-5)<br/>TenantStateChanged (§16 A61, EVT-16 relay)
+                Note over SNS_M: 11 event types produced (§7.3):<br/>DepartmentMembershipGranted/Revoked/LevelChanged<br/>TenantRoleGranted · TenantRoleRevoked (§16 A14)<br/>MembershipRevoked (shared cascade signal — Delegation + Tender ACL)<br/>TenderAssigneeOverridden (I-13 validate-and-emit)<br/>TenantSeatOverageStarted/Resolved (SEAT-5)<br/>TenantStateChanged (§16 A61, EVT-16 relay)<br/>TenantMembershipsPurged (tenant-offboard cascade — Delegation/Tender ACL/Group Mapping)<br/>(DelegationStarted/DelegationEnded moved to the Delegation Service's own topic, ADR-0008)
                 SNS_M -->>- Router: MessageID
             else envelope.Source == 'iam.tenant.events'
                 Router ->>+ SNS_T: Publish(TopicArn=SNS_TOPIC_ARN_TENANT, ...)
@@ -61,7 +61,7 @@ sequenceDiagram
 
             alt publish fails (network / SNS unavailable)
                 Runner ->> OB: increment attempts, retry up to OUTBOX_MAX_ATTEMPTS (5)
-                Note over Runner: Exponential backoff with jitter.<br/>Beyond 5 attempts → dead letter (outbox_dead_letters_total pages).<br/>Selective replay via platform-events v1.3.0 ReprocessDeadLettersWith.
+                Note over Runner: Exponential backoff with jitter.<br/>Beyond 5 attempts → dead letter (outbox_dead_letters_total pages).<br/>Selective replay via platform-events v1.4.0 ReprocessDeadLettersWith.
             end
         end
     end

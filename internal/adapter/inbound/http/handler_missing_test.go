@@ -13,14 +13,8 @@ import (
 // error taxonomy. Mirrors the design invariant in handler_matrix_test.go:
 // nil service — if input validation leaks through, the test nil-panics.
 
-// ── DelegationHandler.List (P-18) ─────────────────────────────────────
-
-func TestDelegationList_MissingIdentity(t *testing.T) {
-	h := &DelegationHandler{}
-	c, w := buildCtx(http.MethodGet, "/", ``, nil)
-	h.List(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
-}
+// DelegationHandler.List (P-18) tests retired — moved to the standalone
+// Delegation Service's DLG-1 (ADR-0008 v2). ID never reused.
 
 // ── MembershipHandler.Patch (P-7) — early-return matrix ───────────────
 

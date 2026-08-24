@@ -12,7 +12,9 @@ import (
 )
 
 func TestTopicForEvent_TenantEvents(t *testing.T) {
-	// Only TenantCreated and TrialStarted route to iam.tenant.events (§7.3).
+	// TenantCreated and TrialStarted route to iam.tenant.events (§7.3).
+	// TenantMembershipsPurged is Core's own signal and routes to
+	// iam.membership.events instead — see TestTopicForEvent_MembershipEvents.
 	assert.Equal(t, domain.TopicTenant, domain.TopicForEvent(domain.EventTenantCreated))
 	assert.Equal(t, domain.TopicTenant, domain.TopicForEvent(domain.EventTrialStarted))
 }
@@ -25,8 +27,8 @@ func TestTopicForEvent_MembershipEvents(t *testing.T) {
 		domain.EventDepartmentMembershipLevelChanged,
 		domain.EventTenantRoleGranted,
 		domain.EventTenantRoleRevoked,
-		domain.EventDelegationStarted,
-		domain.EventDelegationEnded,
+		domain.EventMembershipRevoked,
+		domain.EventTenantMembershipsPurged,
 		domain.EventTenderAssigneeOverridden,
 		domain.EventTenantSeatOverageStarted,
 		domain.EventTenantSeatOverageResolved,

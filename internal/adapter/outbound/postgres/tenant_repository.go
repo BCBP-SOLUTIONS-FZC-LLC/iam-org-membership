@@ -36,7 +36,6 @@ const tenantSelectColumns = `
 	realm_id, realm_type, keycloak_shard, mfa_freshness_seconds,
 	local_accounts_enabled, realm_sync_pending, default_locale,
 	licensed_seats, ownerless_since, overage_since,
-	delegation_max_duration_days, delegation_review_window_days,
 	record_version, created_at, updated_at, deleted_at`
 
 func (r *TenantRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
@@ -110,12 +109,6 @@ func (r *TenantRepository) Update(ctx context.Context, id uuid.UUID, patch *doma
 	}
 	if patch.MFAFreshnessSeconds != nil {
 		sets = append(sets, "mfa_freshness_seconds = "+next(*patch.MFAFreshnessSeconds))
-	}
-	if patch.DelegationMaxDurationDays != nil {
-		sets = append(sets, "delegation_max_duration_days = "+next(*patch.DelegationMaxDurationDays))
-	}
-	if patch.DelegationReviewWindowDays != nil {
-		sets = append(sets, "delegation_review_window_days = "+next(*patch.DelegationReviewWindowDays))
 	}
 	if len(sets) == 0 {
 		// Nothing to update — return the current row (idempotent PATCH).

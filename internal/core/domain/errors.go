@@ -28,7 +28,6 @@ var (
 	ErrTenantNotFound     = errors.New("tenant_not_found")
 	ErrMemberNotFound     = errors.New("member_not_found")
 	ErrDepartmentNotFound = errors.New("department_not_found")
-	ErrDelegationNotFound = errors.New("delegation_not_found")
 	ErrInvitationNotFound = errors.New("invitation_not_found")
 	ErrPlanNotFound       = errors.New("plan_not_found")
 
@@ -50,20 +49,9 @@ var (
 	ErrTenantReadOnly             = errors.New("tenant_read_only")
 	ErrDepartmentAlreadyActivated = errors.New("department_already_activated")
 	ErrRoleAlreadyGranted         = errors.New("role_already_granted")
-	ErrACLAlreadyExists           = errors.New("acl_already_exists")
 	ErrMemberNotActive            = errors.New("member_not_active")
 
 	// Domain-rule (§17 422 family)
-	ErrSelfDelegation                  = errors.New("self_delegation")
-	ErrDelegationStartInPast           = errors.New("delegation_start_in_past")
-	ErrDelegationStartTooFarFuture     = errors.New("delegation_start_too_far_future") // §16 A71, DEL-14
-	ErrDelegationWindowTooLong         = errors.New("delegation_window_too_long")      // §16 A71, DEL-14: span > delegation_max_duration_days
-	ErrExtendDaysOutOfRange            = errors.New("extend_days_out_of_range")        // §16 A71: extend_days outside [1, 180]
-	ErrDelegateUnavailable             = errors.New("delegate_unavailable")
-	ErrDelegationNotOpenEnded          = errors.New("delegation_not_open_ended") // P-32: extend only applies to open-ended delegations
-	ErrInvalidDelegate                 = errors.New("invalid_delegate")
-	ErrDelegationWindowInverted        = errors.New("delegation_window_inverted")
-	ErrScopeIDRequired                 = errors.New("scope_id_required")
 	ErrCannotDeleteSystemDepartment    = errors.New("cannot_delete_system_department")
 	ErrDepartmentNotActiveForTenant    = errors.New("department_not_active_for_tenant")
 	ErrDepartmentRetired               = errors.New("department_retired")
@@ -71,7 +59,6 @@ var (
 	ErrInvalidAction                   = errors.New("invalid_action")
 	ErrInvalidReplacement              = errors.New("invalid_replacement")
 	ErrInvalidOwnerCandidate           = errors.New("invalid_owner_candidate")
-	ErrInvalidExpiresAt                = errors.New("invalid_expires_at")
 	ErrInvalidRole                     = errors.New("invalid_role")
 	ErrInvalidPlan                     = errors.New("invalid_plan")
 	ErrInvalidRealmType                = errors.New("invalid_realm_type")
@@ -91,16 +78,23 @@ var (
 	// Dependency (§17 503 family)
 	ErrDBUnavailable               = errors.New("db_unavailable")
 	ErrCacheUnavailable            = errors.New("cache_unavailable")
-	ErrUserProfileUnavailable      = errors.New("user_profile_unavailable")
 	ErrWorkflowServiceUnavailable  = errors.New("workflow_service_unavailable")
 	ErrRealmProvisionerUnavailable = errors.New("realm_provisioner_unavailable")
-	// ErrCatalogServiceUnavailable is returned by service.CatalogService
-	// when both the cat:departments/plans-equivalent primary cache AND the
-	// 24h stale-if-error fallback are empty and the live call to
-	// catalog-admin-config also failed — i.e. there is truly no data to
-	// serve, not merely stale data. Never a silent wrong answer (LLD §11,
-	// CAT-FAIL-2).
-	ErrCatalogServiceUnavailable = errors.New("catalog_service_unavailable")
+	// ErrCatalogUnavailable is returned by service.CatalogService when both
+	// the om:plans/om:departments primary cache AND the stale-if-error
+	// fallback are empty and the live call to catalog-admin-config also
+	// failed — i.e. there is truly no data to serve, not merely stale data.
+	// Never a silent wrong answer (LLD §9.3/§17).
+	ErrCatalogUnavailable = errors.New("catalog_unavailable")
+	// ErrGroupMappingUnavailable is declared per LLD §17 for I-10 JIT
+	// resolution failures, but service.GroupMappingService.resolveMappings
+	// deliberately fails OPEN on a cold cache + live-call failure (ADR-0007
+	// Action Item 4 — a SAML login must never fail because this call
+	// failed) and never actually returns it today. Kept in the taxonomy so
+	// the wire contract matches the LLD; whether resolveMappings should
+	// ever surface it instead of failing open is ADR-0007 Action Item 4's
+	// call, not something changed here.
+	ErrGroupMappingUnavailable = errors.New("group_mapping_unavailable")
 )
 
 // DomainError wraps a sentinel with a human-readable message and optional

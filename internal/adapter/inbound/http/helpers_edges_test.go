@@ -52,7 +52,6 @@ func TestP19Helpers_DomainErrorStatus_EnumCoverage(t *testing.T) {
 		{domain.ErrTenantNotFound, http.StatusNotFound},
 		{domain.ErrMemberNotFound, http.StatusNotFound},
 		{domain.ErrDepartmentNotFound, http.StatusNotFound},
-		{domain.ErrDelegationNotFound, http.StatusNotFound},
 		{domain.ErrInvitationNotFound, http.StatusNotFound},
 		{domain.ErrOptimisticLockConflict, http.StatusConflict},
 		{domain.ErrConflict, http.StatusConflict},

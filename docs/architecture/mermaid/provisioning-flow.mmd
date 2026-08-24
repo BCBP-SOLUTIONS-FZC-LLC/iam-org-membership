@@ -3,7 +3,8 @@ sequenceDiagram
     participant SNS_T as SNS (iam.tenant.events)
     participant SQS_T as SQS (tenant-orgm-q)
     participant EC as MembershipEventConsumer
-    participant TSVC as TenantService.Provision
+    participant TSVC as ProvisioningService.TrialSignup
+    participant Catalog as Catalog Service
     participant TX as pgcommon.RunInTx
     participant DB as PostgreSQL (org_membership)
     participant OB as outbox_events
@@ -19,7 +20,13 @@ sequenceDiagram
     EC ->>+ EC: Check processed_events(event_id, consumer='orgm') → dedup (EVT-4/IDEMP-2)
     Note over EC: EVT-15 clamp: event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS (300)<br/>→ NACK to DLQ, iam_future_lifecycle_event_rejected_total++<br/>NOT recorded in processed_events (any nonzero pages)
 
-    EC ->>+ TSVC: ProvisionFromEvent(ctx, envelope)
+    EC ->>+ TSVC: TrialSignup(ctx, envelope)
+
+    TSVC ->>+ Catalog: PlanByCode(plan) — trial_duration_days
+    Catalog -->>- TSVC: plan
+    TSVC ->>+ Catalog: Departments() — the 5-system-dept trial activation set
+    Catalog -->>- TSVC: departments
+    Note over TSVC,Catalog: Both calls happen BEFORE the tx opens — an HTTP call has no<br/>business running while a Postgres tx is open (mesh call, ≤30ms p99,<br/>but still a failure mode that didn't exist when this was a local repo.List call)
 
     TSVC ->>+ TX: RunInTx(ctx, func(txCtx))
 
@@ -47,6 +54,8 @@ sequenceDiagram
     OB -->>- TX: inserted
     TX ->>+ OB: (6b) outbox.Enqueue(TrialStarted {tenant_id, plan, trial_ends_at})<br/>source = iam.tenant.events
     OB -->>- TX: inserted
+    TX ->>+ OB: (6c) outbox.Enqueue(TenantRoleGranted {owner grant}, §16 A14)<br/>source = iam.membership.events — granted_by = owner_user_id itself
+    OB -->>- TX: inserted
 
     TX ->>+ DB: UPDATE tenants SET last_event_at = envelope.time (EVT-14 advance)
     DB -->>- TX: updated
@@ -64,8 +73,9 @@ sequenceDiagram
     SQS_T -->>- EC: deleted
     deactivate EC
 
-    Note over Router,SNS_M: Outbox runner picks up both events; RoutingPublisher routes by Source →<br/>both go to iam.tenant.events (O&M's only two produced events on that topic — §7.3)
+    Note over Router,SNS_M: Outbox runner picks up all three events; RoutingPublisher routes by Source →<br/>TenantCreated/TrialStarted go to iam.tenant.events (O&M's only two produced events on that topic — §7.3);<br/>TenantRoleGranted goes to iam.membership.events
     Router ->> SNS_M: Publish TenantCreated
     Router ->> SNS_M: Publish TrialStarted
+    Router ->> SNS_M: Publish TenantRoleGranted
 
     Note over EC,DB: No self-consumption — O&M's tenant-orgm-q subscription filter excludes<br/>TenantCreated / TrialStarted (HLD §9.1.1 disjoint produce/consume sets)

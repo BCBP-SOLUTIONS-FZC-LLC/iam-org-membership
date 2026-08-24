@@ -106,7 +106,7 @@ func TestResolveGroups_EmptyBaseURL_Errors(t *testing.T) {
 	// Resilience (cache → stale → fail-open) is
 	// service.GroupMappingService's job, not this client's — it must
 	// surface a plain error so the caller can decide.
-	c := New()
+	c := New(nil)
 	_, err := c.ResolveGroups(context.Background(), uuid.New(), []string{"eng-team"})
 	require.Error(t, err)
 }

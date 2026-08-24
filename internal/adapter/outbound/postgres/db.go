@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"time"
 
@@ -19,29 +18,41 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// DSNFromEnv builds the DSN for the application (RLS-scoped) pool. When
-// PG_BOUNCER_MODE=true this should point at PgBouncer (transaction-pool
-// mode) — the pool's GUCProvider will emit SET LOCAL app.tenant_id on every
-// checkout so the GUC binds transactionally, never at session scope (RLS-6).
+// DSNFromEnv builds a PostgreSQL connection URL for the application pool by
+// delegating host/port/user/password/dbname/sslmode parsing and DSN
+// assembly to pgcommon.ConfigFromEnv() — the same env vars
+// (DATABASE_URL/PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DBNAME/PG_SSLMODE)
+// platform-pgcommon itself reads to build the pool Config used by main.go,
+// so there is exactly one DSN-assembly implementation instead of two drifting
+// in parallel. Warnings from ConfigFromEnv (invalid/insecure settings
+// replaced by defaults) are surfaced at the call site that owns a logger
+// (see cmd/server/main.go); this helper only returns the DSN string.
 //
-// Returns URL form (not keyword/value): platform-pgcommon's migration runner
-// wraps the DSN with url.Parse and rejects keyword form.
+// URL format is required because the migration runner (pgmigrate.Runner)
+// calls url.Parse on the DSN after prepending "pgx5://"; a keyword/value DSN
+// would produce invalid URL escapes (%20 for spaces) and fail at startup.
+// pgcommon builds the DSN via net/url, which already produces this format.
 func DSNFromEnv() string {
-	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+	cfg, _ := pgcommon.ConfigFromEnv()
+	if os.Getenv("DATABASE_URL") != "" {
+		// DATABASE_URL is returned verbatim by pgcommon.ConfigFromEnv — set
+		// statement_timeout via its own query string, not appended here.
+		return cfg.DSN
+	}
+	return ApplyStatementTimeout(cfg.DSN)
+}
+
+// ApplyStatementTimeout appends a server-side statement_timeout option to dsn
+// so hung queries release pool connections instead of holding them for the
+// full HTTP deadline. PG_STATEMENT_TIMEOUT accepts a Go duration string
+// (e.g. "5s", "500ms"). This has no pgcommon equivalent — pgcommon.Config has
+// no statement-timeout field — so it remains a small extension layered on
+// top of the pgcommon-built DSN rather than a full DSN builder. Ignored when
+// dsn is empty or PG_STATEMENT_TIMEOUT is unset.
+func ApplyStatementTimeout(dsn string) string {
+	if dsn == "" {
 		return dsn
 	}
-	host := envOrDB("PG_HOST", "localhost")
-	port := envOrDB("PG_PORT", "5432")
-	user := os.Getenv("PG_USER")
-	pass := os.Getenv("PG_PASSWORD")
-	dbname := envOrDB("PG_DBNAME", "org_membership")
-	sslmode := envOrDB("PG_SSLMODE", "require")
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
-		url.PathEscape(user), url.PathEscape(pass), host, port, dbname, sslmode)
-
-	// Server-side statement timeout so hung queries release pool connections
-	// rather than holding them for the full HTTP deadline. Accepts a Go
-	// duration string (e.g. "5s", "500ms"). Ignored when DATABASE_URL is set.
 	if t := os.Getenv("PG_STATEMENT_TIMEOUT"); t != "" {
 		if d, err := time.ParseDuration(t); err == nil && d > 0 {
 			dsn += fmt.Sprintf("&options=-c%%20statement_timeout%%3D%d", d.Milliseconds())
@@ -71,13 +82,6 @@ func MigrationDSNFromEnv() string {
 		return dsn
 	}
 	return DSNFromEnv()
-}
-
-func envOrDB(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 // TxRunner wraps pgcommon.Pool to implement service.TxRunner. When a
@@ -181,3 +185,20 @@ func wrapConnErr(err error) error {
 // suppress unused-import warning until we add repositories in later phases;
 // withPool is exercised through the future repository layer.
 var _ = withPool
+
+// itoa is a tiny helper so callers can inline a LIMIT clause into a raw SQL
+// string without importing strconv for a single conversion. Moved here
+// (originally lived in the now-removed delegation_repository.go, ADR-0008
+// v2) since invitation_repository.go's reconciler queries share it too.
+func itoa(n int) string {
+	if n <= 0 {
+		return "100"
+	}
+	// Simple positive-int formatter.
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}

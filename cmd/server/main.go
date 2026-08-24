@@ -22,24 +22,24 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
-	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gin-gonic/gin"
-	swaggerFiles "github.com/swaggo/files"
-	ginSwagger "github.com/swaggo/gin-swagger"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	_ "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/docs/swagger"
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
 	catalogadminclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/catalogadmin"
+	delegationcheckclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/delegationcheck"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	groupmappingclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/groupmappingclient"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
-	userprofileclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/userprofile"
 	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/valkey"
 	workflowclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/workflow"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
@@ -48,7 +48,6 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // buildVersion is injected by -ldflags at build time (see Dockerfile / Makefile).
@@ -86,29 +85,41 @@ func main() {
 		ServiceName:  envOr("APP_NAME", "iam-org-membership"),
 		BuildVersion: envOr("BUILD_VERSION", buildVersion),
 	}
+	// events.Init registers platform-events' own outbox/publish/consume
+	// metrics (outbox_dead_letters_total, events_published_total,
+	// outbox_pending_total, sqs_receive_errors_total, ~20 total) on the same
+	// default Prometheus registry metrics.Register() above uses. Without
+	// this call those metrics stay dark on /metrics even though
+	// api/asyncapi.yaml already documents outbox_dead_letters_total as if
+	// it were live.
+	events.Init(cfg.ServiceName, cfg.BuildVersion)
 
-	// ── 3. Database ───────────────────────────────────────────────────────
+	// ── 3. Database — pgcommon.ConfigFromEnv reads DATABASE_URL/PG_* directly
+	// so pool sizing, PgBouncer mode, and DSN assembly have exactly one
+	// implementation instead of a second one hand-rolled here. ────────────
+	pgCfg, pgWarnings := pgcommon.ConfigFromEnv()
+	for _, w := range pgWarnings {
+		log.Warn("postgres config warning", map[string]interface{}{"key": w.Key, "reason": w.Reason})
+	}
+	// DSNFromEnv (not a bare pgCfg.DSN) so the DATABASE_URL bypass applies
+	// here too: PG_STATEMENT_TIMEOUT must be ignored when DATABASE_URL is
+	// set verbatim, per DSNFromEnv/ApplyStatementTimeout's own contract.
 	dsn := pgadapter.DSNFromEnv()
+	// Migrations must bypass PgBouncer because the migration runner acquires
+	// a pg_advisory_lock, which is session-scoped and breaks under
+	// transaction pooling (CONFIG-2). MIGRATION_DATABASE_URL points directly
+	// at Postgres; falls back to dsn when unset.
 	migrationDSN := pgadapter.MigrationDSNFromEnv()
 
-	maxConns, _ := strconv.Atoi(envOr("PG_MAX_CONNS", "20"))
-	minConns, _ := strconv.Atoi(envOr("PG_MIN_CONNS", "0"))
-	slowQueryThreshold := 200 * time.Millisecond
-	if s := os.Getenv("PG_SLOW_QUERY_THRESHOLD"); s != "" {
-		if d, perr := time.ParseDuration(s); perr == nil && d > 0 {
-			slowQueryThreshold = d
-		}
-	}
-
-	pgBouncerMode := os.Getenv("PG_BOUNCER_MODE") == "true"
-	pool, err := pgcommon.NewPool(context.Background(), pgcommon.Config{
-		DSN:                dsn,
-		MaxConns:           int32(maxConns),
-		MinConns:           int32(minConns),
-		PGBouncerMode:      pgBouncerMode,
-		GUCProvider:        pgcommon.GUCSetFromContext,
-		SlowQueryThreshold: slowQueryThreshold,
-	})
+	pgCfg.DSN = dsn
+	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
+	// pgcommon v1.2.0 retyped Config.Logger against a public domain.Logger
+	// (previously typed against an internal, externally-unimplementable
+	// interface) — slow-query warnings now route through the same
+	// Zap-backed sink as everything else, at the SlowQueryThreshold already
+	// resolved by ConfigFromEnv above.
+	pgCfg.Logger = pgadapter.NewLoggerAdapter(log)
+	pool, err := pgcommon.NewPool(context.Background(), pgCfg)
 	if err != nil {
 		panic(fmt.Sprintf("connect to postgres: %v", err))
 	}
@@ -120,8 +131,18 @@ func main() {
 	// dev it falls back to DSNFromEnv() so single-role setups keep working,
 	// with a warning so the operator knows cross-tenant queries will
 	// RLS-filter to zero rows.
+	//
+	// *pgcommon.Pool (not a raw pgxpool.Pool), deliberately with no
+	// GUCProvider — a BYPASSRLS role must see across every tenant — but
+	// still wired with the same Logger as the app pool above, so slow
+	// cross-tenant queries are traced through the same structured logger
+	// instead of nowhere, and this pool gets a real Health()/Ping() for
+	// /readyz.
 	sysDSN := pgadapter.SystemDSNFromEnv()
-	sysPool, err := pgxpool.New(context.Background(), sysDSN)
+	sysPool, err := pgcommon.NewPool(context.Background(), pgcommon.Config{
+		DSN:    sysDSN,
+		Logger: pgadapter.NewLoggerAdapter(log),
+	})
 	if err != nil {
 		panic(fmt.Sprintf("connect sysPool: %v", err))
 	}
@@ -138,7 +159,7 @@ func main() {
 	if err := outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: migrationDSN}); err != nil {
 		panic(fmt.Sprintf("outbox schema: %v", err))
 	}
-	if err := pgadapter.RunMigrations(ctx, migrationDSN); err != nil {
+	if err := pgadapter.RunMigrations(ctx, migrationDSN, log); err != nil {
 		panic(fmt.Sprintf("domain migrations: %v", err))
 	}
 
@@ -158,46 +179,69 @@ func main() {
 		panic(fmt.Sprintf("load aws config: %v", err))
 	}
 
-	var snsOpts []func(*sns.Options)
 	var sqsOpts []func(*sqs.Options)
 	var glueOpts []func(*glue.Options)
 	if ep := os.Getenv("AWS_ENDPOINT_URL"); ep != "" {
-		snsOpts = append(snsOpts, func(o *sns.Options) { o.BaseEndpoint = &ep })
 		sqsOpts = append(sqsOpts, func(o *sqs.Options) { o.BaseEndpoint = &ep })
 		glueOpts = append(glueOpts, func(o *glue.Options) { o.BaseEndpoint = &ep })
 	}
-	// Retained for Phase 3 (event consumer wiring). Reference to keep the
-	// imports live under go vet's unused-check.
-	_ = sns.NewFromConfig(awsCfg, snsOpts...)
-	_ = sqs.NewFromConfig(awsCfg, sqsOpts...)
-	_ = glue.NewFromConfig(awsCfg, glueOpts...)
+	// sqsClient is shared by both inbound consumers (§7.1b below). glueClient
+	// backs the two GlueCodec instances built next. Neither platform-events'
+	// NewSNSPublisher (builds its own SNS client from SNSConfig.Region/
+	// EndpointURL) nor NewRoutingPublisher needs an SNS client constructed
+	// here — there is deliberately no sns.NewFromConfig call in this file.
+	sqsClient := sqs.NewFromConfig(awsCfg, sqsOpts...)
+	glueClient := glue.NewFromConfig(awsCfg, glueOpts...)
 
 	// ── 6. Event codec + outbox publisher ─────────────────────────────────
-	// Two-codec architecture (new flow):
-	//   enqueueCodec — schema validation only (wraps NoopCodec); outbox stores plain JSON.
-	//   snsCodec     — wire encoding (Glue) at SNS publish time via WithCodec.
-	//
-	// Phase 0: both are NoopCodec — dev works end-to-end without AWS/Glue.
-	// Phase 3: replace snsCodec with a real GlueCodec; enqueueCodec stays NoopCodec.
+	// Two-codec architecture:
+	//   enqueueCodec — schema validation only (wraps NoopCodec); outbox always
+	//                  stores plain JSON regardless of the SNS-side codec below.
+	//   snsCodec     — wire encoding (Glue) applied transiently by the SNS
+	//                  publisher immediately before publish (events.WithCodec);
+	//                  built once per topic below since each topic is backed by
+	//                  its own Glue registry (SCHEMA-7).
 	enqueueCodec, err := eventbusadapter.NewValidatingCodec(eventbusadapter.NoopCodec{})
 	if err != nil {
 		panic(fmt.Sprintf("init validating codec: %v", err))
 	}
-	outboxPublisher := eventbusadapter.New(cfg.ServiceName, enqueueCodec)
+	outboxPublisher := eventbusadapter.New(cfg.ServiceName, enqueueCodec).WithLogger(log)
 	// txRunner injects a tx-bound ContextEventPublisher into the ctx so
 	// services can call port.EventPublisherFromContext(ctx).EnqueueCtx
 	// inside a RunInTx block — state write + event insert commit together
 	// (EVT-10, CONS-1..4).
 	txRunner := pgadapter.NewTxRunner(pool, outboxPublisher)
 
-	// Two-topic RoutingPublisher — wraps SNS publishers per topic. In dev
-	// (no SNS_TOPIC_*_ARN set) both lanes fall back to the noop publisher.
-	// Phase 3: wire GlueCodec via events.WithCodec once platform-events exposes it.
-	membershipPub, err := buildTopicPublisher(os.Getenv("SNS_TOPIC_MEMBERSHIP_ARN"))
+	// Two-topic RoutingPublisher — wraps SNS publishers per topic, each
+	// carrying its own Glue-backed wire-format codec when that topic's
+	// registry env var is set; falls back to NoopCodec (plain JSON, dev/test
+	// without a Glue registry) when unset. In dev (no SNS_TOPIC_*_ARN set)
+	// both lanes fall back to the noop publisher regardless of codec.
+	allSchemaNames, err := eventbusadapter.AllSchemaNames()
+	if err != nil {
+		panic(fmt.Sprintf("list embedded event schemas: %v", err))
+	}
+	var membershipSchemas, tenantSchemas []string
+	for _, name := range allSchemaNames {
+		if domain.TopicForEvent(name) == domain.TopicTenant {
+			tenantSchemas = append(tenantSchemas, name)
+		} else {
+			membershipSchemas = append(membershipSchemas, name)
+		}
+	}
+	membershipCodec, err := buildTopicCodec(ctx, glueClient, os.Getenv("GLUE_REGISTRY_MEMBERSHIP_NAME"), membershipSchemas, log)
+	if err != nil {
+		panic(fmt.Sprintf("init membership glue codec: %v", err))
+	}
+	tenantCodec, err := buildTopicCodec(ctx, glueClient, os.Getenv("GLUE_REGISTRY_TENANT_NAME"), tenantSchemas, log)
+	if err != nil {
+		panic(fmt.Sprintf("init tenant glue codec: %v", err))
+	}
+	membershipPub, err := buildTopicPublisher(os.Getenv("SNS_TOPIC_MEMBERSHIP_ARN"), membershipCodec, log)
 	if err != nil {
 		panic(fmt.Sprintf("build membership publisher: %v", err))
 	}
-	tenantPub, err := buildTopicPublisher(os.Getenv("SNS_TOPIC_TENANT_ARN"))
+	tenantPub, err := buildTopicPublisher(os.Getenv("SNS_TOPIC_TENANT_ARN"), tenantCodec, log)
 	if err != nil {
 		panic(fmt.Sprintf("build tenant publisher: %v", err))
 	}
@@ -207,6 +251,7 @@ func main() {
 	outboxRunner, err := outbox.NewRunner(outbox.Config{
 		Pool:               pool,
 		Publisher:          routingPublisher,
+		Logger:             log,
 		PollInterval:       envDuration("OUTBOX_POLL_INTERVAL", 500*time.Millisecond),
 		BatchSize:          envInt("OUTBOX_BATCH_SIZE", 50),
 		MaxAttempts:        envInt("OUTBOX_MAX_ATTEMPTS", 5),
@@ -231,13 +276,14 @@ func main() {
 	// guards live inside the handler. Both queues share the same consumer
 	// identity in processed_events (§16 A33 / PE-1).
 	skew := envDuration("MAX_LIFECYCLE_EVENT_SKEW_SECONDS", 300*time.Second)
-	membershipConsumer := consumeradapter.NewMembershipEventConsumer(pool, outboxPublisher, skew, nil)
+	idempotencyStore := pgadapter.NewIdempotencyRepository(pool)
+	membershipConsumer := consumeradapter.NewMembershipEventConsumer(pool, outboxPublisher, idempotencyStore, skew, log)
 
 	var sqsConsumers []events.Consumer
 	if url := os.Getenv("SQS_TENANT_ORGM_QUEUE_URL"); url != "" {
 		cons, err := events.NewSQSConsumerWithClient(
-			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1")},
-			sqs.NewFromConfig(awsCfg, sqsOpts...),
+			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
+			sqsClient,
 			membershipConsumer.Handle,
 			events.WithConcurrency(envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
 		)
@@ -251,8 +297,8 @@ func main() {
 	}
 	if url := os.Getenv("SQS_BILLING_ORGM_QUEUE_URL"); url != "" {
 		cons, err := events.NewSQSConsumerWithClient(
-			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1")},
-			sqs.NewFromConfig(awsCfg, sqsOpts...),
+			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
+			sqsClient,
 			membershipConsumer.Handle,
 			events.WithConcurrency(envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
 		)
@@ -274,88 +320,6 @@ func main() {
 		}()
 	}
 
-	// ── 8. Router ─────────────────────────────────────────────────────────
-	r := gin.New()
-	// Return 405 Method Not Allowed (with Allow header) when a path exists
-	// but the HTTP method is not registered, instead of the default 404.
-	// Clients get a precise signal ("wrong method") rather than "not found".
-	r.HandleMethodNotAllowed = true
-
-	// 1 MB body cap to prevent memory exhaustion via oversized JSON payloads.
-	r.Use(func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
-		c.Next()
-	})
-	// 30 s hard deadline on every request.
-	r.Use(gincommon.TimeoutMiddleware(30 * time.Second))
-	// Panic recovery, request-ID, tracing, correlation, metrics, logging.
-	r.Use(gincommon.ObservabilityMiddlewares(cfg)...)
-	// G-13: normalize platform-gincommon 401 responses to include code field.
-	r.Use(httpadapter.NormalizeAuthErrors())
-
-	// Public infra endpoints (registered before RequireAuth so LB probes
-	// with no headers still get 200).
-	r.GET("/healthz", healthzHandler())
-	r.GET("/readyz", readyzHandler(pool, cache, outboxRunner))
-	r.GET("/metrics", metricsHandler())
-
-	// ── API + Event docs surface ────────────────────────────────────────
-	// Mirrors sibling iam-user-profile2 exactly:
-	//   /swagger/*any    Swagger UI (REST APIs, custom BCBP theme, Try-it-out)
-	//     /swagger/index.css              → custom purple-gradient theme
-	//     /swagger/swagger-initializer.js → KeepModelTogglePlugin bootstrap
-	//     /swagger/doc.json               → Swagger 2.0 spec (regenerated by `make swag` from handler annotations)
-	//   /asyncapi        Custom event catalog page (13 events, 2 topics,
-	//                    dark theme, sidebar search, deep-linkable schemas)
-	//   /asyncapi.yaml   Raw AsyncAPI 3.0 spec (embedded YAML)
-	if appEnv != "production" || envOr("DOCS_ENABLED", "false") == "true" {
-		docsSecHeaders := func(c *gin.Context) {
-			c.Header("X-Frame-Options", "DENY")
-			c.Header("X-Content-Type-Options", "nosniff")
-			c.Header("Content-Security-Policy",
-				"default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "+
-					"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
-					"img-src 'self' data:; font-src 'self' data: https://fonts.gstatic.com; "+
-					"connect-src 'self'")
-			c.Next()
-		}
-
-		// In production, require DOCS_AUTH_TOKEN as a Bearer token; else pass through.
-		var docsAuthMiddleware gin.HandlerFunc = func(c *gin.Context) { c.Next() }
-		if appEnv == "production" {
-			if docsToken := os.Getenv("DOCS_AUTH_TOKEN"); docsToken != "" {
-				docsAuthMiddleware = func(c *gin.Context) {
-					if c.GetHeader("Authorization") != "Bearer "+docsToken {
-						c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-							"code":    "unauthorized",
-							"message": "docs require Authorization: Bearer <DOCS_AUTH_TOKEN>",
-						})
-						return
-					}
-					c.Next()
-				}
-			} else {
-				log.Warn("DOCS_ENABLED in production without DOCS_AUTH_TOKEN — docs surface is unauthenticated", nil)
-			}
-		}
-
-		stdSwagger := ginSwagger.WrapHandler(swaggerFiles.Handler)
-		r.GET("/swagger/*any", docsSecHeaders, docsAuthMiddleware, func(c *gin.Context) {
-			switch {
-			case strings.HasSuffix(c.Request.URL.Path, "/index.css"):
-				httpadapter.SwaggerThemeHandler(c)
-			case strings.HasSuffix(c.Request.URL.Path, "/swagger-initializer.js"):
-				httpadapter.SwaggerInitializerHandler(c)
-			default:
-				stdSwagger(c)
-			}
-		})
-		r.GET("/asyncapi", docsSecHeaders, docsAuthMiddleware, httpadapter.AsyncAPIHandler)
-		// Raw AsyncAPI spec (unauthenticated within the docs-enabled block).
-		// The OpenAPI spec is served by ginSwagger at /swagger/doc.json.
-		r.GET("/asyncapi.yaml", docsSecHeaders, docsAuthMiddleware, httpadapter.AsyncAPIYAMLHandler)
-	}
-
 	// ── 7c. Business-observability exporter goroutines (§11.2) ──────────
 	// Populate iam_tenant_ownerless / iam_realm_sync_pending /
 	// iam_seat_overage_active / iam_pending_invitations_stale gauges every
@@ -371,28 +335,33 @@ func main() {
 	tenantRoleRepo := pgadapter.NewTenantRoleRepository(pool)
 	deptMemRepo := pgadapter.NewDeptMembershipRepository(pool)
 	deptRoleLabelRepo := pgadapter.NewDeptRoleLabelRepository(pool)
-	delegationRepo := pgadapter.NewDelegationRepository(pool)
-	aclRepo := pgadapter.NewTenderACLRepository(pool)
 	invitationRepo := pgadapter.NewInvitationRepository(pool)
 
 	// Outbound clients — Phase 2 fail-open stubs; Phase 4 wires real HTTP.
-	rpClient := realmprovisionerclient.New()
-	upClient := userprofileclient.New()
-	wfClient := workflowclient.New()
+	// log is threaded through so their transport-error warnings flow through
+	// the same gincommon-backed sink as HTTP/consumer logs instead of
+	// slog.Default().
+	rpClient := realmprovisionerclient.New(log)
+	wfClient := workflowclient.New(log)
+	// delegationCheckClient: DeptMembershipService's WFI-11 §8.8.4 dept-scope
+	// removal precision goes through the standalone Delegation Service's
+	// DLG-I3 (ADR-0008 v2 §6.4) now that `delegations` no longer lives in
+	// this service's database.
+	delegationCheckClient := delegationcheckclient.New(log)
 	// catalogAdminClient/catalogReader: departments/plans read paths go
 	// through catalog-admin-config's CAT-I1/CAT-I2 + a local cache.
 	// Migration-runbook Phase 4 (LLD §12 step 4) completed the cutover —
 	// catalog-admin-config is now the sole writer too; O-1/O-2/O-3/O-5/O-6
 	// and the local departments/plans tables have been removed from this
 	// service entirely.
-	catalogAdminClient := catalogadminclient.New()
-	catalogReader := service.NewCatalogService(catalogAdminClient, cache)
+	catalogAdminClient := catalogadminclient.New(log)
+	catalogReader := service.NewCatalogService(catalogAdminClient, cache).WithLogger(log)
 	// groupMappingClient: I-10's mapping-resolution step goes through Group
 	// Mapping Service's GM-I1 behind the om:grm/gdm/gtrm cache (ADR-0007
 	// Wave 2). P-14..P-29 admin CRUD and the local group-mapping tables
 	// have been fully removed from this service — Group Mapping Service is
 	// now the sole owner of that config surface.
-	groupMappingClient := groupmappingclient.New()
+	groupMappingClient := groupmappingclient.New(log)
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	invitationExpiryDays := envInt("INVITATION_EXPIRY_DAYS", 7)
@@ -400,17 +369,14 @@ func main() {
 	inviteMaxPerHour := envInt("INVITE_MAX_PER_TENANT_PER_HOUR", 200)     // PI-12
 
 	authzSvc := service.NewAuthZService(pool, catalogReader, cache)
-	provisioningSvc := service.NewProvisioningService(pool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, delegationRepo, aclRepo, catalogReader, txRunner, cache, rpClient)
+	provisioningSvc := service.NewProvisioningService(pool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
-	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, delegationRepo, aclRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, nil, seatOverageDays)
-	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogReader, delegationRepo, wfClient, cache, txRunner)
+	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays)
+	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogReader, delegationCheckClient, wfClient, cache, txRunner).WithLogger(log)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, cache)
-	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache, groupMappingClient)
-	reviewWindowDays := envInt("DELEGATION_REVIEW_WINDOW_DAYS", 90) // superseded by tenants.delegation_review_window_days (§16 A71); kept as fallback
-	delegationSvc := service.NewDelegationService(delegationRepo, membershipRepo, upClient, tenantRepo, txRunner, reviewWindowDays)
-	aclSvc := service.NewTenderACLService(aclRepo, membershipRepo)
-	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, nil, invitationExpiryDays).
+	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache, groupMappingClient).WithLogger(log)
+	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, log, invitationExpiryDays).
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour)
 	operatorSvc := service.NewOperatorService(pool, tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
@@ -420,114 +386,82 @@ func main() {
 	membershipH := httpadapter.NewMembershipHandler(membershipSvc)
 	deptMemH := httpadapter.NewDeptMembershipHandler(deptMemSvc)
 	roleLabelH := httpadapter.NewRoleLabelHandler(roleLabelSvc)
-	delegationH := httpadapter.NewDelegationHandler(delegationSvc)
-	aclH := httpadapter.NewACLHandler(aclSvc)
+	// DelegationHandler and DelegationService removed entirely (ADR-0008
+	// v2) — P-18/19/20/32/33 moved to the standalone Delegation Service's
+	// DLG-1/2/3/4/5; IDs never reused.
+	// ACLHandler and TenderACLService removed entirely (ADR-0007 Wave 3
+	// Phase 6) — P-21/22/23/I-12 moved to iam-tender-acl's TAC-1/2/3/4;
+	// IDs never reused.
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, aclSvc, tenantSvc)
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc)
 
-	// Protected API group — GUCBridge writes the tx-local RLS GUC on every
-	// checkout (RLS-6). Order: ProtectedMiddlewares (auth + context) →
-	// GUCBridge → RequireJSONContentType → handlers.
-	protected := append(
-		gincommon.ProtectedMiddlewares(cfg),
-		httpadapter.GUCBridgeMiddleware(),
-		httpadapter.RequireJSONContentType(),
-	)
-	v1 := r.Group("/api/v1", protected...)
-	{
-		// TRIAL-4 / §16 A53 defense-in-depth: block API access to tenants in
-		// terminal-ish lifecycle states (trial_expired/suspended/offboarded)
-		// and enforce read-only on cancelled. Applied ONLY to public routes;
-		// operator + internal groups below bypass this by design so O-7
-		// reassign, TrialReactivated consumer, etc. can restore a tenant.
-		activeTenantGate := httpadapter.RequireActiveTenant(tenantRepo)
-		activeMemberGate := httpadapter.RequireActiveMembership(membershipRepo)
-		tenants := v1.Group("/tenants", activeTenantGate, activeMemberGate)
-		// Tenant — P-1, P-2
-		tenants.GET("/:id", tenantH.Get)
-		tenants.PATCH("/:id", tenantH.Patch)
+	// ── Router — all routing/middleware wiring lives in the inbound HTTP
+	// adapter (internal/adapter/inbound/http/router.go), not here. main.go's
+	// job is to construct dependencies and hand them to NewRouter.
+	router := httpadapter.NewRouter(httpadapter.RouterConfig{
+		GinConfig: cfg,
+		Docs: httpadapter.DocsConfig{
+			Environment: appEnv,
+			Enabled:     envOr("DOCS_ENABLED", "false") == "true",
+			AuthToken:   os.Getenv("DOCS_AUTH_TOKEN"),
+		},
 
-		// Departments (tenant-scoped) — P-3, P-24, P-25
-		tenants.GET("/:id/departments", deptH.List)
-		tenants.POST("/:id/departments", deptH.Activate)
-		tenants.PATCH("/:id/departments/:dept_id", deptH.Patch)
+		TenantRepo:     tenantRepo,
+		MembershipRepo: membershipRepo,
 
-		// Members — P-4, P-5, P-6, P-7, P-8, P-26, P-27, P-28
-		tenants.GET("/:id/members", membershipH.List)
-		tenants.GET("/:id/members/:user_id", membershipH.Get)
-		tenants.POST("/:id/members", invitationH.Invite)                                      // P-6 (invite)
-		tenants.PATCH("/:id/members/:user_id", membershipH.Patch)                             // P-7
-		tenants.DELETE("/:id/members/:user_id", membershipH.Remove)                           // P-8 (§8.8)
-		tenants.POST("/:id/users/:user_id/removal-resolution", membershipH.RemovalResolution) // P-26 (§8.8.3)
-		tenants.PUT("/:id/members/:user_id/roles", membershipH.ReconcileRoles)
-		tenants.GET("/:id/seat-usage", membershipH.SeatUsage)
+		TenantHandler:         tenantH,
+		DepartmentHandler:     deptH,
+		MembershipHandler:     membershipH,
+		DeptMembershipHandler: deptMemH,
+		RoleLabelHandler:      roleLabelH,
+		InvitationHandler:     invitationH,
+		OperatorHandler:       operatorH,
+		InternalHandler:       internalH,
 
-		// Dept memberships — P-9, P-10, P-11
-		tenants.GET("/:id/departments/:dept_id/members", deptMemH.List)
-		tenants.PUT("/:id/departments/:dept_id/members/:user_id", deptMemH.Assign)
-		tenants.DELETE("/:id/departments/:dept_id/members/:user_id", deptMemH.Remove)
-
-		// Role labels — P-12, P-13
-		tenants.GET("/:id/roles", roleLabelH.List)
-		tenants.PATCH("/:id/roles/:role_code", roleLabelH.Patch)
-
-		// Group mappings (P-14, P-15, P-16, P-17, P-29) — retired, moved
-		// to Group Mapping Service (GM-1..GM-6). IDs never reused.
-
-		// Tender ACL — P-21, P-22, P-23
-		tenants.GET("/:id/tenders/:tender_id/acl", aclH.List)
-		tenants.POST("/:id/tenders/:tender_id/acl", aclH.Grant)
-		tenants.DELETE("/:id/tenders/:tender_id/acl/:user_id", aclH.Revoke)
-
-		// Invitations — P-30, P-31
-		tenants.GET("/:id/invitations", invitationH.List)
-		tenants.DELETE("/:id/invitations/:invitation_id", invitationH.Revoke)
-
-		// Delegations — P-18, P-19, P-20, P-32, P-33 (tenant-scoped via requestctx).
-		// Same TRIAL-4 gate as /tenants — a trial_expired tenant cannot
-		// create or list delegations.
-		v1.GET("/delegations", activeTenantGate, activeMemberGate, delegationH.List)
-		v1.POST("/delegations", activeTenantGate, activeMemberGate, delegationH.Create)
-		v1.DELETE("/delegations/:id", activeTenantGate, activeMemberGate, delegationH.Cancel)
-		v1.POST("/delegations/:id/extend", activeTenantGate, activeMemberGate, delegationH.Extend)
-		v1.POST("/delegations/:id/reassign", activeTenantGate, activeMemberGate, delegationH.Reassign)
-
-		// Operator routes — AUTH-6 defense-in-depth (RequireOperatorRole
-		// middleware + handler re-check inside each operator handler).
-		// O-1/O-2/O-3 (departments) and O-5/O-6 (plans) moved to the
-		// Catalog / Admin Config Service (migration-runbook Phase 4, LLD
-		// §12 step 4).
-		op := v1.Group("/operator", httpadapter.RequireOperatorRole())
-		op.PATCH("/tenants/:id/feature-flags", operatorH.SetFeatureFlags) // O-4
-		op.POST("/tenants/:id/reassign-owner", operatorH.ReassignOwner)   // O-7
-
-		// Internal /api/v1/internal/* routes — mTLS + iam-system role
-		// (RLS-5, IAPI-2, AUTH-5). NetworkPolicy is the primary defence;
-		// RequireSystemRole is defense-in-depth.
-		internal := v1.Group("/internal", httpadapter.RequireSystemRole())
-		internal.POST("/tenants", internalH.ProvisionTenant)                                           // I-1
-		internal.PATCH("/tenants/:id", internalH.PatchTenantRealm)                                     // I-2
-		internal.POST("/tenants/:id/members", internalH.AddMember)                                     // I-3 (§8.10 accept + JIT add)
-		internal.POST("/tenants/:id/dept-memberships", internalH.AssignFromGroups)                     // I-10 (§8.5 SAML JIT)
-		internal.PATCH("/tenants/:id/members/:user_id", internalH.PatchMemberLifecycle)                // I-4
-		internal.DELETE("/tenants/:id/members/:user_id", internalH.DeleteMember)                       // I-5
-		internal.GET("/users/:id/memberships", internalH.GetMemberships)                               // I-8 HOT PATH
-		internal.GET("/tenants/:id/locale", internalH.GetLocale)                                       // I-9
-		internal.GET("/tenants/:id/mfa-freshness", internalH.GetMFAFreshness)                          // I-14 (§16 A72)
-		internal.GET("/tenants/:id/seat-usage", internalH.GetSeatUsage)                                // I-11
-		internal.GET("/tenants/:id/tenders/:tender_id/acl/:user_id", internalH.CheckTenderAccess)      // I-12
-		internal.POST("/tenants/:id/tenders/:tender_id/assignee-override", internalH.AssigneeOverride) // I-13
-	}
-	httpadapter.RegisterValidators()
+		Postgres: pingerFunc(func(ctx context.Context) error {
+			if hs := pool.Health(ctx); !hs.Healthy {
+				return fmt.Errorf("database not healthy")
+			}
+			return nil
+		}),
+		// sysPool is a separate physical connection (BYPASSRLS role) from
+		// the app pool above — ping it directly so /readyz notices a
+		// credential/network problem specific to that role, rather than
+		// waiting for the next cross-tenant sweep/reconciler run to fail.
+		SysPostgres: pingerFunc(func(ctx context.Context) error {
+			return sysPool.Ping(ctx)
+		}),
+		Cache: cache,
+		Outbox: pingerFunc(func(context.Context) error {
+			select {
+			case <-outboxRunner.Ready():
+				return nil
+			default:
+				return fmt.Errorf("outbox initialising")
+			}
+		}),
+	})
 
 	// ── 9. Graceful shutdown ─────────────────────────────────────────────
 	srv := &http.Server{
 		Addr:         ":" + envOr("APP_PORT", "8080"),
-		Handler:      r,
+		Handler:      router.Handler(),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 35 * time.Second, // 30s app timeout + 5s buffer
 		IdleTimeout:  60 * time.Second,
+	}
+
+	// Metrics on a dedicated port/listener, separate from the API server
+	// above — so a NetworkPolicy can grant the monitoring namespace scrape
+	// access without also granting it access to the tenant-facing/gateway
+	// API surface. Mirrors iam-tender-acl's identical split.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsServer := &http.Server{
+		Addr:              ":" + envOr("METRICS_PORT", "9090"),
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	quit := make(chan os.Signal, 1)
@@ -544,6 +478,12 @@ func main() {
 			log.Error("server error", map[string]interface{}{"error": err.Error()})
 		}
 	}()
+	go func() {
+		log.Info("metrics server starting", map[string]interface{}{"addr": metricsServer.Addr})
+		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("metrics server error", map[string]interface{}{"error": err.Error()})
+		}
+	}()
 
 	<-quit
 	log.Info("shutdown signal received — draining", nil)
@@ -557,6 +497,9 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("HTTP server shutdown error", map[string]interface{}{"error": err.Error()})
+	}
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		log.Error("metrics server shutdown error", map[string]interface{}{"error": err.Error()})
 	}
 	if err := outboxRunner.Stop(); err != nil {
 		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
@@ -575,9 +518,18 @@ func main() {
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-// buildTopicPublisher returns an SNS publisher for topicARN, or a noop
-// publisher when the ARN is empty (dev/test). Phase 3: add GlueCodec option.
-func buildTopicPublisher(topicARN string) (events.Publisher, error) {
+// pingerFunc adapts a plain func to httpadapter.Pinger so /readyz's three
+// dependencies (Postgres, cache, outbox runner) — each with a different
+// native health-check shape — can be passed into the router uniformly
+// without the http adapter importing any concrete outbound type.
+type pingerFunc func(context.Context) error
+
+func (f pingerFunc) Health(ctx context.Context) error { return f(ctx) }
+
+// buildTopicPublisher returns an SNS publisher for topicARN carrying codec
+// (applied transiently at publish time via events.WithCodec — never touches
+// outbox_events), or a noop publisher when the ARN is empty (dev/test).
+func buildTopicPublisher(topicARN string, codec events.Codec, log port.Logger) (events.Publisher, error) {
 	if topicARN == "" {
 		return eventbusadapter.NoopPublisher{}, nil
 	}
@@ -585,7 +537,29 @@ func buildTopicPublisher(topicARN string) (events.Publisher, error) {
 		TopicARN:    topicARN,
 		Region:      envOr("AWS_REGION", "ap-south-1"),
 		EndpointURL: os.Getenv("AWS_ENDPOINT_URL"),
-	})
+		Logger:      log,
+	}, events.WithCodec(codec))
+}
+
+// buildTopicCodec returns a GlueCodec pre-fetching schemaNames from
+// registryName, refreshed every 5 minutes so a new schema version in Glue
+// takes effect without a pod restart — or a NoopCodec (plain JSON) when
+// registryName is empty (dev/test without a Glue registry configured).
+func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName string, schemaNames []string, log port.Logger) (events.Codec, error) {
+	if registryName == "" {
+		// events.NoopCodec (platform-events' own identity Codec), not this
+		// package's local eventbus.Codec/NoopCodec — those are a different,
+		// Encode-only interface used at outbox-enqueue time for schema
+		// validation, not the Encode+Decode events.Codec WithCodec expects.
+		return events.NoopCodec{}, nil
+	}
+	gc, err := eventbusadapter.NewGlueCodec(ctx, glueClient, registryName, schemaNames)
+	if err != nil {
+		return nil, err
+	}
+	gc.WithLogger(log)
+	gc.StartRefresher(ctx, 5*time.Minute)
+	return gc, nil
 }
 
 func envOr(key, def string) string {
@@ -626,7 +600,8 @@ func validateRequiredEnv(appEnv string) {
 		{"VALKEY_URL", false, "Valkey address is required for caching"},
 		{"SNS_TOPIC_MEMBERSHIP_ARN", true, "iam.membership.events topic ARN; events queue in outbox but never publish without it"},
 		{"SNS_TOPIC_TENANT_ARN", true, "iam.tenant.events topic ARN; TenantCreated/TrialStarted queue but never publish without it"},
-		{"GLUE_REGISTRY_NAME", true, "Glue registry name; NoopCodec used without it"},
+		{"GLUE_REGISTRY_MEMBERSHIP_NAME", true, "iam-membership-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
+		{"GLUE_REGISTRY_TENANT_NAME", true, "iam-tenant-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
 	}
 	var missing []string
 	for _, r := range reqs {
@@ -662,13 +637,18 @@ func validateRequiredEnv(appEnv string) {
 		}
 		panic(msg)
 	}
-	// Glue codec writes a 18-byte binary header to outbox_events.payload —
-	// not valid JSONB and corrupts the row under PgBouncer simple-protocol.
-	if os.Getenv("GLUE_REGISTRY_NAME") != "" && os.Getenv("PG_BOUNCER_MODE") == "true" {
-		panic("startup aborted — GLUE_REGISTRY_NAME and PG_BOUNCER_MODE=true are mutually exclusive: " +
-			"the Glue 18-byte header is not valid JSONB and corrupts outbox_events.payload under transaction pooling. " +
-			"Leave GLUE_REGISTRY_NAME empty (NoopCodec) when PG_BOUNCER_MODE=true.")
-	}
+	// No GLUE_REGISTRY_*+PG_BOUNCER_MODE mutual-exclusion check here — a
+	// prior version of this guard assumed the Glue codec's 18-byte binary
+	// header gets written into outbox_events.payload, which would indeed
+	// corrupt that JSONB column under transaction pooling. That model is
+	// incorrect: WithCodec's Encode step runs transiently in the SNS
+	// publisher immediately before publish, and platform-events
+	// base64-wraps the encoded bytes into a JSON string before ever
+	// touching the envelope (see port.Codec's doc comment in
+	// platform-events) — outbox_events always stores plain, validated JSON
+	// regardless of which codec is configured. PG_BOUNCER_MODE and Glue
+	// registries are configured together in production (see
+	// deploy/helm/values.yaml) and that combination is safe.
 }
 
 // noopPublisher usage below keeps encoding/json + noopPublisher usage

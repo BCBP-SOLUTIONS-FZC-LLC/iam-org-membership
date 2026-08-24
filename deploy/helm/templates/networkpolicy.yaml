@@ -40,7 +40,9 @@ spec:
         - port: {{ .Values.service.port }}
           protocol: TCP
 
-    # Allow Prometheus to scrape /metrics — restricted to the monitoring namespace.
+    # Allow Prometheus to scrape :9090/metrics — restricted to the
+    # monitoring namespace. Metrics live on a SEPARATE port from the API,
+    # so this rule (unlike the two above) does not grant any API access.
     {{- if .Values.networkPolicy.metricsIngress.enabled }}
     - from:
         - namespaceSelector:
@@ -50,7 +52,7 @@ spec:
             matchLabels:
               {{- toYaml .Values.networkPolicy.metricsIngress.podSelector | nindent 14 }}
       ports:
-        - port: {{ .Values.service.port }}
+        - port: {{ .Values.service.metricsPort }}
           protocol: TCP
     {{- end }}
 

@@ -20,7 +20,7 @@ import (
 // uses (the membership repo); every other dependency stays nil.
 func buildProvisioningSvc(m *fakeMembershipRepo) *service.ProvisioningService {
 	return service.NewProvisioningService(
-		nil, nil, m, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, m, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 
@@ -61,7 +61,7 @@ func TestProvisioning_SetMembershipStatus_PropagatesRepoError(t *testing.T) {
 // ── Constructor smoke — every ctor field set, no panic on nil deps ────
 
 func TestProvisioning_NewProvisioningService_ReturnsNonNil(t *testing.T) {
-	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	assert.NotNil(t, svc, "constructor must not fail on nil collaborators — production wiring supplies them")
 }
 
@@ -72,8 +72,8 @@ func TestProvisioning_NewProvisioningService_ReturnsNonNil(t *testing.T) {
 // Workflow service being unavailable is irrelevant on this path.
 //
 // This test wires up the minimum fakes needed for DeleteMember to succeed
-// (plain non-owner member with no dept memberships, delegations, or ACLs)
-// and verifies it returns nil — no workflow client is needed.
+// (plain non-owner member with no dept memberships or delegations) and
+// verifies it returns nil — no workflow client is needed.
 
 func TestProvisioning_DeleteMember_WorkflowNotRequired(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
@@ -93,17 +93,11 @@ func TestProvisioning_DeleteMember_WorkflowNotRequired(t *testing.T) {
 	deptMems := &ruDeptMemRepo{
 		softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil },
 	}
-	delegations := &ruDelegationRepo{
-		softDeleteForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.Delegation, error) { return nil, nil },
-	}
-	acls := &ruACLRepo{
-		softDeleteForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenderACLEntry, error) { return nil, nil },
-	}
 
 	// NewProvisioningService has no WorkflowClient parameter — the WFI-3
 	// pre-check is architecturally absent from the I-5 path.
 	svc := service.NewProvisioningService(
-		nil, nil, mem, roles, deptMems, nil, nil, nil, delegations, acls, nil,
+		nil, nil, mem, roles, deptMems, nil, nil, nil, nil,
 		&passthroughTxRunner{}, nil, nil,
 	)
 

@@ -279,7 +279,7 @@ func BenchmarkP16_BulkP28_100Users(b *testing.B) {
 
 // BenchmarkP16_OutboxInsertOne — cost of one outbox event enqueue tx.
 func BenchmarkP16_OutboxInsertOne(b *testing.B) {
-	_, rawPool := setupTestDB(b)
+	_, rawPool, _ := setupTestDB(b)
 	ctx := context.Background()
 	tenantID := seedTenant(b, ctx, rawPool, "bench-outbox-insert")
 
@@ -299,7 +299,7 @@ func BenchmarkP16_OutboxInsertOne(b *testing.B) {
 // on every iteration so the query planner always sees fresh unpublished
 // rows.
 func BenchmarkP16_OutboxDrain50(b *testing.B) {
-	_, rawPool := setupTestDB(b)
+	_, rawPool, _ := setupTestDB(b)
 	ctx := context.Background()
 	tenantID := seedTenant(b, ctx, rawPool, "bench-outbox-drain")
 

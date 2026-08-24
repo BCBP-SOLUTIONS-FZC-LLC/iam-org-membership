@@ -1,8 +1,10 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/gin-gonic/gin"
@@ -12,9 +14,11 @@ import (
 // InternalHandler covers I-1 (POST /tenants), I-2 (PATCH /tenants/:id),
 // I-4 (PATCH /tenants/:id/members/:user_id), I-5 (DELETE /tenants/:id/members/:user_id),
 // I-8 (GET /users/:id/memberships — hot path), I-9 (locale),
-// I-11 (seat-usage service-to-service, same handler as P-27), I-12 (tender
-// ACL check), I-13 (assignee-override validate-and-emit),
-// I-14 (GET /tenants/:id/mfa-freshness — §16 A72, AuthZ Enrichment step-up gate).
+// I-11 (seat-usage service-to-service, same handler as P-27), I-13
+// (assignee-override validate-and-emit), I-14 (GET
+// /tenants/:id/mfa-freshness — §16 A72, AuthZ Enrichment step-up gate).
+// I-12 (tender ACL check) retired ADR-0007 Wave 3 Phase 6 — moved to
+// iam-tender-acl's TAC-4; ID never reused.
 //
 // All internal routes are gated by RequireSystemRole middleware (RLS-5,
 // IAPI-2, AUTH-5).
@@ -24,7 +28,6 @@ type InternalHandler struct {
 	membership    *service.MembershipService
 	invitation    *service.InvitationService
 	groupMappings *service.GroupMappingService
-	acl           *service.TenderACLService
 	tenants       *service.TenantService
 }
 
@@ -34,12 +37,11 @@ func NewInternalHandler(
 	mem *service.MembershipService,
 	inv *service.InvitationService,
 	gm *service.GroupMappingService,
-	acl *service.TenderACLService,
 	tenants *service.TenantService,
 ) *InternalHandler {
 	return &InternalHandler{
 		provisioning: prov, authz: authz, membership: mem, invitation: inv,
-		groupMappings: gm, acl: acl, tenants: tenants,
+		groupMappings: gm, tenants: tenants,
 	}
 }
 
@@ -525,31 +527,39 @@ func (h *InternalHandler) GetSeatUsage(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// ── I-12 GET /tenants/:id/tenders/:tender_id/acl/:user_id ─────────────
+// I-12 (GET /tenants/:id/tenders/:tender_id/acl/:user_id, "tender ACL
+// check") retired ADR-0007 Wave 3 Phase 6 — moved to iam-tender-acl's
+// TAC-4. ID never reused.
 
-// CheckTenderAccess is I-12 — tender ACL check (active grant, TAE-3).
+// ── GET /tenants/:id/members/:user_id/exists ───────────────────────────
+
+// CheckMemberExists backs iam-tender-acl's grant-time membership-existence
+// check (ADR-0007 Wave 3 extraction, Phase 3 — see
+// iam-tender-acl/O_AND_M_DELTA.md §4). It replaces the composite FK
+// (tender_acl_entries.tenant_membership_id → tenant_memberships) that
+// could not survive tender_acl_entries moving to its own database.
 //
-// @Summary      I-12 — Tender ACL check (active grant, TAE-3)
-// @Description  Returns `{has_access, access_level}` — access_level is populated only when has_access is true.
+// This is an existence check, not a resource fetch: a member who does not
+// exist, or exists but is not MembershipActive, is a normal 200 response
+// (active:false), never a 404 — the caller (iam-tender-acl's TAC-2 grant
+// flow) treats both cases identically as "block the grant", and a 404
+// would collapse into the same generic-error handling as a genuine
+// dependency failure on the caller's side.
+//
+// @Summary      Membership existence/active-status check (iam-tender-acl grant-time dependency)
+// @Description  Returns `{active, tenant_membership_id}` — tenant_membership_id is populated only when active is true. Never 404.
 // @Tags         internal
 // @Produce      json
-// @Param        id         path      string                            true  "Tenant UUID"  format(uuid)
-// @Param        tender_id  path      string                            true  "Tender UUID"  format(uuid)
-// @Param        user_id    path      string                            true  "User UUID"    format(uuid)
-// @Success      200        {object}  InternalTenderACLCheckResponse
-// @Failure      403        {object}  ErrorResponse
-// @Failure      404        {object}  ErrorResponse
+// @Param        id       path      string  true  "Tenant UUID"  format(uuid)
+// @Param        user_id  path      string  true  "User UUID"    format(uuid)
+// @Success      200      {object}  MemberExistsResponse
+// @Failure      400      {object}  ErrorResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
-// @Router       /internal/tenants/{id}/tenders/{tender_id}/acl/{user_id} [get]
-func (h *InternalHandler) CheckTenderAccess(c *gin.Context) {
+// @Router       /internal/tenants/{id}/members/{user_id}/exists [get]
+func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 	tenantID, err := parseTenantIDParam(c)
-	if err != nil {
-		HandleError(c, err)
-		return
-	}
-	tenderID, err := parseUUIDParam(c, "tender_id")
 	if err != nil {
 		HandleError(c, err)
 		return
@@ -559,16 +569,30 @@ func (h *InternalHandler) CheckTenderAccess(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	entry, err := h.acl.CheckAccess(c.Request.Context(), tenantID, tenderID, userID)
+
+	// LLD §11.2 doesn't give I-15 any caller-identifying signal today (both
+	// iam-tender-acl and iam-delegation authenticate as the same
+	// "iam-system" internal principal) — labelled "unknown" rather than
+	// guessing which service made the call.
+	const caller = "unknown"
+
+	m, err := h.membership.CheckActiveMembership(c.Request.Context(), tenantID, userID)
 	if err != nil {
+		if errors.Is(err, domain.ErrMemberNotFound) {
+			metrics.IncMembershipExistsCheck(caller, "inactive")
+			c.JSON(http.StatusOK, gin.H{"active": false, "tenant_membership_id": nil})
+			return
+		}
 		HandleError(c, err)
 		return
 	}
-	if entry == nil {
-		c.JSON(http.StatusOK, gin.H{"has_access": false})
+	if m.Status != domain.MembershipActive {
+		metrics.IncMembershipExistsCheck(caller, "inactive")
+		c.JSON(http.StatusOK, gin.H{"active": false, "tenant_membership_id": nil})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"has_access": true, "access_level": string(entry.AccessLevel)})
+	metrics.IncMembershipExistsCheck(caller, "active")
+	c.JSON(http.StatusOK, gin.H{"active": true, "tenant_membership_id": m.ID})
 }
 
 // ── I-13 POST /tenants/:id/tenders/:tender_id/assignee-override ───────

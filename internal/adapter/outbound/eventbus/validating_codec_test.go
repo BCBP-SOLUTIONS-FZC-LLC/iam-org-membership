@@ -119,8 +119,8 @@ func TestValidationErrorMentionsEventType(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 
-	_, _, err = c.Encode(context.Background(), "DelegationStarted", []byte(`{}`))
+	_, _, err = c.Encode(context.Background(), "MembershipRevoked", []byte(`{}`))
 	require.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "DelegationStarted"),
+	assert.True(t, strings.Contains(err.Error(), "MembershipRevoked"),
 		"error string must include the event type (got %q)", err.Error())
 }

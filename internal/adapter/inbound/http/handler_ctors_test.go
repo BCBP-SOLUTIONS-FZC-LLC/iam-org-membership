@@ -16,16 +16,6 @@ import (
 // prove the constructors return non-nil handler pointers with the service
 // field populated — enough to lock the ctor signature and cover the line.
 
-func TestNewACLHandler_Constructs(t *testing.T) {
-	h := NewACLHandler(nil)
-	assert.NotNil(t, h)
-}
-
-func TestNewDelegationHandler_Constructs(t *testing.T) {
-	h := NewDelegationHandler(nil)
-	assert.NotNil(t, h)
-}
-
 func TestNewDepartmentHandler_Constructs(t *testing.T) {
 	h := NewDepartmentHandler(nil)
 	assert.NotNil(t, h)
@@ -42,7 +32,7 @@ func TestNewInvitationHandler_Constructs(t *testing.T) {
 }
 
 func TestNewInternalHandler_Constructs(t *testing.T) {
-	h := NewInternalHandler(nil, nil, nil, nil, nil, nil, nil)
+	h := NewInternalHandler(nil, nil, nil, nil, nil, nil)
 	assert.NotNil(t, h)
 }
 
@@ -212,42 +202,8 @@ func TestRolesToWire_EmptyIsEmptyNotNil(t *testing.T) {
 	assert.Len(t, got, 0)
 }
 
-// ── delegationToResponse ──────────────────────────────────────────────
-
-func TestDelegationToResponse_MapsAllFields(t *testing.T) {
-	scopeID := uuid.New()
-	starts := time.Now()
-	ends := starts.Add(24 * time.Hour)
-	d := domain.Delegation{
-		ID:            uuid.New(),
-		DelegatorID:   uuid.New(),
-		DelegateID:    uuid.New(),
-		Scope:         domain.ScopeDepartment,
-		ScopeID:       &scopeID,
-		Reason:        "vacation",
-		StartsAt:      starts,
-		EndsAt:        &ends,
-		Status:        domain.DelegationStatus("active"),
-		RecordVersion: 2,
-	}
-	got := delegationToResponse(d)
-	assert.Equal(t, d.ID, got.ID)
-	assert.Equal(t, d.DelegatorID, got.DelegatorID)
-	assert.Equal(t, d.DelegateID, got.DelegateID)
-	assert.Equal(t, "department", got.Scope)
-	assert.Equal(t, &scopeID, got.ScopeID)
-	assert.Equal(t, "vacation", got.Reason)
-	assert.Equal(t, starts, got.StartsAt)
-	assert.Equal(t, &ends, got.EndsAt)
-	assert.Equal(t, "active", got.Status)
-	assert.EqualValues(t, 2, got.RecordVersion)
-}
-
-func TestDelegationToResponse_NilScopeIDPassesThrough(t *testing.T) {
-	got := delegationToResponse(domain.Delegation{Scope: domain.ScopeAll})
-	assert.Nil(t, got.ScopeID)
-	assert.Equal(t, "all", got.Scope)
-}
+// delegationToResponse tests retired — Delegation DTOs moved to the
+// standalone Delegation Service (ADR-0008 v2).
 
 // ── OperatorReassignOwnerRequest.EffectiveUserID (already tested but
 // belt-and-braces here alongside the other DTO converters). ────────────

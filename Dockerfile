@@ -46,6 +46,6 @@ LABEL org.opencontainers.image.title="iam-org-membership" \
 COPY --from=builder /build/bin/iam-org-membership /iam-org-membership
 COPY --from=builder /build/bin/reconciler /reconciler
 
-EXPOSE 8080
+EXPOSE 8080 9090
 
 ENTRYPOINT ["/iam-org-membership"]

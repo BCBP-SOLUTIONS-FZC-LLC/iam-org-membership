@@ -23,6 +23,12 @@ serviceAccount:
 service:
   type: ClusterIP
   port: 8080
+  # /metrics is served on its own dedicated port/listener (METRICS_PORT),
+  # separate from the API port above — so a NetworkPolicy can grant the
+  # monitoring namespace scrape access without also granting it access to
+  # the tenant-facing/gateway API surface. Mirrors iam-tender-acl's
+  # identical split.
+  metricsPort: 9090
 
 # HPA — LLD §13.1, HPA 2-8 replicas.
 autoscaling:
@@ -46,6 +52,7 @@ resources:
 env:
   APP_ENV: "production"
   APP_PORT: "8080"
+  METRICS_PORT: "9090"
 
   # Postgres (LLD §4.4). Host/user/dbname wire in at deploy time; PG_SSLMODE
   # stays "require" in prod.
@@ -88,10 +95,25 @@ env:
   # Outbound service clients (LLD §18). Fail-open where noted in CLAUDE.md.
   WORKFLOW_SERVICE_BASE_URL: ""
   WORKFLOW_TIMEOUT_MS: "3000"
-  USER_PROFILE_SERVICE_BASE_URL: ""
-  USER_PROFILE_TIMEOUT_MS: "3000"
   REALM_PROVISIONER_BASE_URL: ""
   REALM_PROVISIONER_TIMEOUT_MS: "3000"
+  # catalog-admin-config — NOT fail-open, unlike the three clients above:
+  # this service is now the sole system of record for departments/plans
+  # (migration Phase 4/Contract complete, no local fallback table exists
+  # anymore). An unset CATALOG_ADMIN_BASE_URL returns a plain error from
+  # both client methods (internal/adapter/outbound/catalogadmin/http_client.go)
+  # rather than degrading gracefully — this value is load-bearing.
+  CATALOG_ADMIN_BASE_URL: ""
+  CATALOG_ADMIN_TIMEOUT_MS: "3000"
+  # group-mapping (ADR-0007 Wave 2) — fails open on I-10 JIT resolution;
+  # see internal/adapter/outbound/groupmappingclient.
+  GROUP_MAPPING_BASE_URL: ""
+  GROUP_MAPPING_TIMEOUT_MS: "300"
+  # delegation (ADR-0008 v2) — fails open on the §8.8.4 dept-scope
+  # pre-filter, degrading to tenant-wide delegate-impact scoping; see
+  # internal/adapter/outbound/delegationcheck.
+  DELEGATION_BASE_URL: ""
+  DELEGATION_TIMEOUT_MS: "300"
 
   # OpenTelemetry.
   OTEL_SERVICE_NAME: "iam-org-membership"
@@ -204,7 +226,7 @@ readinessProbe:
   failureThreshold: 3
   timeoutSeconds: 3
 
-# CronJobs — 8 reconcilers per LLD §13.1 (exporters run as goroutines in
+# CronJobs — 7 reconcilers per LLD §13.1 (exporters run as goroutines in
 # cmd/server/main.go per our Option A decision, not as CronJobs). Each entry
 # dispatches the same reconciler binary with a different --job flag.
 # See templates/cronjobs.yaml.
@@ -221,9 +243,6 @@ cronjobs:
   seat-overage-reconcile:
     schedule: "0 */6 * * *"
     job: seat-overage-reconcile
-  delegation-expiry:
-    schedule: "*/5 * * * *"
-    job: delegation-expiry
   trial-cleanup:
     schedule: "0 2 * * *"
     job: trial-cleanup

@@ -58,6 +58,13 @@ const (
 	migratorPassword = "migratorpassword-e2eonly"
 )
 
+// noopPinger always reports healthy — this harness has no outbox runner
+// and doesn't exercise /readyz, so a real Postgres/Valkey/outbox check
+// isn't needed here.
+type noopPinger struct{}
+
+func (noopPinger) Health(context.Context) error { return nil }
+
 // e2eEnv bundles a fully wired stack + a live httptest.Server so tests can
 // issue real HTTP requests.
 type e2eEnv struct {
@@ -70,7 +77,6 @@ type e2eEnv struct {
 	// Fake outbound clients — reachable from tests that want to simulate
 	// outages / assert calls made.
 	RP *fakeRealmProvisioner
-	UP *fakeUserProfile
 	WF *fakeWorkflow
 }
 
@@ -91,8 +97,6 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	tenantRoleRepo := pgadapter.NewTenantRoleRepository(appPool)
 	deptMemRepo := pgadapter.NewDeptMembershipRepository(appPool)
 	deptRoleLabelRepo := pgadapter.NewDeptRoleLabelRepository(appPool)
-	delegationRepo := pgadapter.NewDelegationRepository(appPool)
-	aclRepo := pgadapter.NewTenderACLRepository(appPool)
 	invitationRepo := pgadapter.NewInvitationRepository(appPool)
 
 	// Outbox publisher — writes to outbox_events without draining.
@@ -104,7 +108,6 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 
 	// Fake outbound clients.
 	rp := &fakeRealmProvisioner{}
-	up := &fakeUserProfile{}
 	wf := &fakeWorkflow{}
 
 	// catalogDepts/catalogPlans stand in for the departments/plans catalog
@@ -116,15 +119,13 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 
 	// Services.
 	authzSvc := service.NewAuthZService(appPool, catalogPlans, nil)
-	provisioningSvc := service.NewProvisioningService(appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogDepts, delegationRepo, aclRepo, catalogPlans, txRunner, nil, rp)
+	provisioningSvc := service.NewProvisioningService(appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogDepts, catalogPlans, txRunner, nil, rp)
 	tenantSvc := service.NewTenantService(tenantRepo, nil, rp)
 	deptSvc := service.NewDepartmentService(catalogDepts, tenantDeptRepo, nil)
-	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, delegationRepo, aclRepo, tenantRepo, invitationRepo, nil, rp, wf, txRunner, nil, 30)
-	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogDepts, delegationRepo, wf, nil, txRunner)
+	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, nil, rp, wf, txRunner, nil, 30)
+	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogDepts, nil, wf, nil, txRunner)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, nil)
 	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, nil, nil)
-	delegationSvc := service.NewDelegationService(delegationRepo, membershipRepo, up, nil, txRunner)
-	aclSvc := service.NewTenderACLService(aclRepo, membershipRepo)
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rp, nil, txRunner, nil, 7)
 	operatorSvc := service.NewOperatorService(appPool, tenantRepo, tenantRoleRepo, membershipRepo, nil, txRunner)
 
@@ -134,94 +135,49 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	membershipH := httpadapter.NewMembershipHandler(membershipSvc)
 	deptMemH := httpadapter.NewDeptMembershipHandler(deptMemSvc)
 	roleLabelH := httpadapter.NewRoleLabelHandler(roleLabelSvc)
-	delegationH := httpadapter.NewDelegationHandler(delegationSvc)
-	aclH := httpadapter.NewACLHandler(aclSvc)
+	// DelegationHandler is no longer constructed/routed — mirrors
+	// cmd/server/main.go's ADR-0008 v2 cutover (P-18/19/20/32/33 moved to
+	// the standalone Delegation Service's DLG-1..5; IDs never reused).
+	// ACLHandler is no longer constructed/routed — mirrors cmd/server/main.go's
+	// ADR-0007 Wave 3 Phase 6 cutover (P-21/22/23/I-12 fully removed, moved
+	// to iam-tender-acl's TAC-1/2/3/4; IDs never reused).
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, aclSvc, tenantSvc)
-	httpadapter.RegisterValidators()
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc)
 
-	// Router — mirrors cmd/server/main.go route registration exactly.
+	// Router — the exact same constructor cmd/server/main.go calls, so this
+	// harness can never drift from production routing again (it used to be
+	// a hand-copied route table that silently missed routes/gates added to
+	// main.go after the fact).
 	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.Use(func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
-		c.Next()
+	router := httpadapter.NewRouter(httpadapter.RouterConfig{
+		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-e2e"},
+		Docs:      httpadapter.DocsConfig{Environment: "test"},
+
+		TenantRepo:     tenantRepo,
+		MembershipRepo: membershipRepo,
+
+		TenantHandler:         tenantH,
+		DepartmentHandler:     deptH,
+		MembershipHandler:     membershipH,
+		DeptMembershipHandler: deptMemH,
+		RoleLabelHandler:      roleLabelH,
+		InvitationHandler:     invitationH,
+		OperatorHandler:       operatorH,
+		InternalHandler:       internalH,
+
+		Postgres: noopPinger{},
+		Cache:    noopPinger{},
+		Outbox:   noopPinger{},
 	})
-	r.Use(gincommon.TimeoutMiddleware(30 * time.Second))
-	cfg := gincommon.Config{ServiceName: "iam-org-membership-e2e"}
-	r.Use(gincommon.ObservabilityMiddlewares(cfg)...)
 
-	r.GET("/healthz", gincommon.HealthHandler())
-	r.GET("/readyz", func(c *gin.Context) {
-		if !appPool.Health(c.Request.Context()).Healthy {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ready"})
-	})
-
-	protected := append(
-		gincommon.ProtectedMiddlewares(cfg),
-		httpadapter.GUCBridgeMiddleware(),
-		httpadapter.RequireJSONContentType(),
-	)
-	v1 := r.Group("/api/v1", protected...)
-	{
-		tenants := v1.Group("/tenants")
-		tenants.GET("/:id", tenantH.Get)
-		tenants.PATCH("/:id", tenantH.Patch)
-		tenants.GET("/:id/departments", deptH.List)
-		tenants.POST("/:id/departments", deptH.Activate)
-		tenants.PATCH("/:id/departments/:dept_id", deptH.Patch)
-		tenants.GET("/:id/members", membershipH.List)
-		tenants.GET("/:id/members/:user_id", membershipH.Get)
-		tenants.POST("/:id/members", invitationH.Invite)
-		tenants.PATCH("/:id/members/:user_id", membershipH.Patch)
-		tenants.DELETE("/:id/members/:user_id", membershipH.Remove)
-		tenants.POST("/:id/users/:user_id/removal-resolution", membershipH.RemovalResolution)
-		tenants.PUT("/:id/members/:user_id/roles", membershipH.ReconcileRoles)
-		tenants.GET("/:id/seat-usage", membershipH.SeatUsage)
-		tenants.GET("/:id/departments/:dept_id/members", deptMemH.List)
-		tenants.PUT("/:id/departments/:dept_id/members/:user_id", deptMemH.Assign)
-		tenants.DELETE("/:id/departments/:dept_id/members/:user_id", deptMemH.Remove)
-		tenants.GET("/:id/roles", roleLabelH.List)
-		tenants.PATCH("/:id/roles/:role_code", roleLabelH.Patch)
-		tenants.GET("/:id/tenders/:tender_id/acl", aclH.List)
-		tenants.POST("/:id/tenders/:tender_id/acl", aclH.Grant)
-		tenants.DELETE("/:id/tenders/:tender_id/acl/:user_id", aclH.Revoke)
-		tenants.GET("/:id/invitations", invitationH.List)
-		tenants.DELETE("/:id/invitations/:invitation_id", invitationH.Revoke)
-
-		v1.GET("/delegations", delegationH.List)
-		v1.POST("/delegations", delegationH.Create)
-		v1.DELETE("/delegations/:id", delegationH.Cancel)
-
-		op := v1.Group("/operator", httpadapter.RequireOperatorRole())
-		op.PATCH("/tenants/:id/feature-flags", operatorH.SetFeatureFlags)
-		op.POST("/tenants/:id/reassign-owner", operatorH.ReassignOwner)
-
-		internal := v1.Group("/internal", httpadapter.RequireSystemRole())
-		internal.POST("/tenants", internalH.ProvisionTenant)
-		internal.PATCH("/tenants/:id", internalH.PatchTenantRealm)
-		internal.POST("/tenants/:id/members", internalH.AddMember)
-		internal.POST("/tenants/:id/dept-memberships", internalH.AssignFromGroups)
-		internal.PATCH("/tenants/:id/members/:user_id", internalH.PatchMemberLifecycle)
-		internal.DELETE("/tenants/:id/members/:user_id", internalH.DeleteMember)
-		internal.GET("/users/:id/memberships", internalH.GetMemberships)
-		internal.GET("/tenants/:id/locale", internalH.GetLocale)
-		internal.GET("/tenants/:id/seat-usage", internalH.GetSeatUsage)
-		internal.GET("/tenants/:id/tenders/:tender_id/acl/:user_id", internalH.CheckTenderAccess)
-		internal.POST("/tenants/:id/tenders/:tender_id/assignee-override", internalH.AssigneeOverride)
-	}
-
-	srv := httptest.NewServer(r)
+	srv := httptest.NewServer(router.Handler())
 	t.Cleanup(srv.Close)
 
 	return &e2eEnv{
 		ctx: ctx, appPool: appPool, rawPool: rawPool,
 		server: srv, baseURL: srv.URL,
-		RP: rp, UP: up, WF: wf,
+		RP: rp, WF: wf,
 	}
 }
 
@@ -442,20 +398,6 @@ func (f *fakeRealmProvisioner) RevokeUserSessions(_ context.Context, _, _ uuid.U
 	if f.RevokeUserSessionsFailNext {
 		f.RevokeUserSessionsFailNext = false
 		return fmt.Errorf("fake RP RevokeUserSessions outage")
-	}
-	return nil
-}
-
-type fakeUserProfile struct {
-	FailNext bool
-	Calls    []port.SetAvailabilityRequest
-}
-
-func (f *fakeUserProfile) SetAvailability(_ context.Context, req port.SetAvailabilityRequest) error {
-	f.Calls = append(f.Calls, req)
-	if f.FailNext {
-		f.FailNext = false
-		return fmt.Errorf("fake UP outage")
 	}
 	return nil
 }

@@ -28,15 +28,24 @@ import (
 	"github.com/google/uuid"
 )
 
+// Logger is the structured logging interface this client uses (Warn only).
+// *slog.Logger satisfies it directly (existing tests keep working
+// unchanged); so does port.SlogStyleLogger, which New() passes in from
+// main.go so these warnings flow through the same gincommon-backed sink as
+// the rest of the service instead of slog.Default().
+type Logger interface {
+	Warn(msg string, args ...any)
+}
+
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  *slog.Logger
+	logger  Logger
 }
 
 var _ port.WorkflowClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger *slog.Logger) *HTTPClient {
+func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -58,11 +67,12 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger *slog.Logger) *
 }
 
 // New is the composition-root constructor reading env directly.
-// Preserves the Phase 2 factory name so existing wiring compiles.
-func New() *HTTPClient {
+// Preserves the Phase 2 factory name so existing wiring compiles. log is
+// the shared gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
+func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("WORKFLOW_SERVICE_BASE_URL", "")
 	timeout := envDurationMs("WORKFLOW_TIMEOUT_MS", 3*time.Second)
-	return NewHTTPClient(baseURL, timeout, slog.Default())
+	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
 }
 
 // zeroImpactWhenUnconfigured returns "no active workflows" when baseURL is

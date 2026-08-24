@@ -53,11 +53,10 @@ window.onload = function() {
     docExpansion: "list",
     deepLinking: true,
     defaultModelsExpandDepth: 1,
-    // Preserve the tag order declared in swagger_info.go (infra → tenant →
-    // departments → members → roles → groups → delegations → acl →
-    // invitations → resolution → internal → operator) instead of the
-    // Swagger UI default alphabetical sort, which surfaced /acl and
-    // /delegations at the top ahead of the core tenant/members endpoints.
+    // Preserve the tag order declared in swagger_info.go (internal →
+    // operator → tenant → departments → members → roles → invitations →
+    // resolution → infra) instead of the Swagger UI default alphabetical
+    // sort.
     // Identity function returns 0 for every pair, telling Swagger UI's
     // stable sort to keep the definition order verbatim (null/undefined
     // falls back to alphabetical in some builds — the no-op is explicit).

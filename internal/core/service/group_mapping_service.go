@@ -3,9 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
@@ -28,6 +28,16 @@ type GroupMappingService struct {
 	txRunner           port.TxRunner
 	cache              port.Cache
 	groupMappingClient port.GroupMappingClient
+	log                port.SlogStyleLogger // optional — see WithLogger
+}
+
+// WithLogger injects the shared gincommon-backed Logger so this service's
+// fail-open warnings flow through the same sink as HTTP/consumer/
+// outbound-client logs instead of slog.Default(). Optional — the zero value
+// falls back to the top-level slog functions.
+func (s *GroupMappingService) WithLogger(log port.Logger) *GroupMappingService {
+	s.log = port.NewSlogStyleLogger(log)
+	return s
 }
 
 func NewGroupMappingService(
@@ -233,18 +243,19 @@ func (s *GroupMappingService) resolveMappings(ctx context.Context, tenantID uuid
 		return dm, dr, tr
 	}
 	if s.groupMappingClient == nil {
-		slog.WarnContext(ctx, "groupmapping: no GroupMappingClient configured — failing open with empty resolution",
+		s.log.WarnContext(ctx, "groupmapping: no GroupMappingClient configured — failing open with empty resolution",
 			"tenant_id", tenantID)
 		return nil, nil, nil
 	}
 	res, err := s.groupMappingClient.ResolveGroups(ctx, tenantID, groupNames)
 	if err != nil {
 		if dm, dr, tr, ok := s.getCachedResolution(ctx, tenantID, true); ok {
-			slog.WarnContext(ctx, "groupmapping: ResolveGroups live call failed — serving stale-if-error fallback",
+			metrics.IncXsvcError("group_mapping", "group-resolution", "fallback_served")
+			s.log.WarnContext(ctx, "groupmapping: ResolveGroups live call failed — serving stale-if-error fallback",
 				"tenant_id", tenantID, "error", err.Error())
 			return dm, dr, tr
 		}
-		slog.WarnContext(ctx, "groupmapping: ResolveGroups failed with no cached fallback — failing open with empty resolution",
+		s.log.WarnContext(ctx, "groupmapping: ResolveGroups failed with no cached fallback — failing open with empty resolution",
 			"tenant_id", tenantID, "error", err.Error())
 		return nil, nil, nil
 	}

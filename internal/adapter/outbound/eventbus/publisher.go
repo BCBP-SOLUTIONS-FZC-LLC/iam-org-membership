@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 	"github.com/jackc/pgx/v5"
@@ -26,6 +26,7 @@ import (
 type Publisher struct {
 	source string
 	codec  Codec
+	log    port.SlogStyleLogger // optional — see WithLogger
 }
 
 // New creates a Publisher with the given source label (e.g.
@@ -34,6 +35,16 @@ type Publisher struct {
 // outbox_events always stores plain JSON.
 func New(source string, codec Codec) *Publisher {
 	return &Publisher{source: source, codec: codec}
+}
+
+// WithLogger injects the shared gincommon-backed Logger so this Publisher's
+// per-enqueue debug trace flows through the same sink as HTTP/consumer/
+// outbound-client logs instead of an unconditional stdlib log.Printf.
+// Optional — the zero value falls back to the top-level slog functions,
+// which are Debug-level (suppressed by default in production).
+func (p *Publisher) WithLogger(log port.Logger) *Publisher {
+	p.log = port.NewSlogStyleLogger(log)
+	return p
 }
 
 // EnqueueInTx is the alias the inbound consumer uses to emit
@@ -75,9 +86,9 @@ func (p *Publisher) Enqueue(ctx context.Context, tx pgx.Tx, event *domain.Domain
 	// Store plain JSON payload — Glue encoding happens at publish time.
 	env := events.NewEnvelope(event.Type, p.source, json.RawMessage(raw), opts...)
 	envBytes, _ := json.Marshal(env)
-	log.Printf("[DEBUG] outbox.Enqueue type=%s envBytes=%s", event.Type, envBytes)
+	p.log.Debug("outbox.Enqueue", "type", event.Type, "envelope", string(envBytes))
 	if err := outbox.Enqueue(ctx, tx, env); err != nil {
-		log.Printf("[DEBUG] outbox.Enqueue failed type=%s err=%v envBytes=%s", event.Type, err, envBytes)
+		p.log.Error("outbox.Enqueue failed", "type", event.Type, "error", err.Error(), "envelope", string(envBytes))
 		return err
 	}
 	return nil

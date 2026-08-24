@@ -28,7 +28,7 @@ sequenceDiagram
     Note over DB: is_local => true ⇒ SET LOCAL semantics.<br/>Value scoped to THIS transaction only.<br/>Never a session-scoped SET — would persist on pooled PgBouncer<br/>backend and leak across tenants (canonical RLS-6 hazard).
 
     Pool ->>+ DB: SELECT / UPDATE / INSERT (application query)
-    Note over DB: RLS policy on every tenant-scoped table (12 of 15):<br/>  FORCE ROW LEVEL SECURITY<br/>  REVOKE ALL FROM PUBLIC<br/>  POLICY tenant_isolation USING (tenant_id = current_setting('app.tenant_id')::uuid)<br/>Also WITH CHECK on INSERT/UPDATE — cross-tenant write attempts fail.<br/>Missing GUC → current_setting throws → RLS returns 0 rows (fail closed, FAIL-5).
+    Note over DB: RLS policy on 7 of 8 domain tables (all except processed_events;<br/>rls_violation_log is a 9th, RLS-disabled audit table):<br/>  FORCE ROW LEVEL SECURITY<br/>  REVOKE ALL FROM PUBLIC<br/>  POLICY tenant_isolation USING (rls_check_tenant(tenant_id, '&lt;table&gt;'))<br/>                          WITH CHECK (rls_check_tenant(tenant_id, '&lt;table&gt;'))<br/>rls_check_tenant wraps the GUC read + a 1%-sampled violation-log insert on failure (Layer 3).<br/>Missing/malformed GUC → app_tenant_id() catches the exception, returns NULL → 0 rows (fail closed, FAIL-5).
 
     DB -->>- Pool: rows (tenant-scoped) or WITH CHECK violation
 

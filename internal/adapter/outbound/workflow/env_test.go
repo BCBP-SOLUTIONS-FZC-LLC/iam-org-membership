@@ -66,7 +66,7 @@ func TestEnvDurationMs_AlternateKeyName(t *testing.T) {
 func TestNew_ReadsEnvAndConstructs(t *testing.T) {
 	t.Setenv("WORKFLOW_SERVICE_BASE_URL", "http://wf.local")
 	t.Setenv("WORKFLOW_TIMEOUT_MS", "500")
-	client := New()
+	client := New(nil)
 	assert.NotNil(t, client)
 }
 
@@ -74,6 +74,6 @@ func TestNew_NoEnvBuildsUnconfiguredClient(t *testing.T) {
 	_ = os.Unsetenv("WORKFLOW_SERVICE_BASE_URL")
 	_ = os.Unsetenv("WORKFLOW_TIMEOUT_MS")
 	// The unconfigured (baseURL="") client is the WFI-13 fail-open shape.
-	client := New()
+	client := New(nil)
 	assert.NotNil(t, client)
 }

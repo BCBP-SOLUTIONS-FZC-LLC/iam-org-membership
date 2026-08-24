@@ -2,13 +2,12 @@
 //
 // Module:   iam-org-membership
 // Feature:  Pure domain types & helpers — no DB, no HTTP.
-// Files:    internal/core/domain/{errors,event,role,tenant,membership,department,tender_acl}.go
+// Files:    internal/core/domain/{errors,event,role,tenant,membership,department}.go
 package unit_test
 
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/stretchr/testify/assert"
@@ -98,7 +97,6 @@ func TestDomain_AllSentinelsWireCodes(t *testing.T) {
 		domain.ErrTenantNotFound:     "tenant_not_found",
 		domain.ErrMemberNotFound:     "member_not_found",
 		domain.ErrDepartmentNotFound: "department_not_found",
-		domain.ErrDelegationNotFound: "delegation_not_found",
 		domain.ErrInvitationNotFound: "invitation_not_found",
 		// Conflict
 		domain.ErrConflict:                    "conflict",
@@ -112,17 +110,12 @@ func TestDomain_AllSentinelsWireCodes(t *testing.T) {
 		domain.ErrDepartmentAlreadyActivated:  "department_already_activated",
 		domain.ErrRoleAlreadyGranted:          "role_already_granted",
 		// Domain-rule 422
-		domain.ErrSelfDelegation:                  "self_delegation",
-		domain.ErrInvalidDelegate:                 "invalid_delegate",
-		domain.ErrDelegationWindowInverted:        "delegation_window_inverted",
-		domain.ErrScopeIDRequired:                 "scope_id_required",
 		domain.ErrCannotDeleteSystemDepartment:    "cannot_delete_system_department",
 		domain.ErrDepartmentNotActiveForTenant:    "department_not_active_for_tenant",
 		domain.ErrDepartmentRetired:               "department_retired",
 		domain.ErrDepartmentDeactivated:           "department_deactivated",
 		domain.ErrInvalidReplacement:              "invalid_replacement",
 		domain.ErrInvalidOwnerCandidate:           "invalid_owner_candidate",
-		domain.ErrInvalidExpiresAt:                "invalid_expires_at",
 		domain.ErrInvalidRole:                     "invalid_role",
 		domain.ErrAssigneeIneligible:              "assignee_ineligible",
 		domain.ErrFieldImmutable:                  "field_immutable",
@@ -137,16 +130,20 @@ func TestDomain_AllSentinelsWireCodes(t *testing.T) {
 		// Dependency 503
 		domain.ErrDBUnavailable:               "db_unavailable",
 		domain.ErrCacheUnavailable:            "cache_unavailable",
-		domain.ErrUserProfileUnavailable:      "user_profile_unavailable",
 		domain.ErrWorkflowServiceUnavailable:  "workflow_service_unavailable",
 		domain.ErrRealmProvisionerUnavailable: "realm_provisioner_unavailable",
+		domain.ErrCatalogUnavailable:          "catalog_unavailable",
+		domain.ErrGroupMappingUnavailable:     "group_mapping_unavailable",
 	}
 	for sentinel, expected := range cases {
 		assert.Equal(t, expected, sentinel.Error(),
 			"wire code drifted — LLD §17 taxonomy expects %q", expected)
 	}
-	assert.Equal(t, 46, len(cases)+0,
-		"if a new sentinel was added, extend this table too (currently 46)")
+	assert.Equal(t, 41, len(cases)+0,
+		"if a new sentinel was added, extend this table too (currently 41 — 5 delegation-specific "+
+			"sentinels removed per ADR-0008/Option C plus user_profile_unavailable per §16 OQ-5, "+
+			"now owned by iam-delegation; catalog_unavailable renamed from catalog_service_unavailable "+
+			"and group_mapping_unavailable added per LLD §17)")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -165,7 +162,6 @@ func TestDomain_TopicForEvent_TenantLaneOnlyTwo(t *testing.T) {
 		domain.EventTenantRoleGranted, domain.EventTenantRoleRevoked,
 		domain.EventDepartmentMembershipGranted, domain.EventDepartmentMembershipRevoked,
 		domain.EventDepartmentMembershipLevelChanged,
-		domain.EventDelegationStarted, domain.EventDelegationEnded,
 		domain.EventTenderAssigneeOverridden,
 		domain.EventTenantSeatOverageStarted, domain.EventTenantSeatOverageResolved,
 		domain.EventTenantStateChanged,
@@ -197,8 +193,6 @@ func TestDomain_EventTypeConstants(t *testing.T) {
 		"EventDepartmentMembershipGranted":      domain.EventDepartmentMembershipGranted,
 		"EventDepartmentMembershipRevoked":      domain.EventDepartmentMembershipRevoked,
 		"EventDepartmentMembershipLevelChanged": domain.EventDepartmentMembershipLevelChanged,
-		"EventDelegationStarted":                domain.EventDelegationStarted,
-		"EventDelegationEnded":                  domain.EventDelegationEnded,
 		"EventTenderAssigneeOverridden":         domain.EventTenderAssigneeOverridden,
 		"EventTenantSeatOverageStarted":         domain.EventTenantSeatOverageStarted,
 		"EventTenantSeatOverageResolved":        domain.EventTenantSeatOverageResolved,
@@ -207,7 +201,7 @@ func TestDomain_EventTypeConstants(t *testing.T) {
 	for name, val := range cases {
 		assert.NotEmpty(t, val, "event constant %s must be a non-empty string", name)
 	}
-	assert.Len(t, cases, 13, "13 event types documented in §7.3 catalogue")
+	assert.Len(t, cases, 11, "11 event types documented in §7.3 catalogue (DelegationStarted/Ended removed per ADR-0008 Option C — iam-delegation owns them now)")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -249,57 +243,5 @@ func TestDomain_SubscriptionStatusValues(t *testing.T) {
 	assert.EqualValues(t, "past_due", domain.StatusPastDue)
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// DelegationScope enum stability
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P11-DOMAIN-050
-// Feature:           DelegationScope enum values stability
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestDomain_DelegationScopeValues(t *testing.T) {
-	assert.EqualValues(t, "all", domain.ScopeAll)
-	assert.EqualValues(t, "department", domain.ScopeDepartment)
-	assert.EqualValues(t, "tender", domain.ScopeTender)
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// TenderACLEntry.IsActive — TAE-3 passive expiry
-// ═════════════════════════════════════════════════════════════════════════
-
-// Feature: TAE-3 · Active entry has no soft-delete, no expiry.
-func TestDomain_TenderACLEntry_ActiveByDefault(t *testing.T) {
-	e := &domain.TenderACLEntry{}
-	assert.True(t, e.IsActive(time.Now()))
-}
-
-// Feature: TAE-3 · Soft-deleted entry is never active.
-func TestDomain_TenderACLEntry_SoftDeletedIsInactive(t *testing.T) {
-	deleted := time.Now().Add(-time.Hour)
-	e := &domain.TenderACLEntry{DeletedAt: &deleted}
-	assert.False(t, e.IsActive(time.Now()),
-		"deleted_at != NULL must yield IsActive=false regardless of expiry")
-}
-
-// Feature: TAE-3 · Entry with future expiry is active.
-func TestDomain_TenderACLEntry_FutureExpiryIsActive(t *testing.T) {
-	future := time.Now().Add(time.Hour)
-	e := &domain.TenderACLEntry{ExpiresAt: &future}
-	assert.True(t, e.IsActive(time.Now()))
-}
-
-// Feature: TAE-3 · Expired entry is inactive.
-func TestDomain_TenderACLEntry_PastExpiryIsInactive(t *testing.T) {
-	past := time.Now().Add(-time.Hour)
-	e := &domain.TenderACLEntry{ExpiresAt: &past}
-	assert.False(t, e.IsActive(time.Now()),
-		"expires_at <= now yields IsActive=false")
-}
-
-// Feature: TAE-3 boundary · expires_at == now is inactive.
-// Doc says "expires_at > now()", so equality is already expired.
-func TestDomain_TenderACLEntry_ExactExpiryIsInactive(t *testing.T) {
-	now := time.Now()
-	e := &domain.TenderACLEntry{ExpiresAt: &now}
-	assert.False(t, e.IsActive(now),
-		"boundary: expires_at == now must be treated as expired (TAE-3)")
-}
+// TenderACLEntry.IsActive tests — retired ADR-0007 Wave 3 Phase 6, moved to
+// iam-tender-acl (domain type deleted from this service entirely).

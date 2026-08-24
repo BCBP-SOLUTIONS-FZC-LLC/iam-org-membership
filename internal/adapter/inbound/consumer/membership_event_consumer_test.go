@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -41,19 +40,18 @@ func (f *fakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comm
 // ── NewMembershipEventConsumer — default fields ────────────────────────
 
 func TestNewMembershipEventConsumer_NilLoggerAndZeroSkewGetDefaults(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, 0, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, 0, nil)
 	require.NotNil(t, c)
 	assert.Equal(t, 300*time.Second, c.skew, "zero skew defaults to 300s")
-	assert.NotNil(t, c.logger, "nil logger defaults to slog.Default()")
 }
 
 func TestNewMembershipEventConsumer_NegativeSkewAlsoGetsDefault(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, -5*time.Second, slog.Default())
+	c := NewMembershipEventConsumer(nil, nil, nil, -5*time.Second, nil)
 	assert.Equal(t, 300*time.Second, c.skew, "negative skew defaults to 300s")
 }
 
 func TestNewMembershipEventConsumer_PositiveSkewPreserved(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, 42*time.Second, slog.Default())
+	c := NewMembershipEventConsumer(nil, nil, nil, 42*time.Second, nil)
 	assert.Equal(t, 42*time.Second, c.skew)
 }
 
@@ -73,7 +71,7 @@ func applyOn(c *MembershipEventConsumer, tx pgx.Tx, env events.Envelope[json.Raw
 }
 
 func newConsumer() *MembershipEventConsumer {
-	return NewMembershipEventConsumer(nil, nil, 300*time.Second, slog.Default())
+	return NewMembershipEventConsumer(nil, nil, nil, 300*time.Second, nil)
 }
 
 // The Trial signup path is a no-op projection (the TrialTenantProvisioned

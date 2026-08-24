@@ -10,8 +10,11 @@ const (
 	BrandingLogo BrandingLevel = "logo"
 )
 
-// Plan is the global operator entitlement catalog row (§16 A19).
-// PK is the code (reuses tenant_plan enum). Operator PATCH-only (O-6).
+// Plan is the read-through cache's response type for the global plan
+// entitlement catalog, now owned by the Catalog / Admin Config Service
+// (ADR-0007 §2.2, §4.1) — no longer PATCH'd locally (O-6 retired, moved
+// to Catalog Service). Populated via CatalogService's om:plans read-through
+// against CatalogAdminClient (§16 A19).
 //
 // WorkflowTemplateLimit / TenderLimit are nil pointers meaning "unlimited"
 // (LLD §19.3 resolution of the -1-sentinel ambiguity). NULL in the DB,
@@ -28,17 +31,4 @@ type Plan struct {
 	RecordVersion         int64
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
-}
-
-// PlanPatch is the partial-update payload for O-6.
-type PlanPatch struct {
-	DisplayName           *string
-	WorkflowTemplateLimit **int // double pointer distinguishes "unset" from "set to nil (unlimited)"
-	TenderLimit           **int
-	TrialDurationDays     *int
-	SSOEnabled            *bool
-	CustomBranding        *BrandingLevel
-	FeatureSet            map[string]any
-
-	RecordVersion int64
 }

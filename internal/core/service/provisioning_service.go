@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"regexp"
 	"time"
 
@@ -26,12 +25,20 @@ type ProvisioningService struct {
 	labels      port.DeptRoleLabelRepository
 	tenantDepts port.TenantDepartmentRepository
 	depts       port.DepartmentCatalogReader
-	delegations port.DelegationRepository
-	acls        port.TenderACLRepository
 	plans       port.PlanCatalogReader
 	txRunner    port.TxRunner
 	cache       port.Cache
 	rp          port.RealmProvisionerClient
+	log         port.SlogStyleLogger // optional — see WithLogger
+}
+
+// WithLogger injects the shared gincommon-backed Logger so this service's
+// tenant_ownerless_escalation alert flows through the same sink as HTTP/
+// consumer/outbound-client logs instead of slog.Default(). Optional — the
+// zero value falls back to the top-level slog functions.
+func (s *ProvisioningService) WithLogger(log port.Logger) *ProvisioningService {
+	s.log = port.NewSlogStyleLogger(log)
+	return s
 }
 
 func NewProvisioningService(
@@ -39,15 +46,15 @@ func NewProvisioningService(
 	tenants port.TenantRepository, memberships port.MembershipRepository,
 	roles port.TenantRoleRepository, deptMems port.DeptMembershipRepository,
 	labels port.DeptRoleLabelRepository, tenantDepts port.TenantDepartmentRepository,
-	depts port.DepartmentCatalogReader, delegations port.DelegationRepository,
-	acls port.TenderACLRepository, plans port.PlanCatalogReader,
+	depts port.DepartmentCatalogReader,
+	plans port.PlanCatalogReader,
 	txRunner port.TxRunner, cache port.Cache, rp port.RealmProvisionerClient,
 ) *ProvisioningService {
 	return &ProvisioningService{
 		pool: pool, tenants: tenants, memberships: memberships,
 		roles: roles, deptMems: deptMems, labels: labels,
 		tenantDepts: tenantDepts, depts: depts,
-		delegations: delegations, acls: acls, plans: plans,
+		plans:    plans,
 		txRunner: txRunner, cache: cache, rp: rp,
 	}
 }
@@ -338,10 +345,12 @@ func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID,
 }
 
 // DeleteMember is I-5: full cascade on Keycloak USER_DELETE. Soft-deletes
-// tenant_memberships + cascades tenant_roles, dept_memberships, delegations,
-// tender_acl_entries. Sets ownerless_since if we just removed the last
-// active tenant_owner (TM-12/T-13). Emits Revoked + DelegationEnded
-// (delegate_removed, DEL-7) atomically.
+// tenant_memberships + cascades tenant_roles, dept_memberships. Sets
+// ownerless_since if we just removed the last active tenant_owner
+// (TM-12/T-13). Emits MembershipRevoked atomically (ADR-0008 §6.4 — the
+// delegation and tender-ACL cascades this used to run inline moved to the
+// Delegation Service's and Tender-ACL Service's own async consumers, both
+// subscribed to this one shared event, LLD §15.2.2).
 func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID uuid.UUID) error {
 	g, _ := pgcommon.GUCSetFromContext(ctx)
 	g.UserID = "iam-system"
@@ -410,38 +419,22 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 			}
 		}
 
-		// Cascade 3: end active delegations (both directions).
-		endedDelegations, err := s.delegations.SoftDeleteForUser(txCtx, tenantID, userID)
-		if err != nil {
-			return err
-		}
-		for _, d := range endedDelegations {
-			if pub == nil {
-				continue
-			}
-			// DEL-7: DelegationEnded(ended_reason=delegate_removed) is only
-			// emitted when the deleted user is the DELEGATE. Delegations where
-			// the user is the delegator are soft-deleted silently — the delegate
-			// keeps their availability state; UP is not called here.
-			if d.DelegateID != userID {
-				continue
-			}
+		// Cascade 3 (ADR-0008 §6.4): the delegation and tender-ACL cascades
+		// that used to run inline here (s.delegations.SoftDeleteForUser +
+		// per-row DelegationEnded{delegate_removed}; s.acls.
+		// SoftDeleteForUser) moved to the Delegation Service's and
+		// Tender-ACL Service's own async consumers, both of which subscribe
+		// to this single shared MembershipRevoked emission (LLD §15.2.2,
+		// mirroring MembershipService.RemoveUser's identical emission) and
+		// run their own cascades.
+		if pub != nil {
 			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
-				Type: domain.EventDelegationEnded, TenantID: tenantID,
-				Subject: d.ID.String(), Actor: "iam-system",
-				Data: domain.DelegationEndedPayload{
-					DelegationID: d.ID, TenantID: tenantID,
-					DelegatorID: d.DelegatorID, DelegateID: d.DelegateID,
-					Scope: d.Scope, ScopeID: d.ScopeID,
-					EndedReason: domain.EndReasonDelegateRemoved,
-					ActorID:     domain.SystemActorID,
+				Type: domain.EventMembershipRevoked, TenantID: tenantID,
+				Subject: userID.String(), Actor: "iam-system",
+				Data: domain.MembershipRevokedPayload{
+					TenantID: tenantID, UserID: userID, ActorID: domain.SystemActorID,
 				},
 			})
-		}
-
-		// Cascade 4: soft-delete ACL grants for the user.
-		if _, err := s.acls.SoftDeleteForUser(txCtx, tenantID, userID); err != nil {
-			return err
 		}
 
 		// Membership itself.
@@ -471,7 +464,7 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 						if metrics.TenantOwnerlessEscalated != nil {
 							metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
 						}
-						slog.ErrorContext(txCtx, "tenant_ownerless_escalation",
+						s.log.ErrorContext(txCtx, "tenant_ownerless_escalation",
 							"tenant_id", tenantID.String(),
 							"removed_user_id", userID.String(),
 							"reason", "last_active_owner_removed",

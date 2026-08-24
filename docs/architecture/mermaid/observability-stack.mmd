@@ -2,27 +2,28 @@ graph LR
     subgraph request["Per-request (gincommon.DefaultMiddlewares — every HTTP call)"]
         panic["PanicRecovery\n· defer recover()\n· log panic + stack\n· record OTel error on span\n· emit http_panic_total\n· return 500 JSON"]
         reqid["RequestID\n· read x-request-id or generate UUID\n· echo X-Request-ID header"]
-        trace["Tracing (OTel)\n· extract W3C traceparent\n· start HTTP server span\n· propagated to UP/Workflow/RP\n  via gincommon.PropagateHeaders"]
+        trace["Tracing (OTel)\n· extract W3C traceparent\n· start HTTP server span\n· propagated to Workflow/RP/Catalog/GroupMapping/Delegation\n  via gincommon.PropagateHeaders"]
         metrics["Metrics\n· increment http_active_requests\n· defer: duration, sizes, status class"]
         logging["Logging (Zap)\n· defer: structured http_request log\n· sanitize header values"]
         guc["GUCBridgeMiddleware\n· pgcommon.GUCSetFromContext binds\n  SET LOCAL app.tenant_id per tx (RLS-6)\n· never session-scoped SET (would leak\n  across pooled PgBouncer backends)"]
     end
 
-    subgraph prom["Prometheus metrics  →  /metrics"]
+    subgraph prom["Prometheus metrics  →  /metrics (verified against internal/adapter/outbound/metrics/business.go)"]
         p1["http_requests_total{method, route, status_class}\nhttp_request_duration_seconds{method, route, status_class}\nhttp_active_requests{route}\nhttp_panic_total\nbuild_info{service='iam-org-membership', version}"]
-        p_slo["iam_membership_lookup_latency_seconds{result='hit'|'miss'}\n(histogram — source for SLO-1 15/30 ms p99)\niam_memberships_cache_hit_ratio (gauge)"]
-        p_business["Business counters (all cardinality-bounded, §16 A48):\niam_membership_joins_total{tenant_id, source}\niam_membership_leaves_total{tenant_id, reason}\niam_delegation_created_total{tenant_id, scope}\niam_delegation_expired_total{tenant_id}\niam_delegation_expiry_deferred_total (DEL-6 UP degraded)"]
-        p_wf["Delegate-impact (§8.8):\niam_delegate_removal_blocked_total{trigger=full_removal|dept_demotion|dept_removal}\niam_delegate_reassignment_total{tenant_id}\niam_delegate_workflow_cancel_total{tenant_id}\niam_delegate_suspend_impact_total (§8.8.5 advisory)"]
-        p_seat["Seat / invite:\niam_seat_limit_reached_total{tenant_id}  (SEAT-1, product signal not incident)\niam_seat_overage_started_total{tenant_id}\niam_invitations_created/accepted/expired/revoked_total\niam_invite_throttled_total{reason=cooldown|rate_limit}"]
-        p_lifecycle["Consumer / lifecycle:\niam_lifecycle_consumer_lag_seconds{queue}  (SLO-3 primary drift signal)\niam_stale_lifecycle_event_skipped_total{event_type}  (EVT-14)\niam_future_lifecycle_event_rejected_total{event_type}  (EVT-15, ANY nonzero pages)\niam_processed_events_duplicates_total{consumer}"]
-        p_gauges["In-process exporter gauges (recomputed every 5 min):\niam_tenant_ownerless  (TM-12 — nonzero pages platform_operator)\niam_realm_sync_pending  (T-15 backlog)\niam_seat_overage_tenants  (SEAT-5)\niam_pending_invitations{tenant_id}\niam_invite_kc_cleanup_pending  (PI-9)"]
-        p_auth["Session / realm:\niam_session_revoke_failed_total{trigger}  (AUTH-8 fail-open, sustained pages)\niam_realm_sync_failed_total  (T-15 reconciler)\niam_invite_kc_cleanup_failed_total"]
+        p_rls["iam_rls_violations_total{violation_type}\n(Layer 3, scraped from rls_violation_log)"]
+        p_wf["Delegate-impact (§8.8):\niam_delegate_removal_blocked_total{scope}\niam_delegate_reassignment_total{action=replace_delegate|stop_workflows}\niam_delegate_suspend_impact_total{checked} (§8.8.5 advisory)"]
+        p_seat["Seat / invite:\niam_seat_limit_reached_total{plan}  (SEAT-1, product signal not incident)\niam_seat_overage_started_total{cause}\niam_invite_throttled_total{reason=cooldown|rate_limit}"]
+        p_lifecycle["Consumer / lifecycle:\niam_lifecycle_consumer_lag_seconds{event_type}  (histogram, SLO-3 primary drift signal)\niam_stale_lifecycle_event_skipped_total{event_type}  (EVT-14)\niam_future_lifecycle_event_rejected_total{event_type}  (EVT-15, ANY nonzero pages)\niam_processed_events_duplicates_total{consumer}\niam_unknown_event_acknowledged_total{topic,event_type}"]
+        p_xsvc["Cross-service clients (Catalog/GroupMapping/Delegation):\niam_xsvc_call_latency_seconds{service,endpoint}\niam_xsvc_call_errors_total{service,endpoint,outcome}\niam_membership_exists_check_total{caller,result}  (I-15)"]
+        p_gauges["In-process exporter gauges (ticker, every 60s — not 5min):\niam_tenant_ownerless  (TM-12 — nonzero pages platform_operator)\niam_realm_sync_pending  (T-15 backlog)\niam_seat_overage_active  (SEAT-5)\niam_pending_invitations_stale"]
+        p_auth["Session / realm:\niam_session_revoke_failed_total{reason}  (AUTH-8 fail-open, sustained pages)\niam_realm_sync_failed_total{stage}  (T-15 reconciler)\niam_tenant_ownerless_escalated_total{reason}"]
         p_outbox["outbox_dead_letters_total{event_type}  (pages)\nplatform-events pool + retry counters"]
+        p_future["NOT implemented (Phase-6 target per business.go's own header\ncomment — do not treat as current):\niam_membership_lookup_latency_seconds · iam_memberships_cache_hit_ratio\niam_membership_joins/leaves_total · iam_group_mapping_resolution_errors_total\niam_invitations_created/accepted/expired/revoked_total\niam_invite_kc_cleanup_pending/_failed_total"]
     end
 
     subgraph otel["OpenTelemetry Traces"]
-        ot1["OTel HTTP span\n· scope = iam-org-membership\n· attributes: http.method, http.route,\n  http.status_code, user_id, tenant_id\n· child spans: UP call, Workflow call, RP call, DB tx"]
-        ot2["OTLP/gRPC export\nOTEL_EXPORTER_OTLP_ENDPOINT\n→ OTel Collector → Tempo"]
+        ot1["OTel HTTP span\n· scope = iam-org-membership\n· attributes: http.method, http.route,\n  http.status_code, user_id, tenant_id\n· child spans: Workflow call, RP call, Catalog call,\n  GroupMapping call, Delegation call, DB tx"]
+        ot2["OTLP/gRPC export\nOTEL_EXPORTER_OTLP_ENDPOINT\n→ OTel Collector → Tempo\n(unset in dev — spans stay in-process only)"]
     end
 
     subgraph logs["Structured Logs  (Zap → Loki)"]
@@ -33,24 +34,23 @@ graph LR
         l5["outbox log · published / failed / DLQ"]
     end
 
-    subgraph db_obs["Database observability  (platform-pgcommon)"]
-        db1["pgx pool metrics\n· acquire_count · acquire_duration\n· acquired_conns · idle_conns\n· max_conns (PG_MAX_CONNS=15)"]
+    subgraph db_obs["Database observability  (platform-pgcommon v1.2.1)"]
+        db1["pgx pool metrics\n· acquire_count · acquire_duration\n· acquired_conns · idle_conns\n· max_conns (PG_MAX_CONNS=20)"]
         db2["pgcommon.NewOTelQueryTracer\n· spans per query, linked to HTTP span\n· redacts tenant_id per SetLogTenantID(false)"]
     end
 
-    subgraph bg["In-process exporter goroutines (cmd/server/main.go)"]
-        exp1["iam_tenant_ownerless exporter\n· ticker 5 min\n· COUNT tenants WHERE ownerless_since IS NOT NULL"]
-        exp2["iam_realm_sync_pending exporter\n· ticker 5 min\n· COUNT tenants WHERE realm_sync_pending = true"]
-        exp3["iam_seat_overage_active exporter\n· ticker 5 min\n· COUNT tenants WHERE overage_since IS NOT NULL"]
-        exp4["iam_pending_invitations_stale exporter\n· ticker 5 min\n· COUNT pending_invitations WHERE status='pending' AND expires_at < now()+24h"]
+    subgraph bg["In-process exporter goroutines (cmd/server/main.go, ticker 60s)"]
+        exp1["iam_tenant_ownerless exporter\n· COUNT tenants WHERE ownerless_since IS NOT NULL"]
+        exp2["iam_realm_sync_pending exporter\n· COUNT tenants WHERE realm_sync_pending = true"]
+        exp3["iam_seat_overage_active exporter\n· COUNT tenants WHERE overage_since IS NOT NULL"]
+        exp4["iam_pending_invitations_stale exporter\n· COUNT pending_invitations WHERE status='pending' AND expires_at < now()"]
     end
 
-    subgraph cron["cmd/reconciler/main.go — 8 CronJobs (§13.1)"]
-        c1["delegation-expiry (*/5)  ·  trial-cleanup (0 2 *)\ninvitation-expiry (*/15)  ·  invitation-kc-cleanup (*/10)\nrealm-config-sync (*/2)  ·  seat-overage-reconcile (0 *)\noutbox-prune (0 1)  ·  processed-events-prune (0 *)"]
+    subgraph cron["cmd/reconciler/main.go — 7 CronJobs (§13.1, deploy/helm/values.yaml)"]
+        c1["invitation-expiry (*/5)  ·  invitation-kc-cleanup (*/10)\nrealm-config-sync (*/10)  ·  seat-overage-reconcile (0 */6 * * *)\ntrial-cleanup (0 2 *)  ·  outbox-prune (0 3 *)  ·  processed-events-prune (0 4 *)\n(delegation-expiry/review/cleanup moved to Delegation Service;\n acl-cleanup moved to Tender ACL Service — none run here)"]
     end
 
     metrics --> p1
-    metrics --> p_slo
     panic   --> p1
     exp1 --> p_gauges
     exp2 --> p_gauges
@@ -66,6 +66,6 @@ graph LR
 
     subgraph alerts["Alert routing (§11.2)"]
         a1["Page:\n· outbox_dead_letters_total rate > 0\n· iam_tenant_ownerless > 0 (platform_operator)\n· iam_future_lifecycle_event_rejected_total rate > 0 (clock skew)\n· iam_lifecycle_consumer_lag_seconds > 30 for ~2 min (SLO-3)\n· iam_realm_sync_pending > 0 sustained > 10 min (T-15)\n· sustained iam_session_revoke_failed_total (AUTH-8)"]
-        a2["Warn:\n· sustained iam_delegation_expiry_deferred_total (UP degraded)\n· sustained iam_delegate_removal_blocked_total w/o matching\n  reassignment/cancel (admins hitting block, not resolving)\n· sustained iam_invite_throttled_total for one tenant"]
+        a2["Warn:\n· sustained iam_xsvc_call_errors_total{service=catalog|group_mapping|delegation}\n· sustained iam_delegate_removal_blocked_total w/o matching\n  reassignment/cancel (admins hitting block, not resolving)\n· sustained iam_invite_throttled_total for one tenant"]
         a3["Informational (not on-call):\n· iam_seat_limit_reached_total spike → CSM/Billing (buy more seats)\n· overage_since older than SEAT_OVERAGE_GRACE_DAYS (30 d) → Billing"]
     end

@@ -180,40 +180,10 @@ func TestScriptTagInInvitationName(t *testing.T) {
 }
 
 // ── P14-XSS-002 ─────────────────────────────────────────────────────────────
-
-// TestHTMLInDelegationReason — same defense-in-depth check as
-// XSS-001 but for delegation reason: DB stores raw, JSON escapes `<`.
-func TestHTMLInDelegationReason(t *testing.T) {
-	e := newE2EEnv(t)
-	tenantID := e.seedTenant(t, "xss-002")
-	delegator := e.seedOwner(t, tenantID)
-	delegate := e.seedActiveMember(t, tenantID)
-
-	payload := `<img src=x onerror="alert(1)">`
-	code, _, body := e.do(t, reqOpts{
-		method:  http.MethodPost,
-		path:    "/api/v1/delegations",
-		headers: ownerHeaders(delegator, tenantID),
-		body: map[string]any{
-			"delegate_id": delegate.String(),
-			"scope":       "all",
-			"reason":      payload,
-		},
-	})
-	require.Equal(t, http.StatusCreated, code,
-		"P14-XSS-002: delegation create with HTML reason must succeed (got %d body=%s)", code, string(body))
-
-	// JSON response must escape `<`.
-	assert.NotContains(t, string(body), "<img",
-		"P14-XSS-002: JSON response must Unicode-escape `<` (defense in depth)")
-
-	// DB stores raw payload verbatim.
-	var stored string
-	require.NoError(t, e.rawPool.QueryRow(e.ctx,
-		`SELECT reason FROM delegations WHERE delegator_id = $1`, delegator).Scan(&stored))
-	assert.Equal(t, payload, stored,
-		"P14-XSS-002: DB stores raw string (parameterized, no interpretation)")
-}
+//
+// TestHTMLInDelegationReason removed (ADR-0008 v2): `delegations` moved to
+// the standalone Delegation Service's own database (migration 000016);
+// this XSS defense-in-depth check is now that service's concern.
 
 // ── P14-AUTH-001 ────────────────────────────────────────────────────────────
 
@@ -591,49 +561,10 @@ func TestDoubleInviteSameEmail(t *testing.T) {
 }
 
 // ── P14-REPLAY-002 ──────────────────────────────────────────────────────────
-
-// TestDoubleDelegationCancelWithSameVersion — cancelling
-// a delegation twice with the same record_version must succeed once and
-// fail the second time as an optimistic-lock or not-found conflict.
-func TestDoubleDelegationCancelWithSameVersion(t *testing.T) {
-	e := newE2EEnv(t)
-	tenantID := e.seedTenant(t, "replay-002")
-	delegator := e.seedOwner(t, tenantID)
-	delegate := e.seedActiveMember(t, tenantID)
-
-	// Create a delegation.
-	code, _, body := e.do(t, reqOpts{
-		method:  http.MethodPost,
-		path:    "/api/v1/delegations",
-		headers: ownerHeaders(delegator, tenantID),
-		body: map[string]any{
-			"delegate_id": delegate.String(),
-			"scope":       "all",
-		},
-	})
-	require.Equal(t, http.StatusCreated, code)
-	var created map[string]any
-	unmarshalBody(t, body, &created)
-	delegationID, _ := created["id"].(string)
-	ver, _ := created["record_version"].(float64)
-
-	// First cancel — should succeed.
-	code1, _, _ := e.do(t, reqOpts{
-		method:  http.MethodDelete,
-		path:    fmt.Sprintf("/api/v1/delegations/%s?record_version=%d", delegationID, int64(ver)),
-		headers: ownerHeaders(delegator, tenantID),
-	})
-	require.Contains(t, []int{http.StatusOK, http.StatusNoContent}, code1, "first cancel must succeed")
-
-	// Second cancel with the SAME (now-stale) version — must fail.
-	code2, _, respBody := e.do(t, reqOpts{
-		method:  http.MethodDelete,
-		path:    fmt.Sprintf("/api/v1/delegations/%s?record_version=%d", delegationID, int64(ver)),
-		headers: ownerHeaders(delegator, tenantID),
-	})
-	assert.Contains(t, []int{http.StatusConflict, http.StatusNotFound, http.StatusUnprocessableEntity}, code2,
-		"P14-REPLAY-002: double-cancel must fail 4xx (got %d body=%s)", code2, string(respBody))
-}
+//
+// TestDoubleDelegationCancelWithSameVersion removed (ADR-0008 v2): P-20
+// (cancel delegation) moved to the standalone Delegation Service's DLG-3;
+// this optimistic-lock replay check is now that service's concern.
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 

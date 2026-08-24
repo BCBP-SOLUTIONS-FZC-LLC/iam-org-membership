@@ -51,4 +51,4 @@ What actually happened. Include error messages, HTTP status codes, log output, o
 ```
 
 ## Additional context
-Any other relevant context (Postgres version, PgBouncer mode, GLUE_REGISTRY_NAME set, related issues).
+Any other relevant context (Postgres version, PgBouncer mode, GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME set, related issues).

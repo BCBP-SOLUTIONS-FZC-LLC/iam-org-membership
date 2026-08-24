@@ -256,20 +256,6 @@ groups:
             (default 30d) triggers Billing enforcement per SEAT-4.
           runbook: "iam-org-membership/seat-overage-business"
 
-      - alert: IAMDelegationExpiryLag
-        expr: iam_delegation_expiry_lag_seconds > 300
-        for: 5m
-        labels:
-          severity: ticket
-          service: iam-org-membership
-        annotations:
-          summary: "delegation-expiry CronJob lagging by >5m"
-          description: |
-            iam_delegation_expiry_lag_seconds = {{ $value }}. Active delegations
-            past ends_at are not being closed promptly. Check the delegation-expiry
-            CronJob and User Profile availability API health.
-          runbook: "iam-org-membership/delegation-expiry-lag"
-
   # ── Outbox runner ───────────────────────────────────────────────────────────
   - name: iam_org_membership_outbox
     rules:

@@ -2,8 +2,10 @@
 
 // Phase 13 · infra + middleware tests. Verifies:
 //
-//   - INFRA-1..3: /healthz, /readyz, /metrics are reachable without any
-//     gateway identity headers (LB probes).
+//   - INFRA-1/2: /healthz, /readyz are reachable without any gateway
+//     identity headers (LB probes). /metrics is served on its own
+//     dedicated port (METRICS_PORT) — not on this router — so it isn't
+//     exercised here; see cmd/server/main.go's metricsServer.
 //   - MW-1: protected route WITHOUT gateway identity headers → 401.
 //   - MW-2/3: X-Request-ID echoed if provided, generated if absent.
 //   - MW-4: 1MB request body cap enforced.

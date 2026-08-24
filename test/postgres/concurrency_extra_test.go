@@ -8,10 +8,10 @@
 //     (tenant, user) → uq_tm_active_user permits exactly one active row.
 //   - P15-ACCEPT-001 — two concurrent invitation accepts for the same
 //     invitation → status transition guard permits one.
-//   - P15-DEL-CREATE-001 — two concurrent delegation creates by the same
-//     delegator → DEL-1 (one active per delegator) enforced by app FOR UPDATE.
-//   - P15-DEL-CANCEL-001 — two concurrent cancels of the same delegation
-//     with the same record_version → CONC-1 optimistic lock permits one.
+//   - P15-DEL-CREATE-001/P15-DEL-CANCEL-001 — removed (ADR-0008 v2):
+//     `delegations` moved to the standalone Delegation Service's own
+//     database (migration 000016); these races are now that service's
+//     concern, not Core's.
 //   - P15-B15-EXT-001 — two concurrent dept-membership assigns with
 //     different levels → uq_dm_active_membership rejects one.
 //   - P15-REC-001 — invitation-expiry reconciler running concurrently with
@@ -26,7 +26,6 @@ package postgres_test
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,7 +37,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 )
 
 // ── P15-JIT-001 ─────────────────────────────────────────────────────────────
@@ -49,7 +47,7 @@ import (
 // (WHERE deleted_at IS NULL) must reject the loser; final state has
 // exactly ONE active row.
 func TestConcurrentSameUserMembershipAdd(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "jit-001")
 	userID := uuid.New()
@@ -95,7 +93,7 @@ func TestConcurrentSameUserMembershipAdd(t *testing.T) {
 // `WHERE status = 'pending'` in the transition allows only the first to
 // mutate; the second observes zero rows affected.
 func TestConcurrentAcceptOfSameInvitation(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "accept-001")
 
@@ -133,161 +131,13 @@ func TestConcurrentAcceptOfSameInvitation(t *testing.T) {
 	assert.Equal(t, "accepted", finalStatus, "P15-ACCEPT-001: final status stable at 'accepted'")
 }
 
-// ── P15-DEL-CREATE-001 ──────────────────────────────────────────────────────
-
-// TestDEL_CREATE_001_ConcurrentDelegationCreate — two racers try to
-// insert a delegation for the same delegator, both scope=all, different
-// delegates. DEL-1 (one active per delegator) is enforced at the app
-// layer via FOR UPDATE. We simulate that guard here — the losing racer
-// must observe an existing active delegation and abort.
-func TestDEL_CREATE_001_ConcurrentDelegationCreate(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
-	ctx := context.Background()
-	tenantID := seedTenant(t, ctx, rawPool, "del-create-001")
-
-	// Seed 1 delegator + 2 candidate delegates as active members.
-	delegator, delegatorMem := uuid.New(), uuid.New()
-	delegateA, delegateAMem := uuid.New(), uuid.New()
-	delegateB, delegateBMem := uuid.New(), uuid.New()
-	for _, seed := range [][3]uuid.UUID{
-		{delegatorMem, tenantID, delegator},
-		{delegateAMem, tenantID, delegateA},
-		{delegateBMem, tenantID, delegateB},
-	} {
-		_, err := rawPool.Exec(ctx, `
-			INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
-			VALUES ($1, $2, $3, 'active')`, seed[0], seed[1], seed[2])
-		require.NoError(t, err)
-	}
-
-	create := func(delegate, delegateMem uuid.UUID) error {
-		ctxT := withTenant(ctx, tenantID)
-		return pgcommon.RunInTx(ctxT, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
-			// DEL-1 guard — advisory tx-lock keyed on (tenant, delegator).
-			// Postgres rejects FOR UPDATE on aggregate queries, so we
-			// serialize sibling racers with pg_advisory_xact_lock and then
-			// do a plain existence check. The lock is auto-released at
-			// commit/rollback.
-			if _, err := tx.Exec(ctx,
-				`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-				tenantID.String()+":"+delegator.String()); err != nil {
-				return err
-			}
-			var existing int
-			if err := tx.QueryRow(ctx, `
-				SELECT count(*) FROM delegations
-				WHERE tenant_id = $1 AND delegator_id = $2
-				  AND status = 'active' AND deleted_at IS NULL`,
-				tenantID, delegator).Scan(&existing); err != nil {
-				return err
-			}
-			if existing > 0 {
-				return errDelegationExists
-			}
-			_, err := tx.Exec(ctx, `
-				INSERT INTO delegations
-					(id, tenant_id, delegator_id, delegate_id, delegator_membership_id, delegate_membership_id,
-					 scope, starts_at, status)
-				VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'all', now(), 'active')`,
-				tenantID, delegator, delegate, delegatorMem, delegateMem)
-			return err
-		})
-	}
-
-	var wg sync.WaitGroup
-	var wins int32
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		if create(delegateA, delegateAMem) == nil {
-			atomic.AddInt32(&wins, 1)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		if create(delegateB, delegateBMem) == nil {
-			atomic.AddInt32(&wins, 1)
-		}
-	}()
-	wg.Wait()
-
-	assert.Equal(t, int32(1), wins,
-		"P15-DEL-CREATE-001: DEL-1 must permit exactly one active delegation per delegator")
-
-	var active int
-	require.NoError(t, rawPool.QueryRow(ctx, `
-		SELECT count(*) FROM delegations
-		WHERE tenant_id = $1 AND delegator_id = $2 AND status = 'active' AND deleted_at IS NULL`,
-		tenantID, delegator).Scan(&active))
-	assert.Equal(t, 1, active, "P15-DEL-CREATE-001: exactly one active delegation after race")
-}
-
-// ── P15-DEL-CANCEL-001 ──────────────────────────────────────────────────────
-
-// TestDEL_CANCEL_001_ConcurrentCancelSameVersion — two racers cancel
-// the same delegation with the SAME (stale-after-first) record_version.
-// CONC-1 optimistic lock permits one; the other's UPDATE affects 0 rows.
-func TestDEL_CANCEL_001_ConcurrentCancelSameVersion(t *testing.T) {
-	_, rawPool := setupTestDB(t)
-	ctx := context.Background()
-	tenantID := seedTenant(t, ctx, rawPool, "del-cancel-001")
-
-	delegator, delegatorMem := uuid.New(), uuid.New()
-	delegate, delegateMem := uuid.New(), uuid.New()
-	for _, seed := range [][3]uuid.UUID{
-		{delegatorMem, tenantID, delegator},
-		{delegateMem, tenantID, delegate},
-	} {
-		_, err := rawPool.Exec(ctx, `
-			INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
-			VALUES ($1, $2, $3, 'active')`, seed[0], seed[1], seed[2])
-		require.NoError(t, err)
-	}
-	delegationID := uuid.New()
-	_, err := rawPool.Exec(ctx, `
-		INSERT INTO delegations
-			(id, tenant_id, delegator_id, delegate_id, delegator_membership_id, delegate_membership_id,
-			 scope, starts_at, status, record_version)
-		VALUES ($1, $2, $3, $4, $5, $6, 'all', now(), 'active', 1)`,
-		delegationID, tenantID, delegator, delegate, delegatorMem, delegateMem)
-	require.NoError(t, err)
-
-	const racers = 3
-	var wg sync.WaitGroup
-	var succeeded int32
-	for i := 0; i < racers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ct, err := rawPool.Exec(ctx, `
-				UPDATE delegations
-				SET status = 'cancelled', deleted_at = now(), record_version = record_version + 1
-				WHERE id = $1 AND record_version = 1 AND status = 'active'`, delegationID)
-			if err == nil && ct.RowsAffected() == 1 {
-				atomic.AddInt32(&succeeded, 1)
-			}
-		}()
-	}
-	wg.Wait()
-
-	assert.Equal(t, int32(1), succeeded,
-		"P15-DEL-CANCEL-001: optimistic lock must permit exactly one cancel")
-
-	var status string
-	var ver int64
-	require.NoError(t, rawPool.QueryRow(ctx,
-		`SELECT status, record_version FROM delegations WHERE id = $1`, delegationID).Scan(&status, &ver))
-	assert.Equal(t, "cancelled", status, "final status must be cancelled")
-	assert.Equal(t, int64(2), ver, "record_version must have incremented exactly once")
-}
-
 // ── P15-B15-EXT-001 ─────────────────────────────────────────────────────────
 
 // TestConcurrentDeptAssignDifferentLevels — two racers
 // PUT the same (tenant, user, dept) at different role_levels. The
 // uq_dm_active_membership partial unique lets exactly one INSERT succeed.
 func TestConcurrentDeptAssignDifferentLevels(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "b15-ext-001")
 
@@ -346,7 +196,7 @@ func TestConcurrentDeptAssignDifferentLevels(t *testing.T) {
 // expired) invites is inserted. The reconciler must flip ONLY the
 // truly-expired rows; the fresh invites must remain 'pending'.
 func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "rec-001")
 
@@ -369,9 +219,8 @@ func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
 
 	// Spawn the reconciler + a live-insert goroutine concurrently.
 	jctx := &jobs.Context{
-		SysPool:    rawPool,
+		SysPool:    sysPool,
 		BatchLimit: 100,
-		Logger:     slog.Default(),
 	}
 
 	var wg sync.WaitGroup
@@ -420,7 +269,7 @@ func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
 // claimers must produce DISJOINT batches (no row appears in both). This
 // is the horizontal-scale safety property for the runner.
 func TestSkipLockedPreventsDuplicatePublish(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	// Seed 20 outbox_events (unpublished).
@@ -486,14 +335,4 @@ func TestSkipLockedPreventsDuplicatePublish(t *testing.T) {
 	// Combined batch size <= total (never over-claim).
 	assert.LessOrEqual(t, len(claimedA)+len(claimedB), total,
 		"P15-OUTBOX-001: combined claims must not exceed seeded row count")
-}
-
-// ── shared error sentinel ───────────────────────────────────────────────────
-
-var errDelegationExists = &delegationExistsErr{}
-
-type delegationExistsErr struct{}
-
-func (*delegationExistsErr) Error() string {
-	return "P15-DEL-CREATE-001: active delegation already exists"
 }

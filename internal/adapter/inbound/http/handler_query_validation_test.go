@@ -90,61 +90,11 @@ func TestP5Get_CrossTenant(t *testing.T) {
 	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
 }
 
-// ── ACLHandler.List — tender_id + tenant_id validation ─────────────────
+// ACLHandler.List/Revoke query-validation tests — retired ADR-0007 Wave 3
+// Phase 6, moved to iam-tender-acl's TAC-1/3. IDs never reused.
 
-func TestP21ACLList_InvalidTenantID(t *testing.T) {
-	h := &ACLHandler{}
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", "bad", "tender_id", uuid.New().String())
-	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-func TestP21ACLList_InvalidTenderID(t *testing.T) {
-	tenant := uuid.New()
-	h := &ACLHandler{}
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String(), "tender_id", "bad")
-	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// ── ACLHandler.Revoke — same shape ─────────────────────────────────────
-
-func TestP23ACLRevoke_InvalidTenantID(t *testing.T) {
-	h := &ACLHandler{}
-	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", "bad", "tender_id", uuid.New().String(), "user_id", uuid.New().String())
-	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-func TestP23ACLRevoke_InvalidUserID(t *testing.T) {
-	tenant := uuid.New()
-	h := &ACLHandler{}
-	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String(), "tender_id", uuid.New().String(), "user_id", "bogus")
-	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// ── DelegationHandler.Cancel — delegation-id path param + identity gate ─
-
-func TestP20DelegCancel_InvalidDelegationID(t *testing.T) {
-	h := &DelegationHandler{}
-	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", "bogus") // {id} in route is the delegation UUID
-	h.Cancel(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-func TestP20DelegCancel_MissingIdentity(t *testing.T) {
-	h := &DelegationHandler{}
-	c, w := buildCtx(http.MethodDelete, "/", ``, nil)
-	setParams(c, "id", uuid.New().String())
-	h.Cancel(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
-}
+// DelegationHandler.Cancel query-validation tests — retired ADR-0008 v2,
+// moved to the standalone Delegation Service's DLG-3. IDs never reused.
 
 // ── DeptMembershipHandler.Remove — same validation shape ────────────────
 

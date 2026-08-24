@@ -528,33 +528,6 @@ func TestDeptRemove_InvalidUserID(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// P-14/P-15: /delegations — Create, End
-// ─────────────────────────────────────────────────────────────────────────
-
-func TestDelegationCreate_MissingIdentity(t *testing.T) {
-	h := &DelegationHandler{}
-	body := `{"delegate_id":"` + uuid.New().String() + `","scope":"all"}`
-	c, w := buildCtx(http.MethodPost, "/", body, nil)
-	h.Create(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
-}
-
-func TestDelegationCreate_MalformedBody(t *testing.T) {
-	h := &DelegationHandler{}
-	c, w := buildCtx(http.MethodPost, "/", `{`, tenantOwnerCtx(uuid.New()))
-	h.Create(c)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestDelegationEnd_InvalidDelegationID(t *testing.T) {
-	h := &DelegationHandler{}
-	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", "not-a-uuid")
-	h.Cancel(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// ─────────────────────────────────────────────────────────────────────────
 // O-7: POST /operator/tenants/{id}/reassign-owner
 // ─────────────────────────────────────────────────────────────────────────
 

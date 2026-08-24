@@ -37,49 +37,46 @@ const (
 )
 
 // Tenant is the aggregate root for the tenant subtree. All child entities
-// (memberships, roles, departments, delegations, ACLs, invitations) FK-cascade
-// to this row (§4.2, T-1..T-15).
+// this service owns (memberships, roles, department activations, invitations)
+// FK-cascade to this row (§4.2, T-1..T-15). Delegations and tender-ACL entries
+// no longer live here — they moved to their own services' databases (ADR-0008).
 type Tenant struct {
-	ID                         uuid.UUID
-	Slug                       string // immutable (T-1)
-	Name                       string
-	Plan                       TenantPlan     // FK to plans(code)
-	FeatureFlags               map[string]any // override delta only (T-9)
-	Status                     SubscriptionStatus
-	TrialEndsAt                *time.Time
-	TrialReactivationCount     int // 0..1 (T-14)
-	SubscriptionStartedAt      *time.Time
-	CancelledAt                *time.Time // biconditional with status (T-11)
-	LastEventAt                *time.Time // EVT-14 high-water
-	RealmID                    string
-	RealmType                  RealmType
-	KeycloakShard              string
-	MFAFreshnessSeconds        int // 60..900 (T-10)
-	LocalAccountsEnabled       bool
-	RealmSyncPending           bool // T-15
-	DefaultLocale              string
-	LicensedSeats              int        // T-8
-	OwnerlessSince             *time.Time // T-13
-	OverageSince               *time.Time // SEAT-5
-	DelegationMaxDurationDays  int        // 1..180 (DEL-14, §16 A71): caps fixed-end span
-	DelegationReviewWindowDays int        // 1..180 (DEL-14, §16 A71): tenant default for open-ended review cycle
-	RecordVersion              int64
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
-	DeletedAt                  *time.Time
+	ID                     uuid.UUID
+	Slug                   string // immutable (T-1)
+	Name                   string
+	Plan                   TenantPlan     // ENUM-bound; validated against om:plans (Catalog Service), no DB FK (ADR-0007 §4)
+	FeatureFlags           map[string]any // override delta only (T-9)
+	Status                 SubscriptionStatus
+	TrialEndsAt            *time.Time
+	TrialReactivationCount int // 0..1 (T-14)
+	SubscriptionStartedAt  *time.Time
+	CancelledAt            *time.Time // biconditional with status (T-11)
+	LastEventAt            *time.Time // EVT-14 high-water
+	RealmID                string
+	RealmType              RealmType
+	KeycloakShard          string
+	MFAFreshnessSeconds    int // 60..900 (T-10)
+	LocalAccountsEnabled   bool
+	RealmSyncPending       bool // T-15
+	DefaultLocale          string
+	LicensedSeats          int        // T-8
+	OwnerlessSince         *time.Time // T-13
+	OverageSince           *time.Time // SEAT-5
+	RecordVersion          int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	DeletedAt              *time.Time
 }
 
 // TenantPatch is the partial-update payload for P-2. Fields left nil are
 // untouched. RecordVersion carries the client's expected version for
 // optimistic locking (CONC-1..4).
 type TenantPatch struct {
-	Name                       *string
-	DefaultLocale              *string
-	LocalAccountsEnabled       *bool
-	MFAFreshnessSeconds        *int
-	DelegationMaxDurationDays  *int           // §16 A71, DEL-14: 1..180
-	DelegationReviewWindowDays *int           // §16 A71, DEL-14: 1..180
-	FeatureFlags               map[string]any // O-4 only; ignored on P-2
+	Name                 *string
+	DefaultLocale        *string
+	LocalAccountsEnabled *bool
+	MFAFreshnessSeconds  *int
+	FeatureFlags         map[string]any // O-4 only; ignored on P-2
 
 	RecordVersion int64
 }

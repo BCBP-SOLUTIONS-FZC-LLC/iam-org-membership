@@ -14,7 +14,7 @@
 //
 // @title           IAM Org & Membership API
 // @version         1.0
-// @description     Organizational layer of the IAM subsystem — owns tenants, departments, memberships, tenant-level roles, delegations, invitations, ACL overlays, and group→role mappings.
+// @description     Organizational layer of the IAM subsystem — owns tenants, departments, memberships, tenant-level roles, and invitations.
 // @description
 // @description     **Tenant isolation.** Every resource is scoped by `x-tenant-id`; cross-tenant reads are blocked by row-level security (RLS-1..RLS-6). The hot path `GET /internal/users/:id/memberships` is the enrichment source for AuthZ (SLO 15 ms cache-hit / 30 ms cache-miss).
 // @description
@@ -46,10 +46,10 @@
 // @description                Comma-separated tenant-role list injected by the API gateway. Operator routes require `platform_operator`; internal routes require `iam-system`.
 //
 // @tag.name         internal
-// @tag.description  In-mesh service-to-service (I-1..I-13)
+// @tag.description  In-mesh service-to-service (I-1..I-15)
 //
 // @tag.name         operator
-// @tag.description  Platform operator (O-1..O-7)
+// @tag.description  Platform operator (O-4, O-7 — O-1/O-2/O-3/O-5/O-6 retired ADR-0007 Wave 1, moved to iam-catalog-admin)
 //
 // @tag.name         tenant
 // @tag.description  Tenant CRUD (P-1, P-2)
@@ -62,12 +62,6 @@
 //
 // @tag.name         roles
 // @tag.description  Dept-role labels (P-12, P-13)
-//
-// @tag.name         delegations
-// @tag.description  OOO delegations (P-18, P-19, P-20)
-//
-// @tag.name         acl
-// @tag.description  Tender ACL overlays (P-21, P-22, P-23)
 //
 // @tag.name         invitations
 // @tag.description  Two-step invite→accept (P-6, P-30, P-31)

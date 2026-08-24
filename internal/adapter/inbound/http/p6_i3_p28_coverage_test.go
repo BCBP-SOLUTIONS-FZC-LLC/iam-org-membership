@@ -382,7 +382,7 @@ func TestReconcileRoles_Idempotent(t *testing.T) {
 	}
 	svc := service.NewMembershipService(
 		mems, roles, &drhDeptMemRepo{},
-		nil, nil, &happyTenantRepo{}, &iahInviteRepo{},
+		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
 		happyTxRunner{}, nil, 30,
 	)
@@ -406,7 +406,7 @@ func TestReconcileRoles_UserNotFound(t *testing.T) {
 	}
 	svc := service.NewMembershipService(
 		mems, &p28RoleRepo{}, &drhDeptMemRepo{},
-		nil, nil, &happyTenantRepo{}, &iahInviteRepo{},
+		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
 		happyTxRunner{}, nil, 30,
 	)
@@ -547,7 +547,7 @@ func TestReconcileRoles_TenantNotFound(t *testing.T) {
 	}
 	svc := service.NewMembershipService(
 		mems, &p28RoleRepo{}, &drhDeptMemRepo{},
-		nil, nil, &happyTenantRepo{}, &iahInviteRepo{},
+		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
 		happyTxRunner{}, nil, 30,
 	)
@@ -645,7 +645,7 @@ var _ port.TenantRoleRepository = (*p28RoleRepo)(nil)
 func buildMinimalMembershipSvc() *service.MembershipService {
 	return service.NewMembershipService(
 		&happyMembershipRepo{}, &p28RoleRepo{}, &drhDeptMemRepo{},
-		nil, nil, &happyTenantRepo{}, &iahInviteRepo{},
+		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
 		happyTxRunner{}, nil, 30,
 	)
@@ -663,7 +663,7 @@ func buildMembershipSvcWithRoles(roles port.TenantRoleRepository) *service.Membe
 	}
 	return service.NewMembershipService(
 		mems, roles, &drhDeptMemRepo{},
-		nil, nil, &happyTenantRepo{}, &iahInviteRepo{},
+		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
 		happyTxRunner{}, nil, 30,
 	)

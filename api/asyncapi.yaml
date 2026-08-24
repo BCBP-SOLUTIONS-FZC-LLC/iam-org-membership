@@ -16,8 +16,9 @@ info:
 
     The two-topic split follows HLD §9.1: tenant lifecycle (creation,
     trial start) fans out to a different consumer set than membership
-    lifecycle (department grants, role grants, delegation, seat overage,
-    tenant-state relay). Selecting the destination topic by
+    lifecycle (department grants, role grants, membership-revocation
+    cascades, seat overage, tenant-state relay). Selecting the destination
+    topic by
     Envelope.Source is the job of platform-events RoutingPublisher —
     see internal/adapter/outbound/eventbus/publisher.go.
 
@@ -311,6 +312,10 @@ info:
 
 defaultContentType: application/json
 
+tags:
+  - $ref: '#/components/tags/published'
+  - $ref: '#/components/tags/consumed'
+
 servers:
   production:
     host: "sns.ap-south-1.amazonaws.com"
@@ -384,8 +389,8 @@ servers:
       Owned and managed by: Notification Service
       SNS subscription filter: EventType IN [DepartmentMembershipGranted,
         DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
-        TenantRoleGranted, TenantRoleRevoked, DelegationStarted,
-        DelegationEnded, TenantSeatOverageStarted, TenantSeatOverageResolved]
+        TenantRoleGranted, TenantRoleRevoked, TenantSeatOverageStarted,
+        TenantSeatOverageResolved]
         (Notification drives user/admin emails + seat-overage banners)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
@@ -397,13 +402,14 @@ servers:
       SQS queue for the Workflow Service consumer.
       Queue: membership-workflow-q  |  DLQ: membership-workflow-q-dlq  (maxReceiveCount=5)
       Owned and managed by: Workflow Service
-      SNS subscription filter: EventType IN [DelegationStarted, DelegationEnded,
-        TenderAssigneeOverridden, DepartmentMembershipGranted,
-        DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
-        TenantStateChanged]
-        (Workflow drives delegation routing, assignee reconciliation, and
-         tenant-state pause/resume/terminate/queue-routing via the §7.1 EVT-16
-         relay of tenant-lifecycle events onto iam-membership-events)
+      SNS subscription filter: EventType IN [TenderAssigneeOverridden,
+        DepartmentMembershipGranted, DepartmentMembershipRevoked,
+        DepartmentMembershipLevelChanged, TenantStateChanged]
+        (Workflow drives assignee reconciliation and tenant-state
+         pause/resume/terminate/queue-routing via the §7.1 EVT-16 relay of
+         tenant-lifecycle events onto iam-membership-events; delegation
+         routing itself is now the Delegation Service's concern, sourced
+         from its own iam.delegation.events topic, not this one)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -442,6 +448,40 @@ servers:
       Owned and managed by: Notification Service
       SNS subscription filter: EventType IN [TenantCreated, TrialStarted]
         (Notification sends the welcome email + trial-start email)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  # ── Inbound: the two queues this service consumes (§7.1) ──────────────────
+  # Owned by this service (iam-org-membership), NOT by the producer. Each is
+  # subscribed to a topic owned and published by another service.
+  sqsTenantOrgm:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue owned and managed by this service, subscribed to the
+      iam.tenant.events SNS topic (owned by the Realm Provisioner).
+      Queue: tenant-orgm-q  |  DLQ: tenant-orgm-q-dlq  (maxReceiveCount=5)
+      SNS subscription filter: EventType IN [TrialTenantProvisioned,
+        TenantRealmReady, TenantConverted, DirectPaidSignup, TrialExpired,
+        TrialReactivated, TenantSuspended, TenantOffboarded]
+        (this service never subscribes to its own co-produced TenantCreated/
+        TrialStarted on the same topic — HLD §9.1.1 "no self-consumption",
+        produce/consume sets on iam.tenant.events are disjoint)
+      Consumer short-name: orgm. Configured via SQS_TENANT_ORGM_QUEUE_URL.
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsBillingOrgm:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue owned and managed by this service, subscribed to the
+      billing.events SNS topic (owned by the Billing Service).
+      Queue: billing-orgm-q  |  DLQ: billing-orgm-q-dlq  (maxReceiveCount=5)
+      SNS subscription filter: EventType IN [TenantPlanChanged,
+        TenantPaymentPastDue, TenantSubscriptionCancelled, TenantReactivated,
+        TenantSeatsChanged]
+      Consumer short-name: orgm. Configured via SQS_BILLING_ORGM_QUEUE_URL.
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -532,11 +572,18 @@ channels:
       Audit Log         membership-audit-q            membership-audit-q-dlq            (all 11)
       AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*
       Realm Provisioner membership-realm-q            membership-realm-q-dlq            DepartmentMembership{Granted,LevelChanged}, TenantRole*
-      Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, Delegation*, TenantSeatOverage*
-      Workflow          membership-workflow-q         membership-workflow-q-dlq         Delegation*, TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged
+      Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, TenantSeatOverage*
+      Workflow          membership-workflow-q         membership-workflow-q-dlq         TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged
       Billing           membership-billing-q          membership-billing-q-dlq          TenantSeatOverage{Started,Resolved}
 
       All queues: maxReceiveCount=5, standard (non-FIFO).
+
+      Sibling-service consumers (queues owned entirely by those services,
+      not detailed as channels here since this repo has no config/binding
+      visibility into them — see each owning service's own AsyncAPI spec):
+        Delegation Service     delegation-cascade-q        MembershipRevoked, TenantMembershipsPurged
+        Tender-ACL Service     (queue name owned by them)  MembershipRevoked, TenantMembershipsPurged
+        Group-Mapping Service  (queue name owned by them)  TenantMembershipsPurged
 
       Queue security: every SQS queue that subscribes to this topic MUST enforce
       a resource-based policy restricting delivery to this SNS topic ARN. Without
@@ -566,10 +613,8 @@ channels:
         $ref: '#/components/messages/TenantRoleGranted'
       TenantRoleRevoked:
         $ref: '#/components/messages/TenantRoleRevoked'
-      DelegationStarted:
-        $ref: '#/components/messages/DelegationStarted'
-      DelegationEnded:
-        $ref: '#/components/messages/DelegationEnded'
+      MembershipRevoked:
+        $ref: '#/components/messages/MembershipRevoked'
       TenderAssigneeOverridden:
         $ref: '#/components/messages/TenderAssigneeOverridden'
       TenantSeatOverageStarted:
@@ -578,6 +623,8 @@ channels:
         $ref: '#/components/messages/TenantSeatOverageResolved'
       TenantStateChanged:
         $ref: '#/components/messages/TenantStateChanged'
+      TenantMembershipsPurged:
+        $ref: '#/components/messages/TenantMembershipsPurged'
 
   iamTenantEvents:
     address: "iam-tenant-events"
@@ -637,10 +684,8 @@ channels:
         $ref: '#/components/messages/TenantRoleGranted'
       TenantRoleRevoked:
         $ref: '#/components/messages/TenantRoleRevoked'
-      DelegationStarted:
-        $ref: '#/components/messages/DelegationStarted'
-      DelegationEnded:
-        $ref: '#/components/messages/DelegationEnded'
+      MembershipRevoked:
+        $ref: '#/components/messages/MembershipRevoked'
       TenderAssigneeOverridden:
         $ref: '#/components/messages/TenderAssigneeOverridden'
       TenantSeatOverageStarted:
@@ -649,6 +694,8 @@ channels:
         $ref: '#/components/messages/TenantSeatOverageResolved'
       TenantStateChanged:
         $ref: '#/components/messages/TenantStateChanged'
+      TenantMembershipsPurged:
+        $ref: '#/components/messages/TenantMembershipsPurged'
     bindings:
       sqs:
         queue:
@@ -751,8 +798,6 @@ channels:
                         "DepartmentMembershipLevelChanged",
                         "TenantRoleGranted",
                         "TenantRoleRevoked",
-                        "DelegationStarted",
-                        "DelegationEnded",
                         "TenantSeatOverageStarted",
                         "TenantSeatOverageResolved"] }
     messages:
@@ -766,10 +811,6 @@ channels:
         $ref: '#/components/messages/TenantRoleGranted'
       TenantRoleRevoked:
         $ref: '#/components/messages/TenantRoleRevoked'
-      DelegationStarted:
-        $ref: '#/components/messages/DelegationStarted'
-      DelegationEnded:
-        $ref: '#/components/messages/DelegationEnded'
       TenantSeatOverageStarted:
         $ref: '#/components/messages/TenantSeatOverageStarted'
       TenantSeatOverageResolved:
@@ -792,24 +833,20 @@ channels:
     servers:
       - $ref: '#/servers/sqsMembershipWorkflow'
     description: |
-      SQS queue subscribed to the events Workflow uses for delegation
-      routing, tender-assignee reconciliation, and tenant-state driven
-      pause/resume/terminate. The TenantStateChanged relay (§7.1 EVT-16)
+      SQS queue subscribed to the events Workflow uses for tender-assignee
+      reconciliation and tenant-state driven pause/resume/terminate.
+      Delegation routing is now the Delegation Service's concern, sourced
+      from its own iam.delegation.events topic — this queue no longer
+      carries delegation events. The TenantStateChanged relay (§7.1 EVT-16)
       is what lets Workflow subscribe to a single topic instead of also
       subscribing to iam-tenant-events and billing.events directly.
       SNS subscription filter policy:
-        { "EventType": ["DelegationStarted",
-                        "DelegationEnded",
-                        "TenderAssigneeOverridden",
+        { "EventType": ["TenderAssigneeOverridden",
                         "DepartmentMembershipGranted",
                         "DepartmentMembershipRevoked",
                         "DepartmentMembershipLevelChanged",
                         "TenantStateChanged"] }
     messages:
-      DelegationStarted:
-        $ref: '#/components/messages/DelegationStarted'
-      DelegationEnded:
-        $ref: '#/components/messages/DelegationEnded'
       TenderAssigneeOverridden:
         $ref: '#/components/messages/TenderAssigneeOverridden'
       DepartmentMembershipGranted:
@@ -915,11 +952,97 @@ channels:
               name: tenant-notification-q-dlq
             maxReceiveCount: 5
 
+  # ── Inbound consumption channels (§7.1) ────────────────────────────────────
+  # These are the only two channels in this spec that this service RECEIVES
+  # from rather than publishes to. Canonical schema ownership sits with the
+  # upstream producers' own AsyncAPI specs (Realm Provisioner for
+  # iam.tenant.events, Billing for billing.events) — the message/schema
+  # definitions below are this service's consumer-side documentation and
+  # must be kept in sync with those contracts, not treated as authoritative.
+  tenantOrgmQueue:
+    address: "tenant-orgm-q"
+    servers:
+      - $ref: '#/servers/sqsTenantOrgm'
+    description: |
+      SQS queue this service consumes from. Produced by the Realm
+      Provisioner on iam.tenant.events. Drives tenants.status / tenants.plan
+      / tenants.realm_* projection updates in membership_event_consumer.go,
+      guarded by EVT-14 (recency) and EVT-15 (future-time clamp), and may
+      trigger the EVT-16 TenantStateChanged relay plus, on a genuine
+      transition into offboarded, the TenantMembershipsPurged cascade
+      signal — both re-emitted onto iam-membership-events, this service's
+      own published topic.
+    messages:
+      TrialTenantProvisioned:
+        $ref: '#/components/messages/TrialTenantProvisioned'
+      TenantRealmReady:
+        $ref: '#/components/messages/TenantRealmReady'
+      TenantConverted:
+        $ref: '#/components/messages/TenantConverted'
+      DirectPaidSignup:
+        $ref: '#/components/messages/DirectPaidSignup'
+      TrialExpired:
+        $ref: '#/components/messages/TrialExpired'
+      TrialReactivated:
+        $ref: '#/components/messages/TrialReactivated'
+      TenantSuspended:
+        $ref: '#/components/messages/TenantSuspended'
+      TenantOffboarded:
+        $ref: '#/components/messages/TenantOffboarded'
+    bindings:
+      sqs:
+        queue:
+          name: tenant-orgm-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600    # 4 days (seconds)
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: tenant-orgm-q-dlq
+            maxReceiveCount: 5
+
+  billingOrgmQueue:
+    address: "billing-orgm-q"
+    servers:
+      - $ref: '#/servers/sqsBillingOrgm'
+    description: |
+      SQS queue this service consumes from. Produced by the Billing
+      Service on billing.events. Drives tenants.status / tenants.plan /
+      tenants.licensed_seats projection updates in
+      membership_event_consumer.go, under the same EVT-14/EVT-15/EVT-16
+      guards as tenant-orgm-q above.
+    messages:
+      TenantPlanChanged:
+        $ref: '#/components/messages/TenantPlanChanged'
+      TenantPaymentPastDue:
+        $ref: '#/components/messages/TenantPaymentPastDue'
+      TenantSubscriptionCancelled:
+        $ref: '#/components/messages/TenantSubscriptionCancelled'
+      TenantReactivated:
+        $ref: '#/components/messages/TenantReactivated'
+      TenantSeatsChanged:
+        $ref: '#/components/messages/TenantSeatsChanged'
+    bindings:
+      sqs:
+        queue:
+          name: billing-orgm-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: billing-orgm-q-dlq
+            maxReceiveCount: 5
+
 operations:
   publishMembershipEvents:
     action: send
     channel:
       $ref: '#/channels/iamMembershipEvents'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Publish membership lifecycle events (11 event types)
     description: |
       iam-org-membership publishes these 11 events atomically with the business
@@ -1056,17 +1179,19 @@ operations:
       - $ref: '#/channels/iamMembershipEvents/messages/DepartmentMembershipLevelChanged'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantRoleGranted'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantRoleRevoked'
-      - $ref: '#/channels/iamMembershipEvents/messages/DelegationStarted'
-      - $ref: '#/channels/iamMembershipEvents/messages/DelegationEnded'
+      - $ref: '#/channels/iamMembershipEvents/messages/MembershipRevoked'
       - $ref: '#/channels/iamMembershipEvents/messages/TenderAssigneeOverridden'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantSeatOverageStarted'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantSeatOverageResolved'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantStateChanged'
+      - $ref: '#/channels/iamMembershipEvents/messages/TenantMembershipsPurged'
 
   publishTenantEvents:
     action: send
     channel:
       $ref: '#/channels/iamTenantEvents'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Publish tenant creation events (TenantCreated, TrialStarted)
     description: |
       iam-org-membership co-produces onto iam-tenant-events alongside Realm
@@ -1095,6 +1220,8 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/membershipAuditQueue'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Audit Log archives all membership events (7-year retention)
     description: |
       Consumer: Audit Log Service
@@ -1109,17 +1236,19 @@ operations:
       - $ref: '#/channels/membershipAuditQueue/messages/DepartmentMembershipLevelChanged'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantRoleGranted'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantRoleRevoked'
-      - $ref: '#/channels/membershipAuditQueue/messages/DelegationStarted'
-      - $ref: '#/channels/membershipAuditQueue/messages/DelegationEnded'
+      - $ref: '#/channels/membershipAuditQueue/messages/MembershipRevoked'
       - $ref: '#/channels/membershipAuditQueue/messages/TenderAssigneeOverridden'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantSeatOverageStarted'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantSeatOverageResolved'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantStateChanged'
+      - $ref: '#/channels/membershipAuditQueue/messages/TenantMembershipsPurged'
 
   receiveMembershipAuthZ:
     action: receive
     channel:
       $ref: '#/channels/membershipAuthZQueue'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: AuthZ Enrichment evicts / refreshes om:memberships cache on role and department changes
     description: |
       Consumer: AuthZ Enrichment Service
@@ -1144,6 +1273,8 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/membershipRealmQueue'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Realm Provisioner adds/drops the requires-mfa realm role per §6.5
     description: |
       Consumer: Realm Provisioner Service
@@ -1174,16 +1305,17 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/membershipNotificationQueue'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Notification sends user/admin emails and drives seat-overage banners
     description: |
       Consumer: Notification Service
       Queue   : membership-notification-q  |  DLQ: membership-notification-q-dlq
-      Filter  : EventType IN [DepartmentMembership*, TenantRole*, Delegation*, TenantSeatOverage*]
+      Filter  : EventType IN [DepartmentMembership*, TenantRole*, TenantSeatOverage*]
 
       Membership events → per-user email ("you have been added to Department X
-        as a reviewer"). TenantRole events → admin email. Delegation events →
-        both delegator and delegate. TenantSeatOverage events → admin banner
-        and grace-period countdown email.
+        as a reviewer"). TenantRole events → admin email. TenantSeatOverage
+        events → admin banner and grace-period countdown email.
 
       Idempotency key: (id, consumer="notification") in processed_events.
     messages:
@@ -1192,8 +1324,6 @@ operations:
       - $ref: '#/channels/membershipNotificationQueue/messages/DepartmentMembershipLevelChanged'
       - $ref: '#/channels/membershipNotificationQueue/messages/TenantRoleGranted'
       - $ref: '#/channels/membershipNotificationQueue/messages/TenantRoleRevoked'
-      - $ref: '#/channels/membershipNotificationQueue/messages/DelegationStarted'
-      - $ref: '#/channels/membershipNotificationQueue/messages/DelegationEnded'
       - $ref: '#/channels/membershipNotificationQueue/messages/TenantSeatOverageStarted'
       - $ref: '#/channels/membershipNotificationQueue/messages/TenantSeatOverageResolved'
 
@@ -1201,15 +1331,21 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/membershipWorkflowQueue'
-    summary: Workflow reacts to delegation, assignee overrides, and tenant-state relay
+    tags:
+      - $ref: '#/components/tags/published'
+    summary: Workflow reacts to assignee overrides and tenant-state relay
     description: |
       Consumer: Workflow Service
       Queue   : membership-workflow-q  |  DLQ: membership-workflow-q-dlq
-      Filter  : EventType IN [Delegation*, TenderAssigneeOverridden,
+      Filter  : EventType IN [TenderAssigneeOverridden,
                               DepartmentMembership*, TenantStateChanged]
 
-      On DelegationStarted / DelegationEnded: reroute task ownership for
-        instances scoped by the delegation.
+      Delegation routing is no longer driven from this queue — Workflow's
+        §8.8 delegate-impact gate (GetDelegateImpact / ReassignDelegate /
+        CancelByDelegate) is a synchronous call from org-membership, not an
+        event subscription, and any delegation-lifecycle event Workflow
+        needs now comes from the Delegation Service's own
+        iam.delegation.events topic.
       On TenderAssigneeOverridden: reconcile Workflow's own assignee_overrides
         state — Workflow is the sole writer of that state, org-membership only
         validates + emits (§16 A32(d) / OVR-1).
@@ -1224,8 +1360,6 @@ operations:
 
       Idempotency key: (id, consumer="workflow-service") in processed_events.
     messages:
-      - $ref: '#/channels/membershipWorkflowQueue/messages/DelegationStarted'
-      - $ref: '#/channels/membershipWorkflowQueue/messages/DelegationEnded'
       - $ref: '#/channels/membershipWorkflowQueue/messages/TenderAssigneeOverridden'
       - $ref: '#/channels/membershipWorkflowQueue/messages/DepartmentMembershipGranted'
       - $ref: '#/channels/membershipWorkflowQueue/messages/DepartmentMembershipRevoked'
@@ -1236,6 +1370,8 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/membershipBillingQueue'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Billing drives seat-overage grace period and enforcement
     description: |
       Consumer: Billing Service
@@ -1258,6 +1394,8 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/tenantAuditQueue'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Audit Log archives tenant lifecycle events
     description: |
       Consumer: Audit Log Service
@@ -1274,6 +1412,8 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/tenantNotificationQueue'
+    tags:
+      - $ref: '#/components/tags/published'
     summary: Notification sends welcome and trial-start emails
     description: |
       Consumer: Notification Service
@@ -1288,6 +1428,97 @@ operations:
       - $ref: '#/channels/tenantNotificationQueue/messages/TenantCreated'
       - $ref: '#/channels/tenantNotificationQueue/messages/TrialStarted'
 
+  # ── Inbound operations — the two queues this service consumes (§7.1) ───────
+  consumeTenantOrgm:
+    action: receive
+    channel:
+      $ref: '#/channels/tenantOrgmQueue'
+    tags:
+      - $ref: '#/components/tags/consumed'
+    summary: Consume Realm Provisioner tenant-lifecycle events — drives the tenants projection
+    description: |
+      Consumer: this service (iam-org-membership)
+      Producer: Realm Provisioner
+      Queue   : tenant-orgm-q  |  DLQ: tenant-orgm-q-dlq
+      Filter  : EventType IN [TrialTenantProvisioned, TenantRealmReady,
+                              TenantConverted, DirectPaidSignup, TrialExpired,
+                              TrialReactivated, TenantSuspended, TenantOffboarded]
+
+      This is a consume-side reaction, not a request/response call. Every
+      message is handled by the single MembershipEventConsumer.Handle entry
+      point (internal/adapter/inbound/consumer/membership_event_consumer.go),
+      which applies, in order:
+        1. EVT-15 future-time clamp — event.time > now() + skew (default
+           MAX_LIFECYCLE_EVENT_SKEW_SECONDS=300) → rejected to DLQ, never
+           recorded in processed_events (poison-pill guard).
+        2. Dedup probe against processed_events (event_id, consumer=
+           "iam-org-membership") — a hit is a silent no-op.
+        3. SELECT ... FOR UPDATE on the tenants row, then EVT-14 recency
+           guard — event.time <= tenants.last_event_at skips the projection
+           but still records processed_events (stale/reordered delivery).
+        4. Per-type projection (see each message's own summary for the exact
+           tenants columns it mutates).
+        5. EVT-16 relay — if the projection changed tenants.status or
+           tenants.plan, enqueue TenantStateChanged onto iam-membership-events
+           in the same tx.
+        6. If the projection transitioned the tenant into offboarded,
+           additionally enqueue TenantMembershipsPurged onto
+           iam-membership-events so Delegation/Tender-ACL/Group-Mapping can
+           run their own tenant-scoped cascade-deletes (§16 OQ-1: this is
+           never a re-emission of Realm Provisioner's own TenantOffboarded
+           under the same or a different name — one producer per event name).
+
+      An event type not in the eight above (and not one of the five
+      billing-orgm-q types) is classified kindUnknown and silently
+      acknowledged (processed_events recorded, no projection applied),
+      counted by iam_unknown_event_acknowledged_total — this is deliberate
+      forward-compatibility so a Realm Provisioner schema addition never
+      triggers a DLQ storm here.
+
+      Idempotency key: (id, consumer="iam-org-membership") in
+      processed_events — both inbound queues share this one consumer
+      identity (see consumerName in membership_event_consumer.go).
+    messages:
+      - $ref: '#/channels/tenantOrgmQueue/messages/TrialTenantProvisioned'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TenantRealmReady'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TenantConverted'
+      - $ref: '#/channels/tenantOrgmQueue/messages/DirectPaidSignup'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TrialExpired'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TrialReactivated'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TenantSuspended'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TenantOffboarded'
+
+  consumeBillingOrgm:
+    action: receive
+    channel:
+      $ref: '#/channels/billingOrgmQueue'
+    tags:
+      - $ref: '#/components/tags/consumed'
+    summary: Consume Billing events — drives the tenants plan/status/seats projection
+    description: |
+      Consumer: this service (iam-org-membership)
+      Producer: Billing Service
+      Queue   : billing-orgm-q  |  DLQ: billing-orgm-q-dlq
+      Filter  : EventType IN [TenantPlanChanged, TenantPaymentPastDue,
+                              TenantSubscriptionCancelled, TenantReactivated,
+                              TenantSeatsChanged]
+
+      Handled by the same MembershipEventConsumer.Handle entry point, and
+      the same EVT-14/EVT-15/EVT-16/TenantMembershipsPurged sequence,
+      documented on consumeTenantOrgm above — the two queues are
+      distinguished only by which producer they came from and which
+      tenants columns their projections touch (see each message's own
+      summary).
+
+      Idempotency key: (id, consumer="iam-org-membership") in
+      processed_events — shared with consumeTenantOrgm.
+    messages:
+      - $ref: '#/channels/billingOrgmQueue/messages/TenantPlanChanged'
+      - $ref: '#/channels/billingOrgmQueue/messages/TenantPaymentPastDue'
+      - $ref: '#/channels/billingOrgmQueue/messages/TenantSubscriptionCancelled'
+      - $ref: '#/channels/billingOrgmQueue/messages/TenantReactivated'
+      - $ref: '#/channels/billingOrgmQueue/messages/TenantSeatsChanged'
+
 components:
   securitySchemes:
     iamRole:
@@ -1295,6 +1526,36 @@ components:
       name: Authorization
       in: header
       description: AWS IAM role attached to the pod via IRSA (IAM Roles for Service Accounts).
+
+  tags:
+    published:
+      name: published
+      description: |
+        This service is the producer. Emitted onto iam-membership-events
+        (11 event types) or iam-tenant-events (2 event types, co-produced
+        alongside Realm Provisioner and Billing) via the transactional
+        outbox (LLD §7.3/§7.4). Every message in components/messages except
+        the 13 consumed ones below, the publishMembershipEvents /
+        publishTenantEvents send operations, and the downstream fan-out
+        receive operations (Audit/AuthZ/Realm Provisioner/Notification/
+        Workflow/Billing — informational, documenting how other teams
+        consume what this service publishes) all carry this tag.
+    consumed:
+      name: consumed
+      description: |
+        This service is the consumer, not the producer. Per §7.1, Org &
+        Membership subscribes to exactly two inbound queues:
+        tenant-orgm-q (Realm Provisioner's iam.tenant.events — 8
+        tenant-lifecycle event types) and billing-orgm-q (Billing's
+        billing.events — 5 billing event types), both handled by the
+        single MembershipEventConsumer in
+        internal/adapter/inbound/consumer/membership_event_consumer.go
+        (EVT-14 recency guard, EVT-15 future-time clamp, EVT-16 tenant-
+        state relay). Canonical schema ownership for anything tagged
+        consumed sits with the producing service's own AsyncAPI spec, not
+        this file — treat these definitions as this service's consumer-side
+        documentation, kept in sync with upstream, not as the source of
+        truth.
 
   messageTraits:
     glueWireFormat:
@@ -1313,6 +1574,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1348,6 +1611,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1383,6 +1648,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1421,6 +1688,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1459,6 +1728,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1485,30 +1756,39 @@ components:
               dataType: String
               description: Dynamic — set from envelope.subject at publish time.
 
-    DelegationStarted:
-      name: DelegationStarted
-      title: Delegation Started
+    MembershipRevoked:
+      name: MembershipRevoked
+      title: Membership Revoked
       summary: |
-        Emitted after a delegation is committed. Emission is transactionally
-        coupled to the User Profile availability update (CONS-2): the outbox
-        row is only written after User Profile has confirmed the delegate
-        pointer update with a 200 response.
+        Emitted unconditionally by MembershipService.RemoveUser (P-8/I-5)
+        and ProvisioningService.DeleteMember's underlying path whenever a
+        user is removed from a tenant. Per LLD §15.2.2 this ONE event is
+        shared by BOTH the Delegation Service's delegation-cascade-q
+        consumer (ends the removed user's delegation rows) and the
+        Tender-ACL Service's equivalent consumer (soft-deletes the user's
+        tender ACL overlays). Earlier revisions of this contract had a
+        second, separate TenantMembershipRemoved event dedicated to
+        Tender-ACL; that has been consolidated into this single shared
+        event, matching the LLD exactly. actor_id is optional — absent for
+        system-driven removals with no HTTP actor context.
       x-lifecycle:
         status: active
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
       payload:
-        $ref: '#/components/schemas/DelegationStartedEnvelope'
+        $ref: '#/components/schemas/MembershipRevokedEnvelope'
       bindings:
         sns:
           messageAttributes:
             EventType:
               dataType: String
-              value: DelegationStarted
+              value: MembershipRevoked
               description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
             TenantID:
               dataType: String
@@ -1524,29 +1804,49 @@ components:
               dataType: String
               description: Dynamic — set from envelope.subject at publish time.
 
-    DelegationEnded:
-      name: DelegationEnded
-      title: Delegation Ended
+    TenantMembershipsPurged:
+      name: TenantMembershipsPurged
+      title: Tenant Memberships Purged
       summary: |
-        Emitted when a delegation ends by expiry, cancellation, or delegate
-        removal. The ended_reason field distinguishes the three paths so
-        consumers can differentiate normal expiry from operator action.
+        Emitted by membership_event_consumer.go whenever a consumed
+        tenant-lifecycle event genuinely transitions a tenant into
+        offboarded. This is Core's own tenant-offboarding cascade signal,
+        consumed by the Delegation, Tender-ACL, and Group-Mapping services
+        to run their own async tenant-scoped cascade-deletes (their tables
+        live in separate databases, out of reach of Core's own
+        ON DELETE CASCADE). actor_id is optional — absent when the purge
+        was driven by a consumed lifecycle event rather than a direct
+        HTTP actor.
+
+        This event was previously named TenantOffboarded and routed on
+        iam-tenant-events; that was wrong, because TenantOffboarded is the
+        Realm-Provisioner-produced terminal tenant event Core only
+        *consumes* (via tenant-orgm-q — the case "TenantOffboarded":
+        dispatch in membership_event_consumer.go's inbound switch is
+        completely unchanged by this rename), never produces — having Core
+        also emit an event of the same name would violate "one producer
+        per event name". This pass renames Core's own outbound relay to
+        TenantMembershipsPurged and moves it here, to
+        iam-membership-events; it is never a re-emission of RP's
+        TenantOffboarded.
       x-lifecycle:
         status: active
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
       payload:
-        $ref: '#/components/schemas/DelegationEndedEnvelope'
+        $ref: '#/components/schemas/TenantMembershipsPurgedEnvelope'
       bindings:
         sns:
           messageAttributes:
             EventType:
               dataType: String
-              value: DelegationEnded
+              value: TenantMembershipsPurged
               description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
             TenantID:
               dataType: String
@@ -1575,6 +1875,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1614,6 +1916,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1652,6 +1956,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1692,6 +1998,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1731,6 +2039,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1761,9 +2071,7 @@ components:
       name: TrialStarted
       title: Trial Started
       summary: |
-        Emitted onto iam-tenant-events immediately after 
-        
-         when
+        Emitted onto iam-tenant-events immediately after TenantCreated, when
         the tenant begins its trial window (both events written in the same
         outbox transaction). Consumers can treat this as an independently
         meaningful signal (it carries plan + trial_ends_at).
@@ -1772,6 +2080,8 @@ components:
       x-owner:
         team: team-iam
         slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
       contentType: application/json
       traits:
         - $ref: '#/components/messageTraits/glueWireFormat'
@@ -1797,6 +2107,515 @@ components:
             Subject:
               dataType: String
               description: Dynamic — set from envelope.subject at publish time.
+
+    # ── Consumed messages (§7.1) ─────────────────────────────────────────────
+    # Producers are the Realm Provisioner (tenant-orgm-q, first 8) and the
+    # Billing Service (billing-orgm-q, last 5), not this service. Documented
+    # here as this service's consumer-side contract — see the "consumed" tag
+    # description and the tenantOrgmQueue/billingOrgmQueue channel notes for
+    # the ownership caveat.
+    TrialTenantProvisioned:
+      name: TrialTenantProvisioned
+      title: Trial Tenant Provisioned
+      summary: |
+        Consumed by this service, not published. Classified as a known
+        tenant-lifecycle type so it is dedup-recorded rather than falling
+        into the kindUnknown silent-ack path, but applyProjection treats it
+        as a no-op — it does NOT mutate tenants.status/plan here. The actual
+        trial-tenant provisioning transaction (5 default departments + 3
+        dept-role labels + owner role grant + TenantCreated/TrialStarted,
+        §8.1) runs synchronously via I-1 POST /api/v1/internal/tenants,
+        called directly over HTTP by Realm Provisioner's own
+        TrialTenantProvisioned handler once the Keycloak realm is ready —
+        not via this SQS event.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TrialTenantProvisionedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TrialTenantProvisioned
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant being provisioned. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantRealmReady:
+      name: TenantRealmReady
+      title: Tenant Realm Ready
+      summary: |
+        Consumed by this service, not published. Sets tenants.realm_id,
+        tenants.realm_type, and tenants.keycloak_shard together in one
+        UPDATE once Realm Provisioner has finished creating the tenant's
+        Keycloak realm.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantRealmReadyEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantRealmReady
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant whose realm is ready. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantConverted:
+      name: TenantConverted
+      title: Tenant Converted
+      summary: |
+        Consumed by this service, not published. Sets tenants.status='active',
+        tenants.subscription_started_at=now(), and tenants.plan (when the
+        payload carries one — an empty/absent plan preserves the previous
+        plan). tenants.feature_flags is left untouched (T-9, the per-tenant
+        delta survives a plan change). May trigger the EVT-16
+        TenantStateChanged relay if status/plan actually changed.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantConvertedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantConverted
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant converting from trial to paid. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    DirectPaidSignup:
+      name: DirectPaidSignup
+      title: Direct Paid Signup
+      summary: |
+        Consumed by this service, not published. Same projection effect as
+        TenantConverted (tenants.status='active',
+        tenants.subscription_started_at=now(), tenants.plan) for a tenant
+        that signed up directly onto a paid plan without a trial period.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/DirectPaidSignupEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: DirectPaidSignup
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant signing up directly onto a paid plan. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TrialExpired:
+      name: TrialExpired
+      title: Trial Expired
+      summary: |
+        Consumed by this service, not published. Sets tenants.status=
+        'trial_expired'. No PII scrub occurs at this point — the tenant
+        remains reactivatable during the 15-day grace window via
+        TrialReactivated below.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TrialExpiredEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TrialExpired
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant whose trial expired. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TrialReactivated:
+      name: TrialReactivated
+      title: Trial Reactivated
+      summary: |
+        Consumed by this service, not published. Sets tenants.status=
+        'trial', recomputes tenants.trial_ends_at as
+        now() + plans.trial_duration_days for the tenant's plan (TR2), and
+        increments tenants.trial_reactivation_count — gated by a one-time
+        cap (T-14: the UPDATE's WHERE clause only matches when
+        trial_reactivation_count < 1, backstopped by a DB CHECK constraint).
+        A reactivation attempt beyond the cap is logged and treated as a
+        no-op, not an error.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TrialReactivatedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TrialReactivated
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant being reactivated. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantSuspended:
+      name: TenantSuspended
+      title: Tenant Suspended
+      summary: |
+        Consumed by this service, not published. Sets tenants.status=
+        'suspended' and tenants.cancelled_at=COALESCE(cancelled_at, now())
+        (T-11 biconditional: cancelled_at IS NOT NULL iff status IN
+        (cancelled, suspended, offboarded) — COALESCE keeps an idempotent
+        replay from resetting an already-set timestamp).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantSuspendedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantSuspended
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant being suspended. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantOffboarded:
+      name: TenantOffboarded
+      title: Tenant Offboarded
+      summary: |
+        Consumed by this service, not published. Terminal (PAID-1). Sets
+        tenants.status='offboarded', tenants.deleted_at=now(), and
+        tenants.cancelled_at=COALESCE(cancelled_at, now()). This transition
+        also triggers this service's own TenantMembershipsPurged relay onto
+        iam-membership-events (§16 OQ-1) — Core scrubs its own tenants row
+        and relies on ON DELETE CASCADE for its own tables, then emits
+        TenantMembershipsPurged so Delegation/Tender-ACL/Group-Mapping run
+        their own tenant-scoped cascade-deletes in their separate
+        databases. TenantMembershipsPurged is a distinct event, on a
+        different topic (iam-membership-events, not iam-tenant-events),
+        and is never a re-emission of this TenantOffboarded event under a
+        different name.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantOffboardedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantOffboarded
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant being offboarded. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantPlanChanged:
+      name: TenantPlanChanged
+      title: Tenant Plan Changed
+      summary: |
+        Consumed by this service, not published. Sets tenants.plan.
+        tenants.feature_flags is left untouched (T-9 — a per-tenant
+        override survives a Billing-driven plan change).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-billing
+        slack: "#billing-events"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantPlanChangedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantPlanChanged
+              description: Set by the producer (Billing Service). Matches this service's SNS filter policy on billing-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant whose plan changed. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-billing".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantPaymentPastDue:
+      name: TenantPaymentPastDue
+      title: Tenant Payment Past Due
+      summary: |
+        Consumed by this service, not published. Sets tenants.status=
+        'past_due'. Access is deliberately unchanged at this stage
+        (HLD §8.10.7) — enforcement, if any, is a Billing-side concern.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-billing
+        slack: "#billing-events"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantPaymentPastDueEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantPaymentPastDue
+              description: Set by the producer (Billing Service). Matches this service's SNS filter policy on billing-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant with a past-due payment. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-billing".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantSubscriptionCancelled:
+      name: TenantSubscriptionCancelled
+      title: Tenant Subscription Cancelled
+      summary: |
+        Consumed by this service, not published. Sets tenants.status=
+        'cancelled' and tenants.cancelled_at=COALESCE(cancelled_at, now())
+        together in the same UPDATE (T-11 biconditional; COALESCE preserves
+        an existing timestamp on idempotent replay, e.g. a tenant that was
+        already suspended).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-billing
+        slack: "#billing-events"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantSubscriptionCancelledEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantSubscriptionCancelled
+              description: Set by the producer (Billing Service). Matches this service's SNS filter policy on billing-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant whose subscription was cancelled. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-billing".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantReactivated:
+      name: TenantReactivated
+      title: Tenant Reactivated
+      summary: |
+        Consumed by this service, not published. Sets tenants.status=
+        'active' and tenants.cancelled_at=NULL — but only when the tenant
+        is not already offboarded (PAID-1: offboarded is terminal; a
+        reactivation attempt on an offboarded tenant is logged and rejected
+        as a no-op, not an error).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-billing
+        slack: "#billing-events"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantReactivatedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantReactivated
+              description: Set by the producer (Billing Service). Matches this service's SNS filter policy on billing-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant being reactivated. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-billing".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantSeatsChanged:
+      name: TenantSeatsChanged
+      title: Tenant Seats Changed
+      summary: |
+        Consumed by this service, not published. Sets tenants.licensed_seats
+        unconditionally (SEAT-2 — always accepted, regardless of current
+        seat usage). May itself open or close a seat-overage window on the
+        next seat-usage reconciler pass if the new value crosses
+        (active_users + pending_invitations).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-billing
+        slack: "#billing-events"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantSeatsChangedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantSeatsChanged
+              description: Set by the producer (Billing Service). Matches this service's SNS filter policy on billing-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant whose licensed seat count changed. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-billing".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
 
   schemas:
     # ── Shared envelope base ─────────────────────────────────────────────────
@@ -1832,12 +2651,12 @@ components:
             - DepartmentMembershipLevelChanged
             - TenantRoleGranted
             - TenantRoleRevoked
-            - DelegationStarted
-            - DelegationEnded
+            - MembershipRevoked
             - TenderAssigneeOverridden
             - TenantSeatOverageStarted
             - TenantSeatOverageResolved
             - TenantStateChanged
+            - TenantMembershipsPurged
             - TenantCreated
             - TrialStarted
           x-enum-descriptions:
@@ -1854,12 +2673,11 @@ components:
             TenantRoleRevoked: >-
               A specific tenant-level role was revoked. Multi-role support
               means a user may still hold other roles after this event.
-            DelegationStarted: >-
-              Delegation committed after User Profile availability update
-              was confirmed (CONS-2 ordering).
-            DelegationEnded: >-
-              Delegation ended — see ended_reason for the specific path
-              (expired / cancelled / delegate_removed).
+            MembershipRevoked: >-
+              A user was removed from a tenant. Shared cascade signal
+              consumed by both the Delegation Service (ends the user's
+              delegation rows) and the Tender-ACL Service (soft-deletes the
+              user's ACL overlays) — see §15.2.2.
             TenderAssigneeOverridden: >-
               Assignee override validated and emitted; Workflow Service
               owns the underlying assignee_overrides state.
@@ -1871,6 +2689,13 @@ components:
             TenantStateChanged: >-
               EVT-16 relay of an upstream tenant-state mutation onto
               iam-membership-events (see cause for the triggering event type).
+            TenantMembershipsPurged: >-
+              Core's own tenant-offboarding cascade signal, emitted when a
+              consumed lifecycle event transitions a tenant into offboarded.
+              Consumed by Delegation, Tender-ACL, and Group-Mapping services
+              to run their own tenant-scoped cascade-deletes. Distinct from,
+              and never a re-emission of, Realm Provisioner's TenantOffboarded
+              (which this service only consumes, on iam-tenant-events).
             TenantCreated: >-
               New tenant row committed on iam-tenant-events (from this service,
               via TrialTenantProvisioned).
@@ -1880,10 +2705,10 @@ components:
           type: string
           description: |
             Canonical entity identifier this event is about. For membership
-            events (Department* / TenantRole*) this is the user_id. For
-            Delegation* it is the delegation_id. For TenderAssigneeOverridden
-            it is the tender_id. For TenantSeatOverage* / TenantStateChanged /
-            TenantCreated / TrialStarted it is the tenant_id.
+            events (Department* / TenantRole* / MembershipRevoked) this is
+            the user_id. For TenderAssigneeOverridden it is the tender_id.
+            For TenantSeatOverage* / TenantStateChanged / TenantCreated /
+            TrialStarted / TenantMembershipsPurged it is the tenant_id.
             Aligns with the CloudEvents subject attribute; simplifies consumer
             routing and log indexing without parsing the payload.
           example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -1948,8 +2773,8 @@ components:
           description: |
             OTel W3C trace ID propagated from the originating HTTP request.
             Use to correlate this event with spans in the distributed trace.
-            Absent for events emitted by background workers (seat overage
-            reconciler, delegation expiry, invitation expiry etc.) where no
+            Absent for events emitted by background workers (seat-overage
+            reconciler, trial-cleanup, invitation-expiry etc.) where no
             inbound request context is available.
           example: "4bf92f3577b34da6a3ce929d0e0e4736"
         correlation_id:
@@ -1970,7 +2795,7 @@ components:
             Principal that triggered the event. For HTTP-triggered operations
             this is the caller's user_id (UUID string) extracted from the
             authenticated request context. For system-generated events
-            (background reconcilers such as seat-overage, delegation-expiry,
+            (background reconcilers such as seat-overage, trial-cleanup,
             invitation-expiry, realm-config-sync) this is "iam-system".
             Useful for audit trails: distinguishes "user X granted user Y a
             role" from a reconciler applying the same state transition.
@@ -2054,7 +2879,7 @@ components:
             data:
               $ref: '#/components/schemas/TenantRoleRevokedPayload'
 
-    DelegationStartedEnvelope:
+    MembershipRevokedEnvelope:
       allOf:
         - $ref: '#/components/schemas/EventEnvelopeBase'
         - type: object
@@ -2062,17 +2887,7 @@ components:
             - data
           properties:
             data:
-              $ref: '#/components/schemas/DelegationStartedPayload'
-
-    DelegationEndedEnvelope:
-      allOf:
-        - $ref: '#/components/schemas/EventEnvelopeBase'
-        - type: object
-          required:
-            - data
-          properties:
-            data:
-              $ref: '#/components/schemas/DelegationEndedPayload'
+              $ref: '#/components/schemas/MembershipRevokedPayload'
 
     TenderAssigneeOverriddenEnvelope:
       allOf:
@@ -2113,6 +2928,16 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/TenantStateChangedPayload'
+
+    TenantMembershipsPurgedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantMembershipsPurgedPayload'
 
     TenantCreatedEnvelope:
       allOf:
@@ -2269,101 +3094,28 @@ components:
           type: string
           format: uuid
 
-    DelegationStartedPayload:
+    MembershipRevokedPayload:
       type: object
       additionalProperties: false
       required:
-        - delegation_id
         - tenant_id
-        - delegator_id
-        - delegate_id
-        - scope
-        - actor_id
+        - user_id
       properties:
-        delegation_id:
-          type: string
-          format: uuid
         tenant_id:
           type: string
           format: uuid
-        delegator_id:
+        user_id:
           type: string
           format: uuid
-          description: User going OOO / assigning the delegation.
-        delegate_id:
-          type: string
-          format: uuid
-          description: User receiving the delegation.
-        scope:
-          type: string
-          enum: [all, department, tender]
-          description: |
-            Delegation scope. When scope == all, scope_id is absent. When scope
-            is department or tender, scope_id references the corresponding entity.
-        scope_id:
-          type: string
-          format: uuid
-          description: |
-            Scoped-delegation target. Present when scope != all; absent when
-            scope == all. Consumers of scoped delegations MUST read this field.
-        ends_at:
-          type: string
-          format: date-time
-          description: |
-            Optional hard end-time (delegation-expiry reconciler enforces this).
-            Absent when the delegation is open-ended (e.g. delegated until
-            manually cancelled).
+          description: The user removed from the tenant (source of the cascade).
         actor_id:
           type: string
           format: uuid
-
-    DelegationEndedPayload:
-      type: object
-      additionalProperties: false
-      required:
-        - delegation_id
-        - tenant_id
-        - delegator_id
-        - delegate_id
-        - scope
-        - ended_reason
-        - actor_id
-      properties:
-        delegation_id:
-          type: string
-          format: uuid
-        tenant_id:
-          type: string
-          format: uuid
-        delegator_id:
-          type: string
-          format: uuid
-        delegate_id:
-          type: string
-          format: uuid
-        scope:
-          type: string
-          enum: [all, department, tender]
-        scope_id:
-          type: string
-          format: uuid
-        ended_reason:
-          type: string
-          enum: [expired, cancelled, delegate_removed]
-          x-enum-descriptions:
-            expired: >-
-              ends_at passed and the delegation-expiry reconciler ended the
-              delegation (pointer-clear on User Profile first, then row end).
-            cancelled: >-
-              Delegator or an operator explicitly cancelled the delegation
-              before ends_at.
-            delegate_removed: >-
-              The delegate was removed from the tenant / department that
-              enabled the delegation, and the delegation was ended as part of
-              the removal cascade (§8.8.4).
-        actor_id:
-          type: string
-          format: uuid
+          description: |
+            Principal that performed the removal. Optional — absent for
+            system-driven removals where no HTTP actor context is available
+            (unlike actor_id on the other membership events, which is
+            required).
 
     TenderAssigneeOverriddenPayload:
       type: object
@@ -2495,6 +3247,24 @@ components:
             consumers can switch on it to differentiate normal vs punitive
             state transitions.
 
+    TenantMembershipsPurgedPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: The tenant being purged/offboarded.
+        actor_id:
+          type: string
+          format: uuid
+          description: |
+            Principal recorded for the purge. Optional — absent when the
+            purge was driven by a consumed lifecycle event (e.g. Realm
+            Provisioner's TenantOffboarded) rather than a direct HTTP actor.
+
     TenantCreatedPayload:
       type: object
       additionalProperties: false
@@ -2550,3 +3320,301 @@ components:
             provisioning time). The trial-cleanup reconciler transitions the
             tenant to trial_expired at this moment if no plan upgrade has
             occurred.
+
+    # ── Consumed-event envelope base (§7.1) ──────────────────────────────────
+    # Shared shape for both inbound queues (platform-events Envelope[T]). The
+    # canonical schema for each of these 13 event types belongs to its
+    # producer's own AsyncAPI spec (Realm Provisioner for the first 8, Billing
+    # for the last 5) — this is this service's consumer-side documentation of
+    # the fields membership_event_consumer.go actually reads, not a closed
+    # contract this service enforces. Unlike EventEnvelopeBase above (this
+    # service's own OWN closed, additionalProperties:false payload contract),
+    # consumed payloads intentionally leave additionalProperties open —
+    # upstream producers may add fields this consumer does not yet read
+    # without breaking this service.
+    ConsumedTenantLifecycleEnvelopeBase:
+      type: object
+      required:
+        - id
+        - type
+        - subject
+        - source
+        - tenant_id
+        - time
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: |
+            RFC 4122 UUID v7 from the producer. Used as the
+            processed_events idempotency key under consumer="iam-org-membership",
+            shared across both tenant-orgm-q and billing-orgm-q.
+          example: "018f4c3e-a1b2-7000-9d3e-4f8c1a2b3d4e"
+        type:
+          type: string
+          enum:
+            - TrialTenantProvisioned
+            - TenantRealmReady
+            - TenantConverted
+            - DirectPaidSignup
+            - TrialExpired
+            - TrialReactivated
+            - TenantSuspended
+            - TenantOffboarded
+            - TenantPlanChanged
+            - TenantPaymentPastDue
+            - TenantSubscriptionCancelled
+            - TenantReactivated
+            - TenantSeatsChanged
+          description: |
+            The first 8 values arrive on tenant-orgm-q (produced by Realm
+            Provisioner); the last 5 arrive on billing-orgm-q (produced by
+            Billing). An event type outside this set is classified
+            kindUnknown by classify() in membership_event_consumer.go and
+            silently acknowledged (recorded in processed_events, no
+            projection applied) rather than routed to a DLQ.
+        subject:
+          type: string
+          format: uuid
+          description: The tenant_id this event is about — always a tenant for every type on both inbound queues.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        source:
+          type: string
+          description: |
+            Publishing-service identifier. "iam-realm-provisioner" for the
+            8 tenant-orgm-q types, "iam-billing" for the 5 billing-orgm-q
+            types. This consumer does not branch on this field — the queue
+            (and therefore the SNS filter policy) already disambiguates the
+            producer; source is documentation/observability only here.
+          example: "iam-realm-provisioner"
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Set on the RLS GUC (app.tenant_id) before the handler's
+            transaction begins, so RLS lets this consumer see and update
+            the tenants row for this tenant (RLS-4 — no BYPASSRLS grant).
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        time:
+          type: string
+          format: date-time
+          description: |
+            UTC event time. Compared against tenants.last_event_at under
+            the row lock for EVT-14 (event.time <= last_event_at → stale,
+            skip projection) and against now() + skew for EVT-15
+            (event.time in the future beyond MAX_LIFECYCLE_EVENT_SKEW_SECONDS
+            → reject to DLQ, poison-pill guard).
+          example: "2026-06-13T10:30:00Z"
+
+    # ── Per-event envelopes (base + typed data) ──────────────────────────────
+    TrialTenantProvisionedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialTenantProvisionedPayload'
+
+    TenantRealmReadyEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantRealmReadyPayload'
+
+    TenantConvertedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantConvertedPayload'
+
+    DirectPaidSignupEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DirectPaidSignupPayload'
+
+    TrialExpiredEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialExpiredPayload'
+
+    TrialReactivatedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialReactivatedPayload'
+
+    TenantSuspendedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantSuspendedPayload'
+
+    TenantOffboardedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantOffboardedPayload'
+
+    TenantPlanChangedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantPlanChangedPayload'
+
+    TenantPaymentPastDueEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantPaymentPastDuePayload'
+
+    TenantSubscriptionCancelledEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantSubscriptionCancelledPayload'
+
+    TenantReactivatedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantReactivatedPayload'
+
+    TenantSeatsChangedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantSeatsChangedPayload'
+
+    # ── Consumed payload schemas (OPEN — producer-owned, not enforced here) ──
+    # additionalProperties is deliberately left unset (open) throughout this
+    # block: these shapes describe only the fields
+    # membership_event_consumer.go actually unmarshals; the producing
+    # service's own schema is free to carry additional fields this consumer
+    # ignores.
+    TrialTenantProvisionedPayload:
+      type: object
+      description: |
+        No fields are read by this consumer — applyProjection's
+        TrialTenantProvisioned case is a deliberate no-op (see the message
+        summary above for why).
+
+    TenantRealmReadyPayload:
+      type: object
+      properties:
+        realm_id:
+          type: string
+          description: Keycloak realm identifier assigned to the tenant.
+        realm_type:
+          type: string
+          description: e.g. "dedicated" — set together with realm_id and keycloak_shard in one UPDATE.
+        keycloak_shard:
+          type: string
+          description: Identifies which Keycloak shard hosts this tenant's realm.
+
+    TenantConvertedPayload:
+      type: object
+      properties:
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+          description: |
+            New plan code. If absent or empty, the previous plan is
+            preserved rather than cleared.
+
+    DirectPaidSignupPayload:
+      type: object
+      properties:
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+          description: |
+            New plan code. If absent or empty, the previous plan is
+            preserved rather than cleared.
+
+    TrialExpiredPayload:
+      type: object
+      description: No fields are read by this consumer — the projection is unconditional (status='trial_expired').
+
+    TrialReactivatedPayload:
+      type: object
+      description: |
+        No fields are read by this consumer. The new trial_ends_at is
+        computed server-side from plans.trial_duration_days for the
+        tenant's current plan, not taken from the payload.
+
+    TenantSuspendedPayload:
+      type: object
+      description: No fields are read by this consumer — the projection is unconditional (status='suspended').
+
+    TenantOffboardedPayload:
+      type: object
+      description: No fields are read by this consumer — the projection is unconditional (status='offboarded', terminal).
+
+    TenantPlanChangedPayload:
+      type: object
+      properties:
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+          description: |
+            New plan code. If absent or empty, the previous plan is
+            preserved rather than cleared. tenants.feature_flags is
+            untouched (T-9).
+
+    TenantPaymentPastDuePayload:
+      type: object
+      description: No fields are read by this consumer — the projection is unconditional (status='past_due').
+
+    TenantSubscriptionCancelledPayload:
+      type: object
+      description: No fields are read by this consumer — the projection is unconditional (status='cancelled', cancelled_at set if not already).
+
+    TenantReactivatedPayload:
+      type: object
+      description: |
+        No fields are read by this consumer. The projection itself is
+        guarded server-side: rejected as a no-op if the tenant is already
+        offboarded (PAID-1).
+
+    TenantSeatsChangedPayload:
+      type: object
+      required:
+        - licensed_seats
+      properties:
+        licensed_seats:
+          type: integer
+          minimum: 0
+          description: |
+            New licensed seat count. Applied unconditionally (SEAT-2) —
+            this consumer never rejects a TenantSeatsChanged regardless of
+            current seat usage.

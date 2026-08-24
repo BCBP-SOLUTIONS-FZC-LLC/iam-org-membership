@@ -55,43 +55,19 @@ type TenantRoleRevokedPayload struct {
 	ActorID  uuid.UUID      `json:"actor_id"`
 }
 
-type DelegationStartedPayload struct {
-	DelegationID uuid.UUID       `json:"delegation_id"`
-	TenantID     uuid.UUID       `json:"tenant_id"`
-	DelegatorID  uuid.UUID       `json:"delegator_id"`
-	DelegateID   uuid.UUID       `json:"delegate_id"`
-	Scope        DelegationScope `json:"scope"`
-	ScopeID      *uuid.UUID      `json:"scope_id,omitempty"`
-	// StartsAt is per LLD §7.4 skeleton line 3029 (added rev-alignment;
-	// §7.3 catalog omitted it but §7.4 requires it). Optional to remain
-	// backward-compat with existing consumers.
-	StartsAt *time.Time `json:"starts_at,omitempty"`
-	EndsAt   *time.Time `json:"ends_at,omitempty"`
-	ActorID  uuid.UUID  `json:"actor_id"`
-}
-
-type DelegationEndedPayload struct {
-	DelegationID uuid.UUID       `json:"delegation_id"`
-	TenantID     uuid.UUID       `json:"tenant_id"`
-	DelegatorID  uuid.UUID       `json:"delegator_id"`
-	DelegateID   uuid.UUID       `json:"delegate_id"`
-	Scope        DelegationScope `json:"scope"`
-	ScopeID      *uuid.UUID      `json:"scope_id,omitempty"`
-	EndedReason  EndReason       `json:"ended_reason"` // expired | cancelled | delegate_removed | review_expired (DEL-7, DEL-13)
-	ActorID      uuid.UUID       `json:"actor_id"`
-}
-
-// DelegationReviewRequestedPayload is the §16 A70 / DEL-13 warning event emitted
-// when an open-ended delegation's review_due_at is within the warning window.
-type DelegationReviewRequestedPayload struct {
-	DelegationID uuid.UUID       `json:"delegation_id"`
-	TenantID     uuid.UUID       `json:"tenant_id"`
-	DelegatorID  uuid.UUID       `json:"delegator_id"`
-	DelegateID   uuid.UUID       `json:"delegate_id"`
-	Scope        DelegationScope `json:"scope"`
-	ScopeID      *uuid.UUID      `json:"scope_id,omitempty"`
-	ReviewDueAt  time.Time       `json:"review_due_at"`
-	ActorID      uuid.UUID       `json:"actor_id"`
+// MembershipRevokedPayload is EventMembershipRevoked's data — deliberately
+// minimal (just enough for a consumer to scope a DELETE/UPDATE ... WHERE
+// tenant_id = $1 AND user_id = $2 against its own tenant-scoped rows).
+// Per LLD §15.2.2, this single event is shared by both the Delegation
+// Service's delegation-cascade-q consumer (ends the user's delegation rows,
+// mirroring what DelegationRepository.SoftDeleteForUser used to do
+// in-process) and the Tender-ACL Service's equivalent consumer (soft-
+// deletes the user's ACL overlays, mirroring
+// TenderACLRepository.SoftDeleteForUser) — ADR-0008 §6.4.
+type MembershipRevokedPayload struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	UserID   uuid.UUID `json:"user_id"`
+	ActorID  uuid.UUID `json:"actor_id"`
 }
 
 type TenderAssigneeOverriddenPayload struct {
@@ -112,6 +88,22 @@ type TenantSeatOverageStartedPayload struct {
 type TenantSeatOverageResolvedPayload struct {
 	TenantID   uuid.UUID `json:"tenant_id"`
 	ResolvedAt time.Time `json:"resolved_at"`
+}
+
+// TenantMembershipsPurgedPayload is EventTenantMembershipsPurged's data —
+// Core's own tenant-level cascade signal on a real
+// suspended/whatever→offboarded transition (see
+// membership_event_consumer.go's Handle, right next to the generic EVT-16
+// TenantStateChanged relay this mirrors). Consumed by the Delegation,
+// Tender-ACL, and Group-Mapping services to run their own asynchronous
+// tenant-scoped cascade-deletes (LLD §15.5, ADR-0008 §6.4 pattern,
+// ADR-0007 §12). Distinct from — and never re-emits — the Realm-
+// Provisioner-produced `TenantOffboarded` event on iam.tenant.events,
+// which Core only ever consumes (LLD §16 OQ-1: "Core does not re-emit
+// TenantOffboarded" — one producer per event name).
+type TenantMembershipsPurgedPayload struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	ActorID  uuid.UUID `json:"actor_id"`
 }
 
 // TenantStateChangedPayload is the §16 A61 relay emitted whenever a

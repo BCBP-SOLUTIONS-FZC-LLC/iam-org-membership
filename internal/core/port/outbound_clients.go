@@ -2,38 +2,10 @@ package port
 
 import (
 	"context"
-	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/google/uuid"
 )
-
-// UserProfileClient is the outbound HTTP client for the iam-user-profile
-// service. Used for delegation coordination (§8.6/§8.7 availability-first
-// commit ordering). Phase 4 wires the real HTTP client; Phase 2 ships a
-// fail-open stub that degrades gracefully.
-//
-// SetAvailability variants (per UP LLD §5.3 row 18):
-//   - Create:   {status:"ooo", ooo_from, ooo_until, delegate_id}
-//   - End:      {delegate_id: null} — pointer-clear only (DEL-6);
-//     NEVER {status:"available"} (UP owns the return-to-available
-//     transition via its own OOO sweep).
-type UserProfileClient interface {
-	SetAvailability(ctx context.Context, req SetAvailabilityRequest) error
-}
-
-// SetAvailabilityRequest models the two shapes documented above. Fields
-// left zero-value are omitted from the wire payload.
-type SetAvailabilityRequest struct {
-	TenantID      uuid.UUID
-	UserID        uuid.UUID
-	Status        *string // "ooo" on create; nil on end (pointer-clear)
-	OOOFrom       *time.Time
-	OOOUntil      *time.Time
-	DelegateID    *uuid.UUID // *uuid.UUID{nil} → wire "delegate_id: null"; nil → field omitted
-	ClearDelegate bool       // true → send delegate_id: null explicitly
-	Note          string     // free-text OOO note shown in UP dashboard (≤500 chars, mapped from delegation reason)
-}
 
 // WorkflowClient calls the Workflow Service for delegate-impact checks
 // (§8.8 removal-resolution gate). Phase 4 wires the real client; Phase 2
@@ -102,6 +74,22 @@ type CreateInvitedUserResponse struct {
 type RealmConfigPatch struct {
 	LocalAccountsEnabled *bool
 	// Future: IdP/federation config, MFA policy, etc.
+}
+
+// DelegationCheckClient replaces the local DelegationRepository.
+// FindActiveDeptDelegateForUser lookup that DeptMembershipService used
+// before `delegations` moved to the standalone Delegation Service
+// (ADR-0008 v2 §6.4/§7.6, iam-lld-delegation-service.md §11.5, WFI-11).
+type DelegationCheckClient interface {
+	// DeptDelegate returns the active delegation.id (if any) where userID
+	// is the delegate for a department-scoped grant on deptID, for WFI-11
+	// precision (LLD §8.8.4). Returns (nil, nil) when none exists. err is
+	// non-nil ONLY when the check itself could not be performed (network/
+	// timeout/5xx) — callers degrade to a nil delegationID (tenant-wide
+	// impact, still correct, less precise) rather than failing the whole
+	// Assign/Remove operation (LLD §11.5: "the gate degrades to
+	// tenant-wide impact" on a Delegation Service outage).
+	DeptDelegate(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*uuid.UUID, error)
 }
 
 // CatalogAdminClient is the outbound HTTP client for the Catalog / Admin

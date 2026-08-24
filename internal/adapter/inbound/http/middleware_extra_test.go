@@ -122,7 +122,6 @@ func TestP11MW010_AllSentinelsMapToCorrectStatus(t *testing.T) {
 		{"tenant_not_found → 404", domain.ErrTenantNotFound, http.StatusNotFound, "tenant_not_found"},
 		{"member_not_found → 404", domain.ErrMemberNotFound, http.StatusNotFound, "member_not_found"},
 		{"department_not_found → 404", domain.ErrDepartmentNotFound, http.StatusNotFound, "department_not_found"},
-		{"delegation_not_found → 404", domain.ErrDelegationNotFound, http.StatusNotFound, "delegation_not_found"},
 		{"invitation_not_found → 404", domain.ErrInvitationNotFound, http.StatusNotFound, "invitation_not_found"},
 
 		// 409 Conflict
@@ -139,17 +138,12 @@ func TestP11MW010_AllSentinelsMapToCorrectStatus(t *testing.T) {
 		{"role_already_granted → 409", domain.ErrRoleAlreadyGranted, http.StatusConflict, "role_already_granted"},
 
 		// 422 Unprocessable Entity (default bucket)
-		{"self_delegation → 422", domain.ErrSelfDelegation, http.StatusUnprocessableEntity, "self_delegation"},
-		{"invalid_delegate → 422", domain.ErrInvalidDelegate, http.StatusUnprocessableEntity, "invalid_delegate"},
-		{"delegation_window_inverted → 422", domain.ErrDelegationWindowInverted, http.StatusUnprocessableEntity, "delegation_window_inverted"},
-		{"scope_id_required → 422", domain.ErrScopeIDRequired, http.StatusUnprocessableEntity, "scope_id_required"},
 		{"cannot_delete_system → 422", domain.ErrCannotDeleteSystemDepartment, http.StatusUnprocessableEntity, "cannot_delete_system_department"},
 		{"dept_not_active → 422", domain.ErrDepartmentNotActiveForTenant, http.StatusUnprocessableEntity, "department_not_active_for_tenant"},
 		{"dept_retired → 422", domain.ErrDepartmentRetired, http.StatusUnprocessableEntity, "department_retired"},
 		{"dept_deactivated → 422", domain.ErrDepartmentDeactivated, http.StatusUnprocessableEntity, "department_deactivated"},
 		{"invalid_replacement → 422", domain.ErrInvalidReplacement, http.StatusUnprocessableEntity, "invalid_replacement"},
 		{"invalid_owner_candidate → 422", domain.ErrInvalidOwnerCandidate, http.StatusUnprocessableEntity, "invalid_owner_candidate"},
-		{"invalid_expires_at → 422", domain.ErrInvalidExpiresAt, http.StatusUnprocessableEntity, "invalid_expires_at"},
 		{"invalid_role → 422", domain.ErrInvalidRole, http.StatusUnprocessableEntity, "invalid_role"},
 		{"assignee_ineligible → 422", domain.ErrAssigneeIneligible, http.StatusUnprocessableEntity, "assignee_ineligible"},
 		{"field_immutable → 422", domain.ErrFieldImmutable, http.StatusUnprocessableEntity, "field_immutable"},
@@ -164,9 +158,10 @@ func TestP11MW010_AllSentinelsMapToCorrectStatus(t *testing.T) {
 		// 503 Service Unavailable
 		{"db_unavailable → 503", domain.ErrDBUnavailable, http.StatusServiceUnavailable, "db_unavailable"},
 		{"cache_unavailable → 503", domain.ErrCacheUnavailable, http.StatusServiceUnavailable, "cache_unavailable"},
-		{"user_profile_unavailable → 503", domain.ErrUserProfileUnavailable, http.StatusServiceUnavailable, "user_profile_unavailable"},
 		{"workflow_service_unavailable → 503", domain.ErrWorkflowServiceUnavailable, http.StatusServiceUnavailable, "workflow_service_unavailable"},
 		{"realm_provisioner_unavailable → 503", domain.ErrRealmProvisionerUnavailable, http.StatusServiceUnavailable, "realm_provisioner_unavailable"},
+		{"catalog_unavailable → 503", domain.ErrCatalogUnavailable, http.StatusServiceUnavailable, "catalog_unavailable"},
+		{"group_mapping_unavailable → 503", domain.ErrGroupMappingUnavailable, http.StatusServiceUnavailable, "group_mapping_unavailable"},
 		{"dependency_unavailable → 503", domain.ErrDependencyUnavailable, http.StatusServiceUnavailable, "dependency_unavailable"},
 	}
 	for _, tc := range cases {
@@ -178,7 +173,7 @@ func TestP11MW010_AllSentinelsMapToCorrectStatus(t *testing.T) {
 			assert.Equal(t, tc.expectCode, body["code"], "wrong error code")
 		})
 	}
-	assert.GreaterOrEqual(t, len(cases), 45,
+	assert.GreaterOrEqual(t, len(cases), 40,
 		"if a sentinel was added to domain/errors.go, extend this exhaustive table")
 }
 

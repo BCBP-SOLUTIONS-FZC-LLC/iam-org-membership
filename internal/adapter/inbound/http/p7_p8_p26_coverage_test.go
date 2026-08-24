@@ -41,7 +41,7 @@ func TestMembershipPatch_SuspendSuccess_200(t *testing.T) {
 		return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
 	}}
 	// workflow=nil → WFI-13 advisory block is skipped (no advisory in response).
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, tenantOwnerCtx(tenantID))
@@ -59,7 +59,7 @@ func TestMembershipPatch_ReactivateSuccess_200(t *testing.T) {
 	mem := &mhMemRepo{setStatusFn: func(_ context.Context, tid, uid uuid.UUID, s domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
 		return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"active","record_version":2}`, tenantOwnerCtx(tenantID))
@@ -77,7 +77,7 @@ func TestMembershipPatch_TenantAdminCanSuspend_200(t *testing.T) {
 	mem := &mhMemRepo{setStatusFn: func(_ context.Context, tid, uid uuid.UUID, s domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
 		return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, tenantAdminCtx(tenantID))
@@ -105,7 +105,7 @@ func TestMembershipPatch_OptimisticLockConflict_409(t *testing.T) {
 	mem := &mhMemRepo{setStatusFn: func(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":99}`, tenantOwnerCtx(tenantID))
@@ -121,7 +121,7 @@ func TestMembershipPatch_MemberNotFound_404(t *testing.T) {
 	mem := &mhMemRepo{setStatusFn: func(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, tenantOwnerCtx(tenantID))
@@ -141,7 +141,7 @@ func TestMembershipPatch_SuspendWithActiveWorkflows_200AdvisoryPresent(t *testin
 	wf := &drhWorkflowClient{getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
 		return &port.DelegateImpact{ActiveWorkflows: 2, WorkflowIDs: []uuid.UUID{wfID, uuid.New()}}, nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, tenantOwnerCtx(tenantID))
@@ -165,7 +165,7 @@ func TestMembershipPatch_SuspendWorkflowClientError_200FailOpen(t *testing.T) {
 	wf := &drhWorkflowClient{getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
 		return nil, errors.New("workflow service down")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, tenantOwnerCtx(tenantID))
@@ -200,7 +200,7 @@ func TestMembershipPatch_SuspendLeftUser_404(t *testing.T) {
 	mem := &mhMemRepo{setStatusFn: func(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, tenantOwnerCtx(tenantID))
@@ -240,7 +240,7 @@ func TestRemovalResolution_ReplaceDelegate_204(t *testing.T) {
 	mem := &mhMemRepo{findByUserFn: func(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
 		return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: domain.MembershipActive}, nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	body := `{"action":"replace_delegate","replacement_user_id":"` + replacementID.String() + `"}`
@@ -257,7 +257,7 @@ func TestRemovalResolution_StopWorkflows_204(t *testing.T) {
 	wf := &drhWorkflowClient{cancelByDelegateFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) error {
 		return nil
 	}}
-	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, _ := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, tenantOwnerCtx(tenantID))
@@ -273,7 +273,7 @@ func TestRemovalResolution_StopWorkflows_204(t *testing.T) {
 func TestRemovalResolution_UnknownAction_422(t *testing.T) {
 	tenantID := uuid.New()
 	wf := &drhWorkflowClient{}
-	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"delete_everything"}`, tenantOwnerCtx(tenantID))
@@ -302,7 +302,7 @@ func TestRemovalResolution_NonAdminSameTenant_403(t *testing.T) {
 func TestRemovalResolution_ReplaceDelegate_MissingReplacement_400(t *testing.T) {
 	tenantID := uuid.New()
 	wf := &drhWorkflowClient{}
-	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, nil, nil, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"replace_delegate"}`, tenantOwnerCtx(tenantID))

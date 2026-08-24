@@ -43,7 +43,7 @@ import (
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept001_ListAllRegardlessOfActive(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-001")
 	dA := seedSystemDept(t, ctx, nil, "TA_001", "TA")
@@ -81,7 +81,7 @@ func TestP8TDept001_ListAllRegardlessOfActive(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept002_ListActiveFilters(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-002")
 	dA := seedNonSystemDept(t, ctx, nil, "TA_002", "TA")
@@ -122,7 +122,7 @@ func TestP8TDept002_ListActiveFilters(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept003_FindHappy(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-003")
 	deptID := seedNonSystemDept(t, ctx, nil, "T003", "T003")
@@ -152,7 +152,7 @@ func TestP8TDept003_FindHappy(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP8TDept004_FindNotFound(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-004")
 	tctx := withTenant(ctx, tenantID)
@@ -184,7 +184,7 @@ func TestP8TDept005_ActivateIdempotent(t *testing.T) {
 	// returning the existing row) is a service-layer concern —
 	// DepartmentService.Activate catches this exact error and re-Finds —
 	// covered by TestP7Dept011_ActivateIdempotent.
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-005")
 	deptID := seedNonSystemDept(t, ctx, nil, "T005", "T005")
@@ -218,7 +218,7 @@ func TestP8TDept005_ActivateIdempotent(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept006_SetActiveOptimisticLock(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-006")
 	deptID := seedNonSystemDept(t, ctx, nil, "T006", "T006")
@@ -254,7 +254,7 @@ func TestP8TDept006_SetActiveOptimisticLock(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP8Tenant001_FindByIDHappy(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-001")
 	tctx := withTenant(ctx, tenantID)
@@ -283,7 +283,7 @@ func TestP8Tenant001_FindByIDHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8Tenant002_FindByIDNotFound(t *testing.T) {
-	appPool, _ := setupTestDB(t)
+	appPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 	// GUC bind to some tenant id so RLS lets the query through — but there's
 	// no matching row, so FindByID returns not-found regardless.
@@ -312,7 +312,7 @@ func TestP8Tenant002_FindByIDNotFound(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP8Tenant003_UpdateNameHappy(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-003")
 	tctx := withTenant(ctx, tenantID)
@@ -341,7 +341,7 @@ func TestP8Tenant003_UpdateNameHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8Tenant004_UpdateOptimisticLock(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-004")
 	tctx := withTenant(ctx, tenantID)
@@ -372,7 +372,7 @@ func TestP8Tenant004_UpdateOptimisticLock(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP8Tenant005_SlugImmutability(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-005-immut")
 

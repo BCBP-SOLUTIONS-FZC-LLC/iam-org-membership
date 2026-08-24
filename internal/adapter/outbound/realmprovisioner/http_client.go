@@ -32,15 +32,24 @@ import (
 	"github.com/google/uuid"
 )
 
+// Logger is the structured logging interface this client uses (Warn only).
+// *slog.Logger satisfies it directly (existing tests keep working
+// unchanged); so does port.SlogStyleLogger, which New() passes in from
+// main.go so these warnings flow through the same gincommon-backed sink as
+// the rest of the service instead of slog.Default().
+type Logger interface {
+	Warn(msg string, args ...any)
+}
+
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  *slog.Logger
+	logger  Logger
 }
 
 var _ port.RealmProvisionerClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger *slog.Logger) *HTTPClient {
+func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -61,11 +70,13 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger *slog.Logger) *
 	}
 }
 
-// New preserves the Phase 2 factory name so existing wiring compiles.
-func New() *HTTPClient {
+// New preserves the Phase 2 factory name so existing wiring compiles. log
+// is the shared gincommon-backed Logger (may be nil — see
+// port.SlogStyleLogger).
+func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("REALM_PROVISIONER_BASE_URL", "")
 	timeout := envDurationMs("REALM_PROVISIONER_TIMEOUT_MS", 3*time.Second)
-	return NewHTTPClient(baseURL, timeout, slog.Default())
+	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
 }
 
 func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {

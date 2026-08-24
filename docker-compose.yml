@@ -6,9 +6,11 @@ services:
         - go_private_token
     ports:
       - "8080:8080"
+      - "9090:9090"
     environment:
       APP_ENV: dev
       APP_PORT: "8080"
+      METRICS_PORT: "9090"
       APP_NAME: iam-org-membership
       PG_HOST: pgbouncer
       PG_PORT: "5432"
@@ -111,7 +113,8 @@ services:
   localstack:
     # Community edition — supports SNS + SQS (all this service needs at MVP).
     # Glue Schema Registry and KMS are Pro-only; the service runs with the
-    # NoopCodec when GLUE_REGISTRY_NAME is unset (the default for local dev).
+    # NoopCodec (plain JSON) on a topic whose GLUE_REGISTRY_*_NAME is unset
+    # (the default for local dev).
     # Pro opt-in: `make docker-up-pro`
     #   (docker compose -f docker-compose.yml -f docker-compose.pro.yml up)
     image: localstack/localstack:4.4.0

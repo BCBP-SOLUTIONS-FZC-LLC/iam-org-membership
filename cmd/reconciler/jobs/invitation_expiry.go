@@ -12,6 +12,11 @@ import (
 // membership-add. Idempotent — restart re-selects only rows still in
 // 'pending' state.
 //
+// Also sets kc_cleanup_pending=true (PI-9) so the never-activated Keycloak
+// user backing an expired invitation is durably scheduled for deletion by
+// the invitation-kc-cleanup reconciler — an expired invite's shell account
+// is not left orphaned.
+//
 // Uses sysPool (BYPASSRLS) because the sweep spans tenants.
 //
 // Note on wave-expiry seat-overage resolution (§8.10.3): this job does
@@ -28,11 +33,11 @@ func InvitationExpiry(ctx context.Context, jctx *Context) (Result, error) {
 	// Select expired pending rows in batches to keep lock hold time bounded.
 	// LIMIT via a scoped subquery — plain UPDATE ... LIMIT isn't Postgres
 	// syntax. Sibling reconcilers (seat_overage, realm_config_sync,
-	// invitation_kc_cleanup, delegation_expiry) use the same pattern.
+	// invitation_kc_cleanup) use the same pattern.
 	err := runInTxWithSysPool(ctx, jctx.SysPool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			UPDATE pending_invitations
-			SET status = 'expired'
+			SET status = 'expired', kc_cleanup_pending = true
 			WHERE id IN (
 				SELECT id FROM pending_invitations
 				WHERE status = 'pending' AND expires_at < now()

@@ -17,8 +17,10 @@ const (
 
 // TenantMembership is lifecycle-only per §16 A14 — carries no role data.
 // The uq_tm_id_tenant_user composite unique is the FK target for
-// tenant_roles / dept_memberships / delegations / tender_acl_entries
-// (§16 A15/A16/A28/A31).
+// tenant_roles / dept_memberships (§16 A15/A16/A28/A31). delegations and
+// tender_acl_entries moved to their own services' databases (ADR-0007/0008)
+// and reference this row via the synchronous I-15 existence check instead
+// of a cross-database FK (§19.2).
 type TenantMembership struct {
 	ID            uuid.UUID
 	TenantID      uuid.UUID

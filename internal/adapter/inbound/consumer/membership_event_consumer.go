@@ -18,9 +18,22 @@
 //     TenantStateChanged event on iam.membership.events in the same tx
 //     as the projection UPDATE.
 //
-// Idempotency (IDEMP-2/4) is provided by INSERT ... ON CONFLICT DO NOTHING
-// into processed_events keyed by (event_id, consumer). Beyond-window
-// duplicates (SQS max 14d + DLQ dwell) are backstopped by EVT-14 recency.
+// It additionally relays TenantMembershipsPurged on iam.membership.events
+// whenever a consumed event genuinely transitions the tenant into
+// 'offboarded' — same real-transition guard as EVT-16, but on its own
+// event type so the Delegation, Tender-ACL, and Group-Mapping services'
+// consumers can subscribe without matching every other status/plan change
+// (LLD §15.5, ADR-0008 §6.4 pattern). Distinct from — and never a re-emit
+// of — the Realm-Provisioner-produced TenantOffboarded event this consumer
+// reacts to on tenant-orgm-q (LLD §16 OQ-1: one producer per event name).
+//
+// Idempotency (IDEMP-2/4) is provided by port.IdempotencyStore against
+// processed_events, keyed by (event_id, consumer) — same port shape as
+// iam-user-profile's IdempotencyStore, but MarkProcessedInTx joins the
+// caller's transaction (rather than iam-user-profile's decoupled,
+// mark-after-success call) so the dedup write commits atomically with the
+// EVT-14 row lock and projection update below. Beyond-window duplicates
+// (SQS max 14d + DLQ dwell) are backstopped by EVT-14 recency.
 //
 // Unknown event types are silently acknowledged, logged at INFO, and
 // counted by iam_unknown_event_acknowledged_total (§6 event consumer
@@ -32,11 +45,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
@@ -59,20 +72,24 @@ type OutboxEnqueuer interface {
 }
 
 type MembershipEventConsumer struct {
-	pool   *pgcommon.Pool
-	outbox OutboxEnqueuer
-	skew   time.Duration
-	logger *slog.Logger
+	pool        *pgcommon.Pool
+	outbox      OutboxEnqueuer
+	idempotency port.IdempotencyStore
+	skew        time.Duration
+	logger      port.SlogStyleLogger
 }
 
-func NewMembershipEventConsumer(pool *pgcommon.Pool, outbox OutboxEnqueuer, skew time.Duration, logger *slog.Logger) *MembershipEventConsumer {
-	if logger == nil {
-		logger = slog.Default()
-	}
+// NewMembershipEventConsumer builds a MembershipEventConsumer. logger may be
+// nil — see MembershipService's constructor doc comment for the fallback/
+// production-wiring contract, which applies identically here. idempotency
+// may be nil only in tests that never reach a live dedup check/write (e.g.
+// constructor-validation tests); production wiring always supplies a real
+// port.IdempotencyStore (postgres.IdempotencyRepository).
+func NewMembershipEventConsumer(pool *pgcommon.Pool, outbox OutboxEnqueuer, idempotency port.IdempotencyStore, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
 	if skew <= 0 {
 		skew = 300 * time.Second
 	}
-	return &MembershipEventConsumer{pool: pool, outbox: outbox, skew: skew, logger: logger}
+	return &MembershipEventConsumer{pool: pool, outbox: outbox, idempotency: idempotency, skew: skew, logger: port.NewSlogStyleLogger(logger)}
 }
 
 // Handle is the entry point for platform-events SQS consumer.
@@ -94,7 +111,9 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		}
 		c.logger.Info("unknown event type — silently acknowledging",
 			"event_id", env.ID, "event_type", env.Type)
-		return c.recordProcessedOnly(ctx, env.ID)
+		return pgcommon.RunInTx(ctx, c.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
+			return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
+		})
 	}
 
 	tenantID, err := uuid.Parse(env.TenantID)
@@ -103,7 +122,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	// Cheap dedup probe outside the tx to save a lock acquisition on replay.
-	seen, err := c.alreadyProcessed(ctx, env.ID)
+	seen, err := c.idempotency.IsProcessed(ctx, consumerName, env.ID)
 	if err != nil {
 		return err
 	}
@@ -130,7 +149,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			if errors.Is(err, pgx.ErrNoRows) {
 				// Tenant absent (already offboarded / never provisioned) —
 				// record dedup and drop silently.
-				return c.insertProcessedEventInTx(txCtx, tx, env.ID)
+				return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
 			}
 			return err
 		}
@@ -141,7 +160,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 				metrics.StaleLifecycleEventSkipped.WithLabelValues(env.Type).Inc()
 			}
 			c.logger.Info("EVT-14 stale — projection unchanged", "event_id", env.ID, "event_type", env.Type)
-			return c.insertProcessedEventInTx(txCtx, tx, env.ID)
+			return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
 		}
 
 		prevStatus := domain.SubscriptionStatus(currentStatus)
@@ -180,7 +199,38 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			}
 		}
 
-		return c.insertProcessedEventInTx(txCtx, tx, env.ID)
+		// ── ADR-0008 §6.4 (LLD §15.5): Core → Delegation/Tender-ACL/
+		// Group-Mapping tenant-purge cascade signal. Whenever this
+		// consumed event actually transitions the tenant into 'offboarded'
+		// (guarded, like EVT-16 above, by the EVT-14 recency check already
+		// having run and by the prevStatus != newStatus diff — never a
+		// bare relay of the inbound event), relay TenantMembershipsPurged
+		// on iam.membership.events so those services' consumers can
+		// soft-delete their own tenant-scoped rows. Distinct from the
+		// generic EVT-16 TenantStateChanged relay above (which also fires
+		// on this transition) so a downstream consumer can filter on it
+		// without matching every other status/plan change, and distinct
+		// from the Realm-Provisioner-produced TenantOffboarded event this
+		// same consumer reacts to on tenant-orgm-q (§16 OQ-1 — Core never
+		// re-emits that event under its own name).
+		if c.outbox != nil && prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
+			if err := c.outbox.EnqueueInTx(txCtx, tx, &domain.DomainEvent{
+				Type:      domain.EventTenantMembershipsPurged,
+				TenantID:  tenantID,
+				Subject:   tenantID.String(),
+				Actor:     "iam-system",
+				IPAddress: "system",
+				UserAgent: "iam-org-membership/event-consumer",
+				Data: domain.TenantMembershipsPurgedPayload{
+					TenantID: tenantID,
+					ActorID:  domain.SystemActorID,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+
+		return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
 	})
 }
 
@@ -315,34 +365,6 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		return prevStatus, prevPlan, err
 	}
 	return prevStatus, prevPlan, nil
-}
-
-func (c *MembershipEventConsumer) alreadyProcessed(ctx context.Context, eventID string) (bool, error) {
-	var found int
-	err := pgcommon.RunInTx(ctx, c.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT 1 FROM processed_events WHERE event_id = $1 AND consumer = $2`, eventID, consumerName).Scan(&found)
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func (c *MembershipEventConsumer) insertProcessedEventInTx(ctx context.Context, tx pgx.Tx, eventID string) error {
-	_, err := tx.Exec(ctx, `
-		INSERT INTO processed_events (event_id, consumer)
-		VALUES ($1, $2)
-		ON CONFLICT (event_id, consumer) DO NOTHING`, eventID, consumerName)
-	return err
-}
-
-func (c *MembershipEventConsumer) recordProcessedOnly(ctx context.Context, eventID string) error {
-	return pgcommon.RunInTx(ctx, c.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		return c.insertProcessedEventInTx(ctx, tx, eventID)
-	})
 }
 
 // ── event classification ─────────────────────────────────────────────────

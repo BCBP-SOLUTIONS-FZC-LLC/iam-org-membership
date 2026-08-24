@@ -402,12 +402,12 @@ func TestHandleError_UnknownDomainErrorFallsBackTo422(t *testing.T) {
 	// falls into the 422 default (documented behavior — 422 is the
 	// domain-rule bucket).
 	c, w := newTestContext(nil)
-	err := domain.NewError(domain.ErrSelfDelegation, "cannot delegate to self")
+	err := domain.NewError(domain.ErrInvalidAction, "action not permitted in current state")
 
 	HandleError(c, err)
 
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
-	assert.Equal(t, "self_delegation", decodeBody(t, w)["code"])
+	assert.Equal(t, "invalid_action", decodeBody(t, w)["code"])
 }
 
 func TestHandleError_NonDomainErrorReturns500(t *testing.T) {

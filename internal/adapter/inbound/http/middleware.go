@@ -7,7 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -20,6 +20,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// errorLogger is the shared gincommon-backed Logger, set once by NewRouter
+// from RouterConfig.GinConfig.Logger. HandleError has ~150 call sites across
+// every handler file, so threading a logger through as an explicit
+// parameter would touch all of them; a package-level var set at router
+// construction time reaches the one bypass site (the unhandled-500 branch
+// below) without that churn. nil-safe — tests that build handlers without
+// going through NewRouter simply get no logging here, same as before.
+var errorLogger port.Logger
 
 // bridgedIdentity is the primitive-typed view of the gateway-injected
 // identity used by the bridge helper. Keeping this decoupled from the
@@ -163,7 +172,7 @@ func RequireSystemRole() gin.HandlerFunc {
 // (long TTL, RP session-revoke failure, misconfigured realm), the service
 // still refuses.
 //
-// Applies ONLY to public routes (/api/v1/tenants/*, /api/v1/delegations/*).
+// Applies ONLY to public routes (/api/v1/tenants/*).
 // Skipped for iam-system (internal/consumer/reconciler paths that need to
 // mutate a trial_expired tenant to restore it) and platform_operator (O-7
 // reassign-owner, O-4 feature-flags, etc — operators must retain access to
@@ -233,7 +242,7 @@ func RequireActiveTenant(tenants port.TenantRepository) gin.HandlerFunc {
 // Bypass: iam-system and platform_operator callers are never membership-checked
 // (they have no tenant_memberships row to look up and must retain access to
 // recover tenants in any state). Applied after RequireActiveTenant on the
-// same /api/v1/tenants/* and /api/v1/delegations/* route groups.
+// same /api/v1/tenants/* route group.
 func RequireActiveMembership(memberships port.MembershipRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc, ok := requestctx.FromContext(c.Request.Context())
@@ -390,7 +399,9 @@ func HandleError(c *gin.Context, err error) {
 			return
 		}
 	}
-	log.Printf("[DEBUG] unhandled 500 error type=%T value=%v", err, err)
+	if errorLogger != nil {
+		errorLogger.Error("unhandled 500 error", map[string]any{"error_type": fmt.Sprintf("%T", err), "error": err.Error()})
+	}
 	er := newErrorResponse(c, "internal_error", "an unexpected error occurred", nil)
 	er.Status = http.StatusInternalServerError
 	c.AbortWithStatusJSON(http.StatusInternalServerError, er)
@@ -456,7 +467,6 @@ func domainErrorStatus(de *domain.DomainError) int {
 	case errors.Is(de.Cause, domain.ErrTenantNotFound),
 		errors.Is(de.Cause, domain.ErrMemberNotFound),
 		errors.Is(de.Cause, domain.ErrDepartmentNotFound),
-		errors.Is(de.Cause, domain.ErrDelegationNotFound),
 		errors.Is(de.Cause, domain.ErrInvitationNotFound),
 		errors.Is(de.Cause, domain.ErrPlanNotFound):
 		return http.StatusNotFound
@@ -470,18 +480,17 @@ func domainErrorStatus(de *domain.DomainError) int {
 		errors.Is(de.Cause, domain.ErrInvitationAlreadyExists),
 		errors.Is(de.Cause, domain.ErrTenantOffboarded),
 		errors.Is(de.Cause, domain.ErrDepartmentAlreadyActivated),
-		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted),
-		errors.Is(de.Cause, domain.ErrACLAlreadyExists):
+		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted):
 		return http.StatusConflict
 	case errors.Is(de.Cause, domain.ErrReinviteTooSoon),
 		errors.Is(de.Cause, domain.ErrInviteRateLimited):
 		return http.StatusTooManyRequests
 	case errors.Is(de.Cause, domain.ErrDBUnavailable),
 		errors.Is(de.Cause, domain.ErrCacheUnavailable),
-		errors.Is(de.Cause, domain.ErrUserProfileUnavailable),
 		errors.Is(de.Cause, domain.ErrWorkflowServiceUnavailable),
 		errors.Is(de.Cause, domain.ErrRealmProvisionerUnavailable),
-		errors.Is(de.Cause, domain.ErrCatalogServiceUnavailable),
+		errors.Is(de.Cause, domain.ErrCatalogUnavailable),
+		errors.Is(de.Cause, domain.ErrGroupMappingUnavailable),
 		errors.Is(de.Cause, domain.ErrDependencyUnavailable):
 		return http.StatusServiceUnavailable
 	default:

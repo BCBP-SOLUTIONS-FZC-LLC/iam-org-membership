@@ -31,7 +31,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestMembershipInsert_Idempotent(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-b3")
 	tctx := withTenant(ctx, tenantID)
@@ -57,7 +57,7 @@ func TestMembershipInsert_Idempotent(t *testing.T) {
 }
 
 func TestMembershipInsert_PreservesSuspendedStatus(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-b14")
 	tctx := withTenant(ctx, tenantID)
@@ -94,7 +94,7 @@ func TestMembershipInsert_PreservesSuspendedStatus(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestDeptMembershipAssign_SameLevelNoOp(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "acme-b4a")
 	tctx := withTenant(ctx, tenantID)
@@ -113,7 +113,7 @@ func TestDeptMembershipAssign_SameLevelNoOp(t *testing.T) {
 }
 
 func TestDeptMembershipAssign_LevelChange(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "acme-b4b")
 	tctx := withTenant(ctx, tenantID)
@@ -132,7 +132,7 @@ func TestDeptMembershipAssign_LevelChange(t *testing.T) {
 }
 
 func TestDeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "acme-b4c")
 	tctx := withTenant(ctx, tenantID)
@@ -186,7 +186,7 @@ func TestDeptMembershipAssign_ConcurrentCreates_OneWinsGracefully(t *testing.T) 
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTenantRoleGrant_Idempotent(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-b2")
 	tctx := withTenant(ctx, tenantID)
@@ -219,7 +219,7 @@ func TestTenantRoleGrant_Idempotent(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestG5_PendingInvitationExpiryGuard_BlocksPastTimestamp(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-g5")
 
@@ -240,7 +240,7 @@ func TestG5_PendingInvitationExpiryGuard_BlocksPastTimestamp(t *testing.T) {
 }
 
 func TestG5_PendingInvitationExpiryGuard_AllowsFutureTimestamp(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "acme-g5b")
 
@@ -259,7 +259,7 @@ func TestG5_PendingInvitationExpiryGuard_AllowsFutureTimestamp(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTenantsRLSPolicy_UsesHelperFunction(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	// Confirm the tenants policy's USING expression references

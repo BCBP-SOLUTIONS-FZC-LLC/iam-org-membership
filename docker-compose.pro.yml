@@ -9,10 +9,11 @@
 #                  postgres pgbouncer redis localstack
 #
 # With Pro:
-#   - Glue Schema Registry: set GLUE_REGISTRY_NAME in .env to activate the
-#     ValidatingCodec / GlueCodec chain. MUST stay empty while PG_BOUNCER_MODE=true
-#     — Glue's 18-byte binary header is not valid JSONB and corrupts
-#     outbox_events.payload under transaction pooling (see .env-example).
+#   - Glue Schema Registry: set GLUE_REGISTRY_MEMBERSHIP_NAME /
+#     GLUE_REGISTRY_TENANT_NAME in .env to activate the GlueCodec on each
+#     topic (one registry per topic, SCHEMA-7). The codec runs at
+#     SNS-publish time only — outbox_events always stores plain JSON, so
+#     this is safe to combine with PG_BOUNCER_MODE=true (see .env-example).
 #   - KMS: available for future S3-KMS use (this service does not use S3 today).
 #   - SNS + SQS: identical to community edition.
 services:
@@ -28,5 +29,7 @@ services:
 
   app:
     environment:
-      GLUE_REGISTRY_NAME: ${GLUE_REGISTRY_NAME:-}
-      GLUE_REGISTRY_ARN: ${GLUE_REGISTRY_ARN:-}
+      GLUE_REGISTRY_MEMBERSHIP_NAME: ${GLUE_REGISTRY_MEMBERSHIP_NAME:-}
+      GLUE_REGISTRY_MEMBERSHIP_ARN: ${GLUE_REGISTRY_MEMBERSHIP_ARN:-}
+      GLUE_REGISTRY_TENANT_NAME: ${GLUE_REGISTRY_TENANT_NAME:-}
+      GLUE_REGISTRY_TENANT_ARN: ${GLUE_REGISTRY_TENANT_ARN:-}

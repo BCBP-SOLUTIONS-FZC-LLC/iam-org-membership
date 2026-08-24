@@ -7,8 +7,8 @@ tag order and description).
 
 Swagger UI groups operations by the tag they carry; without a top-level
 `tags` array the order falls back to first-appearance-in-paths, which
-surfaces `/acl` and `/delegations` above the core internal/operator/tenant
-groups. Declaring the tags at the root pins the display order.
+surfaces unrelated groups above the core internal/operator/tenant groups.
+Declaring the tags at the root pins the display order.
 
 Run: python3 scripts/patch-swagger-extensions.py
      (called automatically by `make swag`)
@@ -28,14 +28,12 @@ ROOT = Path(__file__).parent.parent
 # ---------------------------------------------------------------------------
 
 TAGS = [
-    {"name": "internal",    "description": "In-mesh service-to-service (I-1..I-13)"},
-    {"name": "operator",    "description": "Platform operator (O-1..O-7)"},
+    {"name": "internal",    "description": "In-mesh service-to-service (I-1..I-15)"},
+    {"name": "operator",    "description": "Platform operator (O-4, O-7 — O-1/O-2/O-3/O-5/O-6 retired ADR-0007 Wave 1, moved to iam-catalog-admin)"},
     {"name": "tenant",      "description": "Tenant CRUD (P-1, P-2)"},
     {"name": "departments", "description": "Department activation (P-3, P-9, P-10, P-11, P-24, P-25)"},
     {"name": "members",     "description": "Membership management (P-4..P-8, P-27, P-28)"},
     {"name": "roles",       "description": "Dept-role labels (P-12, P-13)"},
-    {"name": "delegations", "description": "OOO delegations (P-18, P-19, P-20)"},
-    {"name": "acl",         "description": "Tender ACL overlays (P-21, P-22, P-23)"},
     {"name": "invitations", "description": "Two-step invite→accept (P-6, P-30, P-31)"},
     {"name": "resolution",  "description": "Removal-resolution (P-26)"},
     {"name": "infra",       "description": "Health & metrics (unauthenticated)"},

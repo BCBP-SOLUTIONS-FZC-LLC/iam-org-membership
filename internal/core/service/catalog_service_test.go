@@ -137,7 +137,7 @@ func TestCatalogService_Departments_ClientFailsAndNoStale_ReturnsCatalogServiceU
 	require.Error(t, err)
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, domain.ErrCatalogServiceUnavailable.Error(), de.Code)
+	assert.Equal(t, domain.ErrCatalogUnavailable.Error(), de.Code)
 }
 
 func TestCatalogService_DepartmentByID_FoundAndNotFound(t *testing.T) {
@@ -209,7 +209,7 @@ func TestCatalogService_Plans_ClientFailsAndNoStale_ReturnsCatalogServiceUnavail
 	require.Error(t, err)
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, domain.ErrCatalogServiceUnavailable.Error(), de.Code)
+	assert.Equal(t, domain.ErrCatalogUnavailable.Error(), de.Code)
 }
 
 // ── nil cache is a valid configuration (advisory-only) ────────────────

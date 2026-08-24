@@ -6,6 +6,9 @@
 package metrics
 
 import (
+	"context"
+	"errors"
+	"net"
 	"os"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -67,10 +70,6 @@ var (
 	// RealmSyncFailed counts realm-config-sync reconciler failures (T-15).
 	RealmSyncFailed *prometheus.CounterVec
 
-	// DelegationExpiryDeferred counts delegation-expiry ticks that skipped
-	// a row because UP.SetAvailability failed (DEL-6 fail-open defer).
-	DelegationExpiryDeferred *prometheus.CounterVec
-
 	// DelegateRemovalBlocked counts P-7 removals that returned 409
 	// workflow_resolution_required (§8.8.1 WFI-3).
 	DelegateRemovalBlocked *prometheus.CounterVec
@@ -88,6 +87,23 @@ var (
 	// an SQS backlog or slow downstream apply.
 	LifecycleConsumerLagSeconds *prometheus.HistogramVec
 
+	// XsvcCallLatencySeconds times the three new synchronous cross-service
+	// client calls (catalogadmin/groupmappingclient/delegationcheck) — LLD
+	// §11.2, source for the §18.7-§18.9 latency budgets. Labelled by
+	// service ("catalog"|"group_mapping"|"delegation") and endpoint.
+	XsvcCallLatencySeconds *prometheus.HistogramVec
+
+	// XsvcCallErrors counts cross-service call failures by outcome
+	// ("5xx"|"timeout"|"fallback_served"). "fallback_served" is recorded by
+	// the calling service (CatalogService/GroupMappingService), not the
+	// client, since only the caller knows whether a stale/last-known-good
+	// value was served instead of surfacing the error.
+	XsvcCallErrors *prometheus.CounterVec
+
+	// MembershipExistsCheck counts I-15 grant-time membership-existence
+	// checks served, by caller and result (§11.2).
+	MembershipExistsCheck *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -95,6 +111,48 @@ var (
 	SeatOverageActive       prometheus.Gauge // SEAT-5
 	PendingInvitationsStale prometheus.Gauge // invitation-expiry cron health
 )
+
+// ObserveXsvcLatency records a cross-service call's duration. Nil-safe —
+// XsvcCallLatencySeconds is only non-nil once Register() has run (server
+// startup), so client/service unit tests that never call Register() get a
+// silent no-op rather than a nil-pointer panic.
+func ObserveXsvcLatency(service, endpoint string, seconds float64) {
+	if XsvcCallLatencySeconds != nil {
+		XsvcCallLatencySeconds.WithLabelValues(service, endpoint).Observe(seconds)
+	}
+}
+
+// IncXsvcError records a cross-service call failure by outcome. Nil-safe,
+// see ObserveXsvcLatency.
+func IncXsvcError(service, endpoint, outcome string) {
+	if XsvcCallErrors != nil {
+		XsvcCallErrors.WithLabelValues(service, endpoint, outcome).Inc()
+	}
+}
+
+// IncMembershipExistsCheck records an I-15 grant-time membership-existence
+// check. Nil-safe, see ObserveXsvcLatency.
+func IncMembershipExistsCheck(caller, result string) {
+	if MembershipExistsCheck != nil {
+		MembershipExistsCheck.WithLabelValues(caller, result).Inc()
+	}
+}
+
+// XsvcOutcome classifies a cross-service client transport error into one of
+// iam_xsvc_call_errors_total's two client-observable outcomes ("timeout" |
+// "5xx"). The third outcome, "fallback_served", is recorded by the calling
+// service layer, not here — only it knows whether a stale/last-known-good
+// value was served instead of surfacing the error.
+func XsvcOutcome(err error) string {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "5xx"
+}
 
 // Register wires business metrics into the default Prometheus registry.
 // Call once at startup BEFORE the /metrics endpoint is served.
@@ -161,11 +219,6 @@ func Register() {
 		Help: "realm-config-sync reconciler failures (T-15).",
 	}, []string{"stage"})
 
-	DelegationExpiryDeferred = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_delegation_expiry_deferred_total",
-		Help: "delegation-expiry ticks that deferred a row because UP.SetAvailability failed (DEL-6).",
-	}, []string{"reason"})
-
 	DelegateRemovalBlocked = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iam_delegate_removal_blocked_total",
 		Help: "P-7 removals blocked by WFI-3 delegate-impact pre-check (409 workflow_resolution_required).",
@@ -186,6 +239,22 @@ func Register() {
 		Help:    "Seconds between event.time and consumer apply time. Sustained high P99 flags backlog.",
 		Buckets: []float64{0.05, 0.1, 0.5, 1, 5, 15, 60, 300, 1800},
 	}, []string{"event_type"})
+
+	XsvcCallLatencySeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "iam_xsvc_call_latency_seconds",
+		Help:    "Latency of synchronous cross-service client calls (catalog/group_mapping/delegation), by endpoint.",
+		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
+	}, []string{"service", "endpoint"})
+
+	XsvcCallErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_xsvc_call_errors_total",
+		Help: "Cross-service call failures by service/endpoint/outcome (5xx|timeout|fallback_served).",
+	}, []string{"service", "endpoint", "outcome"})
+
+	MembershipExistsCheck = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iam_membership_exists_check_total",
+		Help: "I-15 grant-time membership-existence checks served, by caller and result.",
+	}, []string{"caller", "result"})
 
 	TenantOwnerless = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iam_tenant_ownerless",
@@ -216,11 +285,13 @@ func Register() {
 		SeatLimitReached,
 		InviteThrottled,
 		RealmSyncFailed,
-		DelegationExpiryDeferred,
 		DelegateRemovalBlocked,
 		DelegateReassignment,
 		ProcessedEventsDuplicates,
 		LifecycleConsumerLagSeconds,
+		XsvcCallLatencySeconds,
+		XsvcCallErrors,
+		MembershipExistsCheck,
 		TenantOwnerless,
 		RealmSyncPending,
 		SeatOverageActive,

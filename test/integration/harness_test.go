@@ -198,7 +198,7 @@ func newPhase12Env(t *testing.T) *phase12Env {
 	t.Cleanup(closePg)
 
 	// Apply outbox schema FIRST (creates outbox_events), then domain migrations
-	// (000010_outbox_payload_text.up.sql alters outbox_events and must run after).
+	// (the domain migration alters outbox_events and must run after).
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: pgDSN}))
 	require.NoError(t, pgadapter.RunMigrations(ctx, pgDSN))
 

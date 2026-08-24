@@ -318,79 +318,8 @@ func TestPatchRoleLabel_CrossTenant(t *testing.T) {
 	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// P-19 · ACLHandler.Grant
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P9-P19-001
-// Feature:           P-19 · Invalid tender UUID → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestACLGrant_InvalidTenderID(t *testing.T) {
-	h := &ACLHandler{}
-	tenant := uuid.New()
-	body := `{"user_id":"` + uuid.New().String() + `","access_level":"view"}`
-	c, w := buildCtx(http.MethodPost, "/", body, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String(), "tender_id", "bogus")
-	h.Grant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// Test Case ID:      P9-P19-002
-// Feature:           P-19 · Malformed body → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestACLGrant_MalformedBody(t *testing.T) {
-	h := &ACLHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodPost, "/", `{`, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String(), "tender_id", uuid.New().String())
-	h.Grant(c)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-// Test Case ID:      P9-P19-003
-// Feature:           P-19 · Cross-tenant grant blocked → 403
-// Priority: P1 · Severity: Blocker · Automation Status: Automated
-func TestACLGrant_CrossTenant(t *testing.T) {
-	h := &ACLHandler{}
-	tenantA := uuid.New()
-	body := `{"user_id":"` + uuid.New().String() + `","access_level":"view"}`
-	c, w := buildCtx(http.MethodPost, "/", body, tenantOwnerCtx(uuid.New()))
-	setParams(c, "id", tenantA.String(), "tender_id", uuid.New().String())
-	h.Grant(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// P-18 · ACLHandler.List
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P9-P18-001
-// Feature:           P-18 · Invalid tender UUID → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestACLList_InvalidTenderID(t *testing.T) {
-	h := &ACLHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String(), "tender_id", "bogus")
-	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// P-20 · ACLHandler.Revoke
-// ═════════════════════════════════════════════════════════════════════════
-
-// Test Case ID:      P9-P20-001
-// Feature:           P-20 · Invalid user UUID → 400
-// Priority: P1 · Severity: Major · Automation Status: Automated
-func TestACLRevoke_InvalidUserID(t *testing.T) {
-	h := &ACLHandler{}
-	tenant := uuid.New()
-	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
-	setParams(c, "id", tenant.String(), "tender_id", uuid.New().String(), "user_id", "bogus")
-	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
+// P-18/P-19/P-20 (ACLHandler) — retired ADR-0007 Wave 3 Phase 6, moved to
+// iam-tender-acl's TAC-1/2/3. IDs never reused.
 
 // ═════════════════════════════════════════════════════════════════════════
 // O-4 · OperatorHandler.SetFeatureFlags

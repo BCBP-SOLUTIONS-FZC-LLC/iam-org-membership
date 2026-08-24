@@ -47,8 +47,6 @@ type testFixtures struct {
 	DeptMems    port.DeptMembershipRepository
 	Labels      port.DeptRoleLabelRepository
 	TenantDepts port.TenantDepartmentRepository
-	Delegations port.DelegationRepository
-	ACLs        port.TenderACLRepository
 	Invitations port.InvitationRepository
 
 	// CatalogDepts/CatalogPlans stand in for the departments/plans catalog
@@ -68,14 +66,12 @@ type testFixtures struct {
 	GroupMapping   *service.GroupMappingService
 	Invitation     *service.InvitationService
 	AuthZ          *service.AuthZService
-	Delegation     *service.DelegationService
 	Tenant         *service.TenantService
 	Department     *service.DepartmentService
 	RoleLabel      *service.RoleLabelService
 
 	// Overridable stubs — tests can reach in and swap behaviour (e.g.
-	// fx.UP.FailNext = true to simulate a UP outage for CONS-2 tests).
-	UP *fakeUserProfile
+	// fx.RP.PatchRealmConfigFailNext = true to simulate an RP outage).
 	RP *fakeRealmProvisioner
 
 	// GroupMappingClient stands in for Group Mapping Service's GM-I1 call
@@ -102,11 +98,11 @@ func (f *fakeGroupMappingClient) ResolveGroups(ctx context.Context, tenantID uui
 var _ port.GroupMappingClient = (*fakeGroupMappingClient)(nil)
 
 // buildTestFixtures wires everything on top of the containers Postgres.
-// Fake outbound clients are used for RP/UP/Workflow — they always return
+// Fake outbound clients are used for RP/Workflow — they always return
 // no-op results so the service flows don't fail on external dependencies.
 func buildTestFixtures(t testing.TB) *testFixtures {
 	t.Helper()
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 
 	tenants := pgadapter.NewTenantRepository(appPool)
 	memberships := pgadapter.NewMembershipRepository(appPool)
@@ -114,8 +110,6 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	deptMems := pgadapter.NewDeptMembershipRepository(appPool)
 	labels := pgadapter.NewDeptRoleLabelRepository(appPool)
 	tenantDepts := pgadapter.NewTenantDepartmentRepository(appPool)
-	delegations := pgadapter.NewDelegationRepository(appPool)
-	acls := pgadapter.NewTenderACLRepository(appPool)
 	invitations := pgadapter.NewInvitationRepository(appPool)
 
 	// Outbox publisher — writes to outbox_events table on EnqueueCtx.
@@ -144,8 +138,6 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		DeptMems:     deptMems,
 		Labels:       labels,
 		TenantDepts:  tenantDepts,
-		Delegations:  delegations,
-		ACLs:         acls,
 		Invitations:  invitations,
 		CatalogDepts: catalogDepts,
 		CatalogPlans: catalogPlans,
@@ -153,12 +145,12 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 
 	fx.Provisioning = service.NewProvisioningService(
 		appPool, tenants, memberships, roles, deptMems, labels,
-		tenantDepts, catalogDepts, delegations, acls, catalogPlans,
+		tenantDepts, catalogDepts, catalogPlans,
 		txRunner, nil, // cache=nil (advisory)
 		&fakeRealmProvisioner{}, // no-op RP client
 	)
 	fx.DeptMembership = service.NewDeptMembershipService(
-		deptMems, memberships, tenantDepts, catalogDepts, delegations,
+		deptMems, memberships, tenantDepts, catalogDepts, nil, // delegationCheck: unused in these tests
 		&fakeWorkflow{}, nil, txRunner,
 	)
 	fx.GroupMappingClient = &fakeGroupMappingClient{}
@@ -166,8 +158,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		memberships, roles, deptMems, txRunner, nil, fx.GroupMappingClient,
 	)
 	fx.Membership = service.NewMembershipService(
-		memberships, roles, deptMems, delegations, acls,
-		tenants, invitations, nil, // cache
+		memberships, roles, deptMems, tenants, invitations, nil, // cache
 		&fakeRealmProvisioner{}, &fakeWorkflow{},
 		txRunner, nil, 30, // seatOverageDays
 	)
@@ -179,13 +170,9 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		&fakeRealmProvisioner{}, nil, txRunner, nil, 7,
 	)
 	fx.AuthZ = service.NewAuthZService(appPool, catalogPlans, nil)
-	// UP + RP clients are injected via fx.UP / fx.RP so individual tests can
-	// override behaviour (fx.UP.FailNext = true / fx.RP.PatchRealmConfigFailNext = true).
-	fx.UP = &fakeUserProfile{}
+	// RP client is injected via fx.RP so individual tests can override
+	// behaviour (fx.RP.PatchRealmConfigFailNext = true).
 	fx.RP = &fakeRealmProvisioner{}
-	fx.Delegation = service.NewDelegationService(
-		delegations, memberships, fx.UP, nil, txRunner,
-	)
 	fx.Tenant = service.NewTenantService(tenants, nil, fx.RP)
 	fx.Department = service.NewDepartmentService(catalogDepts, tenantDepts, nil)
 	fx.RoleLabel = service.NewRoleLabelService(labels, nil)
@@ -403,27 +390,6 @@ func (f *fakeRealmProvisioner) RevokeUserSessions(_ context.Context, _, _ uuid.U
 	if f.RevokeUserSessionsFailNext {
 		f.RevokeUserSessionsFailNext = false
 		return errors.New("fake RP RevokeUserSessions outage")
-	}
-	return nil
-}
-
-// fakeUserProfile is a configurable stub for the UserProfileClient port.
-// Default behaviour: SetAvailability succeeds. Tests can flip FailNext or
-// set an ErrToReturn to simulate UP outages / non-2xx responses.
-type fakeUserProfile struct {
-	FailNext    bool
-	ErrToReturn error
-	Calls       []port.SetAvailabilityRequest
-}
-
-func (f *fakeUserProfile) SetAvailability(_ context.Context, req port.SetAvailabilityRequest) error {
-	f.Calls = append(f.Calls, req)
-	if f.FailNext {
-		f.FailNext = false
-		if f.ErrToReturn != nil {
-			return f.ErrToReturn
-		}
-		return errors.New("fake UP outage")
 	}
 	return nil
 }

@@ -50,7 +50,6 @@ type MembershipProjection struct {
 	LocalAccountsEnabled  bool                        `json:"local_accounts_enabled"`
 	Roles                 []domain.TenantRoleCode     `json:"roles"`
 	Departments           []domain.DeptMembershipView `json:"departments"`
-	ActiveDelegations     []DelegationView            `json:"active_delegations"`
 	EffectiveFeatureFlags map[string]any              `json:"effective_feature_flags"`
 }
 
@@ -63,15 +62,6 @@ type MembershipProjection struct {
 // to match the spec literally.
 func readOnlyForStatus(status domain.SubscriptionStatus) bool {
 	return status == domain.StatusCancelled
-}
-
-// DelegationView is the compact projection embedded in the I-8 response.
-type DelegationView struct {
-	DelegationID uuid.UUID              `json:"delegation_id"`
-	DelegateID   uuid.UUID              `json:"delegate_id"`
-	Scope        domain.DelegationScope `json:"scope"`
-	ScopeID      *uuid.UUID             `json:"scope_id,omitempty"`
-	EndsAt       *time.Time             `json:"ends_at,omitempty"`
 }
 
 // GetMembership implements I-8. Cache-through with 300 s ± 30 s jitter
@@ -164,27 +154,6 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 		}
 		drows.Close()
 
-		// Active delegations initiated by the caller (delegator-side).
-		delegations := []DelegationView{}
-		delrows, err := tx.Query(txCtx, `
-			SELECT id, delegate_id, scope, scope_id, ends_at FROM delegations
-			WHERE tenant_id = $1 AND delegator_id = $2 AND deleted_at IS NULL AND status = 'active'`,
-			tenantID, userID)
-		if err != nil {
-			return err
-		}
-		for delrows.Next() {
-			var dv DelegationView
-			var scope string
-			if err := delrows.Scan(&dv.DelegationID, &dv.DelegateID, &scope, &dv.ScopeID, &dv.EndsAt); err != nil {
-				delrows.Close()
-				return err
-			}
-			dv.Scope = domain.DelegationScope(scope)
-			delegations = append(delegations, dv)
-		}
-		delrows.Close()
-
 		// Effective feature flags = planDefaults(plan) ⊕ tenants.feature_flags (PLAN-6).
 		// Errors from PlanByCode are deliberately swallowed (err == nil
 		// gate below), unchanged from this method's pre-cutover behavior:
@@ -221,7 +190,6 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 			LocalAccountsEnabled:  localAccountsEnabled,
 			Roles:                 roles,
 			Departments:           depts,
-			ActiveDelegations:     delegations,
 			EffectiveFeatureFlags: effective,
 		}
 		return nil

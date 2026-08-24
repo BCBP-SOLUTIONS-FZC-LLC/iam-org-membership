@@ -21,10 +21,8 @@
 package e2e_test
 
 import (
-	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -98,59 +96,11 @@ func TestInviteThenList(t *testing.T) {
 }
 
 // ── P13-FLOW-003 ────────────────────────────────────────────────────────────
-
-func TestDelegationCreateListCancel(t *testing.T) {
-	e := newE2EEnv(t)
-	tenantID := e.seedTenant(t, "flow-003")
-	delegator := e.seedOwner(t, tenantID)
-	delegate := e.seedActiveMember(t, tenantID)
-
-	// Step 1 — P-19 create delegation.
-	endsAt := time.Now().UTC().Add(48 * time.Hour)
-	code, _, body := e.do(t, reqOpts{
-		method:  http.MethodPost,
-		path:    "/api/v1/delegations",
-		headers: ownerHeaders(delegator, tenantID),
-		body: map[string]any{
-			"delegate_id": delegate.String(),
-			"scope":       "all",
-			"ends_at":     endsAt.Format(time.RFC3339),
-		},
-	})
-	require.Equal(t, http.StatusCreated, code,
-		"P13-FLOW-003: create delegation must return 201 (got %d body=%s)", code, string(body))
-	var created map[string]any
-	unmarshalBody(t, body, &created)
-	delegationID, _ := created["id"].(string)
-	require.NotEmpty(t, delegationID)
-	recordVersion, ok := created["record_version"].(float64)
-	require.True(t, ok, "create response must include record_version")
-
-	// Verify UP was called (CONS-2 — delegation created only after UP 200).
-	assert.Len(t, e.UP.Calls, 1, "P13-FLOW-003: UP SetAvailability must have been called before insert")
-
-	// Step 2 — P-18 list.
-	code, _, body = e.do(t, reqOpts{
-		method:  http.MethodGet,
-		path:    "/api/v1/delegations",
-		headers: ownerHeaders(delegator, tenantID),
-	})
-	require.Equal(t, http.StatusOK, code)
-	var listResp map[string]any
-	unmarshalBody(t, body, &listResp)
-	items, _ := listResp["items"].([]any)
-	require.Len(t, items, 1)
-
-	// Step 3 — P-20 cancel. record_version rides as a query param (CONC-1
-	// optimistic-lock; the DELETE has no body).
-	code, _, body = e.do(t, reqOpts{
-		method:  http.MethodDelete,
-		path:    fmt.Sprintf("/api/v1/delegations/%s?record_version=%d", delegationID, int64(recordVersion)),
-		headers: ownerHeaders(delegator, tenantID),
-	})
-	assert.Contains(t, []int{http.StatusOK, http.StatusNoContent}, code,
-		"P13-FLOW-003: cancel delegation must return 200/204 (got %d body=%s)", code, string(body))
-}
+//
+// TestDelegationCreateListCancel removed (ADR-0008 v2): P-18/P-19/P-20
+// (list/create/cancel delegation) moved to the standalone Delegation
+// Service's DLG-1..3; the routes this test called are retired here and
+// return 404 (see retired_routes_test.go). ID never reused.
 
 // ── P13-FLOW-004 ────────────────────────────────────────────────────────────
 
@@ -206,8 +156,10 @@ func TestInternalGetMemberships(t *testing.T) {
 func TestInternalProvisionTenant(t *testing.T) {
 	e := newE2EEnv(t)
 
-	// Migrations already seed 3 plans + 5 system departments (§8.1) — see
-	// 000001_schema.up.sql. Nothing to bootstrap here.
+	// The e2e harness's fakeCatalogDepartments/fakeCatalogPlans already seed
+	// 3 plans + 5 system departments (§8.1) in place of the dropped
+	// plans/departments tables (now owned by the Catalog Service). Nothing
+	// to bootstrap here.
 
 	tenantID := uuid.New()
 	ownerID := uuid.New()

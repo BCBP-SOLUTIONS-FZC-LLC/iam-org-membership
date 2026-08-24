@@ -42,7 +42,11 @@ const (
 //	              every checkout (mirrors production).
 //	rawPool     — raw pgxpool bound as postgres superuser, used only to
 //	              seed rows (bypasses RLS naturally).
-func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool) {
+//	sysPool     — pgcommon.Pool bound as postgres superuser, no GUCProvider,
+//	              for tests that exercise jobs.Context.SysPool (a real
+//	              *pgcommon.Pool in production, deliberately without RLS GUC
+//	              injection so a BYPASSRLS-equivalent role sees every tenant).
+func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool, *pgcommon.Pool) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping postgres integration test in short mode")
@@ -70,8 +74,8 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool) {
 	require.NoError(t, err)
 	t.Cleanup(rawPool.Close)
 
-	// Create the two runtime roles BEFORE running migrations. Migration
-	// 000005_roles reasserts BYPASSRLS on the migrator and strips BYPASSRLS
+	// Create the two runtime roles BEFORE running migrations. The domain
+	// migration reasserts BYPASSRLS on the migrator and strips BYPASSRLS
 	// from the app role if somehow acquired.
 	_, err = rawPool.Exec(ctx, fmt.Sprintf(
 		`CREATE ROLE org_membership_app LOGIN PASSWORD '%s' NOBYPASSRLS`, appRolePassword))
@@ -81,12 +85,11 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool) {
 	require.NoError(t, err)
 
 	// Apply platform-events outbox schema FIRST (creates outbox_events +
-	// outbox_dead_letters, with a JSONB payload column) — domain migration
-	// 000010_outbox_payload_text ALTERs that same column to TEXT, so the
-	// outbox schema must exist before domain migrations run (mirrors
-	// cmd/server/main.go's own ordering comment). Phase 4
-	// service-integration tests query outbox_events directly to verify
-	// event emission.
+	// outbox_dead_letters, with a JSONB payload column) — the domain
+	// migration ALTERs that same column to TEXT, so the outbox schema must
+	// exist before domain migrations run (mirrors cmd/server/main.go's own
+	// ordering comment). Phase 4 service-integration tests query
+	// outbox_events directly to verify event emission.
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 
 	// Apply migrations as superuser (needs CREATE EXTENSION, CREATE TYPE, etc).
@@ -120,7 +123,11 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool) {
 	require.NoError(t, err)
 	t.Cleanup(appPool.Close)
 
-	return appPool, rawPool
+	sysPool, err := pgcommon.NewPool(ctx, pgcommon.Config{DSN: superDSN})
+	require.NoError(t, err)
+	t.Cleanup(sysPool.Close)
+
+	return appPool, rawPool, sysPool
 }
 
 // withTenant returns a context carrying a pgcommon GUCSet so the pool's
@@ -148,16 +155,18 @@ func seedTenant(t testing.TB, ctx context.Context, rawPool *pgxpool.Pool, slug s
 // Case 1 (RLS-1): every tenant-scoped table has ENABLE + FORCE RLS.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
-	// The 9 tenant-scoped tables remaining per LLD §4.3 — group_dept_role_mappings/
+	// The 7 tenant-scoped tables remaining per LLD §4.3 — group_dept_role_mappings/
 	// group_tenant_role_mappings/group_dept_mappings were dropped (ADR-0007
-	// Wave 2, moved to Group Mapping Service).
+	// Wave 2, moved to Group Mapping Service); tender_acl_entries was dropped
+	// (ADR-0007 Wave 3 Phase 7, moved to iam-tender-acl); delegations was
+	// dropped (ADR-0008 v2 Option C, moved to iam-delegation).
 	expected := []string{
 		"tenants", "tenant_departments", "tenant_memberships", "tenant_roles",
 		"dept_memberships", "dept_role_labels",
-		"delegations", "tender_acl_entries", "pending_invitations",
+		"pending_invitations",
 	}
 	rows, err := rawPool.Query(ctx, `
 		SELECT c.relname
@@ -187,7 +196,7 @@ func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
 // promises "CI verifies that org_membership_app does not possess BYPASSRLS".
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case1b_AppRoleHasNoBYPASSRLS(t *testing.T) {
-	_, rawPool := setupTestDB(t)
+	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	var bypass bool
@@ -201,7 +210,7 @@ func TestRLS_Case1b_AppRoleHasNoBYPASSRLS(t *testing.T) {
 // Case 2 (RLS-2): missing/malformed GUC → 0 rows, no writes.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case2_FailClosedOnMissingGUC(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	_ = seedTenant(t, ctx, rawPool, "acme")
 
@@ -219,7 +228,7 @@ func TestRLS_Case2_FailClosedOnMissingGUC(t *testing.T) {
 // Case 3 (RLS-3): cross-tenant INSERT rejected by WITH CHECK.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case3_CrossTenantInsertRejectedByWithCheck(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
 	tenantB := uuid.New()
@@ -247,7 +256,7 @@ func TestRLS_Case3_CrossTenantInsertRejectedByWithCheck(t *testing.T) {
 // LOCAL app.tenant_id, the GUC auto-resets at COMMIT.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case5_NoCrossTenantLeakAcrossPool(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
@@ -289,7 +298,7 @@ func TestRLS_Case5_NoCrossTenantLeakAcrossPool(t *testing.T) {
 // T-1: slug UPDATE raises exception (trg_tenant_slug_immutable).
 // ─────────────────────────────────────────────────────────────────────────
 func TestT1_SlugIsImmutable(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
 
@@ -306,7 +315,7 @@ func TestT1_SlugIsImmutable(t *testing.T) {
 // TRG-3: no-op UPDATE does NOT bump record_version.
 // ─────────────────────────────────────────────────────────────────────────
 func TestTRG3_NoOpUpdateDoesNotBumpVersion(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
 
@@ -330,7 +339,7 @@ func TestTRG3_NoOpUpdateDoesNotBumpVersion(t *testing.T) {
 // TR-7 / chk_tr_no_member: INSERT with role_code='member' rejected.
 // ─────────────────────────────────────────────────────────────────────────
 func TestTR7_MemberRoleRejected(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
 
@@ -359,7 +368,7 @@ func TestTR7_MemberRoleRejected(t *testing.T) {
 // tenant_memberships row is rejected by fk_dm_tenant_membership.
 // ─────────────────────────────────────────────────────────────────────────
 func TestCompositeFK_DeptMembershipRejectsWrongUser(t *testing.T) {
-	appPool, rawPool := setupTestDB(t)
+	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
 

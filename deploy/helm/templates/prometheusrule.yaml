@@ -241,22 +241,6 @@ spec:
               now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS. Investigate the producing
               service's clock (NTP), then flush its DLQ.
 
-        - alert: IAMDelegationExpiryLag
-          # Delegation-expiry CronJob is falling behind — active delegations
-          # past ends_at that haven't been closed out yet.
-          expr: |
-            max(iam_delegation_expiry_lag_seconds) > 300
-          for: 5m
-          labels:
-            severity: warning
-            team: platform
-          annotations:
-            summary: delegation-expiry CronJob lagging by >5m
-            description: >-
-              iam_delegation_expiry_lag_seconds = {{ "{{ $value | humanizeDuration }}" }}.
-              Active delegations past ends_at are not being closed promptly.
-              Check the delegation-expiry CronJob and User Profile availability API health.
-
     - name: iam_org_membership_compliance
       rules:
         - alert: IAMOrgMembershipRLSCrossTenantAccess
