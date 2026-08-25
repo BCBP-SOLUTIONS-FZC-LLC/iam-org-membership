@@ -280,7 +280,7 @@ Retention boundary anchored to `trial_ends_at + 15 days` — deterministic. Swee
 
 ### 15.4 Trial Reactivation (HLD TRIAL-5, T-14)
 
-Within 15-d grace, `trial_expired` reactivatable **once** via signed link. RP validates single-use token, re-enables user, emits `TrialReactivated`. O&M consumes (`tenant-orgm-q`) and applies in **one tx**:
+Within 15-d grace, `trial_expired` reactivatable **once** via signed link. RP validates single-use token, re-enables user, emits `TrialReactivated`. O&M consumes (`tenant-orgm-q`); `plan.trial_duration_days` is resolved via a pre-tx `CatalogService.PlanByCode` HTTP call (mirrors §8.1 TrialSignup — no outbound call runs inside an open tx), then the write transaction applies:
 1. `status='trial'` (audit `TrialReactivated`).
 2. **Fresh window:** `trial_ends_at = now() + plan.trial_duration_days` (HLD Invariant TRIAL-7, monotonic).
 3. Increment `trial_reactivation_count` (T-14 CHECK backstop caps at 1).

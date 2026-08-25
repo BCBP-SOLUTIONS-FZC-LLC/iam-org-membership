@@ -3253,7 +3253,9 @@ Unchanged from the monolith. Realm Provisioner owns the realm-side sweep (detect
 
 ### 15.4 Trial reactivation
 
-Unchanged from the monolith. Within the 15-day grace, a `trial_expired` tenant may reactivate **once** via a single-use RP-validated signed link; O&M consumes `TrialReactivated` and applies `status='trial'`, `trial_ends_at = now() + plan.trial_duration_days`, `trial_reactivation_count++` (capped by `CHECK (… <= 1)`, T-14) in one transaction. One-time guarantee is layered (single-use token + counter check + `processed_events` dedup).
+Within the 15-day grace, a `trial_expired` tenant may reactivate **once** via a single-use RP-validated signed link; O&M consumes `TrialReactivated` and applies `status='trial'`, `trial_ends_at = now() + plan.trial_duration_days`, `trial_reactivation_count++` (capped by `CHECK (… <= 1)`, T-14). One-time guarantee is layered (single-use token + counter check + `processed_events` dedup).
+
+`plan.trial_duration_days` is resolved via a `CatalogService.PlanByCode` call to the Catalog Service — an HTTP call, so, per FAIL-1 and mirroring §8.1 TrialSignup's own pre-tx `Catalog.PlanByCode` call, it must complete **before** the write transaction opens (no outbound call runs inside an open Postgres tx). The consumer's `Handle` does this as a short, separate read-only peek transaction (reads the tenant's current `plan`) followed by the Catalog call, then opens the real write transaction that applies the three field changes above atomically. This was carried over unfixed from the monolith through the ADR-0007 catalog extraction — the original handler read `plan.trial_duration_days` via a local SQL subquery against the `plans` table, which the extraction dropped from this service's schema entirely, so every `TrialReactivated` event failed at the query planner (`relation "plans" does not exist"`) until this was found and fixed (with new integration test coverage — previously zero).
 
 ### 15.5 Tenant offboarding (paid)
 

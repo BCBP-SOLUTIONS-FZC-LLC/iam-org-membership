@@ -631,6 +631,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `test/postgres/consumer_evt_test.go::TestConsumerEVT16_StatusChangeEnqueuesRelay` | `TenantStateChanged` emitted in same tx as projection UPDATE |
 | `test/postgres/concurrency_test.go::TestSEAT1_ConcurrencyRace` | Concurrent invite with 1 remaining seat → exactly one succeeds (row-lock) |
 | `test/postgres/services_test.go::TestTM12Escalation_IncrementsCounter` | I-5 sets `ownerless_since` on last-owner removal; only O-7 clears it |
+| `test/postgres/consumer_test.go::TestConsumer_TrialReactivated_SetsTrialEndsAtFromCatalogPlan` | `trial_duration_days` resolved via a pre-tx `CatalogService.PlanByCode` call, not a local `plans` table (dropped under ADR-0007) |
 
 ### Coverage
 
