@@ -75,6 +75,7 @@ type MembershipEventConsumer struct {
 	pool        *pgcommon.Pool
 	outbox      OutboxEnqueuer
 	idempotency port.IdempotencyStore
+	catalog     port.PlanCatalogReader
 	skew        time.Duration
 	logger      port.SlogStyleLogger
 }
@@ -84,12 +85,15 @@ type MembershipEventConsumer struct {
 // production-wiring contract, which applies identically here. idempotency
 // may be nil only in tests that never reach a live dedup check/write (e.g.
 // constructor-validation tests); production wiring always supplies a real
-// port.IdempotencyStore (postgres.IdempotencyRepository).
-func NewMembershipEventConsumer(pool *pgcommon.Pool, outbox OutboxEnqueuer, idempotency port.IdempotencyStore, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
+// port.IdempotencyStore (postgres.IdempotencyRepository). catalog may be nil
+// only in tests that never exercise a TrialReactivated event — it resolves
+// the reactivated plan's trial_duration_days from the Catalog Service
+// (Plans moved out of this service's own database under ADR-0007).
+func NewMembershipEventConsumer(pool *pgcommon.Pool, outbox OutboxEnqueuer, idempotency port.IdempotencyStore, catalog port.PlanCatalogReader, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
 	if skew <= 0 {
 		skew = 300 * time.Second
 	}
-	return &MembershipEventConsumer{pool: pool, outbox: outbox, idempotency: idempotency, skew: skew, logger: port.NewSlogStyleLogger(logger)}
+	return &MembershipEventConsumer{pool: pool, outbox: outbox, idempotency: idempotency, catalog: catalog, skew: skew, logger: port.NewSlogStyleLogger(logger)}
 }
 
 // Handle is the entry point for platform-events SQS consumer.
@@ -137,6 +141,36 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
 
+	// TrialReactivated (§8.10.3/TR2) needs the tenant's current plan's
+	// trial_duration_days from the Catalog Service to compute the new
+	// trial_ends_at. Catalog is an HTTP call, so — like ProvisioningService.
+	// TrialSignup — it must complete before the write transaction below
+	// opens; an HTTP call has no business running while a Postgres tx is
+	// held open. This short read-only peek at the current plan runs in its
+	// own transaction, committed and closed before the HTTP call.
+	var trialDurationDays int
+	if env.Type == "TrialReactivated" {
+		var planCode string
+		peekErr := pgcommon.RunInTx(gucCtx, c.pool, pgx.TxOptions{}, func(peekCtx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(peekCtx, `SELECT plan FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&planCode)
+		})
+		switch {
+		case errors.Is(peekErr, pgx.ErrNoRows):
+			// Tenant absent — the write tx below will hit the same
+			// ErrNoRows and take the standard "record dedup, drop" path.
+		case peekErr != nil:
+			return fmt.Errorf("peek current plan for TrialReactivated: %w", peekErr)
+		case c.catalog == nil:
+			return errors.New("TrialReactivated: no PlanCatalogReader configured")
+		default:
+			plan, err := c.catalog.PlanByCode(ctx, domain.TenantPlan(planCode))
+			if err != nil {
+				return fmt.Errorf("resolve plan %q for TrialReactivated: %w", planCode, err)
+			}
+			trialDurationDays = plan.TrialDurationDays
+		}
+	}
+
 	return pgcommon.RunInTx(gucCtx, c.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
 		// Lock the tenant row (EVT-14 needs consistent last_event_at read).
 		var currentStatus, currentPlan string
@@ -166,7 +200,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		prevStatus := domain.SubscriptionStatus(currentStatus)
 		prevPlan := domain.TenantPlan(currentPlan)
 
-		newStatus, newPlan, err := c.applyProjection(txCtx, tx, tenantID, env, prevStatus, prevPlan)
+		newStatus, newPlan, err := c.applyProjection(txCtx, tx, tenantID, env, prevStatus, prevPlan, trialDurationDays)
 		if err != nil {
 			return err
 		}
@@ -234,7 +268,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	})
 }
 
-func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan) (domain.SubscriptionStatus, domain.TenantPlan, error) {
+func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int) (domain.SubscriptionStatus, domain.TenantPlan, error) {
 	switch env.Type {
 	// ── tenant-orgm-q (Realm-Provisioner-produced) ──────────────────────
 	case "TrialTenantProvisioned":
@@ -289,12 +323,15 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		// TR2 (§15.4, LLD line 4237): trial_ends_at uses per-tier plan.trial_duration_days,
 		// not a hardcoded 30 (rev 1.32/A32(g)). T-14 caps trial_reactivation_count at 1;
 		// the WHERE clause enforces the one-time cap and the CHECK constraint is the DB backstop.
+		// trial_duration_days is resolved from the Catalog Service before this tx opened
+		// (Handle's pre-tx peek) — the `plans` table moved out of this service's own
+		// database under ADR-0007, so it can no longer be read via a local subquery.
 		tag, err := tx.Exec(ctx, `
 			UPDATE tenants t
 			SET status = 'trial',
-			    trial_ends_at = now() + make_interval(days => (SELECT trial_duration_days FROM plans WHERE code = t.plan)),
+			    trial_ends_at = now() + make_interval(days => $2),
 			    trial_reactivation_count = trial_reactivation_count + 1
-			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, tenantID)
+			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, tenantID, trialDurationDays)
 		if err != nil {
 			return prevStatus, prevPlan, err
 		}

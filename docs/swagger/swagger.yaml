@@ -73,6 +73,9 @@ definitions:
     type: object
   http.AssigneeOverrideResponse:
     properties:
+      eligible:
+        example: true
+        type: boolean
       tenant_id:
         format: uuid
         type: string
@@ -82,9 +85,6 @@ definitions:
       user_id:
         format: uuid
         type: string
-      validated:
-        example: true
-        type: boolean
     type: object
   http.DepartmentListResponse:
     properties:

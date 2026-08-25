@@ -23,6 +23,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -39,7 +41,7 @@ func TestN5_TenantSubscriptionCancelled_ReplayPreservesCancelledAt(t *testing.T)
 	tenantID := seedPaidTenant(t, ctx, rawPool, "n5-cancel-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
 
 	// First delivery — sets cancelled_at.
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
@@ -76,7 +78,7 @@ func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
 	tenantID := seedPaidTenant(t, ctx, rawPool, "suspend-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
 
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
 	env1 := mkEnvelope(t, "TenantSuspended", tenantID, firstTS, map[string]string{})
@@ -108,7 +110,7 @@ func TestConsumer_TenantOffboarded_ReplayPreservesTimestamps(t *testing.T) {
 	tenantID := seedPaidTenant(t, ctx, rawPool, "offboard-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
 
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
 	env1 := mkEnvelope(t, "TenantOffboarded", tenantID, firstTS, map[string]string{})
@@ -202,7 +204,7 @@ func TestConsumer_TenantReactivated_FromCancelled_ClearsCancelledAt(t *testing.T
 	tenantID := seedPaidTenant(t, ctx, rawPool, "reactivate")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
 
 	// Cancel first.
 	env1 := mkEnvelope(t, "TenantSubscriptionCancelled", tenantID,
@@ -228,7 +230,7 @@ func TestConsumer_TenantReactivated_FromOffboarded_Rejected(t *testing.T) {
 	tenantID := seedPaidTenant(t, ctx, rawPool, "reactivate-offboarded")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
 
 	// Offboard first — PAID-1 terminal state.
 	env1 := mkEnvelope(t, "TenantOffboarded", tenantID,
@@ -297,3 +299,79 @@ func itoa(i int) string {
 // Reference-touch to keep events package imported without lint noise if
 // the file grows.
 var _ = events.Envelope[json.RawMessage]{}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TrialReactivated (TR2, §15.4) — trial_ends_at must come from the Catalog
+// Service's plan.trial_duration_days, resolved via a pre-tx HTTP-shaped
+// call (fakePlanCatalog here), not a local `plans` table subquery — that
+// table moved to iam-catalog-admin under ADR-0007 and no longer exists in
+// this service's own database.
+// ─────────────────────────────────────────────────────────────────────────
+
+// fakePlanCatalog is a minimal port.PlanCatalogReader test double — no
+// cache, no HTTP, just a fixed TrialDurationDays for whatever code is
+// requested.
+type fakePlanCatalog struct {
+	trialDurationDays int
+}
+
+var _ port.PlanCatalogReader = (*fakePlanCatalog)(nil)
+
+func (f *fakePlanCatalog) Plans(context.Context) ([]domain.Plan, error) { return nil, nil }
+
+func (f *fakePlanCatalog) PlanByCode(_ context.Context, code domain.TenantPlan) (*domain.Plan, error) {
+	return &domain.Plan{Code: code, TrialDurationDays: f.trialDurationDays}, nil
+}
+
+func TestConsumer_TrialReactivated_SetsTrialEndsAtFromCatalogPlan(t *testing.T) {
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "trial-reactivated")
+
+	_, err := rawPool.Exec(ctx, `UPDATE tenants SET status = 'trial_expired' WHERE id = $1`, tenantID)
+	require.NoError(t, err)
+
+	outbox := &captureOutbox{}
+	catalog := &fakePlanCatalog{trialDurationDays: 21}
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), catalog, 5*time.Minute, nil)
+
+	env := mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), struct{}{})
+	require.NoError(t, c.Handle(ctx, env))
+
+	var status string
+	var reactivationCount int
+	var trialEndsAt time.Time
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, trial_reactivation_count, trial_ends_at FROM tenants WHERE id = $1`, tenantID,
+	).Scan(&status, &reactivationCount, &trialEndsAt))
+
+	assert.Equal(t, "trial", status)
+	assert.Equal(t, 1, reactivationCount)
+	assert.WithinDuration(t, time.Now().UTC().Add(21*24*time.Hour), trialEndsAt, 2*time.Minute,
+		"trial_ends_at must use the Catalog Service's trial_duration_days (21), not a dropped local plans table")
+}
+
+func TestConsumer_TrialReactivated_CapReachedIsNoop(t *testing.T) {
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "trial-reactivated-capped")
+
+	_, err := rawPool.Exec(ctx,
+		`UPDATE tenants SET status = 'trial_expired', trial_reactivation_count = 1 WHERE id = $1`, tenantID)
+	require.NoError(t, err)
+
+	outbox := &captureOutbox{}
+	catalog := &fakePlanCatalog{trialDurationDays: 14}
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), catalog, 5*time.Minute, nil)
+
+	env := mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), struct{}{})
+	require.NoError(t, c.Handle(ctx, env))
+
+	var status string
+	var reactivationCount int
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, trial_reactivation_count FROM tenants WHERE id = $1`, tenantID,
+	).Scan(&status, &reactivationCount))
+	assert.Equal(t, "trial_expired", status, "TRIAL-5 cap already hit — no-op, status unchanged")
+	assert.Equal(t, 1, reactivationCount)
+}

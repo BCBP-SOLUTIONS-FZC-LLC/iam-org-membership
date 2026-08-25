@@ -40,18 +40,18 @@ func (f *fakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comm
 // ── NewMembershipEventConsumer — default fields ────────────────────────
 
 func TestNewMembershipEventConsumer_NilLoggerAndZeroSkewGetDefaults(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, 0, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, nil, 0, nil)
 	require.NotNil(t, c)
 	assert.Equal(t, 300*time.Second, c.skew, "zero skew defaults to 300s")
 }
 
 func TestNewMembershipEventConsumer_NegativeSkewAlsoGetsDefault(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, -5*time.Second, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, nil, -5*time.Second, nil)
 	assert.Equal(t, 300*time.Second, c.skew, "negative skew defaults to 300s")
 }
 
 func TestNewMembershipEventConsumer_PositiveSkewPreserved(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, 42*time.Second, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, nil, 42*time.Second, nil)
 	assert.Equal(t, 42*time.Second, c.skew)
 }
 
@@ -67,11 +67,14 @@ func mkEnv(eventType string, payload any) events.Envelope[json.RawMessage] {
 }
 
 func applyOn(c *MembershipEventConsumer, tx pgx.Tx, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan) (domain.SubscriptionStatus, domain.TenantPlan, error) {
-	return c.applyProjection(context.Background(), tx, uuid.New(), env, prevStatus, prevPlan)
+	// trialDurationDays is only meaningful for TrialReactivated, and fakeTx
+	// ignores Exec's bound args entirely (see fakeTx.Exec above) — any
+	// constant is fine for every test that goes through this helper.
+	return c.applyProjection(context.Background(), tx, uuid.New(), env, prevStatus, prevPlan, 30)
 }
 
 func newConsumer() *MembershipEventConsumer {
-	return NewMembershipEventConsumer(nil, nil, nil, 300*time.Second, nil)
+	return NewMembershipEventConsumer(nil, nil, nil, nil, 300*time.Second, nil)
 }
 
 // The Trial signup path is a no-op projection (the TrialTenantProvisioned

@@ -458,12 +458,13 @@ type AssigneeOverrideRequest struct {
 	ActorID       uuid.UUID `json:"actor_id" format:"uuid"`
 }
 
-// AssigneeOverrideResponse is the I-13 success shape.
+// AssigneeOverrideResponse is the I-13 success shape (LLD §16 A55: "200
+// {eligible:true}").
 type AssigneeOverrideResponse struct {
-	Validated bool      `json:"validated" example:"true"`
-	TenderID  uuid.UUID `json:"tender_id" format:"uuid"`
-	TenantID  uuid.UUID `json:"tenant_id" format:"uuid"`
-	UserID    uuid.UUID `json:"user_id" format:"uuid"`
+	Eligible bool      `json:"eligible" example:"true"`
+	TenderID uuid.UUID `json:"tender_id" format:"uuid"`
+	TenantID uuid.UUID `json:"tenant_id" format:"uuid"`
+	UserID   uuid.UUID `json:"user_id" format:"uuid"`
 }
 
 // OperatorReassignOwnerResponse is the O-7 success shape.

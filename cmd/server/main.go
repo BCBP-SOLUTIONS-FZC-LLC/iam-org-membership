@@ -271,13 +271,24 @@ func main() {
 		}
 	}()
 
+	// catalogAdminClient/catalogReader: departments/plans read paths go
+	// through catalog-admin-config's CAT-I1/CAT-I2 + a local cache.
+	// Migration-runbook Phase 4 (LLD §12 step 4) completed the cutover —
+	// catalog-admin-config is now the sole writer too; O-1/O-2/O-3/O-5/O-6
+	// and the local departments/plans tables have been removed from this
+	// service entirely. Built here (before the SQS consumer wiring below)
+	// because MembershipEventConsumer's TrialReactivated handling also
+	// needs a PlanCatalogReader.
+	catalogAdminClient := catalogadminclient.New(log)
+	catalogReader := service.NewCatalogService(catalogAdminClient, cache).WithLogger(log)
+
 	// ── 7b. Inbound SQS consumers (§7.1) ─────────────────────────────────
 	// One handler covers both tenant-orgm-q + billing-orgm-q; EVT-14/15/16
 	// guards live inside the handler. Both queues share the same consumer
 	// identity in processed_events (§16 A33 / PE-1).
 	skew := envDuration("MAX_LIFECYCLE_EVENT_SKEW_SECONDS", 300*time.Second)
 	idempotencyStore := pgadapter.NewIdempotencyRepository(pool)
-	membershipConsumer := consumeradapter.NewMembershipEventConsumer(pool, outboxPublisher, idempotencyStore, skew, log)
+	membershipConsumer := consumeradapter.NewMembershipEventConsumer(pool, outboxPublisher, idempotencyStore, catalogReader, skew, log)
 
 	var sqsConsumers []events.Consumer
 	if url := os.Getenv("SQS_TENANT_ORGM_QUEUE_URL"); url != "" {
@@ -348,14 +359,6 @@ func main() {
 	// DLG-I3 (ADR-0008 v2 §6.4) now that `delegations` no longer lives in
 	// this service's database.
 	delegationCheckClient := delegationcheckclient.New(log)
-	// catalogAdminClient/catalogReader: departments/plans read paths go
-	// through catalog-admin-config's CAT-I1/CAT-I2 + a local cache.
-	// Migration-runbook Phase 4 (LLD §12 step 4) completed the cutover —
-	// catalog-admin-config is now the sole writer too; O-1/O-2/O-3/O-5/O-6
-	// and the local departments/plans tables have been removed from this
-	// service entirely.
-	catalogAdminClient := catalogadminclient.New(log)
-	catalogReader := service.NewCatalogService(catalogAdminClient, cache).WithLogger(log)
 	// groupMappingClient: I-10's mapping-resolution step goes through Group
 	// Mapping Service's GM-I1 behind the om:grm/gdm/gtrm cache (ADR-0007
 	// Wave 2). P-14..P-29 admin CRUD and the local group-mapping tables

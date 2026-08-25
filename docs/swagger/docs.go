@@ -2504,6 +2504,10 @@ const docTemplate = `{
         "http.AssigneeOverrideResponse": {
             "type": "object",
             "properties": {
+                "eligible": {
+                    "type": "boolean",
+                    "example": true
+                },
                 "tenant_id": {
                     "type": "string",
                     "format": "uuid"
@@ -2515,10 +2519,6 @@ const docTemplate = `{
                 "user_id": {
                     "type": "string",
                     "format": "uuid"
-                },
-                "validated": {
-                    "type": "boolean",
-                    "example": true
                 }
             }
         },
