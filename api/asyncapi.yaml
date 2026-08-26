@@ -361,7 +361,7 @@ servers:
       Owned and managed by: AuthZ Enrichment Service
       SNS subscription filter: EventType IN [DepartmentMembershipGranted,
         DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
-        TenantRoleGranted, TenantRoleRevoked]
+        TenantRoleGranted, TenantRoleRevoked, MembershipRevoked]
         (AuthZ evicts / refreshes the om:memberships cache — hot-path lookup I-8)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
@@ -570,7 +570,7 @@ channels:
       Consumer          Queue                         DLQ                               Filter (EventType)
       ──────────────────────────────────────────────────────────────────────────────
       Audit Log         membership-audit-q            membership-audit-q-dlq            (all 11)
-      AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*
+      AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*, MembershipRevoked
       Realm Provisioner membership-realm-q            membership-realm-q-dlq            DepartmentMembership{Granted,LevelChanged}, TenantRole*
       Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, TenantSeatOverage*
       Workflow          membership-workflow-q         membership-workflow-q-dlq         TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged
@@ -722,7 +722,8 @@ channels:
                         "DepartmentMembershipRevoked",
                         "DepartmentMembershipLevelChanged",
                         "TenantRoleGranted",
-                        "TenantRoleRevoked"] }
+                        "TenantRoleRevoked",
+                        "MembershipRevoked"] }
     messages:
       DepartmentMembershipGranted:
         $ref: '#/components/messages/DepartmentMembershipGranted'
@@ -734,6 +735,8 @@ channels:
         $ref: '#/components/messages/TenantRoleGranted'
       TenantRoleRevoked:
         $ref: '#/components/messages/TenantRoleRevoked'
+      MembershipRevoked:
+        $ref: '#/components/messages/MembershipRevoked'
     bindings:
       sqs:
         queue:
@@ -1255,11 +1258,13 @@ operations:
       Queue   : membership-authz-q  |  DLQ: membership-authz-q-dlq
       Filter  : EventType IN [DepartmentMembershipGranted, DepartmentMembershipRevoked,
                               DepartmentMembershipLevelChanged, TenantRoleGranted,
-                              TenantRoleRevoked]
+                              TenantRoleRevoked, MembershipRevoked]
 
-      On any of the five events: AuthZ invalidates the Valkey om:memberships
+      On any of the six events: AuthZ invalidates the Valkey om:memberships
       cache entry for (tenant_id, user_id). The next hot-path lookup at
       GET /internal/users/:id/memberships (I-8) will miss and repopulate.
+      MembershipRevoked additionally covers the case where a user's entire
+      tenant membership (not just one department/role) is removed (§7.3.2).
 
       Idempotency key: (id, consumer="authz-enrichment") in processed_events.
     messages:
@@ -1268,6 +1273,7 @@ operations:
       - $ref: '#/channels/membershipAuthZQueue/messages/DepartmentMembershipLevelChanged'
       - $ref: '#/channels/membershipAuthZQueue/messages/TenantRoleGranted'
       - $ref: '#/channels/membershipAuthZQueue/messages/TenantRoleRevoked'
+      - $ref: '#/channels/membershipAuthZQueue/messages/MembershipRevoked'
 
   receiveMembershipRealm:
     action: receive

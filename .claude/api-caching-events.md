@@ -209,7 +209,7 @@ O&M publishes **only these two** on `iam.tenant.events`. Lifecycle events O&M co
 
 ### 7.3.2 SNS→SQS Fan-out (§16 A60)
 
-`iam.membership.events` consumers: `membership-audit-q` (Audit — no filter, catch-all); `membership-authz-q` (AuthZ — dept/tenant role events for cache eviction); `membership-realm-q` (RP — approver make/unmake + admin/owner for `requires-mfa` realm role); `membership-notification-q` (Notification — user/admin emails + seat-overage banner); `membership-workflow-q` (Workflow — `override`/`TenantStateChanged`; no longer carries delegation events); `membership-billing-q` (Billing — `TenantSeatOverage*` only, filter policy).
+`iam.membership.events` consumers: `membership-audit-q` (Audit — no filter, catch-all); `membership-authz-q` (AuthZ — dept/tenant role events + `MembershipRevoked` for cache eviction); `membership-realm-q` (RP — approver make/unmake + admin/owner for `requires-mfa` realm role); `membership-notification-q` (Notification — user/admin emails + seat-overage banner); `membership-workflow-q` (Workflow — `override`/`TenantStateChanged`; no longer carries delegation events); `membership-billing-q` (Billing — `TenantSeatOverage*` only, filter policy).
 
 Three new cross-service queues, added in this pass, consume the cascade signals introduced above (informational — these queues live in the *other* services, not this repo): `delegation-cascade-q` (Delegation Service — filters `MembershipRevoked` + `TenantMembershipsPurged`), the Tender-ACL Service's equivalent queue (same two event types), and the Group-Mapping Service's equivalent queue (filters `TenantMembershipsPurged` only).
 

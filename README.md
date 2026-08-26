@@ -335,7 +335,7 @@ O&M publishes to **two** SNS topics via a transactional outbox and `RoutingPubli
 | `DepartmentMembershipLevelChanged` | `user_id`, `department_id`, `previous_level`, `new_level` | AuthZ cache invalidation |
 | `TenantRoleGranted` | `user_id`, `role_code`, `actor_id` (one event per role) | AuthZ cache; RP `requires-mfa` realm role for admin/owner |
 | `TenantRoleRevoked` (§16 A14) | `user_id`, `role_code`, `actor_id` | AuthZ cache; symmetric with granted |
-| `MembershipRevoked` | `tenant_id`, `user_id`, `actor_id` | Shared cascade signal on user removal — consumed by both the Delegation Service (ends the user's delegations) and the Tender ACL Service (soft-deletes the user's ACL overlays) |
+| `MembershipRevoked` | `tenant_id`, `user_id`, `actor_id` | Shared cascade signal on user removal — consumed by AuthZ Enrichment (`om:memberships` cache eviction, `membership-authz-q` filter policy), the Delegation Service (ends the user's delegations), and the Tender ACL Service (soft-deletes the user's ACL overlays) |
 | `TenderAssigneeOverridden` | `tender_id`, `user_id`, `actor_id` | Workflow node reassignment (I-13 validate-and-emit) |
 | `TenantSeatOverageStarted` | `tenant_id`, `licensed_seats`, `active_users`, `pending_invitations`, `overage_since` | Billing / CSM banner |
 | `TenantSeatOverageResolved` | `tenant_id`, `resolved_at` | Billing / CSM banner |

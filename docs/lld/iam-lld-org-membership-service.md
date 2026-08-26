@@ -3403,7 +3403,7 @@ The monolith's outbound `PUT /api/v1/internal/users/:id/availability` call was m
 | Direction | Mechanism | Description |
 |---|---|---|
 | AuthZ → This | HTTP `GET /api/v1/internal/users/:id/memberships` (I-8) | Hot-path membership context lookup — now a **four-table** projection with **no `active_delegations[]`** (ADR-0008 §6.1/§14). AuthZ Enrichment correspondingly stops projecting/injecting that field and drops the `UserAvailabilityChanged`-drives-delegation-refresh handling that existed only to keep it fresh. |
-| This → (events) → AuthZ | `iam.membership.events` | Cache invalidation on role/membership changes (unchanged) |
+| This → (events) → AuthZ | `iam.membership.events` (`membership-authz-q` filter policy, §7.3.2) | Cache invalidation on role/membership changes, including whole-membership removal — `DepartmentMembershipGranted`/`Revoked`/`LevelChanged`, `TenantRoleGranted`/`TenantRoleRevoked`, `MembershipRevoked`. `MembershipRevoked` was added to the SNS filter policy / `api/asyncapi.yaml` binding to match this LLD's §7.3.2 registry (previously a spec-only drift — the registry always listed it, the binding hadn't caught up) |
 | Billing / Realm Provisioner → (events) → AuthZ | `billing.events` `TenantPlanChanged`; `iam.tenant.events` `TenantConverted` | Plan-gate flag updates — AuthZ consumes these directly; O&M is not the producer |
 
 ### 18.3 Integration with `realm-provisioner`

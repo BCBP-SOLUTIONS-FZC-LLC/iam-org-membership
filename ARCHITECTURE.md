@@ -471,7 +471,7 @@ Two outbound SNS topics (via `RoutingPublisher`):
 
 Two events carry the user/tenant removal cascade for the extracted services (§15.2.2, LLD §15.2.2):
 
-- **`MembershipRevoked{tenant_id, user_id, actor_id}`** — emitted once per user removal (`MembershipService.RemoveUser`, P-8/I-5). A single shared event consumed by **both** the Delegation Service's cascade queue (ends the user's delegation rows) and the Tender ACL Service's equivalent queue (soft-deletes the user's ACL overlays) — replacing what used to be two separate emissions.
+- **`MembershipRevoked{tenant_id, user_id, actor_id}`** — emitted once per user removal (`MembershipService.RemoveUser`, P-8/I-5). A single shared event consumed by **three** services: the Delegation Service's cascade queue (ends the user's delegation rows), the Tender ACL Service's equivalent queue (soft-deletes the user's ACL overlays) — replacing what used to be two separate emissions — and AuthZ Enrichment's `membership-authz-q` (evicts the `om:memberships` cache entry for a user whose entire tenant membership, not just one department/role, was removed; LLD §7.3.2).
 - **`TenantMembershipsPurged{tenant_id, actor_id}`** — emitted when a consumed lifecycle event genuinely transitions a tenant into `offboarded`. Consumed by Delegation, Tender ACL, and Group Mapping services to run their own async tenant-scoped cascade-deletes (their tables live in separate databases, out of reach of Core's own cascade). This is Core's own outbound signal, distinct from — and not to be confused with — Realm Provisioner's `TenantOffboarded`, which Core only *consumes*.
 
 Two inbound SQS queues (unchanged by the decomposition):
@@ -634,7 +634,7 @@ Coverage is measured over `./internal/...` and `./pkg/...` only. See [CONTRIBUTI
 | Cache never serves stale data across tenants | Tenant UUID prefix on every cache key (CACHE-1) |
 | User removal cannot strand active workflows | `WorkflowClient.GetDelegateImpact` synchronous pre-check; `409 workflow_resolution_required` if `active_workflows > 0` (§8.8, WFI-1/WFI-3) |
 | Dept-membership Assign/Remove degrades, never blocks, on Delegation Service outage | `DelegationCheckClient.DeptDelegate` fails open to tenant-wide impact scoping (§8.8.4, WFI-11) |
-| User-removal cascade to extracted services is signal-based, not owned | One `MembershipRevoked{tenant_id, user_id, actor_id}` per removal, consumed by both Delegation Service and Tender ACL Service for their own async cascades (§15.2.2) — Core neither ends `delegations` rows nor soft-deletes `tender_acl_entries` itself |
+| User-removal cascade to extracted services is signal-based, not owned | One `MembershipRevoked{tenant_id, user_id, actor_id}` per removal, consumed by Delegation Service and Tender ACL Service for their own async cascades (§15.2.2) — Core neither ends `delegations` rows nor soft-deletes `tender_acl_entries` itself — and by AuthZ Enrichment for `om:memberships` cache eviction (`membership-authz-q`, LLD §7.3.2) |
 | SEAT-1 hard cap enforced transactionally | `SELECT tenants.licensed_seats FOR UPDATE` + count in one `RunInTx` (never from cache; CONS-4) |
 | Last-owner protection (actor path) | TM-8 CHECK + service-layer guard on P-8/P-28; TM-13 concurrency serialization via row lock |
 | Last-owner escalation (identity path) | I-5 sets `tenants.ownerless_since = now()` when Keycloak deletes the last owner; O-7 is the only clear path (TM-12/T-13) |
