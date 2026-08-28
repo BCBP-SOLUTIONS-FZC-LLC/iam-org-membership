@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -11,6 +12,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // ProvisioningService owns I-1 (tenant creation), I-2 (RP realm patch),
@@ -68,6 +70,7 @@ type TrialSignupInput struct {
 	Plan          domain.TenantPlan
 	OwnerUserID   uuid.UUID
 	DefaultLocale string
+	LicensedSeats int
 }
 
 // TrialSignup is I-1: creates the tenant row + 5 system dept activations
@@ -126,11 +129,11 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	// still globally active) is preserved here via the explicit IsActive
 	// filter below.
 	trialCodes := map[string]struct{}{
-		"ENGINEERING": {},
-		"DESIGN":      {},
-		"PROCUREMENT": {},
-		"FINANCE":     {},
-		"LEGAL":       {},
+		"engineering": {},
+		"design":      {},
+		"procurement": {},
+		"finance":     {},
+		"legal":       {},
 	}
 	allDepts, err := s.depts.Departments(ctx)
 	if err != nil {
@@ -141,7 +144,7 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 		if !d.IsSystem || !d.IsActive {
 			continue
 		}
-		if _, ok := trialCodes[d.Code]; !ok {
+		if _, ok := trialCodes[strings.ToLower(d.Code)]; !ok {
 			continue
 		}
 		trialDeptIDs = append(trialDeptIDs, d.ID)
@@ -157,6 +160,10 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	locale := req.DefaultLocale
 	if locale == "" {
 		locale = "en-US"
+	}
+	licensedSeats := req.LicensedSeats
+	if licensedSeats <= 0 {
+		licensedSeats = 10 // DB column default (SEAT-1, T-8)
 	}
 
 	var created *domain.Tenant
@@ -179,7 +186,7 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			MFAFreshnessSeconds:  300,
 			LocalAccountsEnabled: true,
 			DefaultLocale:        locale,
-			LicensedSeats:        10,
+			LicensedSeats:        licensedSeats,
 		})
 		if err != nil {
 			return err
@@ -274,11 +281,12 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 // Intentionally includes offboarded (deleted_at IS NOT NULL) tenants — RP
 // must be able to write realm fields during KC realm cleanup even after O&M
 // has soft-deleted the tenant row (§15.5 offboarding sequence).
-func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) error {
+func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) (int64, error) {
 	g, _ := pgcommon.GUCSetFromContext(ctx)
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
+	var newVersion int64
 	if err := s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
 		tx, ok := pgadapterTxFromContext(txCtx)
 		if !ok {
@@ -286,14 +294,16 @@ func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.
 		}
 		// CONC-4: include record_version in WHERE clause so concurrent I-2
 		// calls fail with 409 optimistic_lock_conflict (BUG-I2-2).
-		cmd, err := tx.Exec(txCtx,
-			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND record_version = $5`,
+		// RETURNING record_version captures the post-trigger value so the
+		// caller can propagate it to the response without a second round-trip.
+		row := tx.QueryRow(txCtx,
+			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND record_version = $5 RETURNING record_version`,
 			tenantID, realmID, string(realmType), shard, recordVersion)
-		if err != nil {
-			return err
-		}
-		if cmd.RowsAffected() == 0 {
-			// Probe to distinguish tenant_not_found from optimistic_lock_conflict.
+		if err := row.Scan(&newVersion); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err // propagate SQL errors directly
+			}
+			// 0 rows: probe to distinguish tenant_not_found vs stale record_version.
 			// No deleted_at filter — RP must be able to act on offboarded tenants.
 			var current int64
 			probe := tx.QueryRow(txCtx, `SELECT record_version FROM tenants WHERE id = $1`, tenantID)
@@ -305,13 +315,13 @@ func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.
 		}
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	// BUG-I2-1: evict cached tenant so I-8 hot-path reads updated realm fields (CACHE-6).
 	if s.cache != nil {
 		_ = s.cache.Delete(gucCtx, cacheKeyTenant(tenantID), cacheKeyLocale(tenantID))
 	}
-	return nil
+	return newVersion, nil
 }
 
 // SetMembershipStatus is I-4: Event Consumer updates lifecycle status.

@@ -98,6 +98,9 @@ func (f *fakeMembershipRepo) SoftDelete(ctx context.Context, tenantID, userID uu
 func (f *fakeMembershipRepo) CountActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
 	return 0, errors.New("not used")
 }
+func (f *fakeMembershipRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 
 var _ port.MembershipRepository = (*fakeMembershipRepo)(nil)
 

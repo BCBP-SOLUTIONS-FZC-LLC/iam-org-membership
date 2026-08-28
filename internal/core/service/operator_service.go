@@ -117,6 +117,17 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 	}
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeyTenant(tenantID))
+		// Evict I-8 membership projections for all active members — feature_flags
+		// feeds effective_feature_flags in every MembershipProjection (CACHE-3).
+		if s.memBs != nil {
+			if uids, err := s.memBs.ListActiveUserIDs(ctx, tenantID); err == nil && len(uids) > 0 {
+				keys := make([]string, len(uids))
+				for i, uid := range uids {
+					keys[i] = "om:memberships:" + tenantID.String() + ":" + uid.String()
+				}
+				_ = s.cache.Delete(ctx, keys...)
+			}
+		}
 	}
 	return updated, nil
 }

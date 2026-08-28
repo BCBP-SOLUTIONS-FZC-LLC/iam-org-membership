@@ -8,6 +8,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -299,6 +300,10 @@ func (s *InvitationService) preflightSeatCheck(ctx context.Context, tenantID uui
 func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userID uuid.UUID, keycloakUserID uuid.UUID, email string) (*domain.TenantMembership, error) {
 	// Look for a matching pending invitation.
 	email = normalizeEmail(email)
+	// GAP-I3-1: validate email format when supplied — same check as Invite (P-6).
+	if email != "" && !isValidEmail(email) {
+		return nil, domain.NewError(domain.ErrValidation, "email is not a valid address")
+	}
 	var pending *domain.PendingInvitation
 	var err error
 	pending, err = s.invites.FindPendingByKeycloakUser(ctx, tenantID, keycloakUserID)
@@ -331,8 +336,13 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 		if !ok {
 			return domain.NewError(domain.ErrConflict, "tx unavailable")
 		}
-		// TM-13 lock on tenants for the entire acceptance.
-		if _, err := tx.Exec(txCtx, `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, tenantID); err != nil {
+		// TM-13 lock on tenants for the entire acceptance. Use QueryRow+Scan
+		// so ErrNoRows is detectable (Exec swallows it silently for SELECTs).
+		var tenantVersion int64
+		if err := tx.QueryRow(txCtx, `SELECT record_version FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, tenantID).Scan(&tenantVersion); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+			}
 			return err
 		}
 
@@ -398,6 +408,12 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 			if _, err := s.invites.SetStatus(txCtx, tenantID, pending.ID, domain.InviteAccepted, pending.RecordVersion); err != nil {
 				return err
 			}
+			// §16 A69: read ip_address/user_agent from request context for event envelope.
+			var rcIP, rcUA string
+			if rc, ok := requestctx.FromContext(txCtx); ok {
+				rcIP = rc.ClientIP
+				rcUA = rc.UserAgent
+			}
 			// Apply queued initial tenant roles.
 			for _, code := range pending.InitialTenantRoles {
 				if !code.IsElevated() {
@@ -414,6 +430,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 					_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
 						Type: domain.EventTenantRoleGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: pending.InvitedBy.String(),
+						IPAddress: rcIP, UserAgent: rcUA,
 						Data: domain.TenantRoleGrantedPayload{
 							UserID: userID, TenantID: tenantID, RoleCode: tr.RoleCode, ActorID: pending.InvitedBy,
 						},
@@ -430,6 +447,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 					_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
 						Type: domain.EventDepartmentMembershipGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: pending.InvitedBy.String(),
+						IPAddress: rcIP, UserAgent: rcUA,
 						Data: domain.DepartmentMembershipGrantedPayload{
 							UserID: userID, TenantID: tenantID,
 							DepartmentID: assigned.DepartmentID, Level: assigned.RoleLevel,

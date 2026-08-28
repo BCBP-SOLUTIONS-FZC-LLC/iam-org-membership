@@ -116,6 +116,9 @@ func (f *ptdMembershipRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, in
 	return nil
 }
 func (f *ptdMembershipRepo) CountActive(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (f *ptdMembershipRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 
 var _ port.MembershipRepository = (*ptdMembershipRepo)(nil)
 

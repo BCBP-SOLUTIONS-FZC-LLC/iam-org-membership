@@ -32,6 +32,11 @@ type MembershipRepository interface {
 	// CountActive returns the number of active (non-deleted, non-left)
 	// memberships. Used by SEAT-1 under FOR UPDATE on tenants.
 	CountActive(ctx context.Context, tenantID uuid.UUID) (int, error)
+
+	// ListActiveUserIDs returns the user_id of every non-deleted membership
+	// for the tenant. Used by O-4 to evict per-user I-8 cache entries when
+	// feature_flags change (CACHE-3).
+	ListActiveUserIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
 }
 
 // TenantRoleRepository owns elevated role grants on tenant_roles.

@@ -83,6 +83,9 @@ func (f *ruMembershipRepo) SoftDelete(ctx context.Context, tenantID, userID uuid
 	return f.softDeleteFn(ctx, tenantID, userID, expectedVersion)
 }
 func (f *ruMembershipRepo) CountActive(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (f *ruMembershipRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 
 type ruRoleRepo struct {
 	listByUserFn           func(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.TenantRole, error)

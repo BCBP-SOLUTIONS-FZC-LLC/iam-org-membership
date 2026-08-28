@@ -182,6 +182,9 @@ func (f *mhMemRepo) SetStatus(ctx context.Context, tid, uid uuid.UUID, s domain.
 	return &domain.TenantMembership{ID: uuid.New(), TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
 }
 func (f *mhMemRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil }
+func (f *mhMemRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 func (f *mhMemRepo) CountActive(ctx context.Context, tid uuid.UUID) (int, error) {
 	if f.countActiveFn != nil {
 		return f.countActiveFn(ctx, tid)

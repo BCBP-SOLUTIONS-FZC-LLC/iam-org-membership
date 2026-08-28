@@ -54,6 +54,7 @@ type internalProvisionRequest struct {
 	Plan          string    `json:"plan"`
 	OwnerUserID   uuid.UUID `json:"owner_user_id"`
 	DefaultLocale string    `json:"default_locale,omitempty"`
+	LicensedSeats int       `json:"licensed_seats"`
 }
 
 // ProvisionTenant is I-1 — trial signup (5 depts + 3 labels + owner + 3 events in one tx).
@@ -107,6 +108,7 @@ func (h *InternalHandler) ProvisionTenant(c *gin.Context) {
 		Plan:          domain.TenantPlan(req.Plan),
 		OwnerUserID:   req.OwnerUserID,
 		DefaultLocale: req.DefaultLocale,
+		LicensedSeats: req.LicensedSeats,
 	})
 	if err != nil {
 		HandleError(c, err)
@@ -180,11 +182,12 @@ func (h *InternalHandler) PatchTenantRealm(c *gin.Context) {
 			WithDetails(map[string]any{"received": req.RealmType}))
 		return
 	}
-	if err := h.provisioning.SetRealmFields(c.Request.Context(), tenantID, req.RealmID, domain.RealmType(req.RealmType), req.KeycloakShard, req.RecordVersion); err != nil {
+	newVersion, err := h.provisioning.SetRealmFields(c.Request.Context(), tenantID, req.RealmID, domain.RealmType(req.RealmType), req.KeycloakShard, req.RecordVersion)
+	if err != nil {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "realm_id": req.RealmID, "realm_type": req.RealmType})
+	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "realm_id": req.RealmID, "realm_type": req.RealmType, "record_version": newVersion})
 }
 
 // ── I-4 PATCH /tenants/:id/members/:user_id (KC lifecycle) ─────────────

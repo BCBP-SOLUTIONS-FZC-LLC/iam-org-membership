@@ -166,6 +166,9 @@ func (f *drhMemRepo) SetStatus(context.Context, uuid.UUID, uuid.UUID, domain.Mem
 func (f *drhMemRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error {
 	return nil
 }
+func (f *drhMemRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 func (f *drhMemRepo) CountActive(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
@@ -416,7 +419,8 @@ func TestDeptMembershipAssign_InvalidLevel(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	// ErrInvalidRole → 422 (same as unknown role codes in other handlers)
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 }
 
 func TestDeptMembershipAssign_DeptInactive(t *testing.T) {
@@ -435,7 +439,7 @@ func TestDeptMembershipAssign_DeptInactive(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
 }
 
-// P10-NF-01: memberships.FindByUserID returns ErrMemberNotFound → 404.
+// P10-NF-01: memberships.FindByUserID returns ErrMemberNotFound → 422 member_not_active (DM-2).
 func TestDeptMembershipAssign_UserNotMember_404(t *testing.T) {
 	tenantID := uuid.New()
 	mem := &drhMemRepo{findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
@@ -449,10 +453,10 @@ func TestDeptMembershipAssign_UserNotMember_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "member_not_active")
 }
 
-// P10-NF-02: tenantDepts.Find returns ErrDepartmentNotFound → 404.
+// P10-NF-02: tenantDepts.Find returns ErrDepartmentNotFound → 422 department_deactivated.
 func TestDeptMembershipAssign_DeptNotFound_404(t *testing.T) {
 	tenantID := uuid.New()
 	td := &drhTenantDeptRepo{findFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantDepartment, error) {
@@ -466,7 +470,8 @@ func TestDeptMembershipAssign_DeptNotFound_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "department_not_found")
+	// Dept not activated for tenant → 422 department_deactivated (D-5/TD-6 step 2).
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "department_deactivated")
 }
 
 // P10-422-02: globally retired dept → 422 department_retired (B-15 fix).

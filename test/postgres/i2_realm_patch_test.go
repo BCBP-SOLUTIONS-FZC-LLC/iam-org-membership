@@ -36,7 +36,7 @@ func TestSetRealmFields_UpdatesAllThreeRealmColumnsAtomically(t *testing.T) {
 
 	// Act: SetRealmFields under the target tenant's context.
 	tctx := withSystemAndTenant(ctx, tenantID)
-	err := fx.Provisioning.SetRealmFields(tctx, tenantID, "acme-corp-kc",
+	_, err := fx.Provisioning.SetRealmFields(tctx, tenantID, "acme-corp-kc",
 		domain.RealmType("dedicated"), "shard-1", beforeVersion)
 	require.NoError(t, err)
 
@@ -68,7 +68,7 @@ func TestSetRealmFields_CrossTenantSystemPathTargetsPathID(t *testing.T) {
 	// GUC to (iam-system, tenantA) regardless of the incoming context, so
 	// even a "wrong" x-tenant-id can't misdirect the write.
 	ctxWrongTenant := withSystemAndTenant(ctx, tenantB) // deliberately B
-	err := fx.Provisioning.SetRealmFields(ctxWrongTenant, tenantA, "acme-cross", domain.RealmType("dedicated"), "shard-1", 1)
+	_, err := fx.Provisioning.SetRealmFields(ctxWrongTenant, tenantA, "acme-cross", domain.RealmType("dedicated"), "shard-1", 1)
 	require.NoError(t, err, "iam-system PATCHes any tenant regardless of the incoming GUC context")
 
 	// tenantA (the path target) must be updated.
@@ -94,7 +94,7 @@ func TestSetRealmFields_ReturnsNilOnSuccess(t *testing.T) {
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "i2h03b")
 
 	tctx := withSystemAndTenant(ctx, tenantID)
-	err := fx.Provisioning.SetRealmFields(tctx, tenantID, "acme-shape",
+	_, err := fx.Provisioning.SetRealmFields(tctx, tenantID, "acme-shape",
 		domain.RealmType("dedicated"), "shard-2", 1)
 	assert.NoError(t, err, "service returns nil on happy path so the handler can 200 with the input echo")
 }

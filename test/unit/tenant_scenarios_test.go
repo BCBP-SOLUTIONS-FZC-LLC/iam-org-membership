@@ -69,7 +69,7 @@ func TestProvisioningService_SetRealmFields_TenantNotFound(t *testing.T) {
 	txRunner := &notFoundTxRunner{}
 	svc := service.NewProvisioningService(
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, txRunner, nil, nil)
-	err := svc.SetRealmFields(context.Background(), uuid.New(),
+	_, err := svc.SetRealmFields(context.Background(), uuid.New(),
 		"realm-123", domain.RealmDedicated, "shard-0", 1)
 	assert.ErrorIs(t, err, domain.ErrTenantNotFound)
 }
