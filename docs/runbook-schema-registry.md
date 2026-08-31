@@ -17,7 +17,7 @@ identifiers used by `schema-gov register`.
 
 ### Registry: `iam-membership-events` (env `GLUE_REGISTRY_NAME_MEMBERSHIP`)
 
-Backs SNS topic `iam.membership.events`. Eleven schemas — all events O&M
+Backs SNS topic `iam.membership.events`. Twelve schemas — all events O&M
 produces on the membership topic (§7.3):
 
 | Domain event type | Registered Glue schema name |
@@ -30,6 +30,7 @@ produces on the membership topic (§7.3):
 | `delegation.started` | `DelegationStarted` |
 | `delegation.ended` | `DelegationEnded` (extended `ended_reason` incl. `delegate_removed`, DEL-7) |
 | `tender.assignee.overridden` | `TenderAssigneeOverridden` (I-13) |
+| `mfa.reset` | `MFAReset` (P-34, §16 OQ-8/F6) |
 | `tenant.seat.overage.started` | `TenantSeatOverageStarted` (SEAT-5) |
 | `tenant.seat.overage.resolved` | `TenantSeatOverageResolved` |
 | `tenant.state.changed` | `TenantStateChanged` (§16 A61, EVT-16 relay) |
@@ -46,7 +47,7 @@ are disjoint per HLD §9.1.1):
 | `tenant.created` | `TenantCreated` |
 | `trial.started` | `TrialStarted` |
 
-Total: **13 schemas across two registries**. The event-type ↔ schema-name
+Total: **14 schemas across two registries**. The event-type ↔ schema-name
 mapping lives in `domain.GlueSchemaName` (`internal/core/domain/events.go`) —
 an explicit switch, not a mechanical transform, so a new event type will not
 silently register under a wrong name.
@@ -87,7 +88,7 @@ The eight validation passes are:
 Expected output:
 
 ```
-OK: 11 schemas present in registry 'iam-membership-events'
+OK: 12 schemas present in registry 'iam-membership-events'
 OK:  2 schemas present in registry 'iam-tenant-events'
 OK: no orphan Glue schemas
 OK: no orphan schemas/*.json
@@ -140,7 +141,7 @@ permanently corrupts the audit trail for the duration.
 
 ## Local development
 
-`scripts/init-localstack.sh` registers all 13 schemas into LocalStack Glue mock
+`scripts/init-localstack.sh` registers all 14 schemas into LocalStack Glue mock
 across the two registries under the same PascalCase names. LocalStack Pro is
 required for Glue; without it the script logs and continues, and the app must
 run with both `GLUE_REGISTRY_NAME_*` env vars empty (NoopCodec) — dev only,

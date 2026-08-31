@@ -321,9 +321,13 @@ type MembershipPatchResponse struct {
 }
 
 // RolesReconcileResponse is the P-28 success shape.
+// RolesReconcileResponse is the P-28 success shape (LLD §5.4: corrected —
+// previously the grant/revoke delta; P28-1 documents `roles` as the full
+// post-reconcile elevated set, which — by the full-replacement contract —
+// exactly matches the request body's `roles` array).
 type RolesReconcileResponse struct {
-	Granted []string `json:"granted" example:"tenant_admin"`
-	Revoked []string `json:"revoked" example:"tender_admin"`
+	UserID uuid.UUID `json:"user_id" format:"uuid"`
+	Roles  []string  `json:"roles" example:"tenant_admin,tender_admin"`
 }
 
 // SeatUsageResponse is the P-27 / I-11 payload.
@@ -467,9 +471,13 @@ type AssigneeOverrideResponse struct {
 	UserID   uuid.UUID `json:"user_id" format:"uuid"`
 }
 
-// OperatorReassignOwnerResponse is the O-7 success shape.
+// OperatorReassignOwnerResponse is the O-7 success shape (LLD §5.4:
+// corrected — `roles` is the full active elevated set for the promoted
+// user, not just the newly-granted role_code, and `ownerless_since` is
+// echoed back so the caller can confirm the escalation marker cleared).
 type OperatorReassignOwnerResponse struct {
-	TenantID uuid.UUID `json:"tenant_id" format:"uuid"`
-	UserID   uuid.UUID `json:"user_id" format:"uuid"`
-	RoleCode string    `json:"role_code" example:"tenant_owner"`
+	TenantID       uuid.UUID  `json:"tenant_id" format:"uuid"`
+	UserID         uuid.UUID  `json:"user_id" format:"uuid"`
+	Roles          []string   `json:"roles" example:"tenant_owner"`
+	OwnerlessSince *time.Time `json:"ownerless_since"`
 }

@@ -321,7 +321,8 @@ func TestReconcileRoles_LastOwnerRemovalBlocked(t *testing.T) {
 	assertErrorCode(t, w, http.StatusUnprocessableEntity, "last_owner_removal")
 }
 
-// P28-H-01: grant new role → 200, granted=[role], revoked=[].
+// P28-H-01: grant new role → 200, response echoes the post-reconcile
+// elevated set (P28-1: full-replacement — exactly the request body).
 func TestReconcileRoles_GrantNewRole(t *testing.T) {
 	tenant := uuid.New()
 	userID := uuid.New()
@@ -340,8 +341,8 @@ func TestReconcileRoles_GrantNewRole(t *testing.T) {
 	h.ReconcileRoles(c)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "tender_admin")
-	assert.Contains(t, w.Body.String(), `"granted"`)
-	assert.Contains(t, w.Body.String(), `"revoked"`)
+	assert.Contains(t, w.Body.String(), `"user_id"`)
+	assert.Contains(t, w.Body.String(), `"roles":["tender_admin"]`)
 }
 
 // P28-H-04: empty desired set → all roles revoked; returns 200.
@@ -363,10 +364,12 @@ func TestReconcileRoles_EmptySetRevokesAll(t *testing.T) {
 	setParams(c, "id", tenant.String(), "user_id", userID.String())
 	h.ReconcileRoles(c)
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "tender_admin")
+	assert.Contains(t, w.Body.String(), `"roles":[]`,
+		"P28-2: an empty request body reconciles to an empty elevated set (plain member)")
 }
 
-// P28-H-05: idempotent call (same roles already held) → 200, both empty.
+// P28-H-05: idempotent call (same roles already held) → 200, response still
+// echoes the (unchanged) post-reconcile elevated set.
 func TestReconcileRoles_Idempotent(t *testing.T) {
 	tenant := uuid.New()
 	userID := uuid.New()
@@ -391,8 +394,7 @@ func TestReconcileRoles_Idempotent(t *testing.T) {
 	setParams(c, "id", tenant.String(), "user_id", userID.String())
 	h.ReconcileRoles(c)
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `"granted":[]`)
-	assert.Contains(t, w.Body.String(), `"revoked":[]`)
+	assert.Contains(t, w.Body.String(), `"roles":["tender_admin"]`)
 }
 
 // P28-NF-01: user not found in tenant → 404.

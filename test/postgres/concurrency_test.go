@@ -39,6 +39,7 @@ import (
 // and inserts iff strictly under cap. FOR UPDATE serializes; only one
 // racer's read observes "under cap" and inserts.
 func TestSEAT1_ConcurrencyRace(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "seat-test")
@@ -115,6 +116,7 @@ func TestSEAT1_ConcurrencyRace(t *testing.T) {
 // serializes so exactly one goroutine sees count>1 (or both see count=1
 // and both back off, which is also correct).
 func TestTM13_ConcurrentLastOwnerRemoval(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "tm13-test")
@@ -198,6 +200,7 @@ func TestTM13_ConcurrentLastOwnerRemoval(t *testing.T) {
 // (WHERE deleted_at IS NULL) must permit this because the old row's
 // deleted_at is set.
 func TestTM11_RejoinAfterSoftLeave(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "tm11-test")
@@ -244,6 +247,7 @@ func TestTM11_RejoinAfterSoftLeave(t *testing.T) {
 // status='pending') must permit a fresh 'pending' row for the same
 // (tenant_id, email) after the previous one moved to a terminal state.
 func TestPI1_InvitationRejoinAfterTerminal(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "pi1-test")

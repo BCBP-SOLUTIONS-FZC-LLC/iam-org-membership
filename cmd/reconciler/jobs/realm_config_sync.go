@@ -16,8 +16,9 @@ import (
 //  4. On failure, leave marker for next tick.
 //
 // Disable direction (local_accounts_enabled=false) is prioritized
-// (security-tightening) — but at the sweep level we just push the
-// current value regardless.
+// (security-tightening): the sweep query orders disables first, so under a
+// backlog larger than BatchLimit, un-applied disables are the ones pulled
+// into this tick rather than being starved behind a run of enables.
 func RealmConfigSync(ctx context.Context, jctx *Context) (Result, error) {
 	var res Result
 
@@ -31,6 +32,7 @@ func RealmConfigSync(ctx context.Context, jctx *Context) (Result, error) {
 		rows, err := tx.Query(ctx, `
 			SELECT id, local_accounts_enabled FROM tenants
 			WHERE realm_sync_pending = true AND deleted_at IS NULL
+			ORDER BY local_accounts_enabled ASC
 			LIMIT $1`, jctx.BatchLimit)
 		if err != nil {
 			return err

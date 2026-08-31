@@ -165,14 +165,16 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	fx.Operator = service.NewOperatorService(
 		appPool, tenants, roles, memberships, nil, txRunner,
 	)
+	// RP client is injected via fx.RP so individual tests can override
+	// behaviour (fx.RP.PatchRealmConfigFailNext = true) or inspect calls
+	// (fx.RP.CreateInvitedUserCalls) — shared across every service that
+	// talks to Realm Provisioner, mirroring the single real RP instance.
+	fx.RP = &fakeRealmProvisioner{}
 	fx.Invitation = service.NewInvitationService(
 		invitations, memberships, roles, deptMems, tenants,
-		&fakeRealmProvisioner{}, nil, txRunner, nil, 7,
+		fx.RP, nil, txRunner, nil, 7,
 	)
-	fx.AuthZ = service.NewAuthZService(appPool, catalogPlans, nil)
-	// RP client is injected via fx.RP so individual tests can override
-	// behaviour (fx.RP.PatchRealmConfigFailNext = true).
-	fx.RP = &fakeRealmProvisioner{}
+	fx.AuthZ = service.NewAuthZService(appPool, catalogPlans, catalogDepts, nil)
 	fx.Tenant = service.NewTenantService(tenants, nil, fx.RP)
 	fx.Department = service.NewDepartmentService(catalogDepts, tenantDepts, nil)
 	fx.RoleLabel = service.NewRoleLabelService(labels, nil)
@@ -354,17 +356,28 @@ func (fx *testFixtures) outboxEventTypesForTenant(t *testing.T, ctx context.Cont
 // fakeRealmProvisioner is a stub for tests that don't exercise the RP
 // integration surface. Individual methods can be configured to fail via
 // the *FailNext booleans (one-shot) so tests can exercise the T-15
-// deferred-sync branch, PI-9 cleanup errors, etc.
+// deferred-sync branch, PI-9 cleanup errors, etc. Guarded by mu — shared
+// across every service in testFixtures (fx.RP), so concurrent-load tests
+// (e.g. TestSLO_SeatPreflight100Concurrent) call these methods from many
+// goroutines at once.
 type fakeRealmProvisioner struct {
+	mu sync.Mutex
+
 	PatchRealmConfigFailNext   bool
 	CreateInvitedUserFailNext  bool
 	DeleteUserFailNext         bool
 	RevokeUserSessionsFailNext bool
+	ResetMFAFailNext           bool
 
-	PatchRealmConfigCalls []port.RealmConfigPatch
+	PatchRealmConfigCalls  []port.RealmConfigPatch
+	ResetMFACalls          []uuid.UUID
+	CreateInvitedUserCalls []port.CreateInvitedUserRequest
 }
 
 func (f *fakeRealmProvisioner) CreateInvitedUser(_ context.Context, req port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.CreateInvitedUserCalls = append(f.CreateInvitedUserCalls, req)
 	if f.CreateInvitedUserFailNext {
 		f.CreateInvitedUserFailNext = false
 		return nil, errors.New("fake RP CreateInvitedUser outage")
@@ -372,6 +385,8 @@ func (f *fakeRealmProvisioner) CreateInvitedUser(_ context.Context, req port.Cre
 	return &port.CreateInvitedUserResponse{KeycloakUserID: uuid.New()}, nil
 }
 func (f *fakeRealmProvisioner) DeleteUser(_ context.Context, _, _ uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.DeleteUserFailNext {
 		f.DeleteUserFailNext = false
 		return errors.New("fake RP DeleteUser outage")
@@ -379,6 +394,8 @@ func (f *fakeRealmProvisioner) DeleteUser(_ context.Context, _, _ uuid.UUID) err
 	return nil
 }
 func (f *fakeRealmProvisioner) PatchRealmConfig(_ context.Context, _ uuid.UUID, p port.RealmConfigPatch) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.PatchRealmConfigCalls = append(f.PatchRealmConfigCalls, p)
 	if f.PatchRealmConfigFailNext {
 		f.PatchRealmConfigFailNext = false
@@ -387,9 +404,21 @@ func (f *fakeRealmProvisioner) PatchRealmConfig(_ context.Context, _ uuid.UUID, 
 	return nil
 }
 func (f *fakeRealmProvisioner) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.RevokeUserSessionsFailNext {
 		f.RevokeUserSessionsFailNext = false
 		return errors.New("fake RP RevokeUserSessions outage")
+	}
+	return nil
+}
+func (f *fakeRealmProvisioner) ResetMFA(_ context.Context, _ uuid.UUID, kcUserID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ResetMFACalls = append(f.ResetMFACalls, kcUserID)
+	if f.ResetMFAFailNext {
+		f.ResetMFAFailNext = false
+		return errors.New("fake RP ResetMFA outage")
 	}
 	return nil
 }

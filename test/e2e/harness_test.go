@@ -118,7 +118,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	catalogPlans := newFakeCatalogPlans()
 
 	// Services.
-	authzSvc := service.NewAuthZService(appPool, catalogPlans, nil)
+	authzSvc := service.NewAuthZService(appPool, catalogPlans, catalogDepts, nil)
 	provisioningSvc := service.NewProvisioningService(appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogDepts, catalogPlans, txRunner, nil, rp)
 	tenantSvc := service.NewTenantService(tenantRepo, nil, rp)
 	deptSvc := service.NewDepartmentService(catalogDepts, tenantDeptRepo, nil)
@@ -369,6 +369,7 @@ type fakeRealmProvisioner struct {
 	DeleteUserFailNext         bool
 	PatchRealmConfigFailNext   bool
 	RevokeUserSessionsFailNext bool
+	ResetMFAFailNext           bool
 	PatchRealmConfigCalls      []port.RealmConfigPatch
 }
 
@@ -398,6 +399,13 @@ func (f *fakeRealmProvisioner) RevokeUserSessions(_ context.Context, _, _ uuid.U
 	if f.RevokeUserSessionsFailNext {
 		f.RevokeUserSessionsFailNext = false
 		return fmt.Errorf("fake RP RevokeUserSessions outage")
+	}
+	return nil
+}
+func (f *fakeRealmProvisioner) ResetMFA(_ context.Context, _, _ uuid.UUID) error {
+	if f.ResetMFAFailNext {
+		f.ResetMFAFailNext = false
+		return fmt.Errorf("fake RP ResetMFA outage")
 	}
 	return nil
 }

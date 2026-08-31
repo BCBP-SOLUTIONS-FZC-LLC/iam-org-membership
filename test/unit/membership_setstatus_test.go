@@ -24,6 +24,8 @@ import (
 type fakeRPClient struct {
 	revokeSessionsFn func(ctx context.Context, tenantID, kcUserID uuid.UUID) error
 	revokeCalled     bool
+	resetMFAFn       func(ctx context.Context, tenantID, kcUserID uuid.UUID) error
+	resetMFACalled   bool
 }
 
 func (f *fakeRPClient) CreateInvitedUser(context.Context, port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {
@@ -39,6 +41,13 @@ func (f *fakeRPClient) RevokeUserSessions(ctx context.Context, tenantID, kcUserI
 		return nil
 	}
 	return f.revokeSessionsFn(ctx, tenantID, kcUserID)
+}
+func (f *fakeRPClient) ResetMFA(ctx context.Context, tenantID, kcUserID uuid.UUID) error {
+	f.resetMFACalled = true
+	if f.resetMFAFn == nil {
+		return nil
+	}
+	return f.resetMFAFn(ctx, tenantID, kcUserID)
 }
 
 var _ port.RealmProvisionerClient = (*fakeRPClient)(nil)

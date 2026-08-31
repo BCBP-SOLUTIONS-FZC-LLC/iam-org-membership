@@ -174,7 +174,7 @@ Helm chart mirrors `iam-user-profile`. `terminationGracePeriodSeconds = 75`. HPA
 | `invitation-kc-cleanup` | `*/10 * * * *` | Saga-compensation reconciler (PI-9): sweep `kc_cleanup_pending`, call `RealmProvisioner.DeleteUser`, clear flag |
 | `seat-overage-reconcile` | `0 * * * *` | Seat-overage marker backstop (SEAT-5): recompute `overage_since`; also drives past-grace alert |
 | `realm-config-sync` | `*/2 * * * *` | Realm-config reconciler (T-15): sweep `realm_sync_pending`, call idempotent `PatchRealmConfig`; **prioritises disables** (security-tightening) |
-| `outbox-prune` | `0 1 * * *` | `outbox.Runner.PrunePublished(24h, 10000)` |
+| `outbox-prune` | `0 3 * * *` | Batched raw-SQL delete at 8-day retention, capped per tick at `jctx.BatchLimit` (default 500) — not `outbox.Runner.PrunePublished` |
 
 Exactly **7** CronJobs, dispatched via `cmd/reconciler/main.go --job=<name>` (verified against `cmd/reconciler/jobs/` and `main.go`'s `registry` map). `quota-reset` and `quota-utilization-metrics` **removed** (§16 A26 — moved to Usage & Metering). `delegation-expiry`, `delegation-review`, `delegation-cleanup` (→ Delegation Service) and `acl-cleanup` (→ Tender ACL Service) **removed** by the ADR-0007/ADR-0008 decomposition — those tables and their lifecycle no longer live in this database.
 
@@ -224,8 +224,9 @@ There is no `port.UserProfileClient`/`adapter/outbound/userprofile` integration 
 - RP → O&M: `POST /internal/tenants` (I-1); `PATCH /internal/tenants/:id` (I-2, sets realm_id/realm_type/keycloak_shard together).
 - O&M → RP: `POST /internal/tenants/:id/users` (invited-user create, §16 A11); `DELETE /internal/tenants/:id/users/:keycloak_user_id` (compensating delete, PI-9 durable via `kc_cleanup_pending`); `PATCH /internal/tenants/:id/realm-config` (T-15 realm-config propagation, Option A local-first commit-then-call, durable via `realm_sync_pending`); `POST /internal/tenants/:id/users/:keycloak_user_id/logout` (AUTH-8 session revocation, best-effort/fail-open).
 - RP → events → O&M: `iam.tenant.events` (TenantRealmReady, TenantConverted, TenantSuspended, TenantOffboarded, …) via `tenant-orgm-q`.
+- O&M → events → RP (new, resolves RP-4): `iam.tenant.events` `TrialStarted{tenant_id, plan, trial_ends_at}` via RP's own `tenant-realm-q`. RP tracks the trial timer locally (`tenant_realms`) and runs its own expiry sweep off it — O&M exposes no batch "expired trials" endpoint, and neither side polls the other.
 
-`port.RealmProvisionerClient` — `CreateInvitedUser`, `DeleteUser`, `PatchRealmConfig`, `RevokeUserSessions`. Failure maps to `503 realm_provisioner_unavailable` at invite time; both convergence paths idempotent and retried by reconcilers.
+`port.RealmProvisionerClient` — `CreateInvitedUser`, `DeleteUser`, `PatchRealmConfig`, `RevokeUserSessions`, `ResetMFA` (new, §16 OQ-8/F6). Failure maps to `503 realm_provisioner_unavailable` at invite time and at MFA-reset time (P-34, fail-closed — no reconciler for "eventually reset MFA", unlike `RevokeUserSessions`'s best-effort posture); both convergence paths idempotent and retried by reconcilers.
 
 ### 18.4 `event-consumer`
 
@@ -247,7 +248,7 @@ Deliberately **event-driven, not synchronous** for write; O&M exposes no synchro
 
 ### 20.1 Outbox Health
 
-`outbox.Runner.PrunePublished(24h, 10000)` daily. Dead-letters trigger immediate page. Selective replay via `ReprocessDeadLettersWith(ctx, DLQFilter{EventType, TenantID}, limit)` (platform-events v1.3.0 DLQ API).
+`outbox-prune`'s batched raw-SQL delete at 8-day retention, daily (not `outbox.Runner.PrunePublished`). Dead-letters trigger immediate page. Selective replay via `ReprocessDeadLettersWith(ctx, DLQFilter{EventType, TenantID}, limit)` (platform-events v1.3.0 DLQ API).
 
 **DLQ redrive interacts with EVT-14 recency guard:** redriven lifecycle events carry **original** old CloudEvents `time`. If newer event advanced `last_event_at`, the redrive is correctly **skipped as stale** (`iam_stale_lifecycle_event_skipped_total++`). Post-redrive spike is expected, not an incident. If a redriven event **must** take effect, correct the projection deliberately at the source of truth. EVT-15-parked DLQ events won't redrive without a producer clock fix.
 

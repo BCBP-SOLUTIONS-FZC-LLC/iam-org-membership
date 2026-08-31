@@ -182,5 +182,21 @@ func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerU
 	return tr, nil
 }
 
+// ActiveRoleCodes returns a user's current active elevated tenant_roles
+// (LLD §5.4 O-7 response: `roles: ["tenant_owner", …]` — the full set, not
+// just the role this call granted, since the promoted user may already
+// have held other elevated roles).
+func (s *OperatorService) ActiveRoleCodes(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.TenantRoleCode, error) {
+	roles, err := s.tenRoles.ListByUser(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	codes := make([]domain.TenantRoleCode, len(roles))
+	for i, r := range roles {
+		codes[i] = r.RoleCode
+	}
+	return codes, nil
+}
+
 // Suppress unused reference to time (present for future policy checks).
 var _ = time.Now

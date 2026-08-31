@@ -96,7 +96,7 @@ const docTemplate = `{
                         "TenantRoles": []
                     }
                 ],
-                "description": "Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called by the TrialTenantProvisioned consumer (not by external clients).",
+                "description": "Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called directly by the Signup BFF / Realm Provisioner over the internal mesh — every tenant is created trial-shaped regardless of plan; a consumed TrialTenantProvisioned event, if received, is an idempotent no-op reconcile, not a trigger for this handler.",
                 "consumes": [
                     "application/json"
                 ],
@@ -827,7 +827,7 @@ const docTemplate = `{
                         "TenantRoles": []
                     }
                 ],
-                "description": "SLO 15 ms cache-hit / 30 ms miss (§21). Derived ` + "`" + `member` + "`" + ` role injected (TR-7). effective_feature_flags = planDefaults(plan) ⊕ tenants.feature_flags. Cache TTL 300s ± 30s jitter.",
+                "description": "SLO 15 ms cache-hit / 30 ms miss (§21). Derived ` + "`" + `member` + "`" + ` role injected (TR-7). feature_flags is the sorted list of enabled flag names from planDefaults(plan) ⊕ tenants.feature_flags. Cache TTL 300s ± 30s jitter.",
                 "produces": [
                     "application/json"
                 ],
@@ -2076,6 +2076,67 @@ const docTemplate = `{
                 }
             }
         },
+        "/tenants/{id}/members/{user_id}/reset-mfa": {
+            "post": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "Clears the target user's TOTP/WebAuthn credentials via the Realm Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.",
+                "tags": [
+                    "members"
+                ],
+                "summary": "P-34 — Reset a member's MFA",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User UUID",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "member_not_found",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "member_not_active",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "realm_provisioner_unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/tenants/{id}/members/{user_id}/roles": {
             "put": {
                 "security": [
@@ -3140,9 +3201,17 @@ const docTemplate = `{
         "http.OperatorReassignOwnerResponse": {
             "type": "object",
             "properties": {
-                "role_code": {
-                    "type": "string",
-                    "example": "tenant_owner"
+                "ownerless_since": {
+                    "type": "string"
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "tenant_owner"
+                    ]
                 },
                 "tenant_id": {
                     "type": "string",
@@ -3222,23 +3291,19 @@ const docTemplate = `{
         "http.RolesReconcileResponse": {
             "type": "object",
             "properties": {
-                "granted": {
+                "roles": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     },
                     "example": [
-                        "tenant_admin"
-                    ]
-                },
-                "revoked": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "example": [
+                        "tenant_admin",
                         "tender_admin"
                     ]
+                },
+                "user_id": {
+                    "type": "string",
+                    "format": "uuid"
                 }
             }
         },

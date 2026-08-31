@@ -91,6 +91,7 @@ func newJobContext(t *testing.T, ctx context.Context) (*jobs.Context, *captureEv
 // A pending invitation that is NOT yet expired stays untouched. Terminal
 // invitations (revoked/accepted) are ignored.
 func TestReconciler_InvitationExpiry_FlipsPastExpiresAt(t *testing.T) {
+	t.Parallel()
 	jctx, _, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "recon-invexp")
@@ -144,6 +145,7 @@ func TestReconciler_InvitationExpiry_FlipsPastExpiresAt(t *testing.T) {
 // TestReconciler_InvitationExpiry_Idempotent — re-running the job after
 // convergence must be a no-op (nothing to flip).
 func TestReconciler_InvitationExpiry_Idempotent(t *testing.T) {
+	t.Parallel()
 	jctx, _, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "recon-invexp-idemp")
@@ -176,6 +178,7 @@ func TestReconciler_InvitationExpiry_Idempotent(t *testing.T) {
 // overage_since is NULL → reconciler sets overage_since=now() and emits
 // TenantSeatOverageStarted.
 func TestReconciler_SeatOverage_StartsWhenOverCap(t *testing.T) {
+	t.Parallel()
 	jctx, pub, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "recon-seat-start")
@@ -212,6 +215,7 @@ func TestReconciler_SeatOverage_StartsWhenOverCap(t *testing.T) {
 // over cap (overage_since set) but now active+pending <= licensed_seats
 // gets overage_since cleared and TenantSeatOverageResolved emitted.
 func TestReconciler_SeatOverage_ResolvesWhenBackUnderCap(t *testing.T) {
+	t.Parallel()
 	jctx, pub, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "recon-seat-resolve")
@@ -246,6 +250,7 @@ func TestReconciler_SeatOverage_ResolvesWhenBackUnderCap(t *testing.T) {
 // TestReconciler_SeatOverage_NoOpWhenAlreadyConverged — tenant is under cap
 // and overage_since is already NULL → no transition, no event emitted.
 func TestReconciler_SeatOverage_NoOpWhenAlreadyConverged(t *testing.T) {
+	t.Parallel()
 	jctx, pub, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "recon-seat-noop")
@@ -270,6 +275,7 @@ func TestReconciler_SeatOverage_NoOpWhenAlreadyConverged(t *testing.T) {
 // TestReconciler_ProcessedEventsPrune_DeletesStaleRows — rows older than
 // ProcessedEventsTTLDays are deleted; fresh rows are kept.
 func TestReconciler_ProcessedEventsPrune_DeletesStaleRows(t *testing.T) {
+	t.Parallel()
 	jctx, _, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
 
@@ -303,10 +309,103 @@ func TestReconciler_ProcessedEventsPrune_DeletesStaleRows(t *testing.T) {
 // TestReconciler_ProcessedEventsPrune_NoOpOnEmptyTable — a job invocation
 // against a table with no stale rows returns 0 and doesn't error.
 func TestReconciler_ProcessedEventsPrune_NoOpOnEmptyTable(t *testing.T) {
+	t.Parallel()
 	jctx, _, _ := newJobContext(t, context.Background())
 	ctx := context.Background()
 
 	res, err := jobs.ProcessedEventsPrune(ctx, jctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, res.Succeeded, "empty table → no deletions")
+}
+
+// TestReconciler_ProcessedEventsPrune_BatchLimitCapsOneTick — a backlog
+// larger than BatchLimit deletes exactly BatchLimit rows in one call,
+// leaving the rest for the next tick. Real gap the LLD-vs-code audit
+// found: this delete used to be a single unbounded statement.
+func TestReconciler_ProcessedEventsPrune_BatchLimitCapsOneTick(t *testing.T) {
+	t.Parallel()
+	jctx, _, rawPool := newJobContext(t, context.Background())
+	jctx.BatchLimit = 3
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		_, err := rawPool.Exec(ctx, `
+			INSERT INTO processed_events (event_id, consumer, processed_at)
+			VALUES ($1, 'test-consumer-batch', now() - interval '13 days')`, uuid.NewString())
+		require.NoError(t, err)
+	}
+
+	res, err := jobs.ProcessedEventsPrune(ctx, jctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, res.Succeeded, "BatchLimit=3 must cap this tick at exactly 3 deletes")
+
+	var remaining int
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT count(*) FROM processed_events WHERE consumer = 'test-consumer-batch'`).Scan(&remaining))
+	assert.Equal(t, 2, remaining, "the other 2 stale rows must survive for the next tick")
+}
+
+// ── OutboxPrune ──────────────────────────────────────────────────────────
+
+// TestReconciler_OutboxPrune_DeletesPublishedPastRetention — a published
+// row past OutboxRetentionDays is deleted; an unpublished row and a
+// recently-published row both survive.
+func TestReconciler_OutboxPrune_DeletesPublishedPastRetention(t *testing.T) {
+	t.Parallel()
+	jctx, _, rawPool := newJobContext(t, context.Background())
+	jctx.OutboxRetentionDays = 8
+	ctx := context.Background()
+
+	stale := uuid.New()
+	fresh := uuid.New()
+	unpublished := uuid.New()
+	_, err := rawPool.Exec(ctx, `
+		INSERT INTO outbox_events (id, event_type, payload, published_at)
+		VALUES ($1, 'TestEvent', '{}'::jsonb, now() - interval '10 days')`, stale)
+	require.NoError(t, err)
+	_, err = rawPool.Exec(ctx, `
+		INSERT INTO outbox_events (id, event_type, payload, published_at)
+		VALUES ($1, 'TestEvent', '{}'::jsonb, now() - interval '1 hour')`, fresh)
+	require.NoError(t, err)
+	_, err = rawPool.Exec(ctx, `
+		INSERT INTO outbox_events (id, event_type, payload, published_at)
+		VALUES ($1, 'TestEvent', '{}'::jsonb, NULL)`, unpublished)
+	require.NoError(t, err)
+
+	res, err := jobs.OutboxPrune(ctx, jctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Succeeded, "exactly the stale published row must be deleted")
+
+	var remaining []uuid.UUID
+	rows, err := rawPool.Query(ctx, `SELECT id FROM outbox_events WHERE id IN ($1, $2, $3)`, stale, fresh, unpublished)
+	require.NoError(t, err)
+	for rows.Next() {
+		var id uuid.UUID
+		require.NoError(t, rows.Scan(&id))
+		remaining = append(remaining, id)
+	}
+	rows.Close()
+	assert.ElementsMatch(t, []uuid.UUID{fresh, unpublished}, remaining,
+		"a fresh-published row and an unpublished row must both survive")
+}
+
+// TestReconciler_OutboxPrune_BatchLimitCapsOneTick — same batching
+// guarantee as ProcessedEventsPrune, for outbox_events.
+func TestReconciler_OutboxPrune_BatchLimitCapsOneTick(t *testing.T) {
+	t.Parallel()
+	jctx, _, rawPool := newJobContext(t, context.Background())
+	jctx.BatchLimit = 2
+	jctx.OutboxRetentionDays = 8
+	ctx := context.Background()
+
+	for i := 0; i < 4; i++ {
+		_, err := rawPool.Exec(ctx, `
+			INSERT INTO outbox_events (id, event_type, payload, published_at)
+			VALUES ($1, 'TestEvent', '{}'::jsonb, now() - interval '10 days')`, uuid.New())
+		require.NoError(t, err)
+	}
+
+	res, err := jobs.OutboxPrune(ctx, jctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Succeeded, "BatchLimit=2 must cap this tick at exactly 2 deletes")
 }

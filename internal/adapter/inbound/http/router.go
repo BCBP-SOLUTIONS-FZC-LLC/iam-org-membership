@@ -320,6 +320,7 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	tenants.DELETE("/:id/members/:user_id", membershipH.Remove)                           // P-8 (§8.8)
 	tenants.POST("/:id/users/:user_id/removal-resolution", membershipH.RemovalResolution) // P-26 (§8.8.3)
 	tenants.PUT("/:id/members/:user_id/roles", membershipH.ReconcileRoles)
+	tenants.POST("/:id/members/:user_id/reset-mfa", membershipH.ResetMFA) // P-34 (§16 OQ-8/F6)
 	tenants.GET("/:id/seat-usage", membershipH.SeatUsage)
 
 	// Dept memberships — P-9, P-10, P-11

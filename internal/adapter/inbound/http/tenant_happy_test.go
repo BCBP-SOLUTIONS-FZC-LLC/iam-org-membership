@@ -91,6 +91,7 @@ type happyRPClient struct {
 	createInvitedUserFn  func(context.Context, port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error)
 	deleteUserFn         func(context.Context, uuid.UUID, uuid.UUID) error
 	revokeUserSessionsFn func(context.Context, uuid.UUID, uuid.UUID) error
+	resetMFAFn           func(context.Context, uuid.UUID, uuid.UUID) error
 }
 
 func (f *happyRPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {
@@ -114,6 +115,12 @@ func (f *happyRPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID
 func (f *happyRPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error {
 	if f.revokeUserSessionsFn != nil {
 		return f.revokeUserSessionsFn(ctx, tenantID, keycloakUserID)
+	}
+	return nil
+}
+func (f *happyRPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error {
+	if f.resetMFAFn != nil {
+		return f.resetMFAFn(ctx, tenantID, keycloakUserID)
 	}
 	return nil
 }

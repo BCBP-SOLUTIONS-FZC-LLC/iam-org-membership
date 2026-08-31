@@ -43,6 +43,7 @@ import (
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept001_ListAllRegardlessOfActive(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-001")
@@ -81,6 +82,7 @@ func TestP8TDept001_ListAllRegardlessOfActive(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept002_ListActiveFilters(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-002")
@@ -122,6 +124,7 @@ func TestP8TDept002_ListActiveFilters(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept003_FindHappy(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-003")
@@ -152,6 +155,7 @@ func TestP8TDept003_FindHappy(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP8TDept004_FindNotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-004")
@@ -178,6 +182,7 @@ func TestP8TDept004_FindNotFound(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept005_ActivateIdempotent(t *testing.T) {
+	t.Parallel()
 	// Repo-level Activate is NOT idempotent by itself — ON CONFLICT DO
 	// NOTHING + RETURNING yields no row on a repeat call, which the repo
 	// maps to ErrDepartmentAlreadyActivated. Idempotency (silently
@@ -218,6 +223,7 @@ func TestP8TDept005_ActivateIdempotent(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8TDept006_SetActiveOptimisticLock(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-006")
@@ -254,6 +260,7 @@ func TestP8TDept006_SetActiveOptimisticLock(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP8Tenant001_FindByIDHappy(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-001")
@@ -283,6 +290,7 @@ func TestP8Tenant001_FindByIDHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8Tenant002_FindByIDNotFound(t *testing.T) {
+	t.Parallel()
 	appPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 	// GUC bind to some tenant id so RLS lets the query through — but there's
@@ -312,6 +320,7 @@ func TestP8Tenant002_FindByIDNotFound(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP8Tenant003_UpdateNameHappy(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-003")
@@ -341,6 +350,7 @@ func TestP8Tenant003_UpdateNameHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8Tenant004_UpdateOptimisticLock(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-004")
@@ -372,6 +382,7 @@ func TestP8Tenant004_UpdateOptimisticLock(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP8Tenant005_SlugImmutability(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trepo-005-immut")

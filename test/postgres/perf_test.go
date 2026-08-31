@@ -90,6 +90,7 @@ func percentile(ds []time.Duration, p float64) time.Duration {
 // The 15 ms cache-hit target is not asserted here because the test fixture
 // wires cache=nil.
 func TestSLO_I8_P99UnderBudget(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, userID := seedTenantWithOwner(t, ctx, fx, "slo-i8")
@@ -125,6 +126,7 @@ func TestSLO_I8_P99UnderBudget(t *testing.T) {
 // exactly 5 succeed; the wall-clock ceiling proves the FOR UPDATE
 // serialization doesn't collapse throughput.
 func TestSLO_SeatPreflight100Concurrent(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "slo-seat")
@@ -180,6 +182,13 @@ func TestSLO_SeatPreflight100Concurrent(t *testing.T) {
 // must be within a small constant multiple. Prevents an accidental
 // regression that would inflate every read.
 func TestRLS_OverheadBounded(t *testing.T) {
+	// Deliberately NOT t.Parallel(): this measures a RATIO between two
+	// back-to-back timing loops in one goroutine. Unlike the absolute
+	// wall-clock/latency budgets elsewhere in this file (generous enough to
+	// absorb scheduling noise), a relative ratio is directly skewed by CPU
+	// contention from sibling tests — running this alongside other parallel
+	// postgres tests produced false failures (ratio measured 6.32x vs the
+	// 5x bound) that don't reflect a real RLS regression.
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "rls-overhead")

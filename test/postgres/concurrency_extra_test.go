@@ -47,6 +47,7 @@ import (
 // (WHERE deleted_at IS NULL) must reject the loser; final state has
 // exactly ONE active row.
 func TestConcurrentSameUserMembershipAdd(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "jit-001")
@@ -93,6 +94,7 @@ func TestConcurrentSameUserMembershipAdd(t *testing.T) {
 // `WHERE status = 'pending'` in the transition allows only the first to
 // mutate; the second observes zero rows affected.
 func TestConcurrentAcceptOfSameInvitation(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "accept-001")
@@ -137,6 +139,7 @@ func TestConcurrentAcceptOfSameInvitation(t *testing.T) {
 // PUT the same (tenant, user, dept) at different role_levels. The
 // uq_dm_active_membership partial unique lets exactly one INSERT succeed.
 func TestConcurrentDeptAssignDifferentLevels(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "b15-ext-001")
@@ -196,6 +199,7 @@ func TestConcurrentDeptAssignDifferentLevels(t *testing.T) {
 // expired) invites is inserted. The reconciler must flip ONLY the
 // truly-expired rows; the fresh invites must remain 'pending'.
 func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "rec-001")
@@ -269,6 +273,7 @@ func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
 // claimers must produce DISJOINT batches (no row appears in both). This
 // is the horizontal-scale safety property for the runner.
 func TestSkipLockedPreventsDuplicatePublish(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 

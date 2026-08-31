@@ -44,9 +44,17 @@ const (
 	EventTenantRoleGranted                = "TenantRoleGranted"
 	EventTenantRoleRevoked                = "TenantRoleRevoked"
 	EventTenderAssigneeOverridden         = "TenderAssigneeOverridden"
-	EventTenantSeatOverageStarted         = "TenantSeatOverageStarted"
-	EventTenantSeatOverageResolved        = "TenantSeatOverageResolved"
-	EventTenantStateChanged               = "TenantStateChanged"
+	// EventMFAReset is P-34's (§16 OQ-8/F6) audit signal — emitted after
+	// RealmProvisionerClient.ResetMFA (RP-9) succeeds. O&M persists no MFA
+	// state of its own; this event exists solely so the Audit Log consumer
+	// (the only real audit mechanism in this codebase, membership-audit-q's
+	// catch-all filter) records the actor + target of the reset, per RP's
+	// confirmed HLD §8.2.6 flow ("Audit Log records MFAReset with actor and
+	// target").
+	EventMFAReset                  = "MFAReset"
+	EventTenantSeatOverageStarted  = "TenantSeatOverageStarted"
+	EventTenantSeatOverageResolved = "TenantSeatOverageResolved"
+	EventTenantStateChanged        = "TenantStateChanged"
 	// EventMembershipRevoked replaces two cascades RemoveUser/DeleteMember
 	// used to perform synchronously, in the same DB transaction, via
 	// DelegationRepository.SoftDeleteForUser and

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand/v2"
+	"sort"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -19,11 +20,12 @@ import (
 type AuthZService struct {
 	pool  *pgcommon.Pool
 	plans port.PlanCatalogReader
+	depts port.DepartmentCatalogReader
 	cache port.Cache
 }
 
-func NewAuthZService(pool *pgcommon.Pool, plans port.PlanCatalogReader, cache port.Cache) *AuthZService {
-	return &AuthZService{pool: pool, plans: plans, cache: cache}
+func NewAuthZService(pool *pgcommon.Pool, plans port.PlanCatalogReader, depts port.DepartmentCatalogReader, cache port.Cache) *AuthZService {
+	return &AuthZService{pool: pool, plans: plans, depts: depts, cache: cache}
 }
 
 // MembershipProjection is the I-8 response envelope.
@@ -38,19 +40,24 @@ func NewAuthZService(pool *pgcommon.Pool, plans port.PlanCatalogReader, cache po
 // Enrichment can rebuild the `x-feature-flags` `read_only` claim on a
 // cold cache-miss without additional round-trips (§16 A53 CACHE-9).
 type MembershipProjection struct {
-	UserID                uuid.UUID                   `json:"user_id"`
-	TenantID              uuid.UUID                   `json:"tenant_id"`
-	Status                domain.MembershipStatus     `json:"status"`
-	Plan                  domain.TenantPlan           `json:"plan"`
-	TenantStatus          domain.SubscriptionStatus   `json:"tenant_status"` // deprecated alias — see subscription_status
-	SubscriptionStatus    domain.SubscriptionStatus   `json:"subscription_status"`
-	ReadOnly              bool                        `json:"read_only"`
-	Locale                string                      `json:"default_locale"`
-	MFAFreshnessSeconds   int                         `json:"mfa_freshness_seconds"`
-	LocalAccountsEnabled  bool                        `json:"local_accounts_enabled"`
-	Roles                 []domain.TenantRoleCode     `json:"roles"`
-	Departments           []domain.DeptMembershipView `json:"departments"`
-	EffectiveFeatureFlags map[string]any              `json:"effective_feature_flags"`
+	UserID               uuid.UUID                   `json:"user_id"`
+	TenantID             uuid.UUID                   `json:"tenant_id"`
+	Status               domain.MembershipStatus     `json:"status"`
+	Plan                 domain.TenantPlan           `json:"plan"`
+	TenantStatus         domain.SubscriptionStatus   `json:"tenant_status"` // deprecated alias — see subscription_status
+	SubscriptionStatus   domain.SubscriptionStatus   `json:"subscription_status"`
+	ReadOnly             bool                        `json:"read_only"`
+	Locale               string                      `json:"default_locale"`
+	MFAFreshnessSeconds  int                         `json:"mfa_freshness_seconds"`
+	LocalAccountsEnabled bool                        `json:"local_accounts_enabled"`
+	Roles                []domain.TenantRoleCode     `json:"roles"`
+	Departments          []domain.DeptMembershipView `json:"departments"`
+	// FeatureFlags is the effective set (planDefaults(plan) ⊕
+	// tenants.feature_flags, PLAN-6), projected as the sorted list of
+	// currently-enabled flag names — matches LLD §5.4's documented I-8
+	// shape. Corrected: previously an object keyed by flag name
+	// (`effective_feature_flags`), which didn't match the LLD.
+	FeatureFlags []string `json:"feature_flags"`
 }
 
 // readOnlyForStatus returns true for subscription states that must render
@@ -133,6 +140,20 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 		}
 		rows.Close()
 
+		// Department code lookup (LLD §5.4 I-8 response shape) — a single
+		// om:departments cache read (CatalogService.Departments, 600s TTL),
+		// not a per-department cross-service call; degrades to an empty
+		// code (never fails I-8) on a cold-cache/Catalog-down intersection,
+		// same posture as the feature-flags plan lookup below.
+		deptCodes := map[uuid.UUID]string{}
+		if s.depts != nil {
+			if all, dErr := s.depts.Departments(ctx); dErr == nil {
+				for _, d := range all {
+					deptCodes[d.ID] = d.Code
+				}
+			}
+		}
+
 		// Dept memberships.
 		depts := []domain.DeptMembershipView{}
 		drows, err := tx.Query(txCtx, `
@@ -150,6 +171,7 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 				return err
 			}
 			view.RoleLevel = domain.DeptRole(lvl)
+			view.Code = deptCodes[view.DepartmentID]
 			depts = append(depts, view)
 		}
 		drows.Close()
@@ -176,21 +198,37 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 			effective[k] = v
 		}
 
+		// Project the effective map down to the sorted list of enabled flag
+		// names (LLD §5.4 I-8 shape). A bool value must be true to count;
+		// any other non-nil value is treated as "set" (this codebase's
+		// feature_flags values are boolean in practice, but the domain type
+		// is map[string]any, so this doesn't assume that).
+		enabledFlags := make([]string, 0, len(effective))
+		for k, v := range effective {
+			switch b, ok := v.(bool); {
+			case ok && b:
+				enabledFlags = append(enabledFlags, k)
+			case !ok && v != nil:
+				enabledFlags = append(enabledFlags, k)
+			}
+		}
+		sort.Strings(enabledFlags)
+
 		subStatus := domain.SubscriptionStatus(tStatus)
 		proj = &MembershipProjection{
-			UserID:                userID,
-			TenantID:              tenantID,
-			Status:                domain.MembershipStatus(mStatus),
-			Plan:                  domain.TenantPlan(tPlan),
-			TenantStatus:          subStatus, // deprecated alias
-			SubscriptionStatus:    subStatus,
-			ReadOnly:              readOnlyForStatus(subStatus),
-			Locale:                tLocale,
-			MFAFreshnessSeconds:   mfaFresh,
-			LocalAccountsEnabled:  localAccountsEnabled,
-			Roles:                 roles,
-			Departments:           depts,
-			EffectiveFeatureFlags: effective,
+			UserID:               userID,
+			TenantID:             tenantID,
+			Status:               domain.MembershipStatus(mStatus),
+			Plan:                 domain.TenantPlan(tPlan),
+			TenantStatus:         subStatus, // deprecated alias
+			SubscriptionStatus:   subStatus,
+			ReadOnly:             readOnlyForStatus(subStatus),
+			Locale:               tLocale,
+			MFAFreshnessSeconds:  mfaFresh,
+			LocalAccountsEnabled: localAccountsEnabled,
+			Roles:                roles,
+			Departments:          depts,
+			FeatureFlags:         enabledFlags,
 		}
 		return nil
 	})

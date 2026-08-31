@@ -242,9 +242,9 @@ iam-org-membership/
 │           │   ├── codec.go                 # local eventbus.Codec — outbox-enqueue-time JSON validation + NoopCodec
 │           │   ├── validating_codec.go      # JSON Schema Draft-07 validation against schemas/*.json
 │           │   ├── glue_codec.go            # AWS Glue Schema Registry wire-format codec (events.Codec) — one per topic
-│           │   └── schemas/*.json           # 13 embedded JSON Schema Draft-07 files (11 membership + 2 tenant)
+│           │   └── schemas/*.json           # 14 embedded JSON Schema Draft-07 files (12 membership + 2 tenant)
 │           ├── workflow/                    # HTTP client — GetDelegateImpact/Reassign/Cancel (§8.8)
-│           ├── realmprovisioner/            # HTTP client — CreateInvitedUser/DeleteUser/PatchRealmConfig/RevokeUserSessions
+│           ├── realmprovisioner/            # HTTP client — CreateInvitedUser/DeleteUser/PatchRealmConfig/RevokeUserSessions/ResetMFA
 │           ├── catalogadmin/                # HTTP client — read-only departments/plans (Catalog Service, NOT fail-open)
 │           ├── groupmappingclient/          # HTTP client — group→dept/role JIT resolution (Group Mapping Service, fails open)
 │           ├── delegationcheck/             # HTTP client — dept-scoped delegate lookup (Delegation Service, fails open)
@@ -313,7 +313,7 @@ The `events.NewRoutingPublisher` (HLD §9.2) is used here, with `TopicARNs: map[
 
 All outbox, consumer, DLQ, and pruning patterns are identical to `iam-user-profile`. This service is a **substantive consumer** of two topics at MVP:
 
-- **`iam.tenant.events`** via queue `tenant-orgm-q` — subscribes to the tenant-lifecycle events produced by the Realm Provisioner (`TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`) to drive `tenants` state changes (realm-id/realm-type update, subscription-status transitions, tenant data-wipe). O&M never consumes its own `TenantCreated`/`TrialStarted` — produce/consume sets are disjoint (HLD §9.1.1 "No self-consumption").
+- **`iam.tenant.events`** via queue `tenant-orgm-q` — subscribes to the tenant-lifecycle events produced by the Realm Provisioner (`TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated{source=operator}` — new, resolves F1 of the RP↔O&M alignment review) to drive `tenants` state changes (realm-id/realm-type update, subscription-status transitions, tenant data-wipe, operator un-suspend). O&M never consumes its own `TenantCreated`/`TrialStarted` — produce/consume sets are disjoint (HLD §9.1.1 "No self-consumption").
 - **`billing.events`** via queue `billing-orgm-q` — subscribes to the billing events produced by the Billing Service (`TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated`) to update `subscription_status` and `plan`. `feature_flags` (the override delta, §16 A18) is untouched by any of these — the effective set is derived at read time, not stored (T-9), and `planDefaults` is now sourced through the Catalog read-through cache (§2.1).
 
 Both queues follow the `<topic-short>-<consumer>-q` naming convention (HLD §9.1): topic-short drops the `iam.`/`.events` (`iam.tenant.events`→`tenant`, `billing.events`→`billing`) and the O&M consumer short-name is `orgm`. DLQs are `tenant-orgm-q-dlq` and `billing-orgm-q-dlq`, `maxReceiveCount=5`. Idempotency via `processed_events` as in User Profile.
@@ -357,7 +357,8 @@ erDiagram
         timestamptz trial_ends_at
         int trial_reactivation_count "§16 A57; one-time reactivation cap, CHECK 0..1 (TRIAL-5, T-14)"
         timestamptz subscription_started_at
-        timestamptz cancelled_at "§16 A24; drives grace→suspend→offboard clock (§15.5)"
+        timestamptz cancelled_at "§16 A24; drives grace→suspend→offboard clock (§15.5); NOT set for an operator-sourced suspension (T-16)"
+        suspension_source suspension_source "T-16, new — resolves RP-11; non-NULL iff status='suspended': billing_lapse | operator"
         timestamptz last_event_at "§16 A33; recency high-water mark for the last-writer-wins projection guard (EVT-14)"
         text realm_id "Keycloak realm name; 'trial' for trial tenants; UNIQUE among dedicated realms only (uq_tenants_realm_id_dedicated, T-6)"
         realm_type realm_type "ENUM: shared|dedicated (§16 A22); explicit strategy flag, not derived from realm_id"
@@ -472,6 +473,7 @@ CREATE TYPE membership_status     AS ENUM ('active', 'suspended', 'left');
 CREATE TYPE dept_role             AS ENUM ('preparator', 'reviewer', 'approver');
 CREATE TYPE realm_type            AS ENUM ('shared', 'dedicated');  -- §16 A22, new: explicit strategy flag, matches HLD's keycloak_realm_strategy. Never derive shared/dedicated by string-matching realm_id.
 CREATE TYPE invitation_status     AS ENUM ('pending', 'accepted', 'expired', 'revoked');  -- §16 A11, new: pending_invitations lifecycle; matches HLD §7.3's CHECK domain exactly, promoted to a native ENUM for consistency with every other fixed-choice column (same reasoning as A17).
+CREATE TYPE suspension_source     AS ENUM ('billing_lapse', 'operator');  -- (new, T-16 — resolves RP-11) distinguishes the normal Billing-driven cancelled→suspended lapse from an operator-sourced administrative suspension (RP-14, §8.12 of the Realm Provisioner LLD) that can move active/trial straight to suspended, skipping the grace path.
 ```
 
 **Enums removed by the decomposition.** Four ENUMs that only ever typed columns on extracted tables are **dropped from this service's schema** (originally migrations 000013–000016, now folded into `000000_initial_schema`, §4.4/§19.1) and now live with their owning service:
@@ -499,14 +501,15 @@ CREATE TABLE tenants (
   trial_ends_at          timestamptz,
   trial_reactivation_count int NOT NULL DEFAULT 0 CHECK (trial_reactivation_count BETWEEN 0 AND 1),  -- (§16 A57, new) one-time trial reactivation cap (HLD Invariant TRIAL-5); incremented on TrialReactivated (§15.4); schema-capped at 1 so a second reactivation can never persist even under a bug/race (T-14)
   subscription_started_at timestamptz,          -- NULL for trial tenants; set when paid access begins (= created_at for direct purchase, = now() for trial→active transition)
-  cancelled_at           timestamptz,           -- (§16 A24, new) NULL until the paid-lapse `cancelled` transition; drives the whole grace→suspend→offboard clock (§15.5)
+  cancelled_at           timestamptz,           -- (§16 A24, new) NULL until the paid-lapse `cancelled` transition; drives the whole grace→suspend→offboard clock (§15.5). NOT set for an operator-sourced suspension (T-16) — that path never enters the billing grace/retention clock.
+  suspension_source      suspension_source,     -- (new, T-16 — resolves RP-11) non-NULL iff status='suspended': 'billing_lapse' (the normal cancelled→suspended path, cancelled_at also set) or 'operator' (RP-14 administrative suspension, may apply directly from active/trial, cancelled_at untouched). Cleared to NULL by TenantReactivated alongside cancelled_at.
   last_event_at          timestamptz,           -- (§16 A33, new) CloudEvents `time` of the most recent tenant/billing lifecycle event applied to this projection; the recency high-water mark for the last-writer-wins guard (EVT-14). NULL until the first lifecycle event lands. NOT bumped by API writes (P-2 etc.) — only by consumed events.
   realm_id               text NOT NULL DEFAULT 'trial' CHECK (realm_id <> ''),  -- 'trial' for shared realm; dedicated realm name after provisioning
   realm_type             realm_type NOT NULL DEFAULT 'shared',  -- (§16 A22, new) explicit strategy flag, matches HLD's keycloak_realm_strategy; the authoritative field for shared-vs-dedicated branching — realm_id is a display/connection name only, never compared against a literal
   keycloak_shard         text NOT NULL DEFAULT 'shard-0' CHECK (keycloak_shard <> ''),  -- (§16 A23, new) realm-placement key for the HLD §14.5 Phase-3 sharding plan; a Realm-Provisioner-owned projection (T-12) — O&M stores it, never assigns it. Reserved from MVP (default 'shard-0') so adding shard-1 later is deployment+config, not a schema migration (HLD §7.3/§14.5)
   mfa_freshness_seconds  int NOT NULL DEFAULT 300 CHECK (mfa_freshness_seconds BETWEEN 60 AND 900),  -- (§16 A20, new) per-tenant Approver re-auth freshness window, HLD §5.1/§6.5
   local_accounts_enabled boolean NOT NULL DEFAULT true,
-  realm_sync_pending     boolean NOT NULL DEFAULT false,  -- (§16 A58, new) durable reconciliation marker (T-15): true = a realm-affecting setting (`local_accounts_enabled`) is committed in this row but the synchronous Realm-Provisioner call (`PATCH /internal/tenants/:id/realm-config`) has NOT yet confirmed. Set when the inline P-2 call fails (endpoint then returns 202, not 200); the `realm-config-sync` reconciler (§13.1) converges it via the idempotent `PatchRealmConfig` and clears it once Keycloak matches. Directly mirrors `pending_invitations.kc_cleanup_pending` (§16 A34/PI-9).
+  realm_sync_pending     boolean NOT NULL DEFAULT false,  -- (§16 A58, new) durable reconciliation marker (T-15): true = a realm-affecting setting (`local_accounts_enabled`) is committed in this row but the synchronous Realm-Provisioner call (`PATCH /api/v1/internal/tenants/:id/realm-config` — F8, RP LLD v0.22 versioning) has NOT yet confirmed. Set when the inline P-2 call fails (endpoint then returns 202, not 200); the `realm-config-sync` reconciler (§13.1) converges it via the idempotent `PatchRealmConfig` and clears it once Keycloak matches. Directly mirrors `pending_invitations.kc_cleanup_pending` (§16 A34/PI-9).
   default_locale         text NOT NULL DEFAULT 'en-US',   -- BCP-47; service-layer validated
   licensed_seats         int NOT NULL DEFAULT 10 CHECK (licensed_seats > 0),  -- (§16 A10, new) paid-seat hard cap; a Billing projection (SEAT-4) — trial uses a configurable allowance; matches HLD §6.6 exactly
   ownerless_since        timestamptz,           -- (§16 A39, new) durable escalation marker (T-13): set when the identity-layer deletion path (I-5) removes a tenant's last active tenant_owner (TM-8 can't refuse — the Keycloak identity is already gone); NULL in the normal case; cleared when a platform_operator reassigns ownership (O-7). Drives the ownerless-tenant alert.
@@ -523,9 +526,17 @@ CREATE TABLE tenants (
   -- now enforced by Catalog + this app check, not a DB FK).
 
   CONSTRAINT chk_trial_ends_at_required CHECK (status NOT IN ('trial','trial_expired') OR trial_ends_at IS NOT NULL),  -- both trial states carry the expiry timestamp; reactivation and grace/cleanup are driven off trial_ends_at
-  CONSTRAINT chk_subscription_started_required CHECK (status IN ('trial','trial_expired') OR subscription_started_at IS NOT NULL),  -- paid states require a paid-start timestamp; BOTH trial states (incl. a never-converted expired trial) never had paid access, so subscription_started_at is legitimately NULL
+  CONSTRAINT chk_subscription_started_required CHECK (status IN ('trial','trial_expired','suspended') OR subscription_started_at IS NOT NULL),  -- paid states require a paid-start timestamp; BOTH trial states (incl. a never-converted expired trial) never had paid access, so subscription_started_at is legitimately NULL. 'suspended' is ALSO exempt (T-16, new — resolves RP-11): an operator-sourced suspension can land directly on a never-converted trial tenant, which must keep subscription_started_at NULL; a billing-lapse suspension already has it set from its prior active/cancelled status, so relaxing this to a one-directional exemption is harmless there.
   CONSTRAINT chk_offboarded_soft_deleted        CHECK (status <> 'offboarded' OR deleted_at IS NOT NULL),  -- Invariant PAID-1: an 'offboarded' tenant is always soft-deleted. One-directional by design: deleted_at is also set on the trial_expired hard-delete path, so the converse (deleted_at ⇒ offboarded) is intentionally NOT asserted.
-  CONSTRAINT chk_cancelled_at_required  CHECK ((status IN ('cancelled','suspended','offboarded')) = (cancelled_at IS NOT NULL))  -- (§16 A24, new) two-directional by design, unlike the trial_ends_at/subscription_started_at checks above: §15.5's TenantSubscriptionCancelled/TenantReactivated handlers set and clear cancelled_at in lockstep with status, so the two are never expected to disagree even momentarily.
+  CONSTRAINT chk_cancelled_at_required  CHECK (
+    CASE status
+      WHEN 'cancelled'  THEN cancelled_at IS NOT NULL
+      WHEN 'offboarded' THEN cancelled_at IS NOT NULL
+      WHEN 'suspended'  THEN (suspension_source <> 'billing_lapse' OR cancelled_at IS NOT NULL)
+      ELSE cancelled_at IS NULL
+    END
+  ),  -- (§16 A24; CASE form new, T-16 — resolves RP-11) cancelled_at is required for 'cancelled'/'offboarded' always, and for 'suspended' only on the billing_lapse path (it drives the grace→suspend→offboard clock, §15.5); an operator-sourced suspension (suspension_source='operator') is deliberately NOT required to carry it — and must not be auto-stamped with one — so it never enters that billing clock. Every other status forces it NULL, same as the original two-directional check.
+  CONSTRAINT chk_suspension_source_required CHECK ((status = 'suspended') = (suspension_source IS NOT NULL))  -- (new, T-16 — resolves RP-11) biconditional, same lockstep discipline as chk_cancelled_at_required's original form: TenantSuspended sets it, TenantReactivated clears it back to NULL alongside cancelled_at.
 );
 
 CREATE INDEX idx_tenants_status      ON tenants (status)        WHERE deleted_at IS NULL;
@@ -581,9 +592,9 @@ EXECUTE FUNCTION prevent_slug_change();
 - **`default_currency` is deliberately NOT stored here — it is Billing-owned (§16 A32(b), rev 1.28).** The HLD's §7.3 `tenants` DDL sketch places `default_currency` beside `default_locale`, but this LLD **omits** it: currency is a **pricing/billing** attribute, and the HLD's own boundary assigns pricing to the Billing domain — "Plan PRICE and discount terms live in the Billing domain (§10.7), never [in IAM]" (HLD §7.3 `plans` note / §10.7). Storing a tenant currency in O&M would duplicate billing-owned state O&M neither sets nor consumes (nothing in O&M's flows reads currency — `default_locale` drives the LLM prompt, but no O&M path prices anything). This is the same federated-ownership posture as metered quotas (§16 A26/A30): config lives with the domain that owns it. `default_locale` stays because O&M genuinely owns and serves it (T-3); `default_currency` does not, so it is left to Billing — a deliberate divergence from the HLD's literal column placement, aligned with the HLD's own stated pricing-ownership boundary. If a currency value is ever needed for display in an O&M-served view, it is read from Billing, not stored here.
 - **`mfa_freshness_seconds` (§16 A20, new — closes a real gap).** This LLD had **no MFA modeling at all** prior to this revision — the §2 glossary line "Credentials, password policy, MFA, JWT issuance → Keycloak" was read (incorrectly) as "MFA is entirely out of scope for Org & Membership," but the HLD's own `tenants` DDL (§7.3) and §5.1/§6.5 are explicit that the **re-auth freshness window is a per-tenant setting Org & Membership owns and stores** — Keycloak only *enforces* MFA; it doesn't decide how fresh a re-auth must be. Approver-gated actions (tender-section approval, HLD §8.5) require the caller to have completed MFA within this window; AuthZ Enrichment reads the tenant's configured value and passes it as Keycloak's `max_age` parameter on the `prompt=login` re-auth check (HLD §5.1/§11.3). `int NOT NULL DEFAULT 300 CHECK (BETWEEN 60 AND 900)` matches the HLD's DDL exactly. **Propagation is simpler than `local_accounts_enabled`'s**: this value is never pushed into Keycloak's realm configuration — it's read fresh on every approval-gated request (via I-8, §6.2 below), so a `PATCH` (P-2) takes effect on the **next** request with no realm mutation, no synchronous Realm-Provisioner call, and no reconciliation-queue risk. `tenant_owner`-only (matches `local_accounts_enabled`'s AUTH level); every change writes a `TenantSettingChanged` audit entry, no bus event.
 - **Delegation settings moved to the Delegation Service (ADR-0008 §2.1).** The columns `delegation_max_duration_days` and `delegation_review_window_days` (both §16 A71) are **no longer on `tenants`** — the entire delegation subsystem was extracted, and its per-tenant caps/review-window defaults now live in the Delegation Service's own `delegation_tenant_settings` table. DEL-13/DEL-14 (and the P-19 window-length checks that read these values) are Delegation Service invariants; O&M no longer stores or serves them.
-- `local_accounts_enabled` controls whether the `tenant-{slug}` Keycloak realm allows local email+password accounts. When set to `false`, only SSO-federated login is permitted. A change must reach the Realm Provisioner so it can mutate the realm; per the resolved HLD decision (HLD §5.2, §17; §16 A7) O&M persists the new value and then **synchronously** calls the Realm Provisioner's `PATCH /internal/tenants/:id/realm-config` endpoint. If the realm mutation succeeds, the endpoint returns **`200 OK`**. If the realm mutation fails after the O&M commit, the row is marked **`realm_sync_pending`** (§16 A58, T-15) and the endpoint returns **`202 Accepted`**; the `realm-config-sync` reconciler (§13.1) retries the idempotent `PATCH` until the realm converges, so the stored setting and the realm never silently diverge. **O&M remains the source of truth, while Keycloak is a converging projection.** No bus event is used (`TenantUpdated` was removed in rev 0.3); every change writes a `TenantSettingChanged` audit entry.
+- `local_accounts_enabled` controls whether the `tenant-{slug}` Keycloak realm allows local email+password accounts. When set to `false`, only SSO-federated login is permitted. A change must reach the Realm Provisioner so it can mutate the realm; per the resolved HLD decision (HLD §5.2, §17; §16 A7) O&M persists the new value and then **synchronously** calls the Realm Provisioner's `PATCH /api/v1/internal/tenants/:id/realm-config` endpoint (F8, RP LLD v0.22 versioning). If the realm mutation succeeds, the endpoint returns **`200 OK`**. If the realm mutation fails after the O&M commit, the row is marked **`realm_sync_pending`** (§16 A58, T-15) and the endpoint returns **`202 Accepted`**; the `realm-config-sync` reconciler (§13.1) retries the idempotent `PATCH` until the realm converges, so the stored setting and the realm never silently diverge. **O&M remains the source of truth, while Keycloak is a converging projection.** No bus event is used (`TenantUpdated` was removed in rev 0.3); every change writes a `TenantSettingChanged` audit entry.
 
-  **Write ordering — Option A (local-first, commit-then-call).** The setting is committed to the O&M database **first**, then the synchronous Realm-Provisioner call is made in the same request handler. On success the endpoint returns `200`. On failure the committed row is marked `realm_sync_pending` (a reconciliation-queue entry) and a background reconciler retries the idempotent `PATCH /internal/tenants/:id/realm-config` until Keycloak matches; the endpoint returns `202 Accepted` (pending) rather than a bare `200`, so the caller knows the realm mutation is not yet confirmed. Option A is chosen over Option B (call-RP-first, then commit) for operability: O&M's row is the single source of truth and the realm **converges** to it, versus Option B where a post-RP commit failure would leave Keycloak mutated but the DB stale. The one caveat of Option A is a brief exposure window on the *security-tightening* direction (`local_accounts_enabled` → `false`) if the RP call fails — the DB says "local disabled" while Keycloak still permits local login until reconciliation lands. Because enforcement ultimately lives in Keycloak, the reconciler **prioritises un-applied disabling changes** to keep that window minimal, and alerts if a `realm_sync_pending` row is not cleared within its SLO. (This is an implementation-level ordering choice; the HLD §5.2 contract is satisfied by either ordering.)
+  **Write ordering — Option A (local-first, commit-then-call).** The setting is committed to the O&M database **first**, then the synchronous Realm-Provisioner call is made in the same request handler. On success the endpoint returns `200`. On failure the committed row is marked `realm_sync_pending` (a reconciliation-queue entry) and a background reconciler retries the idempotent `PATCH /api/v1/internal/tenants/:id/realm-config` until Keycloak matches; the endpoint returns `202 Accepted` (pending) rather than a bare `200`, so the caller knows the realm mutation is not yet confirmed. Option A is chosen over Option B (call-RP-first, then commit) for operability: O&M's row is the single source of truth and the realm **converges** to it, versus Option B where a post-RP commit failure would leave Keycloak mutated but the DB stale. The one caveat of Option A is a brief exposure window on the *security-tightening* direction (`local_accounts_enabled` → `false`) if the RP call fails — the DB says "local disabled" while Keycloak still permits local login until reconciliation lands. Because enforcement ultimately lives in Keycloak, the reconciler **prioritises un-applied disabling changes** to keep that window minimal, and alerts if a `realm_sync_pending` row is not cleared within its SLO. (This is an implementation-level ordering choice; the HLD §5.2 contract is satisfied by either ordering.)
 - `chk_trial_ends_at_required` — DB-level consistency guard: **both trial states (`trial` and `trial_expired`) must carry a non-null `trial_ends_at`**. `trial_expired` is *derived* from the expiry timestamp, and both the reactivation path and the grace-period/cleanup cron read `trial_ends_at`, so a `trial_expired` row with a NULL expiry would be logically impossible. The service layer enforces this too (returns `400 trial_ends_at_required` if omitted on tenant creation with `plan = 'trial'`), but the constraint closes the gap for direct writes and future migrations. Paid statuses may leave `trial_ends_at` NULL (direct purchase) or retain it (trial-converted, for audit).
 - `chk_subscription_started_required` — any tenant in a **paid** status (`active`, `past_due`, `cancelled`, `suspended`, `offboarded`) must have a non-null `subscription_started_at`. **Both trial states — `trial` and `trial_expired` — are exempt**, because a never-converted trial (including one that has expired without ever converting) never had paid access and legitimately carries `subscription_started_at IS NULL`. This covers both paid-acquisition paths: direct-purchase tenants set `subscription_started_at = created_at` at INSERT time; trial-converted tenants set it to `now()` in the same `RunInTx` that flips `status`. Together the two constraints enforce the full lifecycle invariant:
 
@@ -628,11 +639,12 @@ EXECUTE FUNCTION prevent_slug_change();
 | T-8 | `licensed_seats > 0` always (`CHECK`); it is never zero or negative even for a not-yet-billed tenant (defaults to the trial allowance, 10). |
 | T-9 | `feature_flags` (§16 A18) holds **only the per-tenant override delta**, never the plan's default entitlements and never a merged/effective snapshot. The effective set exposed to callers (I-8, `x-feature-flags`) is `planDefaults(plan) ⊕ feature_flags` (override-wins-per-key), computed at read time — where `planDefaults(plan)` is sourced from the `om:plans` cache (Catalog Service, ADR-0007 §4). A plan change (`TenantConverted`/`TenantPlanChanged`) never touches this column, so an operator-granted override is never silently clobbered or reset by an unrelated billing event. Writable only via `platform_operator` (O-4); no tenant-facing endpoint can set it. |
 | T-10 | `mfa_freshness_seconds` (§16 A20) is always in `[60, 900]` (`CHECK`) and defaults to `300`. It gates every Approver-gated action (HLD §8.5) as Keycloak's `max_age`, never pushed to Keycloak's realm config. **Freshness of the value itself (§16 A52):** for the approver step-up, AuthZ Enrichment sources it from the **tenant-scoped cache `om:tenant`** (600 s TTL) — which `PATCH /tenants/:id` (P-2) **evicts on write** — so a change takes effect on the **next** request, with no per-user reconciliation lag. It is *also* echoed in the I-8 per-user response for convenience, but that per-user copy (frozen in the 300 s `om:memberships` snapshot, which P-2 does not evict) is **informational only, not the authoritative source for the gate** — this avoids a security-sensitive tightening being masked for up to 300 s by a stale per-user projection. A stale value is in any case never a security *bypass* (Keycloak independently enforces that MFA occurred); this rule makes a *tightening* promptly effective, not merely eventually. `tenant_owner`-only; every change is audit-logged (`TenantSettingChanged`), no bus event. |
-| T-11 | `cancelled_at` (§16 A24) is non-NULL if and only if `status IN ('cancelled', 'suspended', 'offboarded')` (`chk_cancelled_at_required`, two-directional). Set by `TenantSubscriptionCancelled`, cleared by `TenantReactivated` (both before offboarding only), retained through `offboarded` for audit. Drives the §15.5 grace-period (default 30 days) and retention-window (default 90 days) clocks for the paid-lapse `cancelled → suspended → offboarded` sequence. |
+| T-11 | `cancelled_at` (§16 A24) is non-NULL if and only if `status IN ('cancelled', 'offboarded')`, or `status = 'suspended' AND suspension_source = 'billing_lapse'` (`chk_cancelled_at_required` — refined by T-16 to carve out the operator-sourced suspend path, which never sets it). Set by `TenantSubscriptionCancelled`, cleared by `TenantReactivated` (both before offboarding only), retained through `offboarded` for audit. Drives the §15.5 grace-period (default 30 days) and retention-window (default 90 days) clocks for the paid-lapse `cancelled → suspended → offboarded` sequence — an operator-suspended tenant is deliberately kept **out** of that clock (T-16). |
+| T-16 | **`suspension_source` (new — resolves RP-11) distinguishes why a tenant is `suspended`.** Non-NULL if and only if `status = 'suspended'` (`chk_suspension_source_required`, two-directional, same lockstep discipline as `cancelled_at`/T-11). `'billing_lapse'` is the normal Billing-driven `cancelled → suspended` path (`cancelled_at` also set, T-11) and is the value applied when a consumed `TenantSuspended` event omits the field (backward-compatible default for producers that predate RP-14). `'operator'` is an administrative suspension (RP-14, §8.12 of the Realm Provisioner LLD) that can move `active`/`trial` **directly** to `suspended`, skipping the grace path entirely — for this path `cancelled_at` is deliberately left untouched (never auto-stamped) so the tenant does not enter the §15.5 grace/retention clock it was never actually billing-lapsed into. `chk_subscription_started_required` (T-5) exempts `suspended` from requiring `subscription_started_at`, specifically so an operator can suspend a never-converted trial tenant without a spurious paid-start timestamp. `TenantReactivated` clears `suspension_source` back to `NULL` unconditionally, alongside `cancelled_at` — regardless of which path led to `suspended`. **Corrected — the target status is derived, not hardcoded to `active`:** a tenant that was operator-suspended while still a never-converted trial (`subscription_started_at IS NULL`) returns to `'trial'`, not `'active'` — resolving to `'active'` would violate `chk_subscription_started_required`. A tenant that was ever paid (`subscription_started_at` set, from either the normal `billing_lapse` path or an operator-suspended-while-paid tenant) still resolves to `'active'`, unchanged. Caught by a real-Postgres integration test during implementation, not by inspection alone. **Confirmed by RP (§16 OQ-7):** the `TenantSuspended` payload field is named `source`, is present on every occurrence (RP's own lapse sweep, RP-C3, explicitly sends `source=billing_lapse`; RP-14 sends `source=operator`), and its value string matches this ENUM verbatim — no mapping/translation needed. The "default `billing_lapse` when absent" behavior (§7.1) is retained purely as a defensive fallback; RP confirmed it never relies on that default. |
 | T-12 | `keycloak_shard` (§16 A23) is the realm-placement key for the HLD §14.5 Phase-3 sharding plan — `text NOT NULL DEFAULT 'shard-0'`, matching HLD §7.3. It is a **Realm-Provisioner-owned projection** (like `realm_id`/`realm_type`, T-2/T-6): O&M **stores** it but never **assigns** it, and there is no shard-selection or shard-routing logic in this service. The Realm Provisioner sets it on dedicated-realm provisioning (`I-2`/`TenantRealmReady`, together with `realm_id`/`realm_type`); at MVP every tenant is `'shard-0'`. Carried from MVP purely so introducing `shard-1` later is a deployment+config change, not a schema migration. |
 | T-13 | `ownerless_since` (§16 A39) is NULL for every tenant with an owner and is set to `now()` **only** by the TM-12 complete-and-escalate path (I-5 removing the last active `tenant_owner`). It is **cleared only by O-7** (operator owner-reassignment). A non-NULL value means the tenant currently has **zero** active owners and needs operator intervention — it is the durable backing for the `iam_tenant_ownerless` alert (§11.2), so a transient set/clear must never be used for anything else. O&M-originated (not a Billing/Realm projection); no bus event is emitted for the state (escalation is via the metric/alert + audit log, deliberately avoiding a new HLD event-catalog entry, §16 A39). |
 | T-14 | `trial_reactivation_count` (§16 A57) enforces the **one-time trial reactivation cap** (HLD Invariant TRIAL-5). `int NOT NULL DEFAULT 0`, bounded `CHECK (trial_reactivation_count BETWEEN 0 AND 1)`. It starts at 0 on trial signup, and O&M increments it to 1 when it applies a `TrialReactivated` (§15.4, §7.1) — so a tenant can be reactivated **at most once**. The one-time guarantee is layered: the reactivation link's **single-use signed token** (redeemed upstream by the Realm Provisioner) is the primary gate; O&M's counter check + this `CHECK` is the backstop that makes a second reactivation impossible to persist even under a double-click, redelivered `TrialReactivated`, or bug (the second apply would violate the `CHECK`, and `processed_events` dedups exact event replays). O&M-owned; advanced only by consuming `TrialReactivated`, never by an API write. |
-| T-15 | `realm_sync_pending` (§16 A58) is the **durable realm-config reconciliation marker** for the Option-A (local-first, commit-then-call) write ordering of realm-affecting settings (`local_accounts_enabled`, §4.2). `boolean NOT NULL DEFAULT false`. It is set to `true` **only** when a P-2 write commits the setting to the `tenants` row but the inline synchronous Realm-Provisioner call (`PatchRealmConfig`, `PATCH /internal/tenants/:id/realm-config`) fails — in which case P-2 returns **`202 Accepted`** (not `200`) so the caller knows the realm mutation is unconfirmed. It is **cleared only by the `realm-config-sync` reconciler** (§13.1) once the idempotent `PatchRealmConfig` succeeds and Keycloak matches. A non-`false` value means O&M's stored setting and the Keycloak realm are **diverged**; because the divergence is security-relevant on the *disabling* direction (`local_accounts_enabled` → `false` — the DB says local login is off while the realm still permits it), the reconciler prioritises un-applied disables and the `iam_realm_sync_pending`/`iam_realm_sync_failed_total` alerts (§11.2) page when a row does not clear within its SLO. Directly mirrors `pending_invitations.kc_cleanup_pending` (§16 A34/PI-9), the other durable RP-convergence marker. O&M-owned; no bus event (`TenantUpdated` removed rev 0.3), every underlying change writes a `TenantSettingChanged` audit entry. |
+| T-15 | `realm_sync_pending` (§16 A58) is the **durable realm-config reconciliation marker** for the Option-A (local-first, commit-then-call) write ordering of realm-affecting settings (`local_accounts_enabled`, §4.2). `boolean NOT NULL DEFAULT false`. It is set to `true` **only** when a P-2 write commits the setting to the `tenants` row but the inline synchronous Realm-Provisioner call (`PatchRealmConfig`, `PATCH /api/v1/internal/tenants/:id/realm-config` — F8, RP LLD v0.22 versioning) fails — in which case P-2 returns **`202 Accepted`** (not `200`) so the caller knows the realm mutation is unconfirmed. It is **cleared only by the `realm-config-sync` reconciler** (§13.1) once the idempotent `PatchRealmConfig` succeeds and Keycloak matches. A non-`false` value means O&M's stored setting and the Keycloak realm are **diverged**; because the divergence is security-relevant on the *disabling* direction (`local_accounts_enabled` → `false` — the DB says local login is off while the realm still permits it), the reconciler prioritises un-applied disables and the `iam_realm_sync_pending`/`iam_realm_sync_failed_total` alerts (§11.2) page when a row does not clear within its SLO. Directly mirrors `pending_invitations.kc_cleanup_pending` (§16 A34/PI-9), the other durable RP-convergence marker. O&M-owned; no bus event (`TenantUpdated` removed rev 0.3), every underlying change writes a `TenantSettingChanged` audit entry. |
 
 **Seat-cap invariants (§16 A10, new):**
 
@@ -1235,12 +1247,14 @@ The four extractions (ADR-0007 `01-hld-delta-decomposition.md`; ADR-0008 `02-hld
 | **After ADR-0007** (Catalog + Group Mapping + Tender ACL waves) | 25 | 11 | 2 | 0 | **38** |
 | **After ADR-0008** (Delegation wave) | 20 | 11 | 2 | 0 | **33** |
 | **+ I-15** (new grant-time membership-existence check) | 20 | 12 | 2 | 0 | **34** |
+| **+ P-34** (new MFA-reset trigger, §16 OQ-8/F6) | 21 | 12 | 2 | 0 | **35** |
 
 - **ADR-0007 removes 16:** Operator **O-1/O-2/O-3/O-5/O-6** (→ Catalog `iam-catalog-admin`) and the **2 undocumented `GET /api/v1/departments[/:id]` global reads** (→ Catalog); Public **P-14/P-15/P-16/P-17/P-29** (→ Group Mapping `iam-group-mapping`); Public **P-21/P-22/P-23** and Internal **I-12** (→ Tender ACL `iam-tender-acl`). `54 − 16 = 38`.
 - **ADR-0008 removes 5 endpoint IDs** — Public **P-18/P-19/P-20/P-32/P-33** (→ Delegation `iam-delegation`) — **plus 2 internal delegation cron entry points** (delegation-expiry / review-sweep sweepers, not catalogue endpoints and so not in the ID count) **plus the two delegation-policy fields** `delegation_max_duration_days`/`delegation_review_window_days` dropped from **P-1/P-2** and from I-8 (the backing `tenants` columns move to the Delegation Service's `delegation_tenant_settings`, ADR-0008 §2.2/DLG-6/7). `38 − 5 = 33`. (This matches ADR-0008 §2.4's own "Core drops to **33** endpoint IDs.")
 - **This LLD adds 1:** Internal **I-15** `GET /api/v1/internal/tenants/:id/members/:user_id/exists` — the grant-time membership-existence check the extracted Tender ACL and Delegation services consume in place of the composite membership FKs they lost across the DB split (ADR-0007 §6.5, ADR-0008 §6.3). `33 + 1 = 34`.
+- **This revision adds 1 more:** Public **P-34** `POST /api/v1/tenants/:id/members/:user_id/reset-mfa` — the O&M-side trigger for RP-9 (§16 OQ-8, F6 of the RP↔O&M alignment review), confirmed O&M-owned by RP and previously held pending scheduling. `34 + 1 = 35`.
 
-**Net retained Core public/internal/operator endpoint-ID count = 33 + I-15 = 34.** Retired IDs **I-6/I-7** (§16 A26) remain in the catalogue as struck-through historical rows and are not counted among active endpoints; extracted IDs are deleted, not renumbered — surviving IDs keep their monolith numbers.
+**Net retained Core public/internal/operator endpoint-ID count = 34 + P-34 = 35.** Retired IDs **I-6/I-7** (§16 A26) remain in the catalogue as struck-through historical rows and are not counted among active endpoints; extracted IDs are deleted, not renumbered — surviving IDs keep their monolith numbers.
 
 > **Discrepancy noted (source-instruction conflict):** the extraction brief simultaneously lists **O-2** among the endpoints Catalog took *and*, in a §5.4 aside, asked its spec be retained. O-2 (`PATCH /api/v1/operator/departments/:id`) edits the **global `departments` catalog**, which is wholly owned by the Catalog Service after ADR-0007; the reconciliation above (and ADR-0008 §2.4's `38` baseline, which already excludes it) both treat O-2 as **removed**. Keeping an O-2 spec while removing O-2 from the catalogue would leave an orphaned spec for an endpoint Core no longer serves. **O-2 is therefore removed from both §5.3 and §5.4.** If Catalog genuinely left department-catalog writes in Core (it did not, per ADR-0007 §5), this is a one-line re-add.
 
@@ -1316,6 +1330,7 @@ The four extractions (ADR-0007 `01-hld-delta-decomposition.md`; ADR-0008 `02-hld
 | P-28 | `PUT /api/v1/tenants/:id/members/:user_id/roles` | Full-replacement reconcile of a user's tenant-level roles — supports multiple simultaneous roles (§5.4, §16 A14); `422 last_owner_removal` if it would leave zero active `tenant_owner`s | tenant_admin/owner | invalidates |
 | P-30 | `GET /api/v1/tenants/:id/invitations` | List outstanding (pending) invitations for the tenant — complements `seat-usage`'s `pending_invitations` count (§5.4, §16 A11); `?include_terminal=true` for an audit view | tenant_admin/owner | no (small, fast-changing set) |
 | P-31 | `DELETE /api/v1/tenants/:id/invitations/:invitation_id` | Revoke a still-pending invitation — frees the seat and deletes the not-yet-activated Keycloak user (§5.4, PI-6, §16 A11); `404 invitation_not_found` if already terminal | tenant_admin/owner | invalidates seat-usage |
+| P-34 | `POST /api/v1/tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA — clears TOTP/WebAuthn credentials via the Realm Provisioner (RP-9), forcing re-enrollment on next login (§16 OQ-8/F6). **Fail-closed**: an RP outage returns `503 realm_provisioner_unavailable`, never a silent no-op. Emits `MFAReset` (§7.3) for the Audit Log consumer | tenant_admin/owner | no |
 
 *Removed from Public (extracted): **P-14/P-15/P-16/P-17/P-29** group-mappings → `iam-group-mapping`; **P-18/P-19/P-20/P-32/P-33** delegations → `iam-delegation`; **P-21/P-22/P-23** tender ACL → `iam-tender-acl`.*
 
@@ -1434,7 +1449,7 @@ This is the **sole** resolution path for the TM-12 last-owner-deletion escalatio
 6. COMMIT; then DEL om:memberships:{tenant}:{user_id}.
 ```
 
-**Response codes:** `200 OK` (returns `{tenant_id, user_id, roles:["tenant_owner", …], ownerless_since:null}`) · `404 tenant_not_found` · `409 tenant_offboarded` (terminal, PAID-1 — no recovery) · `422 invalid_owner_candidate` (the `user_id` is not an active member of this tenant).
+**Response codes:** `200 OK` (returns `{tenant_id, user_id, roles:["tenant_owner", …], ownerless_since:null}` — **implemented**: `roles` is the promoted user's full active elevated set, via `OperatorService.ActiveRoleCodes`, not just the newly-granted role; `ownerless_since` is echoed as `null`, guaranteed by step 4's unconditional clear in the same tx) · `404 tenant_not_found` · `409 tenant_offboarded` (terminal, PAID-1 — no recovery) · `422 invalid_owner_candidate` (the `user_id` is not an active member of this tenant).
 
 **Effect / invariants:** reuses the existing `TenantRoleGranted` event (no new bus event, TR-4), so Audit Log, AuthZ Enrichment, and Notification all react exactly as they do to any owner grant. Because step 3 is `ON CONFLICT DO NOTHING` and step 4 is an unconditional clear, O-7 is **idempotent** — a double-submit or retry converges on the same state (member is owner, `ownerless_since` NULL). O-7 is the **only** writer that clears `ownerless_since` (T-13). It does **not** un-delete the departed owner's rows (TM-11 immutability holds); it installs a **new** owner. If the tenant has **no** active members at all (the last owner was also the last member), step 2 fails `422 invalid_owner_candidate` for every candidate — the operator must first re-establish a member through the normal provisioning/invite path, then call O-7; this is called out so the operator isn't left guessing.
 
@@ -1470,7 +1485,12 @@ This is the **sole** resolution path for the TM-12 last-owner-deletion escalatio
         legitimate bulk onboarding; the seat cap (SEAT-1) remains the hard bound on concurrent seats.
       Every refusal here increments iam_invite_throttled_total{reason} (§11.2). No RP call, no email.
 
-2. Call Realm Provisioner: POST /internal/tenants/:id/users {email, full_name, required_actions}
+2. Call Realm Provisioner: POST /api/v1/internal/tenants/:id/users {email, full_name, required_actions}
+   (path corrected — F8 of the RP↔O&M alignment review: RP LLD v0.22 versions all internal routes under
+   /api/v1/internal; this LLD's own prose had never actually matched the client's real path even before
+   that alignment. `required_actions` is computed by O&M and applied verbatim by RP — F5, resolved: RP
+   has no visibility into `initial_tenant_roles`/`initial_dept_mappings`, so it cannot decide
+   CONFIGURE_TOTP itself; only O&M, which holds this invite's role/dept-mapping data, can)
    → creates the Keycloak user (email_verified=false, [VERIFY_EMAIL, UPDATE_PASSWORD], +CONFIGURE_TOTP
    if initial mappings include an Approver level or a tenant_admin/owner role — HLD §8.2.2 step 3) and
    sends the invitation email (single-use link, 7-day expiry). Returns keycloak_user_id. (§18.3)
@@ -1535,7 +1555,7 @@ Both routes share one handler/query — `SELECT licensed_seats, overage_since FR
 ```
 
 **Behaviour:**
-1. **Authorize** — the `actor_id` must hold `tender_admin` (AUTH-3 in the source authz model; enforced here at the handler); else `403 insufficient_role`. (The override is a `tender_admin` action, §8.6.)
+1. **Authorize** — the `actor_id` must hold **`tender_admin`, `tenant_admin`, or `tenant_owner`** in this tenant (corrected — not `tender_admin`-only: tenant admins/owners are intentionally allowed the same override authority, defense-in-depth per the elevated-role set this LLD uses elsewhere; enforced in the **service layer**, `MembershipService.ValidateAndEmitAssigneeOverride`, not at the handler — the handler only null-checks `actor_id`); else `403 insufficient_role`. The `AUTH-3` citation this line previously carried is stale — AUTH-3 was retired when tender-ACL management authorization moved to `iam-tender-acl` (§5.4 preamble) and does not govern this check.
 2. **Validate eligibility** — the `new_user_id` must be an **active** `dept_memberships` row for `(tenant_id, department_id)` with `role_level >= required_level` (the same `(department, level)` rule §8.5 enforces at authoring/instantiation, so an override can never seat an ineligible user); else `422 assignee_ineligible` (§16 A62 — a well-formed request whose named assignee fails the node's business-rule precondition, so `422`, not `409`). A deleted/suspended/absent candidate fails this (live-membership check, DM-2/TM-9).
 3. **Emit + return** — on both checks passing, enqueue `TenderAssigneeOverridden` (`{tender_id, tenant_id, user_id: new_user_id, actor_id}`, §7.3) via the outbox and return `200 {eligible:true}`. The payload is deliberately **lightweight** — it carries no `node_id`, `previous_user_id`, or `reason`; those are Workflow-execution state the Workflow Service records in its own `assignee_overrides` row and forwards to Audit.
 
@@ -1557,12 +1577,38 @@ RunInTx:
   --   is now a real membership and must be removed via P-8, not un-invited (PI-6).
   write InvitationRevoked audit entry (PI-7, no bus event);
   COMMIT;
-then: compensating Realm Provisioner DELETE /internal/tenants/:id/users/:keycloak_user_id  -- delete the
+then: compensating Realm Provisioner DELETE /api/v1/internal/tenants/:id/users/:keycloak_user_id  -- delete the  %% F8: versioned + tenant-nested, RP LLD v0.22
       not-yet-activated Keycloak user (§18.3); best-effort with idempotent retry, since the user never
       completed onboarding. Frees the seat immediately (the row is no longer 'pending', SEAT-1/PI-3).
 ```
 
 **Response codes:** P-30 `200 OK`; P-31 `204 No Content` (revoked) · `404 invitation_not_found` (no matching **pending** invitation) · `409 optimistic_lock_conflict`. Both invalidate `om:seat_usage:{tenant}` (§6.1).
+
+#### (P-34) `POST /api/v1/tenants/:id/members/:user_id/reset-mfa` — MFA reset (§16 OQ-8/F6)
+
+**Auth:** `tenant_admin` / `tenant_owner` (AUTH-2), enforced at the HTTP layer (`requireTenantAdmin`) — the service method does not re-check it, the same split P-8/P-28 use.
+
+RP confirmed (against their own HLD §8.2.6) that RP-9 is genuinely O&M-initiated: a tenant-admin user-management action, same class as invite (P-6) and remove (P-8). The confirmed flow is: admin action → O&M authorizes + audits → `RealmProvisionerClient.ResetMFA` (RP-9) → RP removes the user's TOTP/WebAuthn credentials → next login forces re-enrollment.
+
+```text
+FindByUserID(tenant_id, user_id);                 -- 404 member_not_found if no row
+if membership.status != 'active': 422 member_not_active;
+
+RealmProvisionerClient.ResetMFA(tenant_id, keycloak_user_id);   -- RP-9, synchronous, FAIL-CLOSED
+  -- on error: 503 realm_provisioner_unavailable — no event emitted, nothing recorded.
+  -- Unlike RevokeUserSessions' best-effort posture (AUTH-8), there is no reconciler
+  -- for "eventually reset MFA": a failure must not silently appear to succeed.
+
+RunInTx:
+  outbox.Enqueue(MFAReset{tenant_id, user_id, actor_id});   -- §7.3 — the sole audit
+    -- record for this action (Audit Log's catch-all subscription is the only
+    -- real audit mechanism in this codebase); O&M persists no MFA state itself.
+  COMMIT;
+```
+
+**Scope note — actor MFA step-up.** RP's confirmed flow also names the *acting admin's own* MFA freshness as a precondition ("confirms via their own MFA"). That check is **not implemented in this service's code** and is not this endpoint's to enforce: `pkg/requestctx.RequestContext` carries no actor-MFA-freshness claim, and `mfa_freshness_seconds`/I-14 exist only to expose the tenant's *configured window* for AuthZ Enrichment's own Keycloak `max_age` re-auth gate (§6.2) — the same "gateway/AuthZ Enrichment enforces, O&M configures" split AUTH-7 already documents for other defense-in-depth layers. Requiring step-up on this specific route is a gateway-routing configuration change (marking `POST .../reset-mfa` as step-up-required), not an O&M code change.
+
+**Response codes:** `204 No Content` · `404 member_not_found` · `422 member_not_active` · `503 realm_provisioner_unavailable` (RP-9 outage — fail-closed, §16 OQ-8). Not cached; no cache to invalidate.
 
 #### (I-3) `POST /api/v1/internal/tenants/:id/members` — membership add / **invitation acceptance** (§16 A11, extended)
 
@@ -1632,7 +1678,7 @@ Resolves the gap left by removing role changes from P-7: `top_role` was a single
 
 | # | Invariant |
 |---|-----------|
-| P28-1 | `PUT .../roles` is a **full-replacement reconcile** of the **elevated** role set — after a successful call, the user's non-revoked `tenant_roles` rows for this tenant **exactly match** the request body's `roles` array. `member` is never among them (TR-7); it is derived, so it is neither stored by this call nor accepted in the request (`400 invalid_role`). |
+| P28-1 | `PUT .../roles` is a **full-replacement reconcile** of the **elevated** role set — after a successful call, the user's non-revoked `tenant_roles` rows for this tenant **exactly match** the request body's `roles` array. `member` is never among them (TR-7); it is derived, so it is neither stored by this call nor accepted in the request (`400 invalid_role`). **Implemented**: the response is `{user_id, roles}` (deduped + sorted echo of the request body), not the grant/revoke delta the handler previously returned. |
 | P28-2 | **An empty `roles: []` is valid (§16 A29)** — it revokes all elevated grants and leaves the user a **plain member**, which is a fully-defined state (the active `tenant_memberships` row *is* the `member` grant, TR-7), not the roleless dead end the pre-1.10 design feared. De-privileging to plain member (`roles: []`) is distinct from removing access entirely — to do the latter, suspend (P-7) or remove (P-8). The old `422 empty_role_set` code is retired (no longer emitted by any path). |
 | P28-3 | Revoking the tenant's **last** `tenant_owner` grant is rejected whole-transaction (`422 last_owner_removal`, TM-8) — including when the request is a full role-set replacement that happens to drop `tenant_owner` incidentally (e.g. replacing `["tenant_owner"]` with `["tenant_admin"]` on the sole owner). The check runs against the **post-reconcile** state, not just literal revocations, and — when the reconcile drops `tenant_owner` — **under the TM-13 tenant-row `FOR UPDATE` lock**, so it stays correct even against a concurrent owner-removal on a *different* owner row (§16 A44). |
 | P28-4 | Every individual grant/revoke resulting from a P-28 call emits its own `TenantRoleGranted`/`TenantRoleRevoked` event (TR-4) — a request that adds one role and removes another emits **two** events, not one "roles changed" event, so the audit trail is precise about which role changed and in which direction. |
@@ -1728,8 +1774,10 @@ The cursor is an opaque, base64-encoded `{created_at, id}` pair of the last row 
 **The most-called endpoint in the service.** Called by AuthZ Enrichment on every cache miss (HLD §8.3), which means every first request per user per cache TTL.
 
 ```jsonc
-// GET /api/v1/internal/users/{user_id}/memberships
-// x-tenant-id: <tenant_id>
+// GET /api/v1/internal/users/{user_id}/memberships?tenant_id=<tenant_id>
+// corrected — the tenant is a query param, not an x-tenant-id header;
+// matches the real InternalHandler.GetMemberships (c.Query("tenant_id"))
+// and is what AuthZ Enrichment actually calls today
 // 200 OK
 {
   "user_id": "2b1f...",
@@ -1739,7 +1787,7 @@ The cursor is an opaque, base64-encoded `{created_at, id}` pair of the last row 
   "subscription_status": "active",       // §16 A53 — the TENANT's subscription_status (active|past_due|cancelled|suspended|offboarded); lets AuthZ Enrichment reconstruct the access posture on a COLD rebuild, not only from a consumed event
   "read_only": false,                    // §16 A53 — derived: true iff subscription_status='cancelled' (read-only grace, §15.5/HLD §8.10.7). AuthZ folds this into x-feature-flags so writes are denied on a cancelled tenant even on a freshly-rebuilt cache entry
   "plan": "pro",
-  "feature_flags": ["sso_enabled", "llm_enabled"],
+  "feature_flags": ["sso_enabled", "llm_enabled"], // sorted list of currently-enabled flag names (implemented: AuthZService projects the effective map down to this array; department code resolved via a single om:departments cache read, not a per-department cross-service call)
   "mfa_freshness_seconds": 300, // §16 A20 — tenant's configured Approver re-auth window; AuthZ Enrichment passes this as Keycloak's max_age
   "departments": [
     { "department_id": "engr-uuid", "code": "ENGINEERING", "role_level": "approver" },
@@ -1759,22 +1807,22 @@ The cursor is an opaque, base64-encoded `{created_at, id}` pair of the last row 
 
 #### (I-1) `POST /api/v1/internal/tenants` — tenant provisioning
 
-Idempotent create. Called by the Signup BFF / Realm Provisioner on a new tenant signup:
+**Corrected against the actual code (this section previously drifted — see the note below the invariants).** Idempotent create. Called directly by the Signup BFF / Realm Provisioner over the internal mesh:
 
 ```jsonc
 {
-  "id":                      "acme-uuid",       // required; client-generated UUIDv4/v7
-  "slug":                    "acme-corp",        // required; immutable after creation
-  "name":                    "ACME Corporation", // required
-  "plan":                    "trial",            // required; paid values are "starter" | "pro" | "enterprise" (HLD §6.6) — note "growth" is not a plan; "trial" here is the LLD onboarding shorthand for a not-yet-converted tenant
-  "owner_user_id":           "keycloak-sub-uuid", // required; Keycloak sub of the signup initiator
-                                                 //   → seeded as first tenant_memberships row (status='active')
-                                                 //   + a tenant_roles row granting role_code='tenant_owner'
-  "default_locale":          "en-US",            // optional; defaults to 'en-US'
-  "trial_ends_at":           "2026-07-15T00:00:00Z", // required when plan='trial'
-  "subscription_started_at": null                // required when plan!='trial'; null for trial
+  "tenant_id":        "acme-uuid",         // required; client-generated UUIDv4/v7 — the pre-allocated tenant UUID (RP-6)
+  "slug":             "acme-corp",         // required; immutable after creation
+  "name":             "ACME Corporation",  // required
+  "plan":             "starter",           // required; ONE OF "starter" | "pro" | "enterprise" (HLD §6.6) — "trial" is NEVER a legal value here: it is the tenant's subscription_status, not its plan tier, and is applied unconditionally by the server below regardless of which plan tier is chosen
+  "owner_user_id":    "keycloak-sub-uuid", // required; Keycloak sub of the signup initiator
+                                            //   → seeded as first tenant_memberships row (status='active')
+                                            //   + a tenant_roles row granting role_code='tenant_owner'
+  "default_locale":   "en-US"              // optional; defaults to 'en-US'
 }
 ```
+
+There is **no** `trial_ends_at` or `subscription_started_at` field in this request — both prior LLD revisions showing them here did not match the DTO (`InternalProvisionRequest`, `internal/adapter/inbound/http/dto.go`). `trial_ends_at` is always computed server-side from `plan.trial_duration_days` (a pre-tx `CatalogService.PlanByCode` call, §8.1); `subscription_started_at` is never accepted at create time — it is set later, only by `TenantConverted`/`DirectPaidSignup` (`subscription_started_at = now()`).
 
 `owner_user_id` is the Keycloak `sub` of the user who initiated signup, supplied by the Signup BFF from the JWT of the authenticated signup session. It is used to seed the first `tenant_memberships` row (`status = 'active'`) **and** a `tenant_roles` row granting `role_code = 'tenant_owner'` (`granted_by = owner_user_id` itself, since no other admin exists yet). It is not stored on the `tenants` row itself — ownership is expressed through the role grant, not a dedicated column.
 
@@ -1784,7 +1832,7 @@ Idempotent create. Called by the Signup BFF / Realm Provisioner on a new tenant 
 - **No row returned** (the `id` already exists) → **idempotent replay**: the tenant was already provisioned; return the existing tenant (`200`), no re-seed.
 - **Slug owned by a *different* tenant** → a `slug` collision is on the *separate* `uq_tenants_slug` constraint, which `ON CONFLICT (id)` does **not** absorb, so the `INSERT` raises a `unique_violation`; the handler maps it to **`409 slug_already_taken`**.
 
-On first create, seeds: `tenant_departments` for all five system departments, `dept_role_labels` (three rows with default display names), and the owner `tenant_memberships` row (whose creation grants the `tenant_owner` role) — all within the same `RunInTx` as the `tenants` INSERT. No quota row is seeded here (§16 A26) — Usage & Metering initializes its own per-tenant usage state independently. Emits `TenantCreated`, and additionally `TrialStarted` on the trial signup path.
+**Every create is trial-shaped — there is no separate "direct-paid" creation path (resolves RP-6's underlying premise, corrects a prior LLD inaccuracy).** On first create, this endpoint unconditionally inserts `status='trial'`, `realm_id='trial'`, `realm_type='shared'`, and a computed `trial_ends_at` — regardless of the requested `plan` tier. It also seeds `tenant_departments` for all five system departments, `dept_role_labels` (three rows with default display names), and the owner `tenant_memberships` row (whose creation grants the `tenant_owner` role) — all within the same `RunInTx` as the `tenants` INSERT, and unconditionally emits `TenantCreated` **and** `TrialStarted`. No quota row is seeded here (§16 A26) — Usage & Metering initializes its own per-tenant usage state independently. A tenant that will end up "direct-paid" is created **exactly** this way and then settled to `active` moments later by a consumed `DirectPaidSignup` event (§7.1) — an `UPDATE` that is structurally **identical** to `TenantConverted`'s trial→paid conversion handler (`status='active', subscription_started_at=now(), plan=$2`). The only difference between "trial that later converts" and "direct-paid" in this codebase is which event name settles the row — there is no code path that creates a tenant already `active`/paid or already on a dedicated realm; a dedicated realm, if provisioned, arrives later via `TenantRealmReady`/I-2, the same mechanism trial-to-paid conversion uses. If the platform's product intent is for a genuinely distinct direct-paid path (skip the shared realm and trial status entirely, e.g. per HLD §8.10.6's framing that RP provisions a dedicated realm *before* this row exists), that is a **feature gap**, not merely a documentation gap — flagged here, not implemented.
 
 **(I-1) provisioning invariants:**
 
@@ -1794,7 +1842,9 @@ On first create, seeds: `tenant_departments` for all five system departments, `d
 | I1-2 | **`slug` uniqueness is global** (`uq_tenants_slug`). A slug owned by a *different* tenant returns `409 slug_already_taken` — raised as a `unique_violation`, a **separate conflict domain** from the `id` PK (they cannot be collapsed into two `ON CONFLICT` clauses). `slug` is immutable after creation (T-1). |
 | I1-3 | The **first `tenant_owner` membership** is created during provisioning from `owner_user_id` and is the **sole source of tenant ownership** — ownership is a `tenant_memberships` row, never a `tenants` column; an active tenant must always retain ≥ 1 active owner (TM-8). |
 | I1-4 | Provisioning **seeds atomically**: `tenant_departments` (active system departments, TD-3), `dept_role_labels` (the three role rows), the owner `tenant_memberships` row, and the owner's `tenant_roles` grant (`role_code='tenant_owner'`) are all written in the **same transaction** (`RunInTx`) as the `tenants` INSERT — all-or-nothing. Provisioning no longer seeds any quota row (§16 A26) — Usage & Metering initializes its own per-tenant usage state independently, out of band from this transaction. |
-| I1-5 | **`TenantCreated` is emitted for every successful create**; **`TrialStarted` is additionally emitted when the tenant starts on the trial path**. Both are written to the outbox inside the same transaction, so event emission is atomic with the create — no create without its events, no events without the row. |
+| I1-5 | **`TenantCreated` and `TrialStarted` are both emitted unconditionally on every successful create** (corrected — there is no plan-conditional branch: every tenant is created trial-shaped, per the note above). Both are written to the outbox inside the same transaction, so event emission is atomic with the create — no create without its events, no events without the row. |
+
+> **Correction note.** Prior revisions of this section showed a request body with `id`/`trial_ends_at`/`subscription_started_at` fields and described `TrialStarted` as conditional on "the trial signup path" — none of that matches `internal/core/service/provisioning_service.go`'s `TrialSignup` (the sole creation function, field name `tenant_id`, no trial/paid branch) or `internal/adapter/inbound/http/dto.go`'s `InternalProvisionRequest`. Caught while investigating RP-6 (direct-paid `tenant_id` allocation) — the caller-supplied-ID/idempotency answer already given to RP remains correct and is verified in code; only the request shape and the "distinct direct-paid path" framing were wrong.
 
 #### (I-15) `GET /api/v1/internal/tenants/:id/members/:user_id/exists` — grant-time membership-existence check (new)
 
@@ -1849,7 +1899,7 @@ Standard semantics across all endpoints (shared with `iam-user-profile` via `gin
 | `409 Conflict` | Uniqueness or optimistic-lock conflict | `slug_already_taken` (`uq_tenants_slug`, I1-2); `department_already_activated` (TD-7 / P-24); `optimistic_lock_conflict` (`record_version` mismatch, API-3); `workflow_resolution_required` (user is delegate on active workflows — full removal §8.8, or a department demotion/removal §8.8.4, WFI-3/WFI-9); `seat_limit_reached` (active members + pending invitations at/above `licensed_seats`, §16 A10/A11, SEAT-1); `invitation_already_exists` (a pending invite for this email already exists, §16 A11, PI-1); `role_already_granted` (concurrent P-28 insert of the same `role_code`) |
 | `422 Unprocessable Entity` | Domain-rule violation | `department_retired` / `department_deactivated`; `member_not_active`; `last_owner_removal` (P-28/O-7 last-owner guard, TM-8); `assignee_ineligible` (I-13 — named assignee fails the node's `(department, level)` rule, §16 A62); `invalid_owner_candidate` (O-7); `invalid_replacement` (replacement user not active or not same-tenant, §8.8 WFI-5) |
 | `429 Too Many Requests` | **Invite abuse-throttling only (§16 A41)** | O&M emits `429` **only** for P-6 invite throttling — `reinvite_too_soon` (per-email cooldown, PI-11) and `invite_rate_limited` (per-tenant hourly ceiling, PI-12). It still does **not** meter or rate-limit anything else: quota / API-rate `429`s remain the **gateway**'s and the Usage & Metering Service's (HLD §10.6, §16 A26). |
-| `503 Service Unavailable` | Dependency down | `db_unavailable` (Postgres); `cache_unavailable` (Valkey, degraded); `realm_provisioner_unavailable` (Realm Provisioner 5xx/timeout during P-6 invite, §18.3); `workflow_service_unavailable` (Workflow Service 5xx/timeout during delegate-impact check or resolution, §8.8, WFI-8) |
+| `503 Service Unavailable` | Dependency down | `db_unavailable` (Postgres); `cache_unavailable` (Valkey, degraded); `realm_provisioner_unavailable` (Realm Provisioner 5xx/timeout during P-6 invite, §18.3, or during P-34 MFA reset, §16 OQ-8/F6 — both fail-closed); `workflow_service_unavailable` (Workflow Service 5xx/timeout during delegate-impact check or resolution, §8.8, WFI-8) |
 
 All error bodies use `gincommon.ErrorResponse` (`{ code, message, … }`); mutation responses additionally echo `record_version` / `updated_at` for optimistic-lock round-tripping (API-3).
 ## 6. Caching Design
@@ -1988,13 +2038,14 @@ This service has two active SQS subscriptions at MVP (HLD §9.1):
 | `TrialTenantProvisioned` | Confirm/settle trial tenant record (idempotent reconcile). |
 | `TenantRealmReady` | Update `tenants.keycloak_realm` (`realm_id`) with the provisioned realm name, set `realm_type='dedicated'` (§16 A22), **and record `keycloak_shard`** (§16 A23, T-12) — all in the same `UPDATE`, so realm name, strategy, and placement never observably disagree. The shard value is chosen by the Realm Provisioner (O&M stores it, never selects it); at MVP it is `'shard-0'`. |
 | `TenantConverted` | Set `status='active'`, `subscription_started_at=now()`, `plan`. `feature_flags` (the override delta, §16 A18) is untouched — the effective set changes automatically at next read because `planDefaults(plan)` changes; there is nothing to recompute or write. (Uses `subscription_started_at`, this LLD's paid-start column — **not** a `converted_at` column; the HLD's `tenants.converted_at` was consolidated into `subscription_started_at` here per §4.2, and stray `converted_at` references were corrected in the rev 1.26 HLD-conformance audit.) |
-| `DirectPaidSignup` | Settle direct-purchase tenant to `status='active'` with the paid plan. |
-| `TrialExpired` | Set `status='trial_expired'` (audit-logged); sessions are disabled by the Realm Provisioner. **No PII scrub at this point** — the tenant is still reactivatable throughout the 15-day grace (§15.4), so scrubbing now would destroy a recoverable tenant's data. The soft-delete + PII scrub happen **only after** the grace elapses, in O&M's Phase-2 `trial-cleanup` cron (§13.1/§15.3). |
+| `DirectPaidSignup` | Settle direct-purchase tenant to `status='active'` with the paid plan (`subscription_started_at=now()`). **Handler is structurally identical to `TenantConverted`'s** — there is no distinct direct-paid creation path (§8.1/I-1 note, RP-6): the row already exists, created trial-shaped by I-1 like any other tenant; this event only settles it. |
+| `TrialExpired` | Set `status='trial_expired'` (audit-logged); sessions are disabled by the Realm Provisioner. **No deletion at this point** — the tenant is still reactivatable throughout the 15-day grace (§15.4), so deleting now would destroy a recoverable tenant's data. The **hard delete** happens **only after** the grace elapses, in O&M's Phase-2 `trial-cleanup` cron (§13.1/§15.3) — corrected: this is a real `DELETE`, not a soft-delete/PII-scrub, consistent with PAID-1's "trial lifecycle terminates at `trial_expired` → hard delete." |
 | `TrialReactivated` | Restore `status='trial'` and the trial window (§15.4). |
-| `TenantSuspended` | Set `status='suspended'` (§15.5). |
+| `TenantSuspended` | Set `status='suspended'` and `suspension_source` from the event's `source` field (default `'billing_lapse'` if absent). On `billing_lapse`, also set `cancelled_at = COALESCE(cancelled_at, now())`. On `operator` (new — resolves RP-11, RP-14/§8.12), `cancelled_at` is left untouched — the tenant does not enter the grace/retention clock (§15.5, T-16). |
 | `TenantOffboarded` | Set `status='offboarded'` (terminal — Invariant PAID-1); trigger the tenant data-wipe (§15.5). **O&M consumes this event; it does not produce it** (produced by the Realm Provisioner, EVT-7/§16 A54). The Core-side cascade signal that drives the Delegation Service's async row-end is a **distinctly-named** Core event, `TenantMembershipsPurged`, **not** a re-emitted `TenantOffboarded` — see the collision note in §7.3. |
+| `TenantReactivated` (**new — resolves F1 of the RP↔O&M alignment review**) | RP emits `source=operator` here to reverse an RP-14 operator-sourced suspension (RP-10). Handled by the **exact same** `applyProjection` case as the `billing-orgm-q` `TenantReactivated` row below — the handler reads no payload fields, so behavior is identical regardless of producer: derives `status` (`active` if ever paid, else `trial`) from `subscription_started_at`, clears `cancelled_at`/`suspension_source` (T-16). EVT-14 recency (`tenants.last_event_at` under the row lock) makes the two producers — Billing on `billing-orgm-q`, RP on `tenant-orgm-q` — safe to interleave: the newest producer-stamped event always wins regardless of which queue delivered it. Previously this event was wired only to `billing-orgm-q`, so an operator un-suspend never reached O&M's projection — the tenant stayed `suspended` forever; the `tenant-orgm-q` SNS filter policy now includes it. |
 
-O&M never consumes its own `TenantCreated`/`TrialStarted` — produce and consume sets are disjoint (HLD §9.1.1 "No self-consumption").
+O&M never consumes its own `TenantCreated`/`TrialStarted` — produce and consume sets are disjoint (HLD §9.1.1 "No self-consumption"). `tenant-orgm-q`'s filter is now **nine** event types (was eight before the F1 fix above).
 
 **Queue: `billing-orgm-q`** (subscribes to `billing.events` SNS topic) — consumes the events **produced by the Billing Service**:
 
@@ -2002,8 +2053,8 @@ O&M never consumes its own `TenantCreated`/`TrialStarted` — produce and consum
 |---|---|
 | `TenantPlanChanged` | Update `plan` (no status change). `feature_flags` (the override delta, §16 A18) is untouched — same reasoning as `TenantConverted` above; a stored override survives a plan change because it's never merged back into the column (T-9). |
 | `TenantPaymentPastDue` | Set `status='past_due'` (dunning); **access unchanged** per HLD §8.10.7 (locking out a paying customer over an expired card is the wrong outcome). |
-| `TenantSubscriptionCancelled` | Set `status='cancelled'` **and `cancelled_at=now()`**, together, in the same `UPDATE` (§16 A24, T-11, `chk_cancelled_at_required`) — starts the §15.5 grace/retention clock. |
-| `TenantReactivated` | Set `status='active'` **and `cancelled_at=NULL`**, together, in the same `UPDATE` (§16 A24, T-11) — only valid before offboarding (§15.5); stops the grace/retention clock. |
+| `TenantSubscriptionCancelled` | Set `status='cancelled'` **and `cancelled_at=COALESCE(cancelled_at, now())`**, together, in the same `UPDATE` (§16 A24, T-11, `chk_cancelled_at_required`) — starts the §15.5 grace/retention clock. `COALESCE` (not a bare `now()`) so a redelivered/replayed event never resets an already-running clock. Also clears `suspension_source` to `NULL` (T-16) — required regardless of prior state, since only `suspended` may carry a non-NULL value. |
+| `TenantReactivated` | Set `cancelled_at=NULL` and `suspension_source=NULL` (T-16) unconditionally; `status` is **derived**, not hardcoded to `'active'` — `'active'` if `subscription_started_at IS NOT NULL` (ever paid), else `'trial'` (a never-converted trial tenant that was operator-suspended, T-16) — in the same `UPDATE` (§16 A24, T-11). Only valid before offboarding (§15.5); stops the grace/retention clock. **This is now a two-producer event** (F1 fix, above) — the identical case also fires for RP's `source=operator` delivery on `tenant-orgm-q`. |
 | `TenantSeatsChanged` (new, §16 A10) | `UPDATE tenants SET licensed_seats = $new_value`. **No status change and no validation gate** — SEAT-2/SEAT-4: this is an unconditional projection write, applied even if it decreases below the current active-member count (SEAT-3 handles the resulting over-cap state gracefully, never by removing users). Seats are billed independently of plan tier (HLD §6.6/1101), so this is a **distinct** event from `TenantPlanChanged`, not a field added to it. |
 
 O&M does **not** subscribe to `iam.user.events`; the user-deletion membership cascade is handled synchronously via `DELETE /tenants/:t/users/:u` with active-workflow reconciliation (§8.8/§8.9), and JIT membership creation comes from synchronous Event Consumer API calls (HLD §5.3). There is no `realm.events` topic in the HLD — realm-lifecycle events ride `iam.tenant.events` above.
@@ -2036,6 +2087,7 @@ The service publishes to two SNS topics via `events.NewRoutingPublisher`:
 | `MembershipRevoked` (**new, ADR-0008 §6.4 / DLG-Q4**) | A user's tenant membership is removed — emitted by the P-8 / I-5 removal cascade (§8.8) once Core commits the membership removal. The **per-user cascade signal** the Delegation Service consumes (on `delegation-cascade-q`) to asynchronously end that user's delegate-side/delegator-side `delegations` rows and clear the User-Profile availability pointer (the row-end that Core used to do in-transaction now lives in the Delegation Service, ADR-0008 §6.4). Request-triggered (has an HTTP origin) | `tenant_id`, `user_id`, `actor_id` |
 | `TenantMembershipsPurged` (**new, ADR-0008 §6.4 — see collision note**) | The **tenant-level** cascade signal: emitted when O&M, having consumed the Realm Provisioner's `TenantOffboarded` (§7.1), completes the tenant membership data-wipe (§15.5). The Delegation Service consumes it (on `delegation-cascade-q`) to end **all** of the tenant's delegations at once — the async replacement for the dropped `fk_del_tenant` cascade (ADR-0008 §6.4, ownership matrix). Consumer-triggered (no HTTP origin → CronJob/consumer sentinel on `ip_address`/`user_agent`, §7.4) | `tenant_id`, `actor_id` |
 | `TenderAssigneeOverridden` | Tender assignee overridden — emitted by O&M's **I-13** validate-and-emit endpoint (§5.4, the Workflow Service's call) after O&M validated the new assignee's identity/permissions; it does **not** persist the override record (that is Workflow-execution state the Workflow Service owns, §16 A32(d)/A54/§2.2, OVR-1) | `tender_id`, `tenant_id`, `user_id`, `actor_id` |
+| `MFAReset` (**new, §16 OQ-8/F6**) | Emitted by O&M's **P-34** endpoint after `RealmProvisionerClient.ResetMFA` (RP-9) succeeds. The sole audit record for the reset (actor + target) — O&M persists no MFA state of its own; consumed only by the Audit Log's catch-all subscription | `tenant_id`, `user_id`, `actor_id` |
 | `TenantSeatOverageStarted` | Seat usage crossed above the cap — emitted when `overage_since` transitions NULL→set (SEAT-5, §16 A59), i.e. a Billing seat decrease left `active + pending > licensed_seats`. The **Billing-driven-enforcement hand-off signal**: Billing consumes it to start its grace/dunning policy, Notification to warn the admin. O&M itself takes no punitive action (SEAT-3/SEAT-4) | `tenant_id`, `licensed_seats`, `active_users`, `pending_invitations`, `overage_since` |
 | `TenantSeatOverageResolved` | Seat usage returned to at/under cap — emitted when `overage_since` transitions set→NULL (SEAT-5), via seats bought back, users removed, or invites lapsing (PI-5). Lets Billing stop the grace/dunning clock and Notification clear the banner | `tenant_id`, `resolved_at` |
 | `TenantStateChanged` | **Tenant-state relay for the Workflow Service (§16 A61, EVT-16).** Emitted iff O&M applies a consumed lifecycle event (§7.1) that actually **changes `tenants.status` or `tenants.plan`** — i.e. the *settled* projection value after the EVT-14 recency guard, not the raw producer event. Carries O&M's authoritative resolved state so the Workflow engine can pause/resume/terminate/re-route on it (`TenantSuspended`→pause, `TenantOffboarded`→terminate, paid `TenantReactivated`→resume, `TenantPlanChanged`→queue-routing) **without** subscribing to `iam.tenant.events`/`billing.events` (which the HLD topology doesn't grant it) and without re-deriving last-writer-wins itself. Deliberately published on `iam.membership.events` (the topic Workflow already consumes) rather than a tenant topic — it is O&M's own projection fact, not a restatement of RP/Billing's raw events. Enqueued in the **same `RunInTx`** as the projection `UPDATE` (outbox), so it never fires on an EVT-14-skipped stale event or a no-op. Consumer-triggered (no HTTP origin, §7.4) | `tenant_id`, `status`, `previous_status`, `plan`, `previous_plan`, `changed_at`, `cause` (the source event type, e.g. `TenantSuspended`) |
@@ -2077,6 +2129,7 @@ Each published topic fans out **per-consumer** (HLD §9.1.1): one dedicated SQS 
 |---|---|---|---|
 | Audit Log | `tenant-audit-q` | `TenantCreated`, `TrialStarted` (+ all other producers' tenant-lifecycle events) | audit trail of tenant lifecycle |
 | Notification | `tenant-notification-q` | `TenantCreated`, `TrialStarted` | welcome / trial-start emails |
+| **Realm Provisioner** (**new — resolves RP-4**) | `tenant-realm-q` | `TrialStarted` only (filter policy) | records `trial_ends_at` on its own `tenant_realms` row and runs its own realm-side expiry sweep (RP's own LLD §8.7) — RP does not poll O&M for expired trials, and O&M does not expose a batch "expired trials" endpoint (its internal catalogue is closed: I-1..5, I-8..11, I-13..15). O&M's only inbound signal back is the `TrialExpired` event RP produces once its sweep detects the expiry, consumed on `tenant-orgm-q` (§7.1) for the Phase-1 `status='trial_expired'` flip |
 
 (O&M itself consumes this topic via `tenant-orgm-q`, §7.1 — a separate per-consumer queue on the same topic; produce and consume sets are disjoint, so O&M never receives its own `TenantCreated`/`TrialStarted`.)
 
@@ -2313,7 +2366,8 @@ sequenceDiagram
     participant DB as org_membership DB
     participant SNS
 
-    SignupBFF->>OrgMembership: POST /api/v1/internal/tenants {id, slug, name, plan:trial, owner_user_id}
+    SignupBFF->>OrgMembership: POST /api/v1/internal/tenants {tenant_id, slug, name, plan: starter|pro|enterprise, owner_user_id}
+    Note over OrgMembership: status is always set to 'trial' server-side here, regardless of plan — corrected per RP-6 investigation, I-1
     OrgMembership->>Catalog: PlanByCode(plan) — trial_duration_days   %% pre-tx: HTTP call must not run inside an open Postgres tx
     OrgMembership->>Catalog: Departments() — the 5-system-dept trial activation set   %% same reason, pre-tx
     OrgMembership->>DB: BEGIN RunInTx
@@ -2331,6 +2385,41 @@ sequenceDiagram
     OrgMembership->>SNS: TenantCreated, TrialStarted → iam.tenant.events
     OrgMembership->>SNS: TenantRoleGranted → iam.membership.events
 ```
+
+### 8.1b Direct-paid signup (new — F11 of the RP↔O&M alignment review, RP-6)
+
+**Shows only O&M's own verified behavior.** Unlike §8.1's diagram, this one deliberately does **not** depict Realm Provisioner's internal sequencing (when it provisions a dedicated realm, whether that happens before or after the settle event below) — that ordering is not confirmed on O&M's side (see the open note at the end of this section). What *is* verified, in code, is that O&M has **no distinct direct-paid creation path**: every tenant is created identically via I-1, and "direct-paid" is purely a post-creation settle, structurally identical to §8.2's `TenantConverted` handler.
+
+```mermaid
+sequenceDiagram
+    participant SignupBFF
+    participant OrgMembership as Org & Membership
+    participant Catalog as Catalog Service
+    participant DB as org_membership DB
+    participant RP as Realm Provisioner
+    participant SNS
+
+    Note over SignupBFF,OrgMembership: Identical to §8.1 — I-1 has no plan-conditional branch.
+    SignupBFF->>OrgMembership: POST /api/v1/internal/tenants {tenant_id, slug, name, plan: starter|pro|enterprise, owner_user_id}
+    OrgMembership->>Catalog: PlanByCode(plan) — trial_duration_days
+    OrgMembership->>Catalog: Departments() — the 5-system-dept activation set
+    OrgMembership->>DB: BEGIN RunInTx
+    OrgMembership->>DB: INSERT tenants (status='trial', realm_id='trial' shared, trial_ends_at computed) ON CONFLICT DO NOTHING
+    OrgMembership->>DB: INSERT tenant_departments / dept_role_labels / tenant_memberships / tenant_roles — same as §8.1
+    OrgMembership->>DB: outbox.Enqueue(TenantCreated), outbox.Enqueue(TrialStarted), outbox.Enqueue(TenantRoleGranted)
+    OrgMembership->>DB: COMMIT
+    OrgMembership-->>SignupBFF: 201 Created {tenant_id}
+    OrgMembership->>SNS: TenantCreated, TrialStarted → iam.tenant.events
+
+    Note over RP: Not modeled here — RP's own provisioning/billing<br/>sequencing for a direct-paid tenant is not confirmed on O&M's<br/>side (open item, below). RP eventually provisions a dedicated<br/>realm via TenantRealmReady (§8.2), same mechanism as a real<br/>trial-to-paid conversion.
+
+    Note over OrgMembership,SNS: some time later — RP/Billing determine this was never<br/>really a trial and settle it directly:
+    SNS->>OrgMembership: DirectPaidSignup {plan} (consumed on tenant-orgm-q)
+    OrgMembership->>DB: UPDATE tenants SET status='active', subscription_started_at=now(), plan=$plan, suspension_source=NULL
+    Note over OrgMembership: Byte-for-byte the same UPDATE as TenantConverted's handler (§8.2) —<br/>no distinct "direct-paid" projection logic exists.
+```
+
+**Open item — not modeled above:** whether Realm Provisioner provisions the dedicated realm *before* `DirectPaidSignup` settles the row (matching HLD §8.10.6's framing, "O&M creates the tenants row after this service provisions") or *after* (matching the trial-conversion pattern, where `TenantRealmReady` can land independently of the plan settle) is unconfirmed on O&M's side — O&M has no code path that branches on this ordering, since `DirectPaidSignup`'s handler reads only `{plan}` from its own payload and never checks realm state. This is the same gap the I-1 correction (§8.1) flagged: O&M's LLD has no dedicated diagram for RP's own half of this flow, and this section doesn't invent one.
 
 ### 8.2 Trial → paid conversion
 
@@ -2368,7 +2457,7 @@ sequenceDiagram
     alt Cache hit
         Valkey-->>AuthZ: membership context
     else Cache miss
-        AuthZ->>OrgMembership: GET /api/v1/internal/users/:id/memberships x-tenant-id:{tenant}
+        AuthZ->>OrgMembership: GET /api/v1/internal/users/:id/memberships?tenant_id={tenant}
         OrgMembership->>Valkey: GET om:memberships:{tenant}:{user}
         alt Valkey hit
             Valkey-->>OrgMembership: serialized membership
@@ -2737,8 +2826,8 @@ sequenceDiagram
 
     Admin->>OrgMembership: POST /api/v1/tenants/:id/members {email, full_name, initial_tenant_roles, initial_dept_mappings} (P-6)
     OrgMembership->>DB: pre-flight — reject if active member (409 member_already_exists) or pending invite exists (409 invitation_already_exists)
-    OrgMembership->>RealmProv: POST /internal/tenants/:id/users {email, required_actions}
-    RealmProv->>Keycloak: create user (email_verified=false, [VERIFY_EMAIL, UPDATE_PASSWORD, +CONFIGURE_TOTP])
+    OrgMembership->>RealmProv: POST /api/v1/internal/tenants/:id/users {email, full_name, required_actions} %% F8: versioned + tenant-nested, RP LLD v0.22. F5: required_actions computed by O&M from initial_tenant_roles/initial_dept_mappings, applied verbatim by RP (RP-5)
+    RealmProv->>Keycloak: create user (email_verified=false, required_actions as sent — [VERIFY_EMAIL, UPDATE_PASSWORD, +CONFIGURE_TOTP] when the invite grants tenant_admin/owner or an Approver level)
     Keycloak-->>RealmProv: keycloak_user_id
     RealmProv-->>OrgMembership: keycloak_user_id
     OrgMembership->>DB: RunInTx — SELECT licensed_seats FOR UPDATE, count active + pending
@@ -2903,6 +2992,7 @@ Internal routes (`/api/v1/internal/*`) protected by Kubernetes NetworkPolicy. On
 | Activate/deactivate a tenant department (P-24/P-25) | `tenant_admin`, `tenant_owner` |
 | Update a dept-role display label (P-13) | `tenant_admin`, `tenant_owner` |
 | Resolve a blocked removal/demotion (`replace_delegate`/`stop_workflows`, P-26) | `tenant_admin`, `tenant_owner` (§8.8.3/§8.8.4, WFI-4) |
+| Reset a member's MFA (P-34, §16 OQ-8/F6) | `tenant_admin`, `tenant_owner`; fail-closed on RP-9 outage |
 | View seat usage (P-27) | `tenant_admin`, `tenant_owner`; Billing internally (I-11) |
 | Change `licensed_seats` | Billing only, via `TenantSeatsChanged` (§16 A10, SEAT-4) |
 | Set/clear per-tenant `feature_flags` overrides (O-4, §16 A18) | `platform_operator` only (T-9, OP-6) |
@@ -3081,8 +3171,8 @@ Identical Helm chart structure to `iam-user-profile`. `terminationGracePeriodSec
 | `invitation-kc-cleanup` | `*/10 * * * *` | Saga-compensation reconciler: delete never-activated Keycloak users off `kc_cleanup_pending` (PI-9) |
 | `realm-config-sync` | `*/10 * * * *` | Realm-config reconciler (§16 A58, T-15): converge `local_accounts_enabled` etc. off `realm_sync_pending`; prioritises disables |
 | `seat-overage-reconcile` | `0 */6 * * *` | Seat-overage marker backstop (§16 A59, SEAT-5); emits `TenantSeatOverageStarted`/`Resolved` on transitions |
-| `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor (§15.3): soft-delete + PII-scrub `trial_expired` tenants past the 15-day grace |
-| `outbox-prune` | `0 3 * * *` | `outbox.Runner.PrunePublished(ctx, 24h, 10000)` |
+| `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor (§15.3): **hard-`DELETE`** `trial_expired` tenants past the 15-day grace (PAID-1: the trial lifecycle terminates at `trial_expired` → hard delete, unlike the paid lifecycle's soft-delete-and-retain-for-audit at `offboarded`) |
+| `outbox-prune` | `0 3 * * *` | Batched raw-SQL `DELETE FROM outbox_events WHERE published_at IS NOT NULL AND published_at < now() - INTERVAL '8 days'`, capped per tick at `jctx.BatchLimit` (default 500) — corrected: not a call to `outbox.Runner.PrunePublished`, and 8 days (matching `processed_events`' own retention pattern), not 24h |
 | `processed-events-prune` | `0 4 * * *` | Prune `processed_events` > 8 days |
 
 `quota-reset` / `quota-utilization-metrics` remain removed (§16 A26). `delegation-expiry`, `delegation-review`, `delegation-cleanup` (Delegation Service) and `acl-cleanup` (Tender-ACL Service) are **not** in Core. **No `rls-violation-prune` or `invitation-cleanup` CronJob exists** — `rls_violation_log` and hard-deletion of terminal `pending_invitations` currently have no automated pruning mechanism in code; see §15.7 for the retention-claim correction.
@@ -3142,7 +3232,7 @@ Real PostgreSQL + Valkey. The single consolidated `000000_initial_schema` migrat
 ### 14.3 Contract tests
 
 - `port.WorkflowClient` (§8.8.1): verify `GetDelegateImpact` / `ReassignDelegate` / `CancelByDelegate` shapes and the `5xx`/timeout → `workflow_service_unavailable` mapping (WFI-8).
-- `port.RealmProvisionerClient` (§16 A11/§18.3): verify `CreateInvitedUser` / `DeleteUser` / `PatchRealmConfig` / `RevokeUserSessions` shapes and the invite-time `realm_provisioner_unavailable` mapping.
+- `port.RealmProvisionerClient` (§16 A11/§18.3): verify `CreateInvitedUser` / `DeleteUser` / `PatchRealmConfig` / `RevokeUserSessions` / `ResetMFA` shapes and the invite-time / MFA-reset-time `realm_provisioner_unavailable` mapping (`ResetMFA` fail-closed, §16 OQ-8/F6).
 - **`port.CatalogAdminClient` (new):** verify `GET /internal/plans` / `GET /internal/departments` request/response shapes against the Catalog Service's internal API, and the `5xx`/timeout → last-known-good / `catalog_unavailable` behaviour.
 - **`port.GroupMappingClient` (new):** verify `POST /internal/tenants/:id/group-resolution` shape and the `5xx`/timeout → login-JIT-deferred behaviour.
 - **`port.DelegationCheckClient` (new):** verify `GET /internal/delegations/dept-delegate` shape and the `5xx`/timeout → degrade-to-tenant-wide behaviour.
@@ -3249,7 +3339,7 @@ Unchanged: a re-registered user gets a new `sub` UUID; `uq_tm_active_user` (part
 
 ### 15.3 Trial expiry & cleanup
 
-Unchanged from the monolith. Realm Provisioner owns the realm-side sweep (detects expiry, disables/deletes shared-trial-realm users, emits `TrialExpired`/`TrialReactivated`); O&M consumes `TrialExpired` for the Phase-1 `status='trial_expired'` flip and runs its own `trial-cleanup` cron for the Phase-2 soft-delete/PII-scrub after the 15-day grace. Per-user `USER_DELETE` events drive I-5 (membership soft-delete) and User Profile's own PII scrub. The `trial_signup_ledger` hash is retained (one-lifetime-trial rule, HLD TRIAL-2/6).
+Unchanged from the monolith. Realm Provisioner owns the realm-side sweep (detects expiry, disables/deletes shared-trial-realm users, emits `TrialExpired`/`TrialReactivated`); O&M consumes `TrialExpired` for the Phase-1 `status='trial_expired'` flip and runs its own `trial-cleanup` cron for the Phase-2 **hard delete** after the 15-day grace (corrected — the tenant row and its cascading child rows are actually `DELETE`d, not soft-deleted/PII-scrubbed; this matches PAID-1's "hard delete" framing and the actual `cmd/reconciler/jobs/trial_cleanup.go` implementation, which relies on `ON DELETE CASCADE` for the child tables — a real cascade, since this is a genuine `DELETE` on `tenants`, unlike the paid `offboarded` path in §15.5 which only ever soft-deletes the `tenants` row). Per-user `USER_DELETE` events drive I-5 (membership soft-delete) and User Profile's own PII scrub. The `trial_signup_ledger` hash is retained (one-lifetime-trial rule, HLD TRIAL-2/6).
 
 ### 15.4 Trial reactivation
 
@@ -3259,11 +3349,11 @@ Within the 15-day grace, a `trial_expired` tenant may reactivate **once** via a 
 
 ### 15.5 Tenant offboarding (paid)
 
-Unchanged in its Billing-owned status machine (`cancelled → suspended → offboarded`); O&M reacts. On `TenantSubscriptionCancelled` it sets `cancelled_at` and coordinates the AuthZ read-only flag; on `TenantSuspended` it reflects suspended; on `TenantReactivated` (pre-offboarding only) it restores `active`; on **`TenantOffboarded`** — the HLD's terminal tenant event, **produced by the Realm Provisioner** (EVT-7) — it performs the GDPR tenant wipe of O&M-owned data:
+Mostly unchanged in its Billing-owned status machine (`cancelled → suspended → offboarded`); O&M reacts. On `TenantSubscriptionCancelled` it sets `cancelled_at` and coordinates the AuthZ read-only flag; on `TenantSuspended` it reflects suspended, and — **new, resolves RP-11** — also records `suspension_source` (`billing_lapse` or `operator`, T-16), since RP-14 (§8.12 of the Realm Provisioner LLD) can emit `TenantSuspended` administratively straight from `active`/`trial`, bypassing this grace path entirely; `cancelled_at` is only stamped for the `billing_lapse` branch, so an operator-sourced suspension never starts the grace/retention clock below. on `TenantReactivated` (pre-offboarding only) it restores `active` and clears `suspension_source` alongside `cancelled_at`, regardless of which path led to `suspended`; on **`TenantOffboarded`** — the HLD's terminal tenant event, **produced by the Realm Provisioner** (EVT-7) — it performs the GDPR tenant wipe of O&M-owned data:
 
-1. `UPDATE tenants SET status='offboarded', deleted_at=now(), <PII columns scrubbed> WHERE id=$1` (`offboarded` terminal, PAID-1; `id` retained for audit).
-2. `ON DELETE CASCADE` on all tenant-scoped FKs propagates deletes to Core's retained tenant-scoped rows (`tenant_memberships`, `tenant_roles`, `dept_memberships`, `dept_role_labels`, `tenant_departments`, `pending_invitations`).
-3. Invalidate all `om:*:{tenant_id}:*` Valkey keys (deletion-cascade eviction, CACHE-8).
+1. `UPDATE tenants SET status='offboarded', deleted_at=now() WHERE id=$1` (`offboarded` terminal, PAID-1; `id` retained for audit; this service stores no PII on the `tenants` row itself beyond opaque UUIDs, §15.8, so there is nothing further to scrub here).
+2. **Explicit `DELETE FROM <table> WHERE tenant_id=$1`, one statement per table, in the same transaction** — `tenant_memberships`, `tenant_roles`, `dept_memberships`, `dept_role_labels`, `tenant_departments`, `pending_invitations` (corrected: **not** an `ON DELETE CASCADE` side effect — the `tenants` row above is only soft-deleted, never actually `DELETE`d, so no FK cascade can ever fire from it; this was a real bug — the deletes previously never ran at all — caught by an LLD-vs-code audit and fixed with real-Postgres integration test coverage).
+3. Best-effort invalidation of the tenant's exactly-known Valkey keys (`om:tenant`, `om:locale`, `om:roles`, `om:seat_usage`, `om:members:{tenant}:50`, `om:grm`/`om:gdm`/`om:gtrm` + their `:stale` variants) after the transaction commits — advisory only (CACHE-2/9), a failure here never rolls back the wipe that already committed. Two per-secondary-key families (`om:memberships:{tenant}:{user}`, `om:dept_members:{tenant}:{dept}`) are deliberately left to their existing TTL rather than enumerated, since neither this service nor Valkey supports a cheap wildcard delete for an unbounded key set.
 
 **New under decomposition — the tenant-purge fan-out.** The extracted services' tenant-scoped rows (`delegations`, `tender_acl_entries`, the group-mapping tables) live in **their own databases**, out of reach of Core's `ON DELETE CASCADE`. So, in the same handler, Core emits a distinct Core-owned tenant-level signal — **`TenantMembershipsPurged{tenant_id, actor_id}`** — which the Delegation, Tender-ACL, and Group-Mapping services consume to run their own asynchronous tenant-scoped cascade-deletes (ADR-0008 §6.4 pattern, ADR-0007 §12 last row). **Core does not re-emit `TenantOffboarded`** — it only *consumes* the Realm-Provisioner-produced one (EVT-7). This preserves the monolith's "one producer per event name" rule while still giving the extracted services a Core signal to cascade on.
 
@@ -3281,7 +3371,7 @@ Unchanged. All state changes captured as outbox events, persisted by Audit Log; 
 |---|---|---|
 | `processed_events` | 8 days | `processed-events-prune` CronJob, daily `0 4 * * *` (IDEMP-4 dedup window) |
 | `rls_violation_log` | — | **No pruning mechanism exists.** No CronJob touches this table (`cmd/reconciler/jobs/` has no `rls-violation-prune` job); the earlier claim of an hourly/30-day prune was aspirational, not implemented. Needs either a job built or this row removed until it is. |
-| `outbox_events` (published) | Daily pruning | `outbox-prune` CronJob, daily `0 3 * * *`, `outbox.Runner.PrunePublished(ctx, 24h, 10000)` |
+| `outbox_events` (published) | 8 days | `outbox-prune` CronJob, daily `0 3 * * *`, batched raw-SQL delete capped at `jctx.BatchLimit` per tick (corrected — not `outbox.Runner.PrunePublished`) |
 | `pending_invitations` (terminal) | Never hard-deleted today | `invitation-expiry` CronJob (`*/5 * * * *`) only flips status to `expired`; **no separate hard-delete job exists** — the earlier claim of a monthly `invitation-cleanup` job is aspirational, not implemented. |
 
 *(Removed: the monolith's `delegations` and `tender_acl_entries` retention rows — those tables' retention is now their services' concern.)*
@@ -3307,7 +3397,9 @@ The monolith's §16 A-register (A1–A72) recorded the decisions that built the 
 | OQ-3 | **I-15 response shape.** This LLD specs `{active, tenant_membership_id}` (the Tender-ACL LLD §7.6.2 shape) rather than ADR-0007 §6.5's original bare `{active}`, because the Delegation Service needs the `tenant_membership_id` to populate its two `*_membership_id` columns (ADR-0008 §6.3). Confirm both consumers accept the enriched shape. | IAM platform + Tender-ACL + Delegation | Open |
 | OQ-4 | **`fk_dm_department` FK-loss.** ADR-0007 §9's FK-loss enumeration omits `dept_memberships.fk_dm_department → departments`; the Catalog split drops it too. This LLD replaces it with the `om:departments` app-level check (§4, §14.2). Confirm the ADR's list is corrected and the check is sufficient (no orphan dept references escape validation). | IAM platform | Open (bookkeeping) |
 | OQ-5 | **Vestigial User-Profile client.** The delegation availability coordination (the monolith's only `port.UserProfileClient` caller) moved to the Delegation Service. **Resolved** — `internal/adapter/outbound/userprofile/`, `port.UserProfileClient`, and `USER_PROFILE_BASE_URL` have all been deleted from the codebase; no retained Core path calls User Profile. | IAM platform | Resolved |
+| OQ-7 | **`TenantSuspended.source` field/value mapping (resolves RP-11). Resolved — confirmed by RP.** RP-14 (§8.12 of the Realm Provisioner LLD) emits `TenantSuspended(source=operator)` for administrative suspensions that can land directly on `active`/`trial`, skipping the billing grace path; RP's own lapse sweep (RP-C3, §8.8) emits `source=billing_lapse` explicitly. RP confirmed the field is named `source`, is present on **every** `TenantSuspended` (not just the operator path), and its value is always exactly `billing_lapse` or `operator` — matching this LLD's `tenants.suspension_source` enum (T-16) verbatim, no mapping/translation needed. O&M's "default `billing_lapse` when absent" (§7.1, `TenantSuspendedPayload`) remains as a defensive fallback only — RP confirmed it never relies on that default, since the field is always sent. RP also cross-referenced this LLD's T-16 in their own §8.8 (auto-offboard exclusion for the operator/never-converted-trial branch) and §8.12 (the admin-suspend emission itself). | IAM platform + RP | Resolved |
 | OQ-6 | **Event schemas are CLOSED (`additionalProperties: false`), not open — contradicting §7.3.1's SCHEMA-5 invariant text.** All 13 on-disk JSON Schema files under `internal/adapter/outbound/eventbus/schemas/` and every corresponding schema in `api/asyncapi.yaml` itself declare `additionalProperties: false`. `api/asyncapi.yaml`'s own `info.description`/`x-forward-compatibility` blocks document this at length as a **deliberate** contract choice (no free forward-compatibility; every field addition is a coordinated producer+consumer rollout, a Glue version bump, and — for a genuinely breaking change — a `.v2` type) and explicitly state *"the closed-schema decision is documented in the LLD §16 open-question register"* — which, until this entry, it was not. **Resolved by this entry**: SCHEMA-5 and the `validate` Pass-5 description (§7.3.1) have been corrected to describe the actual closed-schema policy instead of the stale open-schema text. No code change — the schemas were already correct and intentional; only the LLD's own description of them was wrong. | IAM platform | Resolved |
+| OQ-8 | **RP-9 (MFA reset) caller (F6 of the RP↔O&M alignment review) — Resolved.** RP confirmed (against their own HLD §8.2.6) that RP-9 is genuinely O&M-initiated: a tenant-admin user-management action, same class as invite (P-6) and remove (P-8). **P-34** `POST /api/v1/tenants/:id/members/:user_id/reset-mfa` (§5.4) is now the built trigger: it authorizes the actor (`tenant_admin`/`tenant_owner`, AUTH-2), validates the target is an active member, calls the now-interface-promoted `RealmProvisionerClient.ResetMFA` (RP-9) **fail-closed** (`503 realm_provisioner_unavailable` on outage — unlike `RevokeUserSessions`' best-effort posture, there is no reconciler for "eventually reset MFA"), and on success emits `MFAReset` (§7.3) for the Audit Log consumer. The actor's-own-MFA-step-up half of RP's confirmed flow is **out of this service's code scope** — it is a gateway/AuthZ Enrichment routing concern (mirrors AUTH-7's "gateway/AuthZ enforces, O&M configures" split for other layers), not something `pkg/requestctx` or this service's handlers can check. | IAM platform + RP | Resolved |
 
 Every A-register item that concerned an extracted table/endpoint/event (delegation A65/A66/A70/A71, tender-ACL A16/A17/A27/A32(c)/A51, group-mapping A25/A64, plan/catalog A18(partial)/A19) is now the owning service's to maintain; this LLD keeps only the A-items that govern retained surface (A4, A10, A11, A14, A20, A22–A24, A28–A31, A33–A34, A38–A48, A50, A52, A54, A57–A62, A72), cited inline where relevant.
 
@@ -3376,7 +3468,7 @@ All errors returned via `gincommon.ErrorResponse`:
 | 429 | `invite_rate_limited` | P-6 refused: tenant exceeded `INVITE_MAX_PER_TENANT_PER_HOUR` (PI-12). Body: `retry_after_seconds`. |
 | 429 | `quota_exceeded` | Issued by the gateway / Usage & Metering, **not** by any O&M endpoint (§16 A26); cross-reference only |
 | 503 | `workflow_service_unavailable` | Workflow call (`delegate-impact`/`reassign-delegate`/`cancel-by-delegate`) 5xx/timeout (§8.8, WFI-8); operation aborted, no DB write, retryable; includes `upstream_status` |
-| 503 | `realm_provisioner_unavailable` | P-6 invite: Realm Provisioner invited-user creation 5xx/timeout (§16 A11, §8.10); no `pending_invitations` row, retryable |
+| 503 | `realm_provisioner_unavailable` | P-6 invite: Realm Provisioner invited-user creation 5xx/timeout (§16 A11, §8.10); no `pending_invitations` row, retryable. Also P-34 MFA reset: RP-9 5xx/timeout (§16 OQ-8/F6) — fail-closed, no `MFAReset` emitted, retryable |
 | 503 | `catalog_unavailable` | Catalog `GET /internal/plans` or `/internal/departments` 5xx/timeout with a **cold** cache and no last-known-good snapshot (§9.3). A warm cache or a stale-if-error snapshot never surfaces this — it is the rare cold-cache+outage intersection on an admin/JIT write path; the I-8 read never returns it. |
 | 503 | `group_mapping_unavailable` | Declared in the taxonomy for I-10 JIT-resolution failures, but **`GroupMappingService.resolveMappings` deliberately fails OPEN** on a cold cache + live-call failure (ADR-0007 Action Item 4 — a SAML login must never fail on this call) and never actually returns this code today |
 | 503 | `dependency_unavailable` | Generic — `TxRunner.RunInTx` maps a low-level pgx connection error (not a SQL-level constraint/syntax error) to this code so handlers get a consistent 5xx shape; distinct from the more specific `db_unavailable`, which is the `/readyz` health-check failure path |
@@ -3408,7 +3500,7 @@ The monolith's outbound `PUT /api/v1/internal/users/:id/availability` call was m
 
 ### 18.3 Integration with `realm-provisioner`
 
-Unchanged. `POST /api/v1/internal/tenants` (I-1) and `PATCH /api/v1/internal/tenants/:id` (I-2) inbound for tenant provisioning / realm-id set; outbound `port.RealmProvisionerClient` — `CreateInvitedUser` / `DeleteUser` (invited-user lifecycle, §16 A11/A34), `PatchRealmConfig` (`local_accounts_enabled` propagation with `realm_sync_pending` reconcile, §16 A7/A58), `RevokeUserSessions` (privilege-reduction session-kill, best-effort/fail-open, §16 A46/AUTH-8). RP produces the `iam.tenant.events` lifecycle events (`TenantRealmReady`, `TenantConverted`, `TenantSuspended`, `TenantOffboarded`, `TrialExpired`, `TrialReactivated`) that O&M consumes via `tenant-orgm-q`.
+`POST /api/v1/internal/tenants` (I-1) and `PATCH /api/v1/internal/tenants/:id` (I-2) inbound for tenant provisioning / realm-id set; outbound `port.RealmProvisionerClient` — `CreateInvitedUser` / `DeleteUser` (invited-user lifecycle, §16 A11/A34), `PatchRealmConfig` (`local_accounts_enabled` propagation with `realm_sync_pending` reconcile, §16 A7/A58), `RevokeUserSessions` (privilege-reduction session-kill, best-effort/fail-open, §16 A46/AUTH-8), `ResetMFA` (RP-9, MFA-credential removal for **P-34**, fail-closed — §16 OQ-8/F6). RP produces the `iam.tenant.events` lifecycle events (`TenantRealmReady`, `TenantConverted`, `TenantSuspended`, `TenantOffboarded`, `TrialExpired`, `TrialReactivated`, `TenantReactivated{source=operator}` — new, resolves F1 of the RP↔O&M alignment review, RP-10 reversing RP-14) that O&M consumes via `tenant-orgm-q`. **This → (events) → RP** (**new — resolves RP-4**): O&M produces `TrialStarted{tenant_id, plan, trial_ends_at}` on `iam.tenant.events`, which RP consumes on its own `tenant-realm-q` (filter policy `EventType IN [TrialStarted]`) to seed the trial timer it tracks locally on `tenant_realms` and sweeps itself — O&M exposes no batch "expired trials" endpoint and neither side polls the other; O&M's only inbound signal is the `TrialExpired` RP produces back on `tenant-orgm-q` once its own sweep detects the expiry (§7.3).
 
 ```go
 // internal/core/port/outbound_clients.go — actual signatures
@@ -3417,6 +3509,7 @@ type RealmProvisionerClient interface {
     DeleteUser(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error
     PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, patch RealmConfigPatch) error
     RevokeUserSessions(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error
+    ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error  // RP-9, P-34, fail-closed — §16 OQ-8/F6
 }
 ```
 
@@ -3487,7 +3580,7 @@ Every synchronous edge Core participates in post-decomposition, with its budget 
 | `GET /internal/delegations/dept-delegate` | This (§8.8.4) → Delegation | §18.9 | ≤50 ms | Admin removal path; degrades to tenant-wide impact (still correct) | ADR-0008 §9 |
 | `GET /internal/tenants/:id/members/:user_id/exists` (I-15) | Tender-ACL / Delegation → This | §18.9 | ≤50 ms (as served) | Core down blocks **new grants** only; existing authorization (I-8, I-12) unaffected | ADR-0007 §6.5, ADR-0008 §6.3 |
 | `GetDelegateImpact` / `ReassignDelegate` / `CancelByDelegate` | This → Workflow | §18.5 | 200–350 ms (in the enclosing op's SLO) | Fail-closed on removal/resolution; fail-open on P-7 suspend advisory | §8.8 |
-| `CreateInvitedUser` / `DeleteUser` / `PatchRealmConfig` / `RevokeUserSessions` | This → Realm Provisioner | §18.3 | 100 ms (invite) / async | Fail-closed on invite; fail-open + durable reconcile on config/session | §8.10, §16 A34/A46/A58 |
+| `CreateInvitedUser` / `DeleteUser` / `PatchRealmConfig` / `RevokeUserSessions` / `ResetMFA` | This → Realm Provisioner | §18.3 | 100 ms (invite/MFA-reset) / async | Fail-closed on invite and MFA-reset; fail-open + durable reconcile on config/session | §8.10, §16 A34/A46/A58/OQ-8 |
 
 **No new synchronous dependency touches I-8** — the platform's tightest read (ADR-0007 §14, ADR-0008 §14). Every edge above is on an admin, login, removal, or grant-time path.
 
@@ -3533,7 +3626,7 @@ Revert the branch. Because nothing is deployed, there is no snapshot/replay conc
 
 ### 20.1 Outbox health
 
-Unchanged. `outbox.Runner.PrunePublished(ctx, 24h, 10000)` daily; dead-letters page immediately; selective replay via `ReprocessDeadLettersWith`. The DLQ↔recency-guard interaction (§16 A40/EVT-14) is unchanged: a redriven **lifecycle** event carries its original `time` and is correctly skipped as stale if a newer event advanced `last_event_at` — a post-redrive spike in `iam_stale_lifecycle_event_skipped_total` is expected, not an incident. Membership/outbox DLQ redrives are unaffected; only the two lifecycle-projection queues are subject to EVT-14.
+**Corrected** — the `outbox-prune` CronJob (§13.1) is a batched raw-SQL delete against `outbox_events` at 8-day retention, not a call to `outbox.Runner.PrunePublished`; dead-letters page immediately; selective replay via `ReprocessDeadLettersWith`. The DLQ↔recency-guard interaction (§16 A40/EVT-14) is unchanged: a redriven **lifecycle** event carries its original `time` and is correctly skipped as stale if a newer event advanced `last_event_at` — a post-redrive spike in `iam_stale_lifecycle_event_skipped_total` is expected, not an incident. Membership/outbox DLQ redrives are unaffected; only the two lifecycle-projection queues are subject to EVT-14.
 
 ### 20.2 RLS violation monitoring
 
@@ -3560,6 +3653,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | Suspension (P-7) | Workflow (`GetDelegateImpact`, advisory) | fail-open | suspend commits; advisory omitted (WFI-13) | §8.8.5 |
 | `local_accounts_enabled` change (P-2) | Realm Provisioner (`PatchRealmConfig`) | fail-open + durable reconcile | commits; `realm_sync_pending`, `202`, reconciler converges | §16 A7/A58 |
 | Invite compensation / revoke / expiry KC-cleanup | Realm Provisioner (`DeleteUser`) | async + durable reconcile | `kc_cleanup_pending`; `invitation-kc-cleanup` converges (PI-9) | §13.1, A34 |
+| MFA reset (P-34) | Realm Provisioner (`ResetMFA`, RP-9) | fail-closed | `503 realm_provisioner_unavailable`, no `MFAReset` emitted — no reconciler for "eventually reset MFA" | §16 OQ-8/F6 |
 | Effective-flags `planDefaults` (I-8 read-side) | Catalog (`GET /internal/plans`) | **cache + last-known-good** | warm cache → zero impact; cold + down → stale-if-error snapshot; **never blocks I-8** | §6.3, §18.7 |
 | Department validity (admin/JIT writes) | Catalog (`GET /internal/departments`) | cache + last-known-good | admin/JIT write degrades; off I-8 | §18.7 |
 | JIT resolution (I-10, login) | Group Mapping (`group-resolution`) | cache + defer-login | cold + down → single login's JIT deferred (`503`) | §8.5, §18.8 |

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -234,14 +235,27 @@ func (h *MembershipHandler) ReconcileRoles(c *gin.Context) {
 	for i, code := range req.Roles {
 		desired[i] = domain.TenantRoleCode(code)
 	}
-	granted, revoked, err := h.svc.ReconcileRoles(c.Request.Context(), tenantID, userID, desired, rc.UserID)
+	_, _, err = h.svc.ReconcileRoles(c.Request.Context(), tenantID, userID, desired, rc.UserID)
 	if err != nil {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"granted": rolesToWire(granted),
-		"revoked": rolesToWire(revoked),
+	// P28-1: full-replacement — the post-reconcile elevated role set exactly
+	// matches the request body, deduped (uq_tenant_roles_active already
+	// collapses a duplicate role_code to one stored row) and sorted for a
+	// deterministic response.
+	roleSet := make(map[string]struct{}, len(req.Roles))
+	for _, r := range req.Roles {
+		roleSet[r] = struct{}{}
+	}
+	finalRoles := make([]string, 0, len(roleSet))
+	for r := range roleSet {
+		finalRoles = append(finalRoles, r)
+	}
+	sort.Strings(finalRoles)
+	c.JSON(http.StatusOK, RolesReconcileResponse{
+		UserID: userID,
+		Roles:  finalRoles,
 	})
 }
 
@@ -322,6 +336,46 @@ func (h *MembershipHandler) Remove(c *gin.Context) {
 	}
 	rc, _ := requestctx.FromContext(c.Request.Context())
 	if err := h.svc.RemoveUser(c.Request.Context(), tenantID, userID, rc.UserID); err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// ResetMFA is P-34 (§16 OQ-8/F6) — POST .../members/:user_id/reset-mfa.
+// Clears the target user's MFA credentials via the Realm Provisioner
+// (RP-9). Fail-closed: an RP outage surfaces as 503, never a silent no-op.
+//
+// @Summary      P-34 — Reset a member's MFA
+// @Description  Clears the target user's TOTP/WebAuthn credentials via the Realm Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.
+// @Tags         members
+// @Param        id       path  string  true  "Tenant UUID"   format(uuid)
+// @Param        user_id  path  string  true  "User UUID"     format(uuid)
+// @Success      204
+// @Failure      404      {object}  ErrorResponse  "member_not_found"
+// @Failure      422      {object}  ErrorResponse  "member_not_active"
+// @Failure      503      {object}  ErrorResponse  "realm_provisioner_unavailable"
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /tenants/{id}/members/{user_id}/reset-mfa [post]
+func (h *MembershipHandler) ResetMFA(c *gin.Context) {
+	tenantID, err := parseTenantIDParam(c)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	userID, err := parseUUIDParam(c, "user_id")
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	if err := requireTenantAdmin(c, tenantID); err != nil {
+		HandleError(c, err)
+		return
+	}
+	rc, _ := requestctx.FromContext(c.Request.Context())
+	if err := h.svc.ResetUserMFA(c.Request.Context(), tenantID, userID, rc.UserID); err != nil {
 		HandleError(c, err)
 		return
 	}

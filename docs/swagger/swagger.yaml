@@ -528,9 +528,14 @@ definitions:
     type: object
   http.OperatorReassignOwnerResponse:
     properties:
-      role_code:
-        example: tenant_owner
+      ownerless_since:
         type: string
+      roles:
+        example:
+        - tenant_owner
+        items:
+          type: string
+        type: array
       tenant_id:
         format: uuid
         type: string
@@ -585,18 +590,16 @@ definitions:
     type: object
   http.RolesReconcileResponse:
     properties:
-      granted:
+      roles:
         example:
         - tenant_admin
-        items:
-          type: string
-        type: array
-      revoked:
-        example:
         - tender_admin
         items:
           type: string
         type: array
+      user_id:
+        format: uuid
+        type: string
     type: object
   http.SeatUsageResponse:
     properties:
@@ -747,8 +750,10 @@ paths:
       - application/json
       description: Activates the 5 default system departments, creates 3 dept-role
         labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one
-        transaction. Called by the TrialTenantProvisioned consumer (not by external
-        clients).
+        transaction. Called directly by the Signup BFF / Realm Provisioner over the
+        internal mesh — every tenant is created trial-shaped regardless of plan; a
+        consumed TrialTenantProvisioned event, if received, is an idempotent no-op
+        reconcile, not a trigger for this handler.
       parameters:
       - description: Provisioning payload
         in: body
@@ -1218,8 +1223,8 @@ paths:
   /internal/users/{id}/memberships:
     get:
       description: SLO 15 ms cache-hit / 30 ms miss (§21). Derived `member` role injected
-        (TR-7). effective_feature_flags = planDefaults(plan) ⊕ tenants.feature_flags.
-        Cache TTL 300s ± 30s jitter.
+        (TR-7). feature_flags is the sorted list of enabled flag names from planDefaults(plan)
+        ⊕ tenants.feature_flags. Cache TTL 300s ± 30s jitter.
       parameters:
       - description: User UUID
         format: uuid
@@ -2031,6 +2036,46 @@ paths:
       - TenantID: []
       - TenantRoles: []
       summary: P-7 — Suspend/reactivate member (status only)
+      tags:
+      - members
+  /tenants/{id}/members/{user_id}/reset-mfa:
+    post:
+      description: Clears the target user's TOTP/WebAuthn credentials via the Realm
+        Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on
+        RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: member_not_found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "422":
+          description: member_not_active
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "503":
+          description: realm_provisioner_unavailable
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-34 — Reset a member's MFA
       tags:
       - members
   /tenants/{id}/members/{user_id}/roles:

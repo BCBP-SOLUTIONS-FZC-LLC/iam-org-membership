@@ -148,6 +148,7 @@ func (r *ruRPClient) RevokeUserSessions(context.Context, uuid.UUID, uuid.UUID) e
 	r.revokeCalled = true
 	return r.revokeErr
 }
+func (r *ruRPClient) ResetMFA(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
 // buildRemoveUserSvc wires MembershipService with the RemoveUser
 // collaborators only. All others stay nil.

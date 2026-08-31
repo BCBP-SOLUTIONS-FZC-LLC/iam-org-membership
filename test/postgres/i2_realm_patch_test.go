@@ -20,6 +20,7 @@ import (
 // UPDATE succeeds only because the GUC (app.tenant_id, app.user_id) was
 // set to (target, iam-system) by SetRealmFields — RLS-5 invariant.
 func TestSetRealmFields_UpdatesAllThreeRealmColumnsAtomically(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "i2h03")
@@ -58,6 +59,7 @@ func TestSetRealmFields_UpdatesAllThreeRealmColumnsAtomically(t *testing.T) {
 // running under tenant B's GUC context; only tenant A must be modified,
 // tenant B must be untouched.
 func TestSetRealmFields_CrossTenantSystemPathTargetsPathID(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantA, _ := seedTenantWithOwner(t, ctx, fx, "i2ct-a")
@@ -89,6 +91,7 @@ func TestSetRealmFields_CrossTenantSystemPathTargetsPathID(t *testing.T) {
 // input parameters (internal_handler.go:161). This exercises the "silent
 // success returns nil" contract that the handler translation depends on.
 func TestSetRealmFields_ReturnsNilOnSuccess(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "i2h03b")

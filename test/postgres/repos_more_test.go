@@ -48,6 +48,7 @@ import (
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP8LabelR001_SeedHappy(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "lbl-001")
@@ -79,6 +80,7 @@ func TestP8LabelR001_SeedHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8LabelR002_UpdateHappy(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "lbl-002")
@@ -111,6 +113,7 @@ func TestP8LabelR002_UpdateHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP8LabelR003_UpdateOptimisticLock(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "lbl-003")

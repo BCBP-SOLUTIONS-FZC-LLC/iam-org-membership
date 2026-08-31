@@ -36,12 +36,13 @@ import (
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestN5_TenantSubscriptionCancelled_ReplayPreservesCancelledAt(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "n5-cancel-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	// First delivery — sets cancelled_at.
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
@@ -73,12 +74,13 @@ func TestN5_TenantSubscriptionCancelled_ReplayPreservesCancelledAt(t *testing.T)
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "suspend-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
 	env1 := mkEnvelope(t, "TenantSuspended", tenantID, firstTS, map[string]string{})
@@ -100,17 +102,136 @@ func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// T-16 (new, resolves RP-11): operator-sourced suspension against the real
+// DB — proves the CHECK constraint rework (chk_cancelled_at_required,
+// chk_subscription_started_required, chk_suspension_source_required)
+// actually accepts an active/trial → suspended jump that skips the
+// billing-lapse path, without a fabricated cancelled_at/subscription_started_at.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestConsumer_TenantSuspended_OperatorSource_FromNeverConvertedTrial(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	// A plain trial tenant: subscription_started_at IS NULL (never converted).
+	tenantID := seedTenant(t, ctx, rawPool, "operator-suspend-trial")
+
+	outbox := &captureOutbox{}
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+	env := mkEnvelope(t, "TenantSuspended", tenantID, time.Now().UTC(), map[string]string{"source": "operator"})
+	require.NoError(t, c.Handle(ctx, env), "chk_cancelled_at_required/chk_subscription_started_required must accept this transition")
+
+	var status string
+	var subscriptionStartedAt, cancelledAt *time.Time
+	var source *string
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, suspension_source, subscription_started_at, cancelled_at FROM tenants WHERE id = $1`,
+		tenantID).Scan(&status, &source, &subscriptionStartedAt, &cancelledAt))
+	assert.Equal(t, "suspended", status)
+	require.NotNil(t, source)
+	assert.Equal(t, string(domain.SuspensionSourceOperator), *source)
+	assert.Nil(t, cancelledAt, "operator-sourced suspension must not stamp cancelled_at (T-16)")
+	assert.Nil(t, subscriptionStartedAt, "a never-converted trial keeps subscription_started_at NULL even suspended")
+
+	// Reactivation clears suspension_source alongside status. Since this
+	// tenant was never paid (subscription_started_at still NULL), it must
+	// return to 'trial', not 'active' — 'active' would violate
+	// chk_subscription_started_required.
+	env2 := mkEnvelope(t, "TenantReactivated", tenantID, time.Now().UTC(), map[string]string{})
+	require.NoError(t, c.Handle(ctx, env2))
+
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, suspension_source FROM tenants WHERE id = $1`, tenantID).Scan(&status, &source))
+	assert.Equal(t, "trial", status, "a never-converted trial tenant returns to 'trial', not 'active' (T-16)")
+	assert.Nil(t, source, "T-16: reactivation clears suspension_source")
+}
+
+func TestConsumer_TenantSuspended_BillingLapse_SetsSuspensionSourceAndCancelledAt(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedPaidTenant(t, ctx, rawPool, "billing-lapse-suspend")
+
+	outbox := &captureOutbox{}
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+	env := mkEnvelope(t, "TenantSuspended", tenantID, time.Now().UTC(), map[string]string{"source": "billing_lapse"})
+	require.NoError(t, c.Handle(ctx, env))
+
+	var status string
+	var source *string
+	var cancelledAt *time.Time
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, suspension_source, cancelled_at FROM tenants WHERE id = $1`,
+		tenantID).Scan(&status, &source, &cancelledAt))
+	assert.Equal(t, "suspended", status)
+	require.NotNil(t, source)
+	assert.Equal(t, string(domain.SuspensionSourceBillingLapse), *source)
+	assert.NotNil(t, cancelledAt, "billing_lapse suspension drives the §15.5 grace clock")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// F1 (RP↔O&M alignment review, OQ-C): TenantReactivated is now a two-
+// producer event — Billing on billing-orgm-q (the normal paid path) and
+// Realm Provisioner on tenant-orgm-q (RP-10, source=operator, reversing an
+// RP-14 operator suspension). Both land in the exact same handler case,
+// which reads no payload fields, so correctness rests entirely on EVT-14's
+// generic timestamp ordering. This proves a stale/reordered redelivery of
+// the ORIGINAL suspend can't regress a reactivation applied by either
+// producer — the newest event wins regardless of which "queue" it
+// conceptually came from (the Go handler has no notion of source queue at
+// all; only the SNS filter policy, api/asyncapi.yaml, routes by queue).
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestConsumer_TenantReactivated_EVT14_ProtectsAgainstStaleReorderedSuspend(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "f1-reorder-protect")
+
+	outbox := &captureOutbox{}
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+	// t0: operator-suspends the trial tenant (as RP-14 would, straight from trial).
+	t0 := time.Now().UTC().Add(-1 * time.Hour)
+	suspendEnv := mkEnvelope(t, "TenantSuspended", tenantID, t0, map[string]string{"source": "operator"})
+	require.NoError(t, c.Handle(ctx, suspendEnv))
+
+	// t1 (> t0): reactivated — as RP-10 would, undoing the operator suspend.
+	t1 := t0.Add(30 * time.Minute)
+	reactivateEnv := mkEnvelope(t, "TenantReactivated", tenantID, t1, map[string]string{})
+	require.NoError(t, c.Handle(ctx, reactivateEnv))
+
+	var status string
+	require.NoError(t, rawPool.QueryRow(ctx, `SELECT status FROM tenants WHERE id = $1`, tenantID).Scan(&status))
+	require.Equal(t, "trial", status, "reactivation must land before the reorder test proceeds")
+
+	// A STALE redelivery of the original suspend (same t0, distinct event ID
+	// so processed_events doesn't short-circuit) must be skipped by EVT-14 —
+	// it must NOT regress the tenant back to 'suspended' now that a newer
+	// event (the reactivation at t1) has already advanced last_event_at.
+	staleReplayEnv := mkEnvelope(t, "TenantSuspended", tenantID, t0, map[string]string{"source": "operator"})
+	require.NoError(t, c.Handle(ctx, staleReplayEnv))
+
+	require.NoError(t, rawPool.QueryRow(ctx, `SELECT status FROM tenants WHERE id = $1`, tenantID).Scan(&status))
+	assert.Equal(t, "trial", status,
+		"EVT-14 must skip the stale/reordered suspend redelivery — reactivation must not be regressed")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // TenantOffboarded — terminal (PAID-1). Replay must preserve BOTH
 // cancelled_at and deleted_at.
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestConsumer_TenantOffboarded_ReplayPreservesTimestamps(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "offboard-replay")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
 	env1 := mkEnvelope(t, "TenantOffboarded", tenantID, firstTS, map[string]string{})
@@ -142,11 +263,103 @@ func TestConsumer_TenantOffboarded_ReplayPreservesTimestamps(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// GDPR tenant wipe (§15.5) — real bug found by the LLD-vs-code audit: the
+// TenantOffboarded handler flipped status/deleted_at on the tenants row but
+// never actually deleted the six child tables it's documented to wipe (the
+// LLD's claimed ON DELETE CASCADE can't fire — the tenants row is only
+// soft-deleted, never actually DELETEd). Fixed to issue explicit deletes in
+// the same tx. This test seeds one row in every affected child table and
+// proves all six are gone after a single TenantOffboarded delivery.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestConsumer_TenantOffboarded_GDPRWipe_DeletesAllChildRows(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedPaidTenant(t, ctx, rawPool, "gdpr-wipe")
+
+	userID := uuid.New()
+	deptID := uuid.New()
+
+	membershipID := uuid.New()
+	_, err := rawPool.Exec(ctx,
+		`INSERT INTO tenant_memberships (id, tenant_id, user_id, status) VALUES ($1, $2, $3, 'active')`,
+		membershipID, tenantID, userID)
+	require.NoError(t, err)
+
+	_, err = rawPool.Exec(ctx,
+		`INSERT INTO tenant_roles (tenant_id, user_id, tenant_membership_id, role_code, granted_by) VALUES ($1, $2, $3, 'tenant_owner', $2)`,
+		tenantID, userID, membershipID)
+	require.NoError(t, err)
+
+	_, err = rawPool.Exec(ctx,
+		`INSERT INTO tenant_departments (tenant_id, department_id) VALUES ($1, $2)`,
+		tenantID, deptID)
+	require.NoError(t, err)
+
+	_, err = rawPool.Exec(ctx,
+		`INSERT INTO dept_memberships (tenant_id, user_id, tenant_membership_id, department_id, role_level, granted_by) VALUES ($1, $2, $3, $4, 'approver', $2)`,
+		tenantID, userID, membershipID, deptID)
+	require.NoError(t, err)
+
+	_, err = rawPool.Exec(ctx,
+		`INSERT INTO dept_role_labels (tenant_id, role_code, display_name) VALUES ($1, 'approver', 'Approver')`,
+		tenantID)
+	require.NoError(t, err)
+
+	_, err = rawPool.Exec(ctx,
+		`INSERT INTO pending_invitations (tenant_id, email, full_name, invited_by, expires_at) VALUES ($1, 'pending@example.com', 'Pending Invitee', $2, now() + interval '7 days')`,
+		tenantID, userID)
+	require.NoError(t, err)
+
+	outbox := &captureOutbox{}
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+	env := mkEnvelope(t, "TenantOffboarded", tenantID, time.Now().UTC(), map[string]string{})
+	require.NoError(t, c.Handle(ctx, env))
+
+	for _, tbl := range []string{"tenant_memberships", "tenant_roles", "tenant_departments", "dept_memberships", "dept_role_labels", "pending_invitations"} {
+		var count int
+		require.NoError(t, rawPool.QueryRow(ctx,
+			`SELECT count(*) FROM `+tbl+` WHERE tenant_id = $1`, tenantID).Scan(&count))
+		assert.Equal(t, 0, count, "GDPR wipe must delete every %s row for the offboarded tenant", tbl)
+	}
+
+	// The tenants row itself is only soft-deleted — id retained for audit.
+	var status string
+	var deletedAt *time.Time
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, deleted_at FROM tenants WHERE id = $1`, tenantID).Scan(&status, &deletedAt))
+	assert.Equal(t, "offboarded", status)
+	assert.NotNil(t, deletedAt)
+}
+
+// A replay (second TenantOffboarded delivery, already-offboarded tenant)
+// must not error even though the child rows are already gone — the DELETEs
+// are unconditional on tenant_id, so a second pass just affects 0 rows.
+func TestConsumer_TenantOffboarded_GDPRWipe_ReplayIsNoopNotError(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedPaidTenant(t, ctx, rawPool, "gdpr-wipe-replay")
+
+	outbox := &captureOutbox{}
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+	env1 := mkEnvelope(t, "TenantOffboarded", tenantID, time.Now().UTC().Add(-time.Minute), map[string]string{})
+	require.NoError(t, c.Handle(ctx, env1))
+
+	env2 := mkEnvelope(t, "TenantOffboarded", tenantID, time.Now().UTC(), map[string]string{})
+	require.NoError(t, c.Handle(ctx, env2), "replay after the tenant row is gone (deleted_at IS NOT NULL) must still be handled cleanly")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // B17: invitation_expiry reconciler respects BatchLimit — a backlog wave
 // never produces a single unbounded UPDATE.
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestInvitationExpiry_RespectsBatchLimit(t *testing.T) {
+	t.Parallel()
 	jctx, _, rawPool := newJobContext(t, context.Background())
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "b17-batch")
@@ -199,12 +412,13 @@ func TestInvitationExpiry_RespectsBatchLimit(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestConsumer_TenantReactivated_FromCancelled_ClearsCancelledAt(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "reactivate")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	// Cancel first.
 	env1 := mkEnvelope(t, "TenantSubscriptionCancelled", tenantID,
@@ -225,12 +439,13 @@ func TestConsumer_TenantReactivated_FromCancelled_ClearsCancelledAt(t *testing.T
 }
 
 func TestConsumer_TenantReactivated_FromOffboarded_Rejected(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedPaidTenant(t, ctx, rawPool, "reactivate-offboarded")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	// Offboard first — PAID-1 terminal state.
 	env1 := mkEnvelope(t, "TenantOffboarded", tenantID,
@@ -324,6 +539,7 @@ func (f *fakePlanCatalog) PlanByCode(_ context.Context, code domain.TenantPlan) 
 }
 
 func TestConsumer_TrialReactivated_SetsTrialEndsAtFromCatalogPlan(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trial-reactivated")
@@ -333,7 +549,7 @@ func TestConsumer_TrialReactivated_SetsTrialEndsAtFromCatalogPlan(t *testing.T) 
 
 	outbox := &captureOutbox{}
 	catalog := &fakePlanCatalog{trialDurationDays: 21}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), catalog, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), catalog, nil, 5*time.Minute, nil)
 
 	env := mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), struct{}{})
 	require.NoError(t, c.Handle(ctx, env))
@@ -352,6 +568,7 @@ func TestConsumer_TrialReactivated_SetsTrialEndsAtFromCatalogPlan(t *testing.T) 
 }
 
 func TestConsumer_TrialReactivated_CapReachedIsNoop(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "trial-reactivated-capped")
@@ -362,7 +579,7 @@ func TestConsumer_TrialReactivated_CapReachedIsNoop(t *testing.T) {
 
 	outbox := &captureOutbox{}
 	catalog := &fakePlanCatalog{trialDurationDays: 14}
-	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), catalog, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), catalog, nil, 5*time.Minute, nil)
 
 	env := mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), struct{}{})
 	require.NoError(t, c.Handle(ctx, env))

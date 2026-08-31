@@ -41,6 +41,7 @@ import (
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP7Tenant001_GetHappyPath(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-001")
@@ -67,6 +68,7 @@ func TestP7Tenant001_GetHappyPath(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant002_GetNotFound(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	unknownID := uuid.New()
@@ -96,6 +98,7 @@ func TestP7Tenant002_GetNotFound(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP7Tenant010_PatchNameHappy(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-010")
@@ -126,6 +129,7 @@ func TestP7Tenant010_PatchNameHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant011_MFAFreshnessMinBoundary(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-011")
@@ -150,6 +154,7 @@ func TestP7Tenant011_MFAFreshnessMinBoundary(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant012_MFAFreshnessMaxBoundary(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-012")
@@ -174,6 +179,7 @@ func TestP7Tenant012_MFAFreshnessMaxBoundary(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant013_LocaleUpdate(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-013")
@@ -199,6 +205,7 @@ func TestP7Tenant013_LocaleUpdate(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant014_RealmSyncHappy(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-014")
@@ -231,6 +238,7 @@ func TestP7Tenant014_RealmSyncHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant015_RealmSyncDeferredOnRPOutage(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-015")
@@ -259,6 +267,7 @@ func TestP7Tenant015_RealmSyncDeferredOnRPOutage(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP7Tenant016_RealmSyncSkippedWhenUnchanged(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-016")
@@ -290,6 +299,7 @@ func TestP7Tenant016_RealmSyncSkippedWhenUnchanged(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant020_PatchNilRejected(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-020")
@@ -318,6 +328,7 @@ func TestP7Tenant020_PatchNilRejected(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant021_MFAFreshnessBelowMin(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-021")
@@ -346,6 +357,7 @@ func TestP7Tenant021_MFAFreshnessBelowMin(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant022_MFAFreshnessAboveMax(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-022")
@@ -372,6 +384,7 @@ func TestP7Tenant022_MFAFreshnessAboveMax(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant023_MFAFreshnessZero(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-023")
@@ -395,6 +408,7 @@ func TestP7Tenant023_MFAFreshnessZero(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP7Tenant024_MFAFreshnessNegative(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-024")
@@ -418,6 +432,7 @@ func TestP7Tenant024_MFAFreshnessNegative(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP7Tenant025_EmptyLocaleRejected(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-025")
@@ -445,6 +460,7 @@ func TestP7Tenant025_EmptyLocaleRejected(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Tenant026_PatchNotFoundOnFlagChange(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	unknown := uuid.New()

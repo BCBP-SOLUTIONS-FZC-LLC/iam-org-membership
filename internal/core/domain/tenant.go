@@ -36,9 +36,18 @@ const (
 	RealmDedicated RealmType = "dedicated"
 )
 
+// SuspensionSource mirrors the suspension_source enum (T-16, new — resolves
+// RP-11). Non-empty iff Status == StatusSuspended.
+type SuspensionSource string
+
+const (
+	SuspensionSourceBillingLapse SuspensionSource = "billing_lapse"
+	SuspensionSourceOperator     SuspensionSource = "operator"
+)
+
 // Tenant is the aggregate root for the tenant subtree. All child entities
 // this service owns (memberships, roles, department activations, invitations)
-// FK-cascade to this row (§4.2, T-1..T-15). Delegations and tender-ACL entries
+// FK-cascade to this row (§4.2, T-1..T-16). Delegations and tender-ACL entries
 // no longer live here — they moved to their own services' databases (ADR-0008).
 type Tenant struct {
 	ID                     uuid.UUID
@@ -50,8 +59,9 @@ type Tenant struct {
 	TrialEndsAt            *time.Time
 	TrialReactivationCount int // 0..1 (T-14)
 	SubscriptionStartedAt  *time.Time
-	CancelledAt            *time.Time // biconditional with status (T-11)
-	LastEventAt            *time.Time // EVT-14 high-water
+	CancelledAt            *time.Time        // biconditional with status/suspension_source (T-11); NOT set for an operator-sourced suspension (T-16)
+	SuspensionSource       *SuspensionSource // T-16, new — resolves RP-11; non-nil iff Status == StatusSuspended
+	LastEventAt            *time.Time        // EVT-14 high-water
 	RealmID                string
 	RealmType              RealmType
 	KeycloakShard          string

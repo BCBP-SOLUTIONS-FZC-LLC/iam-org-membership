@@ -32,7 +32,7 @@ func NewTenantRepository(pool *pgcommon.Pool) *TenantRepository {
 const tenantSelectColumns = `
 	id, slug, name, plan, feature_flags, status,
 	trial_ends_at, trial_reactivation_count, subscription_started_at,
-	cancelled_at, last_event_at,
+	cancelled_at, suspension_source, last_event_at,
 	realm_id, realm_type, keycloak_shard, mfa_freshness_seconds,
 	local_accounts_enabled, realm_sync_pending, default_locale,
 	licensed_seats, ownerless_since, overage_since,

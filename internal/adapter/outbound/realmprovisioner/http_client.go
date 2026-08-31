@@ -1,10 +1,21 @@
 // Package realmprovisioner is the outbound HTTP client for the Realm
-// Provisioner service (§18). Four methods:
+// Provisioner service (§18). Five methods:
 //
 //   - CreateInvitedUser  — recommend-and-confirm (§16, P-6 seat-hold flow)
 //   - DeleteUser         — recommend-and-confirm (§16, PI-9 reconciler)
 //   - PatchRealmConfig   — HLD-ratified (HLD §5.2, LLD §16 A7/A58, T-15)
 //   - RevokeUserSessions — recommend-and-confirm (§16 A46, AUTH-8 fail-open)
+//   - ResetMFA           — RP-9, LLD §16 OQ-8 (F6 of the RP↔O&M alignment
+//     review): confirmed O&M-initiated, but not yet wired to a public
+//     endpoint or added to port.RealmProvisionerClient — deliberately a
+//     method on *HTTPClient only, not the interface, until the "Reset MFA"
+//     admin feature is actually scheduled (RP has agreed it's fine to hold).
+//
+// F8 of the RP↔O&M alignment review: every route below is versioned under
+// internalAPIBase ("/api/v1/internal"), built from one central helper
+// (url()) rather than repeating the prefix per method. REALM_PROVISIONER_
+// BASE_URL is host-only (e.g. http://iam-realm-provisioner.iam.svc.cluster.
+// local) — the version+internal-API segment is never part of the env var.
 //
 // Timeout via REALM_PROVISIONER_TIMEOUT_MS (default 3000).
 //
@@ -31,6 +42,20 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
 )
+
+// internalAPIBase is the single source of truth for RP's versioned internal
+// API prefix (F8, RP↔O&M alignment review — RP LLD v0.22 aligned all
+// internal business endpoints under this prefix). Every RealmProvisionerClient
+// route is built via (*HTTPClient).url(path), never by hand-appending this
+// string per method, so a future prefix change (or a future RP client
+// method) only ever touches one place.
+const internalAPIBase = "/api/v1/internal"
+
+// url builds a fully-qualified RP request URL: baseURL + internalAPIBase +
+// path. path must start with "/" (e.g. "/tenants/"+tenantID.String()+"/users").
+func (c *HTTPClient) url(path string) string {
+	return c.baseURL + internalAPIBase + path
+}
 
 // Logger is the structured logging interface this client uses (Warn only).
 // *slog.Logger satisfies it directly (existing tests keep working
@@ -89,13 +114,18 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 		return &port.CreateInvitedUserResponse{KeycloakUserID: uuid.New()}, nil
 	}
 	body := map[string]any{
-		"tenant_id": req.TenantID,
 		"email":     req.Email,
 		"full_name": req.FullName,
 	}
+	if len(req.RequiredActions) > 0 {
+		// RP-5, F5: applied verbatim — O&M is the one side that knows the
+		// invite's initial_tenant_roles/dept_mappings, so it decides here,
+		// not RP.
+		body["required_actions"] = req.RequiredActions
+	}
 	buf, _ := json.Marshal(body)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/api/v1/internal/users/invite", bytes.NewReader(buf))
+		c.url("/tenants/"+req.TenantID.String()+"/users"), bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +157,7 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 		return nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		fmt.Sprintf("%s/api/v1/internal/users/%s", c.baseURL, keycloakUserID), nil)
+		c.url("/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String()), nil)
 	if err != nil {
 		return err
 	}
@@ -161,7 +191,7 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 	}
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
-		fmt.Sprintf("%s/api/v1/internal/tenants/%s/realm-config", c.baseURL, tenantID), bytes.NewReader(buf))
+		c.url("/tenants/"+tenantID.String()+"/realm-config"), bytes.NewReader(buf))
 	if err != nil {
 		return err
 	}
@@ -190,7 +220,7 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 		return nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("%s/api/v1/internal/users/%s/revoke-sessions", c.baseURL, keycloakUserID), nil)
+		c.url("/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String()+"/revoke-sessions"), nil)
 	if err != nil {
 		return err
 	}
@@ -216,6 +246,37 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 	c.logger.Warn("rp: RevokeUserSessions non-2xx — fail-open",
 		"keycloak_user_id", keycloakUserID, "status", resp.StatusCode, "body", string(msg))
 	return fmt.Errorf("rp: RevokeUserSessions returned %d", resp.StatusCode)
+}
+
+// ResetMFA calls RP-9 (LLD §16 OQ-8, F6 of the RP↔O&M alignment review).
+// RP confirmed this is O&M-initiated (a tenant-admin user-management
+// action requiring O&M's authorization + audit, neither of which RP can
+// decide) — P-34 is that trigger. Fail-closed: a non-2xx or transport
+// error is returned to the caller (service.MembershipService.ResetUserMFA
+// maps it to realm_provisioner_unavailable, 503), never swallowed.
+func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error {
+	if c.baseURL == "" {
+		c.logger.Warn("rp: baseURL not configured — ResetMFA no-op (dev)")
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.url("/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String()+"/mfa-reset"), nil)
+	if err != nil {
+		return err
+	}
+	c.setInternalHeaders(req, tenantID)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		c.logger.Warn("rp: ResetMFA transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("rp: ResetMFA returned %d: %s", resp.StatusCode, string(msg))
 }
 
 func (c *HTTPClient) setInternalHeaders(req *http.Request, tenantID uuid.UUID) {

@@ -1,5 +1,5 @@
 # Auto-registers JSON schemas in AWS Glue Schema Registry across BOTH registries:
-#   iam-membership-events (11 schemas) and iam-tenant-events (2 schemas).
+#   iam-membership-events (12 schemas) and iam-tenant-events (2 schemas).
 # Matrix fan-out ensures per-registry log separation and per-registry failures.
 #
 # Source of truth for schemas

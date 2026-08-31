@@ -119,10 +119,23 @@ func (h *OperatorHandler) ReassignOwner(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"tenant_id": tr.TenantID,
-		"user_id":   tr.UserID,
-		"role_code": string(tr.RoleCode),
+	// LLD §5.4 O-7: step 4 unconditionally clears ownerless_since in the
+	// same tx as the grant, so it is always nil by this point — echoed
+	// back rather than re-read, since ReassignOwner already guarantees it.
+	roleCodes, err := h.svc.ActiveRoleCodes(ctx, tenantID, tr.UserID)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	roles := make([]string, len(roleCodes))
+	for i, code := range roleCodes {
+		roles[i] = string(code)
+	}
+	c.JSON(http.StatusOK, OperatorReassignOwnerResponse{
+		TenantID:       tr.TenantID,
+		UserID:         tr.UserID,
+		Roles:          roles,
+		OwnerlessSince: nil,
 	})
 }
 

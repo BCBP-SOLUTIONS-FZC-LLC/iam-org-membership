@@ -40,6 +40,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -72,6 +73,7 @@ func TestTrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestInviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -127,6 +129,8 @@ func TestInviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
 	require.Len(t, proj.Departments, 1)
 	assert.Equal(t, engineeringID, proj.Departments[0].DepartmentID)
 	assert.Equal(t, domain.DeptReviewer, proj.Departments[0].RoleLevel)
+	assert.Equal(t, "ENGINEERING", proj.Departments[0].Code,
+		"I-8 must resolve the department code from the om:departments catalog (LLD §5.4)")
 
 	// 5) Pending invitation flipped to accepted.
 	//
@@ -149,10 +153,40 @@ func TestInviteAcceptFlow_LandsRolesAndDepts(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// I-8 feature_flags: LLD §5.4 documents this as a sorted array of
+// currently-enabled flag names (e.g. ["sso_enabled", "llm_enabled"]) —
+// corrected from the prior `effective_feature_flags` map shape.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestGetMembership_FeatureFlags_ProjectedAsEnabledNameArray(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+
+	tenantID := uuid.New()
+	ownerID := uuid.New()
+	tctx := withSystemAndTenant(ctx, tenantID)
+
+	// Enterprise plan's fixture FeatureSet carries one enabled boolean flag.
+	_, _, err := fx.Provisioning.TrialSignup(tctx, service.TrialSignupInput{
+		TenantID: tenantID, Slug: "acme-flags", Name: "Acme Flags",
+		Plan: domain.PlanEnterprise, OwnerUserID: ownerID, DefaultLocale: "en-US",
+	})
+	require.NoError(t, err)
+
+	proj, err := fx.AuthZ.GetMembership(tctx, tenantID, ownerID)
+	require.NoError(t, err)
+	assert.Contains(t, proj.FeatureFlags, "require_mfa_all_users_allowed",
+		"a plan-default flag that is true must appear in the enabled-name array")
+	assert.IsIncreasing(t, proj.FeatureFlags, "the array must be sorted for a deterministic response")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // E2E-3: P-28 role reconcile grant + revoke round-trip + I-8 reflects.
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestRoleReconcile_GrantThenRevoke(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e3")
@@ -202,6 +236,7 @@ func roleCodes(rs []domain.TenantRole) []domain.TenantRoleCode {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestDeptAssignAndLevelChange_I8Reflects(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e4")
@@ -248,6 +283,7 @@ func TestDeptAssignAndLevelChange_I8Reflects(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestFullRemovalCascade(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e5")
@@ -326,6 +362,7 @@ func TestFullRemovalCascade(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTrialSignup_IdempotentReplay_NoReSeedNoReEvents(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -397,6 +434,7 @@ func TestTrialSignup_IdempotentReplay_NoReSeedNoReEvents(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTrialSignup_SlugConflict_ReturnsError(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -427,6 +465,7 @@ func TestTrialSignup_SlugConflict_ReturnsError(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTrialSignup_ConcurrentSameIdRace_OneWinsOneReplays(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -493,6 +532,7 @@ func TestTrialSignup_ConcurrentSameIdRace_OneWinsOneReplays(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTrialSignup_CatalogFetchFailure_PreventsAnySideEffects(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -533,6 +573,7 @@ func TestTrialSignup_CatalogFetchFailure_PreventsAnySideEffects(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTenantPatch_ConcurrentPatchRace_OneWinsOne409(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -581,16 +622,24 @@ func TestTenantPatch_ConcurrentPatchRace_OneWinsOne409(t *testing.T) {
 }
 
 func TestReassignOwnerFlow(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "e2e6")
 
-	// Seed a second active member as the new-owner candidate.
+	// Seed a second active member as the new-owner candidate — already
+	// holding tender_admin, to prove O-7's response reflects the FULL
+	// post-grant elevated set, not just the newly-granted role (LLD §5.4).
 	newOwnerID := uuid.New()
-	_, err := fx.rawPool.Exec(ctx, `
+	var newOwnerMembershipID uuid.UUID
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
 		INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
-		VALUES (gen_random_uuid(), $1, $2, 'active')`,
-		tenantID, newOwnerID)
+		VALUES (gen_random_uuid(), $1, $2, 'active') RETURNING id`,
+		tenantID, newOwnerID).Scan(&newOwnerMembershipID))
+	_, err := fx.rawPool.Exec(ctx, `
+		INSERT INTO tenant_roles (tenant_id, user_id, tenant_membership_id, role_code, granted_by)
+		VALUES ($1, $2, $3, 'tender_admin', $2)`,
+		tenantID, newOwnerID, newOwnerMembershipID)
 	require.NoError(t, err)
 
 	tctx := withSystemAndTenant(ctx, tenantID)
@@ -601,6 +650,15 @@ func TestReassignOwnerFlow(t *testing.T) {
 	require.NotNil(t, tr)
 	assert.Equal(t, domain.RoleTenantOwner, tr.RoleCode)
 	assert.Equal(t, newOwnerID, tr.UserID)
+
+	// LLD §5.4 O-7 response: `roles` is the full active set for the
+	// promoted user — must include BOTH the pre-existing tender_admin and
+	// the newly-granted tenant_owner, not just the latter.
+	roleCodes, err := fx.Operator.ActiveRoleCodes(tctx, tenantID, newOwnerID)
+	require.NoError(t, err)
+	assert.Contains(t, roleCodes, domain.RoleTenantOwner)
+	assert.Contains(t, roleCodes, domain.RoleTenderAdmin,
+		"O-7 must not clobber a pre-existing elevated role the promoted user already held")
 
 	// I-8 for the new owner must now show tenant_owner.
 	newProj, err := fx.AuthZ.GetMembership(tctx, tenantID, newOwnerID)

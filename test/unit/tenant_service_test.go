@@ -65,6 +65,7 @@ func (r *tsRP) PatchRealmConfig(ctx context.Context, tid uuid.UUID, p port.Realm
 	return nil
 }
 func (r *tsRP) RevokeUserSessions(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (r *tsRP) ResetMFA(context.Context, uuid.UUID, uuid.UUID) error           { return nil }
 
 var _ port.RealmProvisionerClient = (*tsRP)(nil)
 
