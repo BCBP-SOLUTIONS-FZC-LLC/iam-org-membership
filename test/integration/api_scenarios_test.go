@@ -1435,7 +1435,8 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 			body, isOperator(tt.TenantID))
 		defer resp.Body.Close()
 		b := assertStatus(t, resp, http.StatusOK)
-		hasField(t, b, "role_code", "tenant_owner")
+		roles, _ := b["roles"].([]any)
+		require.Contains(t, roles, "tenant_owner", "response roles must include tenant_owner — body: %v", b)
 		rvT = e.getTenantRV(t, tt.TenantID, tt.OwnerID)
 	})
 

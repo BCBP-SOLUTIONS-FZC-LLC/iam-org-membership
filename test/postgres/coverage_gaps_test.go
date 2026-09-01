@@ -1156,7 +1156,7 @@ func TestCOVAuthZ001_GetMembership_HappyPath(t *testing.T) {
 	assert.Equal(t, deptID, proj.Departments[0].DepartmentID)
 	assert.Equal(t, domain.DeptPreparator, proj.Departments[0].RoleLevel)
 
-	assert.NotNil(t, proj.EffectiveFeatureFlags)
+	assert.NotNil(t, proj.FeatureFlags)
 }
 
 // Test Case ID:      COV-AUTHZ-002

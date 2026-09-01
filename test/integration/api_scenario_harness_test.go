@@ -86,6 +86,7 @@ func (r *scenarioRPClient) PatchRealmConfig(_ context.Context, _ uuid.UUID, _ po
 	return nil
 }
 func (r *scenarioRPClient) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (r *scenarioRPClient) ResetMFA(_ context.Context, _, _ uuid.UUID) error            { return nil }
 
 var _ port.RealmProvisionerClient = (*scenarioRPClient)(nil)
 
@@ -337,7 +338,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		seatOverageDays      = 30
 	)
 
-	authzSvc       := service.NewAuthZService(appPool, catalogSvc, nil)
+	authzSvc       := service.NewAuthZService(appPool, catalogSvc, catalogSvc, nil)
 	provisioningSvc := service.NewProvisioningService(
 		appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo,
 		deptRoleLabelRepo, tenantDeptRepo, catalogSvc, catalogSvc,
