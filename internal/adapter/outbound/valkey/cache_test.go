@@ -184,6 +184,38 @@ func TestVC_CACHE_010_HealthWhenServerDown(t *testing.T) {
 	assert.Error(t, c.Health(ctx), "unhealthy after server torn down")
 }
 
+// TestVC_CACHE_012_GetReturnsErrorOnServerDown covers the error branch in
+// Get() at line 55 — `return nil, err` when the server is unavailable and the
+// error is NOT redis.Nil (i.e., a genuine transport failure).
+func TestVC_CACHE_012_GetReturnsErrorOnServerDown(t *testing.T) {
+	c, mr := newTestCache(t)
+	ctx := context.Background()
+
+	// Store a key while the server is up.
+	require.NoError(t, c.Set(ctx, "key1", []byte("val"), time.Minute))
+
+	// Tear down the server → next call returns a non-redis.Nil error.
+	mr.Close()
+
+	got, err := c.Get(ctx, "key1")
+	assert.Error(t, err, "transport error must be propagated by Get()")
+	assert.Nil(t, got, "nil must be returned alongside the error")
+}
+
+// TestVC_CACHE_013_MGetReturnsErrorOnServerDown covers the error branch in
+// MGet() at lines 63-65 — `return nil, err` when the server is unavailable.
+func TestVC_CACHE_013_MGetReturnsErrorOnServerDown(t *testing.T) {
+	c, mr := newTestCache(t)
+	ctx := context.Background()
+
+	// Tear down the server before the MGet call.
+	mr.Close()
+
+	vals, err := c.MGet(ctx, []string{"k1", "k2"})
+	assert.Error(t, err, "transport error must be propagated by MGet()")
+	assert.Nil(t, vals, "nil must be returned alongside the error")
+}
+
 // TestVC_CACHE_011_KeyBuildersFormatCorrectly — every cache-key
 // builder returns the exact `om:...` shape §6.1 mandates. Renames here
 // would silently invalidate every cached entry.

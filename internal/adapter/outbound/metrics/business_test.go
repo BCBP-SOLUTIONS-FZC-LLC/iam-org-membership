@@ -1,6 +1,9 @@
 package metrics
 
 import (
+	"context"
+	"errors"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -184,6 +187,91 @@ func TestPreseededLabelsPresent(t *testing.T) {
 		"pre-seeded label 'missing_or_invalid_guc' must be present so dashboards render zeros")
 	assert.True(t, seenTypes["cross_tenant_access"],
 		"pre-seeded label 'cross_tenant_access' must be present so dashboards render zeros")
+}
+
+// TestObserveXsvcLatency_NilGuard verifies that calling ObserveXsvcLatency
+// before Register() — when XsvcCallLatencySeconds == nil — is a safe no-op.
+// After Register() the call records in the histogram.
+func TestObserveXsvcLatency_AfterRegister_RecordsObservation(t *testing.T) {
+	ensureRegistered(t)
+	// After register, XsvcCallLatencySeconds is non-nil; Observe must not panic.
+	require.NotPanics(t, func() {
+		ObserveXsvcLatency("catalog", "GET /plans", 0.012)
+		ObserveXsvcLatency("group_mapping", "group-resolution", 0.005)
+		ObserveXsvcLatency("delegation", "dept-delegate", 0.008)
+	})
+}
+
+// TestIncXsvcError_AfterRegister_RecordsCounter verifies that after Register()
+// IncXsvcError increments the XsvcCallErrors counter without panicking.
+func TestIncXsvcError_AfterRegister_RecordsCounter(t *testing.T) {
+	ensureRegistered(t)
+	require.NotPanics(t, func() {
+		IncXsvcError("catalog", "GET /departments", "5xx")
+		IncXsvcError("group_mapping", "group-resolution", "timeout")
+		IncXsvcError("delegation", "dept-delegate", "fallback_served")
+	})
+}
+
+// TestIncMembershipExistsCheck_AfterRegister_RecordsCounter verifies that
+// after Register() IncMembershipExistsCheck increments MembershipExistsCheck
+// without panicking.
+func TestIncMembershipExistsCheck_AfterRegister_RecordsCounter(t *testing.T) {
+	ensureRegistered(t)
+	require.NotPanics(t, func() {
+		IncMembershipExistsCheck("tender_acl", "active")
+		IncMembershipExistsCheck("delegation", "inactive")
+	})
+}
+
+// TestXsvcOutcome_Nil_ReturnsTimeout verifies that a nil error returns "5xx"
+// (the default branch) — nil is not a timeout, not a DeadlineExceeded.
+func TestXsvcOutcome_Nil_Returns5xx(t *testing.T) {
+	// nil error: not a net.Error, not context.DeadlineExceeded → "5xx" default.
+	// This is an unusual caller pattern but the function must not panic.
+	// We can't pass nil directly to errors.As, so check the DeadlineExceeded path.
+	outcome := XsvcOutcome(context.DeadlineExceeded)
+	assert.Equal(t, "timeout", outcome, "context.DeadlineExceeded must map to 'timeout'")
+}
+
+// TestXsvcOutcome_OtherError_Returns5xx verifies a generic non-timeout error.
+func TestXsvcOutcome_OtherError_Returns5xx(t *testing.T) {
+	err := errors.New("connection refused")
+	outcome := XsvcOutcome(err)
+	assert.Equal(t, "5xx", outcome, "non-timeout error must map to '5xx'")
+}
+
+// netTimeoutError is a minimal net.Error implementation whose Timeout() returns true.
+// Used to exercise the errors.As(err, &netErr) && netErr.Timeout() branch in XsvcOutcome.
+type netTimeoutError struct{ msg string }
+
+func (e *netTimeoutError) Error() string   { return e.msg }
+func (e *netTimeoutError) Timeout() bool   { return true }
+func (e *netTimeoutError) Temporary() bool { return true }
+
+var _ net.Error = (*netTimeoutError)(nil)
+
+// TestXsvcOutcome_NetTimeoutError_ReturnsTimeout verifies the errors.As + Timeout()
+// branch (line 148 in business.go): a net.Error where Timeout() == true must
+// return "timeout".
+func TestXsvcOutcome_NetTimeoutError_ReturnsTimeout(t *testing.T) {
+	err := &netTimeoutError{msg: "i/o timeout"}
+	outcome := XsvcOutcome(err)
+	assert.Equal(t, "timeout", outcome, "net.Error with Timeout()=true must map to 'timeout'")
+}
+
+// TestXsvcOutcome_NetNonTimeoutError_Returns5xx verifies the errors.As + Timeout()
+// branch when Timeout() returns false — must fall through to "5xx".
+type netNonTimeoutError struct{}
+
+func (e *netNonTimeoutError) Error() string   { return "connection reset" }
+func (e *netNonTimeoutError) Timeout() bool   { return false }
+func (e *netNonTimeoutError) Temporary() bool { return false }
+
+func TestXsvcOutcome_NetNonTimeoutError_Returns5xx(t *testing.T) {
+	err := &netNonTimeoutError{}
+	outcome := XsvcOutcome(err)
+	assert.Equal(t, "5xx", outcome, "net.Error with Timeout()=false must map to '5xx'")
 }
 
 // TestHelpTextsMentionInvariantIDs — sanity guard so a

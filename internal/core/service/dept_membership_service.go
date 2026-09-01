@@ -253,6 +253,9 @@ func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, de
 		return nil, err
 	}
 	s.invalidate(ctx, tenantID)
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, cacheKeyDeptMembers(tenantID, deptID))
+	}
 	return dm, nil
 }
 

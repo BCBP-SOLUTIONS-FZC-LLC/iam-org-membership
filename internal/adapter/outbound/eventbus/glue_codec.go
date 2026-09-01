@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"strings"
 	"sync"
 	"time"
@@ -210,7 +211,14 @@ func prependGlueHeader(schemaVersionID string, payload []byte) ([]byte, error) {
 // membership/tenant split can never drift from what ValidatingCodec actually
 // loads.
 func AllSchemaNames() ([]string, error) {
-	entries, err := schemasFS.ReadDir("schemas")
+	return allSchemaNamesFromFS(schemasFS)
+}
+
+// allSchemaNamesFromFS is the testable implementation of AllSchemaNames.
+// It accepts an fs.FS so tests can inject a fstest.MapFS to trigger error
+// branches (ReadDir error, non-.json continue).
+func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
+	entries, err := fs.ReadDir(schemas, "schemas")
 	if err != nil {
 		return nil, err
 	}

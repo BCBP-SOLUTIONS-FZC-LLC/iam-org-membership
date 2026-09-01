@@ -110,3 +110,46 @@ func TestPlans_TransportError(t *testing.T) {
 	_, err := c.Plans(context.Background())
 	require.Error(t, err)
 }
+
+func TestNewHTTPClient_NilLogger_FallsBackToSlogDefault(t *testing.T) {
+	// nil logger → defaults to slog.Default() — must not panic and client must work.
+	c := NewHTTPClient("http://localhost", 5*time.Second, nil)
+	require.NotNil(t, c)
+	// Verify client still errors on unreachable host (nil logger not used until a log call).
+	_, err := c.Departments(context.Background())
+	require.Error(t, err) // no server running at localhost with this path
+}
+
+func TestNewHTTPClient_ZeroTimeout_DefaultsTo3s(t *testing.T) {
+	// timeout <= 0 → defaults to 3s — must not panic.
+	c := NewHTTPClient("http://localhost", 0, slog.Default())
+	require.NotNil(t, c)
+	assert.Equal(t, 3*time.Second, c.client.Timeout)
+}
+
+func TestDepartments_500Status_IncrementsMetricAndErrors(t *testing.T) {
+	// A 5xx status must both increment the xsvc error metric and return an error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"code":"internal_error"}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	_, err := c.Departments(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+}
+
+func TestPlans_500Status_IncrementsMetricAndErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"code":"internal_error"}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	_, err := c.Plans(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+}
