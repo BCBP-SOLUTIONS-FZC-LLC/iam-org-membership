@@ -13,6 +13,15 @@ Signup BFF → `POST /internal/tenants` (I-1). One `RunInTx`:
 
 Returns `201 {tenant_id}`. Outbox runner publishes both events to `iam.tenant.events`.
 
+## 8.1b Direct-Paid Signup (F11, RP↔O&M alignment review)
+
+Identical to §8.1 — I-1 has no plan-conditional branch; every tenant is created trial-shaped (`status='trial'`, shared realm, computed `trial_ends_at`) regardless of the requested `plan`. There is no distinct direct-paid creation path. A tenant later determined to be direct-paid is settled by a consumed `DirectPaidSignup{plan}` event on `tenant-orgm-q`:
+```
+RunInTx: UPDATE tenants SET status='active', subscription_started_at=now(), plan=$plan, suspension_source=NULL
+         WHERE id=$1
+```
+Byte-for-byte the same projection as §8.2's `TenantConverted` handler — `DirectPaidSignup` and `TenantConverted` differ only in event *name* (audit signal for "converted from trial" vs "never really trialed"), not in mechanism. RP's own realm-provisioning sequencing relative to this settle event is not confirmed on O&M's side — O&M's handler reads only `{plan}` and never branches on realm state.
+
 ## 8.2 Trial → Paid Conversion
 
 Realm Provisioner emits `TenantConverted` on `iam.tenant.events`. O&M consumes via `tenant-orgm-q`:
@@ -138,7 +147,7 @@ DELETE /tenants/:id/members/:user_id (P-8) OR /internal/tenants/:id/members/:use
 1. `WorkflowClient.CancelByDelegate(tenant, userID)` → `iam_delegate_workflow_cancel_total++`.
 2. Re-check + cascade as above.
 
-**On cascade:** Core no longer owns a `delegations` table or a delegation-specific event. It emits a single `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2, unconditional — not gated on whether the user held any delegation rows), consumed asynchronously by the Delegation Service (which ends this user's delegation rows, including any where they were delegate) and the Tender-ACL Service (which soft-deletes their ACL overlay rows). See §8.8's cascade step and §15.2 for the full event.
+**On cascade:** Core no longer owns a `delegations` table or a delegation-specific event. It emits a single `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2, unconditional — not gated on whether the user held any delegation rows), consumed asynchronously by the Delegation Service (which ends this user's delegation rows, including any where they were delegate), the Tender-ACL Service (which soft-deletes their ACL overlay rows), and AuthZ Enrichment (which evicts the user's `om:memberships` cache entry, `membership-authz-q` filter policy, LLD §7.3.2). See §8.8's cascade step and §15.2 for the full event.
 
 ### 8.8.4 Department-Level Extension (P-10 decrease / P-11)
 
@@ -170,7 +179,8 @@ Admin → POST /tenants/:id/members {email, full_name, initial_tenant_roles, ini
     per-email cooldown active? → 429 reinvite_too_soon (PI-11, iam_invite_throttled_total{cooldown})
     per-tenant hourly ceiling? → 429 invite_rate_limited (PI-12)
 
-  RealmProvisioner.CreateInvitedUser(tenantID, {email, required_actions:[VERIFY_EMAIL, UPDATE_PASSWORD, CONFIGURE_TOTP?]})
+  RealmProvisioner.CreateInvitedUser(tenantID, {email, full_name, required_actions:[VERIFY_EMAIL, UPDATE_PASSWORD, CONFIGURE_TOTP?]})
+    -- required_actions computed here from initial_tenant_roles/initial_dept_mappings, sent verbatim (RP-5, F5 resolved)
     5xx/timeout → 503 realm_provisioner_unavailable (retryable)
     → keycloak_user_id
 
@@ -196,6 +206,21 @@ Event Consumer → POST /internal/tenants/:id/members {user_id, email} (I-3)
 **Seat-hold coupling (T-8/SEAT-1):** `INVITATION_EXPIRY_DAYS = 7` must equal Keycloak invite action-token lifespan (HLD §8.2.2's 7-day link) — divergence would either strand a seat past a dead link or free a seat while the link still works.
 
 **Revoke/expiry (PI-5/PI-6):** P-31 revoke → `status=revoked` AND `kc_cleanup_pending=true` **atomically**; `invitation-expiry` CronJob past `expires_at` → same. Both trigger the `invitation-kc-cleanup` reconciler (PI-9) which idempotently calls `RealmProvisioner.DeleteUser`. There is no monthly hard-delete job for terminal `pending_invitations` rows in this repo — no `invitation-cleanup` CronJob exists (see §15.7); terminal rows persist until tenant offboarding cascade or an explicit GDPR erasure-by-email (§15.8).
+
+## 8.11 MFA Reset (P-34, §16 OQ-8/F6)
+
+RP confirmed (HLD §8.2.6) this is O&M-initiated — same class as invite (P-6) / remove (P-8):
+
+```text
+POST /tenants/:id/members/:user_id/reset-mfa (requireTenantAdmin: tenant_admin/tenant_owner)
+  FindByUserID(tenant_id, user_id) → 404 member_not_found; 422 member_not_active if not active
+  RealmProvisionerClient.ResetMFA(tenant_id, keycloak_user_id)  -- RP-9, synchronous, FAIL-CLOSED
+    → error: 503 realm_provisioner_unavailable, nothing recorded, no reconciler (unlike RevokeUserSessions/AUTH-8's best-effort posture)
+  RunInTx: outbox.Enqueue(MFAReset{tenant_id, user_id, actor_id})  -- sole audit record (Audit Log catch-all)
+  → 204 No Content
+```
+
+Actor's-own-MFA-step-up (also part of RP's confirmed flow) is a gateway/AuthZ Enrichment routing concern, not enforced in this service's code — `pkg/requestctx` carries no actor-MFA-freshness claim (mirrors AUTH-7's "gateway enforces, O&M configures" split for other layers).
 
 ## 9. Concurrency, Consistency, Failure
 
@@ -256,7 +281,7 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 
 ### 15.2 User Deletion
 
-**Cross-service pattern:** Keycloak hard-deletes; User Profile scrubs its per-user PII (`display_name`, `phone`, `job_title`, `credentials`, signature, availability); O&M sets membership `status='left'` + `deleted_at`; cascade soft-deletes `tenant_roles`/`dept_memberships` (the two tables Core still owns) and emits one `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2). O&M no longer owns `delegations`/`tender_acl_entries` and does not touch them directly — the Delegation Service and Tender-ACL Service each run their own async cascade off that shared `MembershipRevoked` signal, ending delegation rows and soft-deleting ACL overlays respectively in their own databases. (This used to be two separate emissions — `MembershipRevoked` plus a `TenantMembershipRemoved` aimed at Tender-ACL — now consolidated into the one shared event per the LLD.)
+**Cross-service pattern:** Keycloak hard-deletes; User Profile scrubs its per-user PII (`display_name`, `phone`, `job_title`, `credentials`, signature, availability); O&M sets membership `status='left'` + `deleted_at`; cascade soft-deletes `tenant_roles`/`dept_memberships` (the two tables Core still owns) and emits one `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2). O&M no longer owns `delegations`/`tender_acl_entries` and does not touch them directly — the Delegation Service and Tender-ACL Service each run their own async cascade off that shared `MembershipRevoked` signal, ending delegation rows and soft-deleting ACL overlays respectively in their own databases; AuthZ Enrichment consumes the same signal to evict the departed user's `om:memberships` cache entry. (This used to be two separate emissions — `MembershipRevoked` plus a `TenantMembershipRemoved` aimed at Tender-ACL — now consolidated into the one shared event per the LLD.)
 
 **§16 A45 / TR-9:** removal soft-deletes ALL `tenant_roles` rows for the user (symmetric with dept_memberships); one `TenantRoleRevoked` emitted per revoked elevated grant. Suspend (P-7) leaves `tenant_roles` untouched (frozen, M-1).
 
@@ -294,6 +319,8 @@ Billing owns status transitions; O&M and RP react. Sequence `cancelled → suspe
 - **`suspended`** (grace elapsed): RP disables dedicated realm, no login, data retained.
 - **`offboarded`** (retention elapsed, default 90 d from `cancelled_at`): RP exports realm to encrypted S3 then hard-deletes; O&M soft-deletes tenants row + scrubs PII + retains `id`. **Terminal (PAID-1).** Reactivation possible **only before offboarding**.
 
+**Operator-sourced suspension is a separate, parallel path (new, T-16 — resolves RP-11).** RP-14 (§8.12 of the Realm Provisioner LLD) can emit `TenantSuspended{source=operator}` directly against an `active` or `trial` tenant, bypassing `cancelled` entirely. O&M records `suspension_source='operator'` and — unlike the billing-lapse branch — never stamps `cancelled_at`, so this tenant is **not** subject to the 90-day retention/auto-offboard clock above; it stays suspended until an explicit `TenantReactivated` (which clears `suspension_source` and `cancelled_at` together, whichever path led there).
+
 **§16 A54 / OFF1 fan-out contract:** RP publishes `TenantOffboarded` once (only after export+delete verified). Consumers: O&M (wipes tenant-scoped rows), User Profile (scrubs per-user PII UP LLD §8.7a), Audit Log (retains per §15.6).
 
 O&M wipe on `TenantOffboarded`:
@@ -312,7 +339,7 @@ Idempotent via `processed_events`. The whole wipe (steps 1–3) commits as one t
 |---|---|---|
 | `processed_events` | 8 d | `processed-events-prune` CronJob (IDEMP-4 window; > 7-d SQS lifetime) |
 | `rls_violation_log` | 30 d | Hourly CronJob |
-| `outbox_events` (published) | Daily prune | `outbox-prune` CronJob (`outbox.Runner.PrunePublished`) |
+| `outbox_events` (published) | 8 days | `outbox-prune` CronJob — batched raw-SQL delete, capped at `jctx.BatchLimit` per tick (not `outbox.Runner.PrunePublished`) |
 | `pending_invitations` (terminal) | not hard-deleted by any job | No `invitation-cleanup` CronJob exists in this repo — terminal rows (`accepted`/`expired`/`revoked`) persist until tenant offboarding cascade (`ON DELETE CASCADE`) or an explicit GDPR erasure-by-email (§15.8) |
 
 **Removed from this table (ADR-0008/ADR-0007):** `delegations` and `tender_acl_entries` retention rows — Core owns neither table any more; their soft-delete-then-hard-delete retention is now the Delegation Service's and Tender-ACL Service's own concern in their respective databases.

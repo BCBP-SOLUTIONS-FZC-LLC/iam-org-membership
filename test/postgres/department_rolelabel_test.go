@@ -48,6 +48,7 @@ import (
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP7Dept001_ListActive(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-001")
@@ -87,6 +88,7 @@ func TestP7Dept001_ListActive(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP7Dept002_ListEmptyReturnsEmptySlice(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-002")
@@ -120,6 +122,7 @@ func TestP7Dept002_ListEmptyReturnsEmptySlice(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP7Dept010_ActivateHappy(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-010")
@@ -158,6 +161,7 @@ func TestP7Dept010_ActivateHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Dept011_ActivateIdempotent(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-011")
@@ -189,6 +193,7 @@ func TestP7Dept011_ActivateIdempotent(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Dept012_ActivateUnknownDept(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-012")
@@ -219,6 +224,7 @@ func TestP7Dept012_ActivateUnknownDept(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Dept020_DeactivateNonSystem(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-020")
@@ -248,6 +254,7 @@ func TestP7Dept020_DeactivateNonSystem(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Dept022_SetActiveOptimisticLock(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-022")
@@ -279,6 +286,7 @@ func TestP7Dept022_SetActiveOptimisticLock(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Dept023_ReactivateAfterDeactivate(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "dept-023")
@@ -317,6 +325,7 @@ func TestP7Dept023_ReactivateAfterDeactivate(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestP7Label001_ListThreeLabels(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-001")
@@ -344,6 +353,7 @@ func TestP7Label001_ListThreeLabels(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP7Label002_ListEmpty(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-002")
@@ -375,6 +385,7 @@ func TestP7Label002_ListEmpty(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Label010_UpdateHappy(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-010")
@@ -404,6 +415,7 @@ func TestP7Label010_UpdateHappy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Label011_RejectMemberRole(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-011")
@@ -432,6 +444,7 @@ func TestP7Label011_RejectMemberRole(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Label012_RejectUnknownRoleCode(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-012")
@@ -460,6 +473,7 @@ func TestP7Label012_RejectUnknownRoleCode(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Label013_RejectEmptyDisplayName(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-013")
@@ -489,6 +503,7 @@ func TestP7Label013_RejectEmptyDisplayName(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestP7Label014_OptimisticLockMismatch(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-014")
@@ -519,6 +534,7 @@ func TestP7Label014_OptimisticLockMismatch(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestP7Label015_UnicodeLongDisplayName(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, fx.rawPool, "label-015")

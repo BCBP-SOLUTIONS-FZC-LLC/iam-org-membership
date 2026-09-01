@@ -41,8 +41,8 @@ const (
 // this service uses two registries, iam-membership-events and
 // iam-tenant-events, one per SNS topic): construct one per topic with the
 // schema names that belong to that topic (see AllSchemaNames +
-// domain.TopicForEvent in cmd/server/main.go for how the 13 embedded
-// schemas are split 11/2 between the two).
+// domain.TopicForEvent in cmd/server/main.go for how the 14 embedded
+// schemas are split 12/2 between the two).
 //
 // Unlike the sibling iam-user-profile service, this service's event Type
 // strings (e.g. "DepartmentMembershipGranted") ARE already the PascalCase

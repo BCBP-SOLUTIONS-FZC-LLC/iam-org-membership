@@ -76,6 +76,7 @@ type MembershipEventConsumer struct {
 	outbox      OutboxEnqueuer
 	idempotency port.IdempotencyStore
 	catalog     port.PlanCatalogReader
+	cache       port.Cache
 	skew        time.Duration
 	logger      port.SlogStyleLogger
 }
@@ -88,12 +89,15 @@ type MembershipEventConsumer struct {
 // port.IdempotencyStore (postgres.IdempotencyRepository). catalog may be nil
 // only in tests that never exercise a TrialReactivated event — it resolves
 // the reactivated plan's trial_duration_days from the Catalog Service
-// (Plans moved out of this service's own database under ADR-0007).
-func NewMembershipEventConsumer(pool *pgcommon.Pool, outbox OutboxEnqueuer, idempotency port.IdempotencyStore, catalog port.PlanCatalogReader, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
+// (Plans moved out of this service's own database under ADR-0007). cache may
+// be nil — the TenantOffboarded GDPR wipe's cache-invalidation step (§15.5)
+// is best-effort and skipped entirely when cache is nil, consistent with
+// CACHE-2/9 (advisory-only, never a correctness dependency).
+func NewMembershipEventConsumer(pool *pgcommon.Pool, outbox OutboxEnqueuer, idempotency port.IdempotencyStore, catalog port.PlanCatalogReader, cache port.Cache, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
 	if skew <= 0 {
 		skew = 300 * time.Second
 	}
-	return &MembershipEventConsumer{pool: pool, outbox: outbox, idempotency: idempotency, catalog: catalog, skew: skew, logger: port.NewSlogStyleLogger(logger)}
+	return &MembershipEventConsumer{pool: pool, outbox: outbox, idempotency: idempotency, catalog: catalog, cache: cache, skew: skew, logger: port.NewSlogStyleLogger(logger)}
 }
 
 // Handle is the entry point for platform-events SQS consumer.
@@ -171,7 +175,8 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		}
 	}
 
-	return pgcommon.RunInTx(gucCtx, c.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
+	var gdprWipeRan bool
+	txErr := pgcommon.RunInTx(gucCtx, c.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
 		// Lock the tenant row (EVT-14 needs consistent last_event_at read).
 		var currentStatus, currentPlan string
 		var lastEventAt *time.Time
@@ -247,6 +252,24 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		// from the Realm-Provisioner-produced TenantOffboarded event this
 		// same consumer reacts to on tenant-orgm-q (§16 OQ-1 — Core never
 		// re-emits that event under its own name).
+		if prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
+			// GDPR tenant wipe (§15.5) — delete Core's own remaining
+			// tenant-scoped child rows in the same tx as the tenants
+			// projection UPDATE above. The tenants row itself is only
+			// soft-deleted (deleted_at set, PAID-1/chk_offboarded_soft_deleted
+			// — id retained for audit), so ON DELETE CASCADE never fires
+			// from it; these are explicit deletes, not a cascade side
+			// effect. Order doesn't matter for FK ordering here — none of
+			// these six tables reference each other, only tenants (which
+			// is never itself deleted).
+			for _, table := range gdprWipeTables {
+				if _, err := tx.Exec(txCtx, `DELETE FROM `+table+` WHERE tenant_id = $1`, tenantID); err != nil {
+					return fmt.Errorf("GDPR wipe: delete from %s: %w", table, err)
+				}
+			}
+			gdprWipeRan = true
+		}
+
 		if c.outbox != nil && prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
 			if err := c.outbox.EnqueueInTx(txCtx, tx, &domain.DomainEvent{
 				Type:      domain.EventTenantMembershipsPurged,
@@ -266,6 +289,56 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 
 		return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
 	})
+	if txErr != nil {
+		return txErr
+	}
+
+	// Cache invalidation (§15.5 step 3, CACHE-8) runs after the tx commits —
+	// Valkey isn't part of the Postgres transaction, and cache is advisory
+	// only (CACHE-2/9): a failure here never rolls back or fails the wipe
+	// that already committed. Best-effort, skipped entirely if cache is nil.
+	if gdprWipeRan && c.cache != nil {
+		if err := c.cache.Delete(ctx, gdprWipeCacheKeys(tenantID)...); err != nil {
+			c.logger.Warn("GDPR wipe: cache invalidation failed (advisory-only, not fatal)",
+				"tenant_id", tenantID, "error", err)
+		}
+	}
+	return nil
+}
+
+// gdprWipeTables are Core's own tenant-scoped tables deleted on
+// TenantOffboarded (§15.5) — the tenants row itself is only soft-deleted,
+// so these are explicit deletes, never an ON DELETE CASCADE side effect.
+var gdprWipeTables = []string{
+	"pending_invitations",
+	"dept_memberships",
+	"tenant_roles",
+	"tenant_memberships",
+	"dept_role_labels",
+	"tenant_departments",
+}
+
+// gdprWipeCacheKeys returns the exactly-known, bounded tenant-scoped cache
+// keys to evict on offboard (§15.5 step 3, CACHE-8). Two per-secondary-key
+// families are deliberately NOT enumerated here — om:memberships:{tenant}:
+// {user} (unbounded set of users) and om:dept_members:{tenant}:{dept}
+// (unbounded set of departments) — consistent with CACHE-2/9's advisory-
+// cache philosophy: those entries simply expire on their existing TTL
+// (seconds to minutes) rather than requiring a SCAN-based prefix delete.
+func gdprWipeCacheKeys(tenantID uuid.UUID) []string {
+	return []string{
+		fmt.Sprintf("om:tenant:%s", tenantID),
+		fmt.Sprintf("om:locale:%s", tenantID),
+		fmt.Sprintf("om:roles:%s", tenantID),
+		fmt.Sprintf("om:seat_usage:%s", tenantID),
+		fmt.Sprintf("om:members:%s:50", tenantID), // CACHE-10: only limit=50 page-1 is ever cached
+		fmt.Sprintf("om:grm:%s", tenantID),
+		fmt.Sprintf("om:grm:stale:%s", tenantID),
+		fmt.Sprintf("om:gdm:%s", tenantID),
+		fmt.Sprintf("om:gdm:stale:%s", tenantID),
+		fmt.Sprintf("om:gtrm:%s", tenantID),
+		fmt.Sprintf("om:gtrm:stale:%s", tenantID),
+	}
 }
 
 func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int) (domain.SubscriptionStatus, domain.TenantPlan, error) {
@@ -297,8 +370,11 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		if newPlan == "" {
 			newPlan = prevPlan
 		}
+		// T-16: suspension_source cleared defensively — 'active' requires it NULL
+		// (chk_suspension_source_required) regardless of what prevStatus was.
 		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2
+			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2,
+			                    suspension_source = NULL
 			WHERE id = $1`, tenantID, string(newPlan))
 		return domain.StatusActive, newPlan, err
 	case "DirectPaidSignup":
@@ -312,12 +388,15 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		if newPlan == "" {
 			newPlan = prevPlan
 		}
+		// T-16: suspension_source cleared defensively — see TenantConverted above.
 		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2
+			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2,
+			                    suspension_source = NULL
 			WHERE id = $1`, tenantID, string(newPlan))
 		return domain.StatusActive, newPlan, err
 	case "TrialExpired":
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'trial_expired' WHERE id = $1`, tenantID)
+		// T-16: suspension_source cleared defensively (see TenantConverted).
+		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'trial_expired', suspension_source = NULL WHERE id = $1`, tenantID)
 		return domain.StatusTrialExpired, prevPlan, err
 	case "TrialReactivated":
 		// TR2 (§15.4, LLD line 4237): trial_ends_at uses per-tier plan.trial_duration_days,
@@ -330,7 +409,8 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 			UPDATE tenants t
 			SET status = 'trial',
 			    trial_ends_at = now() + make_interval(days => $2),
-			    trial_reactivation_count = trial_reactivation_count + 1
+			    trial_reactivation_count = trial_reactivation_count + 1,
+			    suspension_source = NULL
 			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, tenantID, trialDurationDays)
 		if err != nil {
 			return prevStatus, prevPlan, err
@@ -342,20 +422,50 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		}
 		return domain.StatusTrial, prevPlan, nil
 	case "TenantSuspended":
-		// T-11 biconditional (LLD line 704): cancelled_at IS NOT NULL iff status IN
-		// (cancelled, suspended, offboarded). COALESCE preserves an existing timestamp
-		// (idempotent replay after a manual suspend).
-		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'suspended',
-			                    cancelled_at = COALESCE(cancelled_at, now())
-			WHERE id = $1`, tenantID)
+		// T-16 (new, resolves RP-11): source distinguishes the normal Billing-
+		// driven cancelled→suspended lapse from an RP-14 operator-sourced
+		// administrative suspension that can land directly on active/trial.
+		// Confirmed by RP (LLD §16 OQ-7): the field is always present, but we
+		// still default to billing_lapse if it's ever absent — a defensive
+		// fallback, never relied upon in practice.
+		var payload struct {
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			return prevStatus, prevPlan, err
+		}
+		source := domain.SuspensionSourceBillingLapse
+		if domain.SuspensionSource(payload.Source) == domain.SuspensionSourceOperator {
+			source = domain.SuspensionSourceOperator
+		}
+		var err error
+		if source == domain.SuspensionSourceBillingLapse {
+			// T-11 biconditional (chk_cancelled_at_required): cancelled_at IS NOT
+			// NULL for suspended+billing_lapse. COALESCE preserves an existing
+			// timestamp (idempotent replay after a manual suspend).
+			_, err = tx.Exec(ctx, `
+				UPDATE tenants SET status = 'suspended',
+				                    suspension_source = $2,
+				                    cancelled_at = COALESCE(cancelled_at, now())
+				WHERE id = $1`, tenantID, string(source))
+		} else {
+			// operator branch: cancelled_at deliberately left untouched — this
+			// tenant never enters the §15.5 grace/retention clock (T-16).
+			_, err = tx.Exec(ctx, `
+				UPDATE tenants SET status = 'suspended', suspension_source = $2
+				WHERE id = $1`, tenantID, string(source))
+		}
 		return domain.StatusSuspended, prevPlan, err
 	case "TenantOffboarded":
 		// PAID-1: terminal. Per tenant-offboarding-workflow doc — O&M
 		// scrubs its own row; does NOT cascade-call UP's DELETE.
+		// T-16: suspension_source cleared — 'offboarded' requires it NULL
+		// (chk_suspension_source_required), including when reached from
+		// an operator-suspended tenant.
 		_, err := tx.Exec(ctx, `
 			UPDATE tenants SET status = 'offboarded', deleted_at = now(),
-			                    cancelled_at = COALESCE(cancelled_at, now())
+			                    cancelled_at = COALESCE(cancelled_at, now()),
+			                    suspension_source = NULL
 			WHERE id = $1`, tenantID)
 		return domain.StatusOffboarded, prevPlan, err
 
@@ -375,21 +485,46 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		_, err := tx.Exec(ctx, `UPDATE tenants SET plan = $2 WHERE id = $1`, tenantID, string(newPlan))
 		return prevStatus, newPlan, err
 	case "TenantPaymentPastDue":
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'past_due' WHERE id = $1`, tenantID)
+		// T-16: suspension_source cleared defensively (see TenantConverted).
+		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'past_due', suspension_source = NULL WHERE id = $1`, tenantID)
 		return domain.StatusPastDue, prevPlan, err
 	case "TenantSubscriptionCancelled":
 		// Preserve any existing cancelled_at (e.g. tenant was previously suspended
 		// with cancelled_at set). Replaying this event must NOT reset the §15.5
 		// retention/grace clock. Parity with TenantSuspended/TenantOffboarded.
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, now()) WHERE id = $1`, tenantID)
+		// T-16: suspension_source cleared — 'cancelled' requires it NULL.
+		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, now()), suspension_source = NULL WHERE id = $1`, tenantID)
 		return domain.StatusCancelled, prevPlan, err
 	case "TenantReactivated":
 		if prevStatus == domain.StatusOffboarded {
 			c.logger.Warn("TenantReactivated on offboarded tenant — rejecting (PAID-1)", "tenant_id", tenantID)
 			return prevStatus, prevPlan, nil
 		}
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'active', cancelled_at = NULL WHERE id = $1`, tenantID)
-		return domain.StatusActive, prevPlan, err
+		// T-16 (resolves RP-11): clears suspension_source alongside cancelled_at,
+		// regardless of which path (billing_lapse or operator) led to 'suspended'.
+		// Target status is derived, not hardcoded to 'active': an operator can
+		// suspend a never-converted trial tenant directly (subscription_started_at
+		// still NULL), and reactivating that tenant to 'active' would violate
+		// chk_subscription_started_required — it must return to 'trial' instead.
+		// A tenant that was ever paid (subscription_started_at set) still resolves
+		// to 'active', unchanged from the prior behavior. Two conditioned UPDATEs
+		// (not a QueryRow+RETURNING) to keep this Exec-only, matching every other
+		// case in this switch and the fakeTx unit-test seam.
+		tag, err := tx.Exec(ctx, `
+			UPDATE tenants SET status = 'active', cancelled_at = NULL, suspension_source = NULL
+			WHERE id = $1 AND subscription_started_at IS NOT NULL`, tenantID)
+		if err != nil {
+			return prevStatus, prevPlan, err
+		}
+		if tag.RowsAffected() > 0 {
+			return domain.StatusActive, prevPlan, nil
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE tenants SET status = 'trial', cancelled_at = NULL, suspension_source = NULL
+			WHERE id = $1 AND subscription_started_at IS NULL`, tenantID); err != nil {
+			return prevStatus, prevPlan, err
+		}
+		return domain.StatusTrial, prevPlan, nil
 	case "TenantSeatsChanged":
 		var payload struct {
 			LicensedSeats int `json:"licensed_seats"`

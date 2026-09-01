@@ -26,6 +26,13 @@ TEST_POSTGRES_PKGS := ./test/postgres/...
 TEST_INT_PKGS      := ./test/integration/...
 TEST_E2E_PKGS      := ./test/e2e/...
 
+# Every test/postgres/*.go test func calls t.Parallel() and spins its own
+# testcontainers Postgres (create+migrate+grant, ~1-2s) — capped, not
+# GOMAXPROCS-wide, so we don't spin 10+ containers at once on a dev machine
+# and reintroduce Docker resource-contention flakes. Override on the CLI
+# (e.g. `make test-postgres TEST_POSTGRES_PARALLEL=8`) on a bigger box.
+TEST_POSTGRES_PARALLEL ?= 4
+
 # White-box (package-internal) tests included in unit runs.
 TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/inbound/consumer/... \
@@ -185,7 +192,7 @@ _test-unit: | .coverage
 .PHONY: _test-postgres
 _test-postgres: | .coverage
 	$(GO) test $(TEST_POSTGRES_PKGS) \
-	  -tags=integration -race -count=1 -timeout 300s \
+	  -tags=integration -race -count=1 -timeout 300s -parallel $(TEST_POSTGRES_PARALLEL) \
 	  -coverpkg=$(COVER_PKG_LIST) \
 	  -coverprofile=.coverage/postgres.out
 
@@ -204,7 +211,7 @@ test:
 _test-unit-plain:
 	$(GO) test $(TEST_UNIT_PKGS) $(TEST_INTERNAL_PKGS) -count=1 -timeout 120s -v
 _test-postgres-plain:
-	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 300s -v
+	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 300s -parallel $(TEST_POSTGRES_PARALLEL) -v
 _test-integration-plain:
 	$(GO) test $(TEST_INT_PKGS) -tags=integration -count=1 -timeout 300s -v
 
@@ -228,7 +235,7 @@ test-unit:
 
 .PHONY: test-postgres
 test-postgres:
-	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 300s -v
+	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 300s -parallel $(TEST_POSTGRES_PARALLEL) -v
 
 .PHONY: test-integration
 test-integration:
@@ -404,7 +411,7 @@ schema-verify:
 	  exit 1; \
 	}
 	@missing=""; \
-	for name in DepartmentMembershipGranted DepartmentMembershipLevelChanged DepartmentMembershipRevoked MembershipRevoked TenantMembershipsPurged TenantRoleGranted TenantRoleRevoked TenantSeatOverageResolved TenantSeatOverageStarted TenantStateChanged TenderAssigneeOverridden; do \
+	for name in DepartmentMembershipGranted DepartmentMembershipLevelChanged DepartmentMembershipRevoked MembershipRevoked TenantMembershipsPurged TenantRoleGranted TenantRoleRevoked TenantSeatOverageResolved TenantSeatOverageStarted TenantStateChanged TenderAssigneeOverridden MFAReset; do \
 	  if ! aws glue get-schema \
 	      --schema-id "RegistryName=$(GLUE_REGISTRY_MEMBERSHIP_NAME),SchemaName=$$name" \
 	      --region "$(AWS_REGION)" >/dev/null 2>&1; then \
@@ -423,7 +430,7 @@ schema-verify:
 	  echo "     run 'make schema-register' to create them"; \
 	  exit 1; \
 	fi; \
-	echo "OK: all 13 schemas present across both registries"
+	echo "OK: all 14 schemas present across both registries"
 
 # schema-prune: dry-run scan for orphaned Glue schemas in BOTH registries
 # (exist in Glue, not in repo). Pass EXECUTE=true to archive and delete:

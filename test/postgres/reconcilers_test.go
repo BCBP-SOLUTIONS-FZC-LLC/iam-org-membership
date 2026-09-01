@@ -50,6 +50,7 @@ func (r *recFakeRP) PatchRealmConfig(_ context.Context, _ uuid.UUID, p port.Real
 }
 
 func (r *recFakeRP) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (r *recFakeRP) ResetMFA(_ context.Context, _, _ uuid.UUID) error           { return nil }
 
 // ── P18-REC-OUTBOX-001 ──────────────────────────────────────────────────────
 
@@ -57,6 +58,7 @@ func (r *recFakeRP) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error 
 // old-published + 3 recent-published + 2 unpublished; assert only the 3
 // old rows disappear after OutboxPrune with retention_days=8.
 func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "outbox-prune-018")
@@ -90,6 +92,7 @@ func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
 // TestREC_OUTBOX_002_EmptyTableIsNoOp — prune against a clean
 // outbox_events table returns Attempted=Succeeded=0, no error.
 func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
@@ -107,6 +110,7 @@ func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
 // tenant with trial_ends_at past grace hard-deletes; one within grace and
 // one non-trial-expired both survive.
 func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -132,6 +136,7 @@ func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 // realm_sync_pending=true is swept, RP.PatchRealmConfig is called with
 // the current LocalAccountsEnabled value, and the marker is cleared.
 func TestREC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -166,6 +171,7 @@ func TestREC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
 // TestREC_REALM_002_MarkerRemainsOnRPFailure — RP.PatchRealmConfig
 // returns an error → marker stays set for next tick.
 func TestREC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -192,12 +198,67 @@ func TestREC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
 	assert.True(t, pending, "realm_sync_pending must remain set for next tick retry")
 }
 
+// TestREC_REALM_003_DisablesPrioritizedUnderBacklog — a backlog larger than
+// BatchLimit, mixing enable (true) and disable (false) targets, must pull
+// disables into the batch first (security-tightening direction). This is a
+// real gap the LLD-vs-code audit found: the doc claimed this prioritization
+// existed, but the sweep query had no ORDER BY at all — fixed alongside
+// this test.
+func TestREC_REALM_003_DisablesPrioritizedUnderBacklog(t *testing.T) {
+	t.Parallel()
+	_, rawPool, sysPool := setupTestDB(t)
+	ctx := context.Background()
+
+	// 3 enables + 2 disables, backlog of 5, BatchLimit 2 — only the 2
+	// disables must be picked up by this tick.
+	var disables []uuid.UUID
+	for i := 0; i < 2; i++ {
+		id := seedTenant(t, ctx, rawPool, "realm-disable-"+itoa(i))
+		_, err := rawPool.Exec(ctx,
+			`UPDATE tenants SET realm_sync_pending = true, local_accounts_enabled = false WHERE id = $1`, id)
+		require.NoError(t, err)
+		disables = append(disables, id)
+	}
+	for i := 0; i < 3; i++ {
+		id := seedTenant(t, ctx, rawPool, "realm-enable-"+itoa(i))
+		_, err := rawPool.Exec(ctx,
+			`UPDATE tenants SET realm_sync_pending = true, local_accounts_enabled = true WHERE id = $1`, id)
+		require.NoError(t, err)
+	}
+
+	rp := &recFakeRP{}
+	res, err := jobs.RealmConfigSync(ctx, &jobs.Context{
+		SysPool:          sysPool,
+		BatchLimit:       2,
+		RealmProvisioner: rp,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Succeeded)
+
+	require.Len(t, rp.patchCalls, 2, "BatchLimit=2 must cap this tick at exactly 2 calls")
+	for _, call := range rp.patchCalls {
+		require.NotNil(t, call.LocalAccountsEnabled)
+		assert.False(t, *call.LocalAccountsEnabled,
+			"disables must be prioritized ahead of enables under a backlog exceeding BatchLimit")
+	}
+
+	// Both disable-direction tenants must have had their marker cleared;
+	// the enable-direction tenants must still be pending for the next tick.
+	for _, id := range disables {
+		var pending bool
+		require.NoError(t, rawPool.QueryRow(ctx,
+			`SELECT realm_sync_pending FROM tenants WHERE id = $1`, id).Scan(&pending))
+		assert.False(t, pending, "disable-direction tenant must be synced this tick")
+	}
+}
+
 // ── P18-REC-KC-001 ──────────────────────────────────────────────────────────
 
 // TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess — invitation with
 // kc_cleanup_pending=true and a keycloak_user_id → RP.DeleteUser called,
 // marker cleared.
 func TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -226,6 +287,7 @@ func TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
 // set but keycloak_user_id IS NULL clears the marker without calling
 // RP (nothing to delete on Keycloak side).
 func TestREC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -253,6 +315,7 @@ func TestREC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
 // TestREC_KC_003_MarkerRemainsOnRPFailure — DEL-6 fail-open: RP
 // returns an error → marker stays set, no crash, res.Failed = 1.
 func TestREC_KC_003_MarkerRemainsOnRPFailure(t *testing.T) {
+	t.Parallel()
 	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 

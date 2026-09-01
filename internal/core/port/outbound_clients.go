@@ -43,6 +43,11 @@ type DelegateImpact struct {
 type RealmProvisionerClient interface {
 	// CreateInvitedUser creates a Keycloak user for a pending invitation
 	// (P-6). Used inside the seat-hold tx. Idempotent by (tenant_id, email).
+	// req.RequiredActions is applied verbatim by RP (RP-5) — O&M is the
+	// only side that knows the invite's initial_tenant_roles/dept_mappings,
+	// so it — not RP — decides whether CONFIGURE_TOTP belongs alongside the
+	// base [VERIFY_EMAIL, UPDATE_PASSWORD] actions (HLD §8.2.2 step 3, F5 of
+	// the RP↔O&M alignment review).
 	CreateInvitedUser(ctx context.Context, req CreateInvitedUserRequest) (*CreateInvitedUserResponse, error)
 
 	// DeleteUser is called by the invitation-kc-cleanup reconciler (PI-9).
@@ -59,13 +64,37 @@ type RealmProvisionerClient interface {
 	// (access-token lifetime + 300s membership cache eviction). §16 A46:
 	// recommend-and-confirm; contract not yet ratified.
 	RevokeUserSessions(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error
+
+	// ResetMFA is the RP-9 call backing P-34 (§16 OQ-8/F6 of the RP↔O&M
+	// alignment review): clears the user's TOTP/WebAuthn credentials so
+	// their next login forces re-enrollment. Unlike RevokeUserSessions,
+	// this is fail-CLOSED — there is no reconciler for "eventually reset
+	// MFA", so a failure must surface as realm_provisioner_unavailable
+	// (503) rather than silently appearing to succeed.
+	ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error
 }
 
 type CreateInvitedUserRequest struct {
 	TenantID uuid.UUID
 	Email    string
 	FullName string
+	// RequiredActions are the Keycloak required-action IDs RP applies
+	// verbatim to the new user (RP-5, F5). Computed by InvitationService
+	// from the invite's initial_tenant_roles/initial_dept_mappings — see
+	// the RequiredAction* constants below.
+	RequiredActions []string
 }
+
+// RequiredAction* are the Keycloak required-action IDs this service can
+// request on invited-user creation (HLD §8.2.2 step 3). RequiredActionVerifyEmail
+// and RequiredActionUpdatePassword are always sent; RequiredActionConfigureTOTP
+// is added only when the invite grants tenant_admin/tenant_owner or an
+// Approver-level department mapping.
+const (
+	RequiredActionVerifyEmail    = "VERIFY_EMAIL"
+	RequiredActionUpdatePassword = "UPDATE_PASSWORD"
+	RequiredActionConfigureTOTP  = "CONFIGURE_TOTP"
+)
 
 type CreateInvitedUserResponse struct {
 	KeycloakUserID uuid.UUID

@@ -153,11 +153,35 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 	}
 
 	// Create Keycloak user via RP (external call, outside the tx — never
-	// hold a Postgres tx across a network call, CONS-2).
+	// hold a Postgres tx across a network call, CONS-2). required_actions
+	// (F5): O&M knows initial_tenant_roles/initial_dept_mappings, RP
+	// doesn't — CONFIGURE_TOTP is added here, not decided by RP (HLD
+	// §8.2.2 step 3, RP-5 applies this list verbatim).
+	requiredActions := []string{port.RequiredActionVerifyEmail, port.RequiredActionUpdatePassword}
+	needsTOTP := false
+	for _, r := range req.InitialTenantRoles {
+		if r == domain.RoleTenantAdmin || r == domain.RoleTenantOwner {
+			needsTOTP = true
+			break
+		}
+	}
+	if !needsTOTP {
+		for _, m := range req.InitialDeptMappings {
+			if m.Level == domain.DeptApprover {
+				needsTOTP = true
+				break
+			}
+		}
+	}
+	if needsTOTP {
+		requiredActions = append(requiredActions, port.RequiredActionConfigureTOTP)
+	}
+
 	rpResp, err := s.rp.CreateInvitedUser(ctx, port.CreateInvitedUserRequest{
-		TenantID: tenantID,
-		Email:    req.Email,
-		FullName: req.FullName,
+		TenantID:        tenantID,
+		Email:           req.Email,
+		FullName:        req.FullName,
+		RequiredActions: requiredActions,
 	})
 	if err != nil {
 		return nil, domain.NewError(domain.ErrRealmProvisionerUnavailable, "realm provisioner unavailable")

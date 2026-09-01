@@ -53,22 +53,41 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool, *pgcommon.Pool) {
 	}
 	ctx := context.Background()
 
-	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
-		tcpostgres.WithDatabase("org_membership"),
-		tcpostgres.WithUsername("postgres"),
-		tcpostgres.WithPassword("testpassword"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(60*time.Second),
-		),
-	)
-	require.NoError(t, err)
+	// Container creation + connection-string resolution is retried up to 3
+	// times: under concurrent container churn (many test/postgres funcs now
+	// run via t.Parallel()), testcontainers/Docker Desktop occasionally
+	// loses the port-registration race — the wait strategy sees the "ready"
+	// log line before the port mapping is queryable, surfacing as
+	// `port "5432/tcp" not found` from ConnectionString. This is infra
+	// timing noise, not a test defect, and self-heals on retry.
+	const maxContainerAttempts = 3
+	var pgContainer *tcpostgres.PostgresContainer
+	var superDSN string
+	var err error
+	for attempt := 1; attempt <= maxContainerAttempts; attempt++ {
+		pgContainer, err = tcpostgres.Run(ctx,
+			"postgres:17-alpine",
+			tcpostgres.WithDatabase("org_membership"),
+			tcpostgres.WithUsername("postgres"),
+			tcpostgres.WithPassword("testpassword"),
+			testcontainers.WithWaitStrategy(
+				wait.ForLog("database system is ready to accept connections").
+					WithOccurrence(2).
+					WithStartupTimeout(60*time.Second),
+			),
+		)
+		if err == nil {
+			superDSN, err = pgContainer.ConnectionString(ctx, "sslmode=disable")
+			if err == nil {
+				break
+			}
+			_ = pgContainer.Terminate(ctx)
+		}
+		t.Logf("setupTestDB: postgres testcontainer attempt %d/%d failed: %v", attempt, maxContainerAttempts, err)
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	require.NoError(t, err, "postgres testcontainer failed after %d attempts", maxContainerAttempts)
 	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
-
-	superDSN, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err)
 
 	rawPool, err := pgxpool.New(ctx, superDSN)
 	require.NoError(t, err)
@@ -155,6 +174,7 @@ func seedTenant(t testing.TB, ctx context.Context, rawPool *pgxpool.Pool, slug s
 // Case 1 (RLS-1): every tenant-scoped table has ENABLE + FORCE RLS.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
@@ -196,6 +216,7 @@ func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
 // promises "CI verifies that org_membership_app does not possess BYPASSRLS".
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case1b_AppRoleHasNoBYPASSRLS(t *testing.T) {
+	t.Parallel()
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
@@ -210,6 +231,7 @@ func TestRLS_Case1b_AppRoleHasNoBYPASSRLS(t *testing.T) {
 // Case 2 (RLS-2): missing/malformed GUC → 0 rows, no writes.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case2_FailClosedOnMissingGUC(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	_ = seedTenant(t, ctx, rawPool, "acme")
@@ -228,6 +250,7 @@ func TestRLS_Case2_FailClosedOnMissingGUC(t *testing.T) {
 // Case 3 (RLS-3): cross-tenant INSERT rejected by WITH CHECK.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case3_CrossTenantInsertRejectedByWithCheck(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
@@ -256,6 +279,7 @@ func TestRLS_Case3_CrossTenantInsertRejectedByWithCheck(t *testing.T) {
 // LOCAL app.tenant_id, the GUC auto-resets at COMMIT.
 // ─────────────────────────────────────────────────────────────────────────
 func TestRLS_Case5_NoCrossTenantLeakAcrossPool(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
@@ -298,6 +322,7 @@ func TestRLS_Case5_NoCrossTenantLeakAcrossPool(t *testing.T) {
 // T-1: slug UPDATE raises exception (trg_tenant_slug_immutable).
 // ─────────────────────────────────────────────────────────────────────────
 func TestT1_SlugIsImmutable(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
@@ -315,6 +340,7 @@ func TestT1_SlugIsImmutable(t *testing.T) {
 // TRG-3: no-op UPDATE does NOT bump record_version.
 // ─────────────────────────────────────────────────────────────────────────
 func TestTRG3_NoOpUpdateDoesNotBumpVersion(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
@@ -339,6 +365,7 @@ func TestTRG3_NoOpUpdateDoesNotBumpVersion(t *testing.T) {
 // TR-7 / chk_tr_no_member: INSERT with role_code='member' rejected.
 // ─────────────────────────────────────────────────────────────────────────
 func TestTR7_MemberRoleRejected(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")
@@ -368,6 +395,7 @@ func TestTR7_MemberRoleRejected(t *testing.T) {
 // tenant_memberships row is rejected by fk_dm_tenant_membership.
 // ─────────────────────────────────────────────────────────────────────────
 func TestCompositeFK_DeptMembershipRejectsWrongUser(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantA := seedTenant(t, ctx, rawPool, "acme")

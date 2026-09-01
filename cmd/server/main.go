@@ -288,7 +288,7 @@ func main() {
 	// identity in processed_events (§16 A33 / PE-1).
 	skew := envDuration("MAX_LIFECYCLE_EVENT_SKEW_SECONDS", 300*time.Second)
 	idempotencyStore := pgadapter.NewIdempotencyRepository(pool)
-	membershipConsumer := consumeradapter.NewMembershipEventConsumer(pool, outboxPublisher, idempotencyStore, catalogReader, skew, log)
+	membershipConsumer := consumeradapter.NewMembershipEventConsumer(pool, outboxPublisher, idempotencyStore, catalogReader, cache, skew, log)
 
 	var sqsConsumers []events.Consumer
 	if url := os.Getenv("SQS_TENANT_ORGM_QUEUE_URL"); url != "" {
@@ -371,7 +371,7 @@ func main() {
 	reinviteCooldownMin := envInt("INVITE_REINVITE_COOLDOWN_MINUTES", 60) // PI-11
 	inviteMaxPerHour := envInt("INVITE_MAX_PER_TENANT_PER_HOUR", 200)     // PI-12
 
-	authzSvc := service.NewAuthZService(pool, catalogReader, cache)
+	authzSvc := service.NewAuthZService(pool, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(pool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)

@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,19 +36,64 @@ import (
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
 func TestP10RP001_CreateInvitedUserHappy(t *testing.T) {
 	kcID := uuid.New()
+	tenantID := uuid.New()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "/api/v1/internal/users/invite", r.URL.Path)
+		assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/users", r.URL.Path)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": kcID})
 	}))
 	defer srv.Close()
 	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
 	resp, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
-		TenantID: uuid.New(), Email: "u@e.com", FullName: "U",
+		TenantID: tenantID, Email: "u@e.com", FullName: "U",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, kcID, resp.KeycloakUserID)
+}
+
+// Test Case ID:      P10-RP-001b
+// Feature:           RP · CreateInvitedUser — F5, required_actions sent verbatim
+// Priority: P1 · Severity: Major · Automation Status: Automated
+func TestP10RP001b_CreateInvitedUserSendsRequiredActionsVerbatim(t *testing.T) {
+	tenantID := uuid.New()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
+		TenantID: tenantID, Email: "u@e.com", FullName: "U",
+		RequiredActions: []string{port.RequiredActionVerifyEmail, port.RequiredActionUpdatePassword, port.RequiredActionConfigureTOTP},
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t,
+		[]any{port.RequiredActionVerifyEmail, port.RequiredActionUpdatePassword, port.RequiredActionConfigureTOTP},
+		gotBody["required_actions"], "RP-5: required_actions must be applied verbatim")
+}
+
+// Test Case ID:      P10-RP-001c
+// Feature:           RP · CreateInvitedUser — no required_actions set → key omitted
+// Priority: P2 · Severity: Minor · Automation Status: Automated
+func TestP10RP001c_CreateInvitedUserOmitsRequiredActionsWhenUnset(t *testing.T) {
+	tenantID := uuid.New()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
+		TenantID: tenantID, Email: "u@e.com", FullName: "U",
+	})
+	require.NoError(t, err)
+	_, present := gotBody["required_actions"]
+	assert.False(t, present, "empty/unset RequiredActions must not send a null key")
 }
 
 // Test Case ID:      P10-RP-002
@@ -241,4 +287,140 @@ func TestP10RP040_HeadersPropagated(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, tenant.String(), gotTenant)
 	assert.Equal(t, "iam-system", gotUser)
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// F8 (RP↔O&M alignment review) — contract tests: every RealmProvisionerClient
+// route is versioned under /api/v1/internal and tenant-nested, matching RP
+// LLD v0.22's aligned internal-route convention. One test per method,
+// asserting the exact path (not just the prefix) so a future regression to
+// the old flat/unversioned shape fails loudly.
+// ═════════════════════════════════════════════════════════════════════════
+
+func TestF8_CreateInvitedUser_PathIsVersionedAndTenantNested(t *testing.T) {
+	tenantID := uuid.New()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
+		TenantID: tenantID, Email: "u@e.com", FullName: "U",
+	})
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
+	assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/users", gotPath)
+}
+
+func TestF8_DeleteUser_PathIsVersionedAndTenantNested(t *testing.T) {
+	tenantID, keycloakUserID := uuid.New(), uuid.New()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	require.NoError(t, c.DeleteUser(context.Background(), tenantID, keycloakUserID))
+	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
+	assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String(), gotPath)
+}
+
+func TestF8_RevokeUserSessions_PathIsVersionedAndTenantNested(t *testing.T) {
+	tenantID, keycloakUserID := uuid.New(), uuid.New()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	require.NoError(t, c.RevokeUserSessions(context.Background(), tenantID, keycloakUserID))
+	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
+	assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String()+"/revoke-sessions", gotPath)
+}
+
+func TestF8_PatchRealmConfig_PathIsVersionedAndTenantNested(t *testing.T) {
+	tenantID := uuid.New()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	flag := true
+	require.NoError(t, c.PatchRealmConfig(context.Background(), tenantID, port.RealmConfigPatch{LocalAccountsEnabled: &flag}))
+	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
+	assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/realm-config", gotPath)
+}
+
+// ResetMFA (RP-9, LLD §16 OQ-8) — not yet part of port.RealmProvisionerClient
+// (no caller until the admin feature is scheduled), but the HTTPClient
+// method is fully implemented and tested here so it's ready to wire in.
+func TestF8_ResetMFA_PathIsVersionedAndTenantNested(t *testing.T) {
+	tenantID, keycloakUserID := uuid.New(), uuid.New()
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	require.NoError(t, c.ResetMFA(context.Background(), tenantID, keycloakUserID))
+	assert.Equal(t, http.MethodPost, gotMethod)
+	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
+	assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String()+"/mfa-reset", gotPath)
+}
+
+func TestF8_ResetMFA_Non2xx_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
+	require.Error(t, err)
+}
+
+func TestF8_ResetMFA_DevFallback_NoBaseURL(t *testing.T) {
+	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
+	require.NoError(t, err, "empty baseURL is dev-fallback, not an error")
+}
+
+// ─── Smoke tests (F8 acceptance criteria) ───────────────────────────────
+//
+// A true smoke test hits a live, deployed Realm Provisioner instance and
+// isn't something a unit-test binary can do in CI. These two exercise the
+// exact same request/response path end-to-end (build → send → decode)
+// against an httptest server standing in for a real RP, asserting the 2xx
+// contract the acceptance criteria describe — the closest equivalent
+// available without a running RP to point REALM_PROVISIONER_BASE_URL at.
+func TestF8_Smoke_CreateInvitedUser_Returns2xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
+		TenantID: uuid.New(), Email: "smoke@e.com", FullName: "Smoke Test",
+	})
+	require.NoError(t, err)
+}
+
+func TestF8_Smoke_PatchRealmConfig_Returns2xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	flag := true
+	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag})
+	require.NoError(t, err)
 }

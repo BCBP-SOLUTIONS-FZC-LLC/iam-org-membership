@@ -44,7 +44,7 @@
 | P-3 | `GET /tenants/:id/departments` | List active depts | member | yes |
 | P-4 | `GET /tenants/:id/members` | List members (cursor-paginated, §16 A4) | member | yes (page 1, limit=50 only — CACHE-10) |
 | P-5 | `GET /tenants/:id/members/:user_id` | Single member | member | yes |
-| P-6 | `POST /tenants/:id/members` | **Invite** (two-step invite→accept, §16 A11); stages `pending_invitations` + RP CreateInvitedUser; returns 202; seat-cap gated (SEAT-1) — `409 seat_limit_reached` at/above cap | tenant_admin/owner | invalidates seat-usage |
+| P-6 | `POST /tenants/:id/members` | **Invite** (two-step invite→accept, §16 A11); stages `pending_invitations` + RP CreateInvitedUser (`required_actions` computed from `initial_tenant_roles`/`initial_dept_mappings` — `CONFIGURE_TOTP` added for tenant_admin/owner or Approver-level grants, F5 resolved); returns 202; seat-cap gated (SEAT-1) — `409 seat_limit_reached` at/above cap | tenant_admin/owner | invalidates seat-usage |
 | P-7 | `PATCH /tenants/:id/members/:user_id` | Suspend/reactivate (status only; roles → P-28) | tenant_admin/owner | invalidates |
 | P-8 | `DELETE /tenants/:id/members/:user_id` | Remove user — **delegate-impact gated** (§8.8); `409 workflow_resolution_required` if delegate on active workflows | tenant_admin/owner | invalidates |
 | P-9 | `GET /tenants/:id/departments/:dept_id/members` | Dept members by level | member | yes |
@@ -60,6 +60,7 @@
 | P-27 | `GET /tenants/:id/seat-usage` | `{active_users, pending_invitations, licensed_seats, over_cap, overage_since, grace_ends_at}` | tenant_admin/owner | yes (30 s TTL) |
 | P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement multi-role reconcile; `422 last_owner_removal` guard (TM-8) | tenant_admin/owner | invalidates |
 | P-30/P-31 | `GET`/`DELETE /tenants/:id/invitations[/:invitation_id]` | List/revoke pending invitations (P-31 sets `kc_cleanup_pending`, PI-6) | tenant_admin/owner | no/invalidates seat-usage |
+| P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | **NEW (§16 OQ-8/F6)** — reset a member's MFA via Realm Provisioner (RP-9); `422 member_not_active`, `503 realm_provisioner_unavailable` (fail-closed, no reconciler). Emits `MFAReset` | tenant_admin/owner | no |
 
 ### Internal routes (`/api/v1/internal/*`)
 
@@ -166,7 +167,7 @@ Single joined query over `tenant_memberships` + `tenants` + `tenant_roles` + `de
 
 ### 7.1 Inbound (SQS)
 
-**`tenant-orgm-q` ← `iam.tenant.events`** (produced by Realm Provisioner): `TrialTenantProvisioned`, `TenantRealmReady` (sets `realm_id`/`realm_type='dedicated'`/`keycloak_shard` together), `TenantConverted` (sets `status='active'`, `subscription_started_at=now()`, `plan`; **`feature_flags` untouched** — override survives plan change, T-9), `DirectPaidSignup`, `TrialExpired` (sets `status='trial_expired'`; **no PII scrub yet** — reactivatable during 15-d grace), `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`.
+**`tenant-orgm-q` ← `iam.tenant.events`** (produced by Realm Provisioner): `TrialTenantProvisioned`, `TenantRealmReady` (sets `realm_id`/`realm_type='dedicated'`/`keycloak_shard` together), `TenantConverted` (sets `status='active'`, `subscription_started_at=now()`, `plan`; **`feature_flags` untouched** — override survives plan change, T-9), `DirectPaidSignup`, `TrialExpired` (sets `status='trial_expired'`; **no PII scrub yet** — reactivatable during 15-d grace), `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated{source=operator}` (new, resolves F1 of the RP↔O&M alignment review — RP-10 reversing RP-14; same handler case as `billing-orgm-q`'s `TenantReactivated`, T-16).
 
 **`billing-orgm-q` ← `billing.events`** (produced by Billing): `TenantPlanChanged` (`feature_flags` untouched, T-9), `TenantPaymentPastDue` (sets `status='past_due'`; **access unchanged** per HLD §8.10.7), `TenantSubscriptionCancelled` (sets `status='cancelled'` AND `cancelled_at=now()` together, T-11), `TenantReactivated` (sets `status='active'` AND `cancelled_at=NULL` together; only valid pre-offboard), `TenantSeatsChanged` (unconditional `licensed_seats` update, SEAT-2).
 
@@ -191,6 +192,7 @@ Both queues: DLQ with `maxReceiveCount=5`, `processed_events` dedup, PgBouncer-s
 | `TenantRoleRevoked` (§16 A14) | Elevated tenant role revoked (P-28 or removal cascade TR-9). One event per revoked role | `user_id`, `tenant_id`, `role_code`, `actor_id` |
 | `MembershipRevoked` (§15.2.2) | User removed from tenant — emitted unconditionally by `MembershipService.RemoveUser` (P-8/I-5) and `ProvisioningService.DeleteMember`'s underlying path. **Consolidated in this pass**: a second, separate `TenantMembershipRemoved` event previously existed for the Tender-ACL Service alone — that's gone. This one shared event is now consumed by **both** the Delegation Service's cascade queue (ends the departed user's delegation rows) and the Tender-ACL Service's cascade queue (soft-deletes the departed user's ACL overlays) | `tenant_id`, `user_id`, `actor_id` |
 | `TenderAssigneeOverridden` | I-13 validate-and-emit — Workflow Service call | `tender_id`, `tenant_id`, `user_id`, `actor_id` |
+| `MFAReset` (§16 OQ-8/F6) | P-34 — emitted after `RealmProvisionerClient.ResetMFA` (RP-9) succeeds; sole audit record for the reset (O&M persists no MFA state itself); consumed only by `membership-audit-q`'s catch-all filter | `tenant_id`, `user_id`, `actor_id` |
 | `TenantSeatOverageStarted` | `overage_since` NULL→set (SEAT-5) | `tenant_id`, `licensed_seats`, `active_users`, `pending_invitations`, `overage_since` |
 | `TenantSeatOverageResolved` | `overage_since` set→NULL | `tenant_id`, `resolved_at` |
 | `TenantStateChanged` (§16 A61) | Post-EVT-14 status/plan change | `tenant_id`, `status`, `previous_status`, `plan`, `previous_plan`, `changed_at`, `cause` |
@@ -209,11 +211,11 @@ O&M publishes **only these two** on `iam.tenant.events`. Lifecycle events O&M co
 
 ### 7.3.2 SNS→SQS Fan-out (§16 A60)
 
-`iam.membership.events` consumers: `membership-audit-q` (Audit — no filter, catch-all); `membership-authz-q` (AuthZ — dept/tenant role events for cache eviction); `membership-realm-q` (RP — approver make/unmake + admin/owner for `requires-mfa` realm role); `membership-notification-q` (Notification — user/admin emails + seat-overage banner); `membership-workflow-q` (Workflow — `override`/`TenantStateChanged`; no longer carries delegation events); `membership-billing-q` (Billing — `TenantSeatOverage*` only, filter policy).
+`iam.membership.events` consumers: `membership-audit-q` (Audit — no filter, catch-all); `membership-authz-q` (AuthZ — dept/tenant role events + `MembershipRevoked` for cache eviction); `membership-realm-q` (RP — approver make/unmake + admin/owner for `requires-mfa` realm role); `membership-notification-q` (Notification — user/admin emails + seat-overage banner); `membership-workflow-q` (Workflow — `override`/`TenantStateChanged`; no longer carries delegation events); `membership-billing-q` (Billing — `TenantSeatOverage*` only, filter policy).
 
 Three new cross-service queues, added in this pass, consume the cascade signals introduced above (informational — these queues live in the *other* services, not this repo): `delegation-cascade-q` (Delegation Service — filters `MembershipRevoked` + `TenantMembershipsPurged`), the Tender-ACL Service's equivalent queue (same two event types), and the Group-Mapping Service's equivalent queue (filters `TenantMembershipsPurged` only).
 
-`iam.tenant.events` consumers: `tenant-audit-q`, `tenant-notification-q` (welcome/trial-start emails). O&M's own `tenant-orgm-q` is separate — produce/consume disjoint.
+`iam.tenant.events` consumers: `tenant-audit-q`, `tenant-notification-q` (welcome/trial-start emails), `tenant-realm-q` (Realm Provisioner — `TrialStarted` only, seeds its own local trial-expiry sweep; resolves RP-4, no batch "expired trials" endpoint exists or is planned). O&M's own `tenant-orgm-q` is separate — produce/consume disjoint.
 
 Every subscribing queue: `-dlq`, `maxReceiveCount=5`, `processed_events` dedup.
 

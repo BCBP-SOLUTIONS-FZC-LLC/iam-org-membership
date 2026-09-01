@@ -25,6 +25,7 @@ import (
 // every single one, then re-apply up. Proves each .down.sql is a valid
 // inverse of its .up.sql (no dangling constraints / enums / roles).
 func TestUpDownUpRoundTrips(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping migration round-trip in short mode")
 	}
@@ -71,6 +72,7 @@ func TestUpDownUpRoundTrips(t *testing.T) {
 // file would break the round-trip test above but also blocks any real
 // production rollback.
 func TestEveryUpHasDownSibling(t *testing.T) {
+	t.Parallel()
 	migFS := loadMigrationDir(t)
 	entries, err := fs.ReadDir(migFS, ".")
 	require.NoError(t, err)

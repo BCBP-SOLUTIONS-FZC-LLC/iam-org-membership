@@ -57,8 +57,12 @@ type MembershipListItem struct {
 }
 
 // DeptMembershipView is the compact per-user dept view embedded in the
-// membership projection.
+// membership projection. Code is populated only by I-8 (AuthZService looks
+// it up via the om:departments cache, LLD §5.4) — populated with the empty
+// string wherever a caller (e.g. P-4, which copies these fields into its
+// own DeptMemberView DTO) doesn't have a department catalog reader at hand.
 type DeptMembershipView struct {
 	DepartmentID uuid.UUID `json:"department_id"`
-	RoleLevel    DeptRole  `json:"level"`
+	Code         string    `json:"code,omitempty"`
+	RoleLevel    DeptRole  `json:"role_level"`
 }

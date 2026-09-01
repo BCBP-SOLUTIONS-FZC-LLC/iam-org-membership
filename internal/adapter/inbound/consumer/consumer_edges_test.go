@@ -21,7 +21,7 @@ import (
 // EVT-15: env.Timestamp > now() + skew → ErrPoisonPill (returns BEFORE
 // touching the pool, so a nil pool is fine).
 func TestP19Consumer_EVT15_FutureTimestamp_ReturnsPoisonPill(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 5*time.Minute, nil)
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
 		Type:      "TenantSuspended",
@@ -36,7 +36,7 @@ func TestP19Consumer_EVT15_FutureTimestamp_ReturnsPoisonPill(t *testing.T) {
 // classify() step happens first — use a known event type so classify picks
 // kindTenantLifecycle and we then hit the uuid.Parse call.
 func TestP19Consumer_Handle_BadTenantID_ReturnsParseError(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 5*time.Minute, nil)
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
 		Type:      "TenantSuspended", // known → kindTenantLifecycle
@@ -95,6 +95,17 @@ func TestP19Consumer_ApplyProjection_TenantSeatsChanged_MalformedPayload(t *test
 	c := newConsumer()
 	env := events.Envelope[json.RawMessage]{
 		Type:    "TenantSeatsChanged",
+		Payload: json.RawMessage([]byte(`{not json`)),
+	}
+	_, _, err := applyOn(c, &fakeTx{}, env, domain.StatusActive, domain.TenantPlan("free"))
+	assert.Error(t, err)
+}
+
+// T-16 (resolves RP-11): TenantSuspended's "source" field decode failure.
+func TestP19Consumer_ApplyProjection_TenantSuspended_MalformedPayload(t *testing.T) {
+	c := newConsumer()
+	env := events.Envelope[json.RawMessage]{
+		Type:    "TenantSuspended",
 		Payload: json.RawMessage([]byte(`{not json`)),
 	}
 	_, _, err := applyOn(c, &fakeTx{}, env, domain.StatusActive, domain.TenantPlan("free"))

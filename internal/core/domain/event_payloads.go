@@ -77,6 +77,16 @@ type TenderAssigneeOverriddenPayload struct {
 	ActorID  uuid.UUID `json:"actor_id"`
 }
 
+// MFAResetPayload is EventMFAReset's data (§16 OQ-8/F6, P-34) — the audit
+// record RP's confirmed HLD §8.2.6 flow requires ("Audit Log records
+// MFAReset with actor and target"). O&M persists no MFA state itself; this
+// payload exists solely for the Audit Log consumer.
+type MFAResetPayload struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	UserID   uuid.UUID `json:"user_id"`
+	ActorID  uuid.UUID `json:"actor_id"`
+}
+
 type TenantSeatOverageStartedPayload struct {
 	TenantID           uuid.UUID `json:"tenant_id"`
 	LicensedSeats      int       `json:"licensed_seats"`

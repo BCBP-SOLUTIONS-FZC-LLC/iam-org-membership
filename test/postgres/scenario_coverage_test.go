@@ -27,6 +27,7 @@ import (
 // Feature:           I-1 · trial_ends_at set from plan.trial_duration_days (not hardcoded)
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestTrialSignup_TrialEndsAt_FromPlanDays(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID := uuid.New()
@@ -71,6 +72,7 @@ func TestTrialSignup_TrialEndsAt_FromPlanDays(t *testing.T) {
 //
 // Priority: P1 · Severity: Medium · Automation Status: Automated
 func TestSetRealmFields_ConcurrentBothSucceed_BUG_I2_2(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "i2-conc")
@@ -101,6 +103,7 @@ func TestSetRealmFields_ConcurrentBothSucceed_BUG_I2_2(t *testing.T) {
 // Feature:           I-3 · user who left (soft-deleted) rejoins → new membership row
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestAddFromRegister_Rejoin_CreatesNewRow(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "i3-rejoin")
@@ -136,6 +139,7 @@ func TestAddFromRegister_Rejoin_CreatesNewRow(t *testing.T) {
 // Feature:           I-3 · same user added twice → idempotent (ON CONFLICT DO NOTHING)
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestAddFromRegister_Idempotent_SecondCallNoOp(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "i3-idem")
@@ -164,6 +168,7 @@ func TestAddFromRegister_Idempotent_SecondCallNoOp(t *testing.T) {
 // Feature:           P-2 · RP fails on local_accounts_enabled change → realm_sync_pending=true
 // Priority: P1 · Severity: Critical · Automation Status: Automated
 func TestPatch_RPFailure_SetsRealmSyncPending(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p2-realm-sync")
@@ -198,6 +203,7 @@ func TestPatch_RPFailure_SetsRealmSyncPending(t *testing.T) {
 // Feature:           P-6 · valid invite → 202 pending_invitations row created
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestInvite_HappyPath_CreatesPendingInvitation(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, "p6-happy")
@@ -225,6 +231,7 @@ func TestInvite_HappyPath_CreatesPendingInvitation(t *testing.T) {
 // Feature:           P-6 · active+pending == licensed_seats → 409 seat_limit_reached (SEAT-1)
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
 func TestInvite_SeatCapExact_Returns409(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, "p6-seat")
@@ -259,6 +266,7 @@ func TestInvite_SeatCapExact_Returns409(t *testing.T) {
 // goroutines rather than pre-exhausting the cap, so the loser actually
 // exercises the lost-race branch instead of being rejected by preflight.
 func TestInvite_SeatCapLostRace_CommitsDurableCleanupRow(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, "p6-lostrace")
@@ -330,6 +338,7 @@ func TestInvite_SeatCapLostRace_CommitsDurableCleanupRow(t *testing.T) {
 // Feature:           P-10 · assign active member → 200 + DeptMembershipGranted event
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestDeptMembershipAssign_HappyPath_GrantedEvent(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p10-happy")
@@ -362,6 +371,7 @@ func TestDeptMembershipAssign_HappyPath_GrantedEvent(t *testing.T) {
 // Feature:           P-10 · change level → 200 + DeptMembershipLevelChanged event
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestDeptMembershipAssign_LevelChange_LevelChangedEvent(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p10-level")
@@ -398,6 +408,7 @@ func TestDeptMembershipAssign_LevelChange_LevelChangedEvent(t *testing.T) {
 // Feature:           P-10 · re-assign same level → 200, no new event (TRG-3)
 // Priority: P2 · Severity: Minor · Automation Status: Automated
 func TestDeptMembershipAssign_SameLevel_NoNewEvent(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p10-same")
@@ -437,6 +448,7 @@ func TestDeptMembershipAssign_SameLevel_NoNewEvent(t *testing.T) {
 // Feature:           P-10 · reassign member who left dept → fresh grant row + Granted event
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestDeptMembershipAssign_AfterSoftDelete_FreshGrant(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p10-reassign")
@@ -519,6 +531,7 @@ func seedActiveDept(t testing.TB, ctx context.Context, fx *testFixtures, tenantI
 //
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestAddFromRegister_ExpiredInvitation_PlainAdd(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "i3-exp")
@@ -546,6 +559,7 @@ func TestAddFromRegister_ExpiredInvitation_PlainAdd(t *testing.T) {
 // Priority: P1 · Severity: High · Automation Status: Automated
 // LLD ref:           TD-2: "deactivation does NOT require or cause removal of existing memberships"
 func TestDeptSetActive_Deactivate_MembershipsRemain(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p25-remain")
@@ -602,6 +616,7 @@ func TestDeptSetActive_Deactivate_MembershipsRemain(t *testing.T) {
 // active_workflows > 0) is covered by the unit test below via a fake
 // DelegationCheckClient + fake WorkflowClient.
 func TestDeptMembershipAssign_LevelDecrease_DelegationCheckDegrades_NoBlock(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "p10-wfi9")

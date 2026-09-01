@@ -45,6 +45,7 @@ type pgxpoolPoolReal = pgxpool.Pool
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestG1_TrialSignup_ActivatesExactly5NamedDepartments(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -91,6 +92,7 @@ func TestG1_TrialSignup_ActivatesExactly5NamedDepartments(t *testing.T) {
 // TrialSignup also stamps the standard 3-event storm on iam.tenant.events +
 // iam.membership.events. Verify the outbox rows match §7.3.
 func TestG1_TrialSignup_EmitsExpectedEvents(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
@@ -120,6 +122,7 @@ func TestG1_TrialSignup_EmitsExpectedEvents(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestJIT_FirstTimeAssignment_EmitsGranted(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5a")
@@ -148,6 +151,7 @@ func TestJIT_FirstTimeAssignment_EmitsGranted(t *testing.T) {
 }
 
 func TestJIT_SameLevelReplay_EmitsNothing(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5b")
@@ -175,6 +179,7 @@ func TestJIT_SameLevelReplay_EmitsNothing(t *testing.T) {
 }
 
 func TestJIT_LevelChange_EmitsLevelChanged(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "acme-b5c")
@@ -216,6 +221,7 @@ func TestJIT_LevelChange_EmitsLevelChanged(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestConcurrentAssign_NoMisclassification(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, userID := seedTenantWithOwner(t, ctx, fx, "acme-b15")
@@ -261,6 +267,7 @@ func TestConcurrentAssign_NoMisclassification(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestReassignOwner_EmitsTenantRoleGranted(t *testing.T) {
+	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, currentOwner := seedTenantWithOwner(t, ctx, fx, "acme-b1")
@@ -310,6 +317,7 @@ func TestReassignOwner_EmitsTenantRoleGranted(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestTM12Escalation_IncrementsCounter(t *testing.T) {
+	t.Parallel()
 	// Register metrics once per test process. Register() uses
 	// prometheus.MustRegister which panics on duplicate — guard with a
 	// package-level sync.Once (see phase4TestMetricsInit at file bottom).

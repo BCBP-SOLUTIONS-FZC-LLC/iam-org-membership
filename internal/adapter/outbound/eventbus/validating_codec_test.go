@@ -43,6 +43,18 @@ func TestEncodeValidPayload(t *testing.T) {
 	assert.Empty(t, schemaVer, "NoopCodec returns empty schema version id")
 }
 
+// TestEncodeValidPayload_MFAReset — the new §16 OQ-8/F6 event's schema
+// (tenant_id, user_id, actor_id, all required) matches domain.MFAResetPayload.
+func TestEncodeValidPayload_MFAReset(t *testing.T) {
+	c, err := NewValidatingCodec(NoopCodec{})
+	require.NoError(t, err)
+
+	payload := []byte(`{"tenant_id":"11111111-1111-1111-1111-111111111111","user_id":"22222222-2222-2222-2222-222222222222","actor_id":"33333333-3333-3333-3333-333333333333"}`)
+	out, _, err := c.Encode(context.Background(), "MFAReset", payload)
+	require.NoError(t, err, "valid MFAReset payload must pass schema validation")
+	assert.Equal(t, payload, out)
+}
+
 // TestEncodeRejectsMissingRequiredField — a payload missing a
 // required field must produce a descriptive validation error.
 func TestEncodeRejectsMissingRequiredField(t *testing.T) {

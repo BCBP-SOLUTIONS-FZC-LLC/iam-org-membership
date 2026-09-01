@@ -207,7 +207,7 @@ info:
       JSON-schema validation against the pinned schema version, not SDK strict
       mode.
     in-repo-enforcement: >-
-      This service embeds all 13 schemas at compile time via //go:embed
+      This service embeds all 14 schemas at compile time via //go:embed
       schemas/*.json in internal/adapter/outbound/eventbus/codec.go. The
       ValidatingCodec validates outgoing payloads against those pinned schemas
       before publish; drift between the pinned schema and Glue is caught by CI
@@ -322,7 +322,7 @@ servers:
     protocol: sns
     description: |
       AWS SNS in ap-south-1. TWO topic ARNs are configured via env:
-        • SNS_TOPIC_MEMBERSHIP_ARN — iam-membership-events (11 event types)
+        • SNS_TOPIC_MEMBERSHIP_ARN — iam-membership-events (12 event types)
         • SNS_TOPIC_TENANT_ARN     — iam-tenant-events     (2  event types)
       RoutingPublisher (platform-events v1.3.0) selects the destination
       topic per message by inspecting Envelope.Source:
@@ -361,7 +361,7 @@ servers:
       Owned and managed by: AuthZ Enrichment Service
       SNS subscription filter: EventType IN [DepartmentMembershipGranted,
         DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
-        TenantRoleGranted, TenantRoleRevoked]
+        TenantRoleGranted, TenantRoleRevoked, MembershipRevoked]
         (AuthZ evicts / refreshes the om:memberships cache — hot-path lookup I-8)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
@@ -451,6 +451,21 @@ servers:
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
+  sqsTenantRealm:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Realm Provisioner consumer on the tenant lifecycle topic.
+      Queue: tenant-realm-q  |  DLQ: tenant-realm-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Realm Provisioner Service
+      SNS subscription filter: EventType IN [TrialStarted]
+        (Realm Provisioner records trial_ends_at locally on its own tenant_realms
+         row and runs its own realm-side expiry sweep off that value — it does not
+         poll this service; see this service's LLD §7.3/§8.7 for the resolved
+         RP-4 open question)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
   # ── Inbound: the two queues this service consumes (§7.1) ──────────────────
   # Owned by this service (iam-org-membership), NOT by the producer. Each is
   # subscribed to a topic owned and published by another service.
@@ -463,10 +478,16 @@ servers:
       Queue: tenant-orgm-q  |  DLQ: tenant-orgm-q-dlq  (maxReceiveCount=5)
       SNS subscription filter: EventType IN [TrialTenantProvisioned,
         TenantRealmReady, TenantConverted, DirectPaidSignup, TrialExpired,
-        TrialReactivated, TenantSuspended, TenantOffboarded]
+        TrialReactivated, TenantSuspended, TenantOffboarded, TenantReactivated]
         (this service never subscribes to its own co-produced TenantCreated/
         TrialStarted on the same topic — HLD §9.1.1 "no self-consumption",
         produce/consume sets on iam.tenant.events are disjoint)
+        (new — resolves F1 of the RP↔O&M alignment review: RP emits
+        TenantReactivated{source=operator} here to reverse an operator-
+        sourced suspension, RP-10 undoing RP-14; the shared TenantReactivated
+        handler is queue-agnostic and already derives active/trial from
+        subscription_started_at and clears suspension_source regardless of
+        which topic/producer delivered it, T-16)
       Consumer short-name: orgm. Configured via SQS_TENANT_ORGM_QUEUE_URL.
     security:
       - $ref: '#/components/securitySchemes/iamRole'
@@ -490,7 +511,7 @@ channels:
   iamMembershipEvents:
     address: "iam-membership-events"
     description: |
-      SNS topic for all membership-lifecycle events (11 event types).
+      SNS topic for all membership-lifecycle events (12 event types).
       Consumers subscribe with an SNS filter policy on the EventType MessageAttribute
       to receive only the event types they care about. Full set of attributes emitted
       per message: EventType, TenantID, Source, EventID, and Subject (all PascalCase,
@@ -569,8 +590,8 @@ channels:
       ── Fan-out queue registry (LLD §7.3.2) ─────────────────────────────────
       Consumer          Queue                         DLQ                               Filter (EventType)
       ──────────────────────────────────────────────────────────────────────────────
-      Audit Log         membership-audit-q            membership-audit-q-dlq            (all 11)
-      AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*
+      Audit Log         membership-audit-q            membership-audit-q-dlq            (all 12)
+      AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*, MembershipRevoked
       Realm Provisioner membership-realm-q            membership-realm-q-dlq            DepartmentMembership{Granted,LevelChanged}, TenantRole*
       Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, TenantSeatOverage*
       Workflow          membership-workflow-q         membership-workflow-q-dlq         TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged
@@ -625,6 +646,8 @@ channels:
         $ref: '#/components/messages/TenantStateChanged'
       TenantMembershipsPurged:
         $ref: '#/components/messages/TenantMembershipsPurged'
+      MFAReset:
+        $ref: '#/components/messages/MFAReset'
 
   iamTenantEvents:
     address: "iam-tenant-events"
@@ -646,8 +669,10 @@ channels:
       strict successor to TenantCreated.
 
       Fan-out queue registry (LLD §7.3.2):
-        Audit Log      tenant-audit-q          (all types)
-        Notification   tenant-notification-q   TenantCreated, TrialStarted
+        Audit Log         tenant-audit-q          (all types)
+        Notification      tenant-notification-q   TenantCreated, TrialStarted
+        Realm Provisioner tenant-realm-q          TrialStarted only (trial_ends_at
+                                                    for its own local expiry sweep)
 
       All queues: maxReceiveCount=5, standard (non-FIFO).
 
@@ -669,7 +694,7 @@ channels:
     servers:
       - $ref: '#/servers/sqsMembershipAudit'
     description: |
-      SQS queue subscribed to all 11 membership event types. Audit Log
+      SQS queue subscribed to all 12 membership event types. Audit Log
       archives every membership event for 7-year compliance retention
       (HLD §13.3).
       SNS subscription filter policy: (no filter)
@@ -696,6 +721,8 @@ channels:
         $ref: '#/components/messages/TenantStateChanged'
       TenantMembershipsPurged:
         $ref: '#/components/messages/TenantMembershipsPurged'
+      MFAReset:
+        $ref: '#/components/messages/MFAReset'
     bindings:
       sqs:
         queue:
@@ -722,7 +749,8 @@ channels:
                         "DepartmentMembershipRevoked",
                         "DepartmentMembershipLevelChanged",
                         "TenantRoleGranted",
-                        "TenantRoleRevoked"] }
+                        "TenantRoleRevoked",
+                        "MembershipRevoked"] }
     messages:
       DepartmentMembershipGranted:
         $ref: '#/components/messages/DepartmentMembershipGranted'
@@ -734,6 +762,8 @@ channels:
         $ref: '#/components/messages/TenantRoleGranted'
       TenantRoleRevoked:
         $ref: '#/components/messages/TenantRoleRevoked'
+      MembershipRevoked:
+        $ref: '#/components/messages/MembershipRevoked'
     bindings:
       sqs:
         queue:
@@ -952,6 +982,37 @@ channels:
               name: tenant-notification-q-dlq
             maxReceiveCount: 5
 
+  tenantRealmQueue:
+    address: "tenant-realm-q"
+    servers:
+      - $ref: '#/servers/sqsTenantRealm'
+    description: |
+      SQS queue on iam-tenant-events consumed by the Realm Provisioner to learn
+      trial_ends_at at trial-signup time. Realm Provisioner records the value on
+      its own tenant_realms row and runs its own realm-side expiry sweep off it
+      (§8.7 in the Realm Provisioner LLD) — Realm Provisioner never polls this
+      service for expired trials, and this service never polls Realm Provisioner;
+      the only inbound signal this service receives back is the TrialExpired
+      event on tenant-orgm-q (§7.1), produced once Realm Provisioner's own sweep
+      detects the expiry.
+      SNS subscription filter policy:
+        { "EventType": ["TrialStarted"] }
+    messages:
+      TrialStarted:
+        $ref: '#/components/messages/TrialStarted'
+    bindings:
+      sqs:
+        queue:
+          name: tenant-realm-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: tenant-realm-q-dlq
+            maxReceiveCount: 5
+
   # ── Inbound consumption channels (§7.1) ────────────────────────────────────
   # These are the only two channels in this spec that this service RECEIVES
   # from rather than publishes to. Canonical schema ownership sits with the
@@ -989,6 +1050,8 @@ channels:
         $ref: '#/components/messages/TenantSuspended'
       TenantOffboarded:
         $ref: '#/components/messages/TenantOffboarded'
+      TenantReactivated:
+        $ref: '#/components/messages/TenantReactivated'
     bindings:
       sqs:
         queue:
@@ -1043,9 +1106,9 @@ operations:
       $ref: '#/channels/iamMembershipEvents'
     tags:
       - $ref: '#/components/tags/published'
-    summary: Publish membership lifecycle events (11 event types)
+    summary: Publish membership lifecycle events (12 event types)
     description: |
-      iam-org-membership publishes these 11 events atomically with the business
+      iam-org-membership publishes these 12 events atomically with the business
       write via the transactional outbox (same pgx.Tx). The outbox runner polls
       every 500 ms and delivers to the iam-membership-events SNS topic with
       at-least-once semantics — duplicate delivery is possible and consumers
@@ -1185,6 +1248,7 @@ operations:
       - $ref: '#/channels/iamMembershipEvents/messages/TenantSeatOverageResolved'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantStateChanged'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantMembershipsPurged'
+      - $ref: '#/channels/iamMembershipEvents/messages/MFAReset'
 
   publishTenantEvents:
     action: send
@@ -1226,7 +1290,7 @@ operations:
     description: |
       Consumer: Audit Log Service
       Queue   : membership-audit-q  |  DLQ: membership-audit-q-dlq
-      Filter  : none — subscribes to all 11 membership event types
+      Filter  : none — subscribes to all 12 membership event types
       Purpose : Append-only compliance archival. Every membership event is
                 stored with strict tenant-scoped RLS isolation (HLD §5.7, §13.3).
       Idempotency key: (id, consumer="audit-log") in processed_events.
@@ -1242,6 +1306,7 @@ operations:
       - $ref: '#/channels/membershipAuditQueue/messages/TenantSeatOverageResolved'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantStateChanged'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantMembershipsPurged'
+      - $ref: '#/channels/membershipAuditQueue/messages/MFAReset'
 
   receiveMembershipAuthZ:
     action: receive
@@ -1255,11 +1320,13 @@ operations:
       Queue   : membership-authz-q  |  DLQ: membership-authz-q-dlq
       Filter  : EventType IN [DepartmentMembershipGranted, DepartmentMembershipRevoked,
                               DepartmentMembershipLevelChanged, TenantRoleGranted,
-                              TenantRoleRevoked]
+                              TenantRoleRevoked, MembershipRevoked]
 
-      On any of the five events: AuthZ invalidates the Valkey om:memberships
+      On any of the six events: AuthZ invalidates the Valkey om:memberships
       cache entry for (tenant_id, user_id). The next hot-path lookup at
       GET /internal/users/:id/memberships (I-8) will miss and repopulate.
+      MembershipRevoked additionally covers the case where a user's entire
+      tenant membership (not just one department/role) is removed (§7.3.2).
 
       Idempotency key: (id, consumer="authz-enrichment") in processed_events.
     messages:
@@ -1268,6 +1335,7 @@ operations:
       - $ref: '#/channels/membershipAuthZQueue/messages/DepartmentMembershipLevelChanged'
       - $ref: '#/channels/membershipAuthZQueue/messages/TenantRoleGranted'
       - $ref: '#/channels/membershipAuthZQueue/messages/TenantRoleRevoked'
+      - $ref: '#/channels/membershipAuthZQueue/messages/MembershipRevoked'
 
   receiveMembershipRealm:
     action: receive
@@ -1428,6 +1496,30 @@ operations:
       - $ref: '#/channels/tenantNotificationQueue/messages/TenantCreated'
       - $ref: '#/channels/tenantNotificationQueue/messages/TrialStarted'
 
+  receiveTenantRealm:
+    action: receive
+    channel:
+      $ref: '#/channels/tenantRealmQueue'
+    tags:
+      - $ref: '#/components/tags/published'
+    summary: Realm Provisioner learns trial_ends_at for its own local expiry sweep
+    description: |
+      Consumer: Realm Provisioner Service
+      Queue   : tenant-realm-q  |  DLQ: tenant-realm-q-dlq
+      Filter  : EventType IN [TrialStarted]
+
+      On TrialStarted: Realm Provisioner records trial_ends_at on its own
+      tenant_realms row and runs its own realm-side sweep to detect expiry
+      (disabling/deleting shared-trial-realm users) and emits TrialExpired /
+      TrialReactivated on its own topic. This service only ever consumes
+      TrialExpired back (tenant-orgm-q, §7.1) for the Phase-1 status flip —
+      it does not expose a batch "expired trials" endpoint and neither side
+      polls the other (resolved open question, LLD §7.3/§8.7).
+
+      Idempotency key: (id, consumer="realm-provisioner") in processed_events.
+    messages:
+      - $ref: '#/channels/tenantRealmQueue/messages/TrialStarted'
+
   # ── Inbound operations — the two queues this service consumes (§7.1) ───────
   consumeTenantOrgm:
     action: receive
@@ -1442,7 +1534,21 @@ operations:
       Queue   : tenant-orgm-q  |  DLQ: tenant-orgm-q-dlq
       Filter  : EventType IN [TrialTenantProvisioned, TenantRealmReady,
                               TenantConverted, DirectPaidSignup, TrialExpired,
-                              TrialReactivated, TenantSuspended, TenantOffboarded]
+                              TrialReactivated, TenantSuspended, TenantOffboarded,
+                              TenantReactivated]
+
+      TenantReactivated on this queue (new — resolves F1 of the RP↔O&M
+      alignment review) carries source=operator: RP emits it to reverse an
+      operator-sourced suspension (RP-10 undoing RP-14, T-16). It is handled
+      by the exact same case in applyProjection as the billing-orgm-q
+      TenantReactivated below — the handler reads no payload fields and
+      derives the target status (active vs trial) from the tenants row's
+      own subscription_started_at, so it behaves identically regardless of
+      which topic/producer delivered it. EVT-14 recency ordering is keyed
+      on tenants.last_event_at under the row lock, so the two producers
+      (Billing on billing-orgm-q, RP on tenant-orgm-q) interleave safely —
+      the newest producer-stamped event always wins, same guarantee as
+      every other dual-producer-adjacent case in this consumer.
 
       This is a consume-side reaction, not a request/response call. Every
       message is handled by the single MembershipEventConsumer.Handle entry
@@ -1468,7 +1574,7 @@ operations:
            never a re-emission of Realm Provisioner's own TenantOffboarded
            under the same or a different name — one producer per event name).
 
-      An event type not in the eight above (and not one of the five
+      An event type not in the nine above (and not one of the five
       billing-orgm-q types) is classified kindUnknown and silently
       acknowledged (processed_events recorded, no projection applied),
       counted by iam_unknown_event_acknowledged_total — this is deliberate
@@ -1487,6 +1593,7 @@ operations:
       - $ref: '#/channels/tenantOrgmQueue/messages/TrialReactivated'
       - $ref: '#/channels/tenantOrgmQueue/messages/TenantSuspended'
       - $ref: '#/channels/tenantOrgmQueue/messages/TenantOffboarded'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TenantReactivated'
 
   consumeBillingOrgm:
     action: receive
@@ -1532,7 +1639,7 @@ components:
       name: published
       description: |
         This service is the producer. Emitted onto iam-membership-events
-        (11 event types) or iam-tenant-events (2 event types, co-produced
+        (12 event types) or iam-tenant-events (2 event types, co-produced
         alongside Realm Provisioner and Billing) via the transactional
         outbox (LLD §7.3/§7.4). Every message in components/messages except
         the 13 consumed ones below, the publishMembershipEvents /
@@ -1888,6 +1995,50 @@ components:
             EventType:
               dataType: String
               value: TenderAssigneeOverridden
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject at publish time.
+
+    MFAReset:
+      name: MFAReset
+      title: MFA Reset
+      summary: |
+        Emitted after this service confirms the acting tenant_admin/tenant_owner
+        and calls Realm Provisioner (RP-9) to remove the target user's MFA
+        credentials (TOTP/WebAuthn), forcing re-enrollment on next login
+        (HLD §8.2.6). This service persists nothing about the reset itself —
+        the credential removal is Realm-Provisioner-owned state; this event
+        is the sole audit record (actor + target), consumed by Audit Log.
+        Fail-closed: never emitted if the RP-9 call did not succeed.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/MFAResetEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: MFAReset
               description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
             TenantID:
               dataType: String
@@ -2353,10 +2504,22 @@ components:
       title: Tenant Suspended
       summary: |
         Consumed by this service, not published. Sets tenants.status=
-        'suspended' and tenants.cancelled_at=COALESCE(cancelled_at, now())
-        (T-11 biconditional: cancelled_at IS NOT NULL iff status IN
-        (cancelled, suspended, offboarded) — COALESCE keeps an idempotent
-        replay from resetting an already-set timestamp).
+        'suspended' and tenants.suspension_source from payload.source
+        (default 'billing_lapse' if absent — backward-compatible with
+        producers that predate the operator-suspension path, LLD T-16 /
+        resolves RP-11). On 'billing_lapse' also sets tenants.cancelled_at
+        =COALESCE(cancelled_at, now()) (T-11: cancelled_at IS NOT NULL iff
+        status IN (cancelled, offboarded), or suspended+billing_lapse —
+        COALESCE keeps an idempotent replay from resetting an already-set
+        timestamp). On 'operator' (RP-14, an administrative suspension that
+        can land directly on active/trial, skipping the grace path)
+        cancelled_at is deliberately left untouched, so the tenant never
+        enters the §15.5 grace/retention clock it was never billing-lapsed
+        into. Confirmed by RP (LLD §16 OQ-7): `source` is present on every
+        occurrence — RP's lapse sweep (RP-C3) sends `billing_lapse`
+        explicitly, RP-14 sends `operator` — matching this schema's enum
+        verbatim. The "default to 'billing_lapse' if absent" behavior is
+        a defensive fallback only; RP never relies on it.
       x-lifecycle:
         status: active
       x-owner:
@@ -2545,11 +2708,24 @@ components:
       name: TenantReactivated
       title: Tenant Reactivated
       summary: |
-        Consumed by this service, not published. Sets tenants.status=
-        'active' and tenants.cancelled_at=NULL — but only when the tenant
-        is not already offboarded (PAID-1: offboarded is terminal; a
-        reactivation attempt on an offboarded tenant is logged and rejected
-        as a no-op, not an error).
+        Consumed by this service, not published — and, as of the F1 fix
+        (RP↔O&M alignment review), consumed on TWO queues from TWO
+        producers: billing-orgm-q (Billing Service, the normal paid
+        cancelled→reactivated path) and tenant-orgm-q (Realm Provisioner,
+        RP-10 reversing an RP-14 operator-sourced suspension). Both land in
+        the exact same applyProjection case, which reads no payload fields
+        at all — it derives the outcome purely from the tenants row's own
+        current state, so behavior is identical regardless of producer.
+        Sets tenants.status='active', tenants.cancelled_at=NULL, and
+        tenants.suspension_source=NULL (T-16, resolves RP-11; cleared
+        unconditionally regardless of whether the prior suspension was
+        'billing_lapse' or 'operator') — but only when the tenant is not
+        already offboarded (PAID-1: offboarded is terminal; a reactivation
+        attempt on an offboarded tenant is logged and rejected as a no-op,
+        not an error). EVT-14 recency (tenants.last_event_at under the row
+        lock) makes the two producers safe to interleave — the newest
+        producer-stamped event always wins regardless of which queue it
+        arrived on.
       x-lifecycle:
         status: active
       x-owner:
@@ -2568,13 +2744,13 @@ components:
             EventType:
               dataType: String
               value: TenantReactivated
-              description: Set by the producer (Billing Service). Matches this service's SNS filter policy on billing-orgm-q.
+              description: Set by the producer (Billing Service on billing-orgm-q, or Realm Provisioner on tenant-orgm-q). Matches this service's SNS filter policy on the respective queue.
             TenantID:
               dataType: String
               description: Dynamic — the tenant being reactivated. Matches envelope.tenant_id.
             Source:
               dataType: String
-              description: Publishing service identifier — expected "iam-billing".
+              description: Publishing service identifier — "iam-billing" (billing-orgm-q) or "iam-realm-provisioner" (tenant-orgm-q, operator-reactivation path).
             EventID:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
@@ -2657,6 +2833,7 @@ components:
             - TenantSeatOverageResolved
             - TenantStateChanged
             - TenantMembershipsPurged
+            - MFAReset
             - TenantCreated
             - TrialStarted
           x-enum-descriptions:
@@ -2696,6 +2873,10 @@ components:
               to run their own tenant-scoped cascade-deletes. Distinct from,
               and never a re-emission of, Realm Provisioner's TenantOffboarded
               (which this service only consumes, on iam-tenant-events).
+            MFAReset: >-
+              Target user's MFA credentials were removed via Realm Provisioner
+              (RP-9) at a tenant_admin/tenant_owner's request; the sole audit
+              record for this action (actor_id + user_id), per HLD §8.2.6.
             TenantCreated: >-
               New tenant row committed on iam-tenant-events (from this service,
               via TrialTenantProvisioned).
@@ -2705,8 +2886,8 @@ components:
           type: string
           description: |
             Canonical entity identifier this event is about. For membership
-            events (Department* / TenantRole* / MembershipRevoked) this is
-            the user_id. For TenderAssigneeOverridden it is the tender_id.
+            events (Department* / TenantRole* / MembershipRevoked / MFAReset)
+            this is the user_id. For TenderAssigneeOverridden it is the tender_id.
             For TenantSeatOverage* / TenantStateChanged / TenantCreated /
             TrialStarted / TenantMembershipsPurged it is the tenant_id.
             Aligns with the CloudEvents subject attribute; simplifies consumer
@@ -2898,6 +3079,16 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/TenderAssigneeOverriddenPayload'
+
+    MFAResetEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/MFAResetPayload'
 
     TenantSeatOverageStartedEnvelope:
       allOf:
@@ -3116,6 +3307,26 @@ components:
             system-driven removals where no HTTP actor context is available
             (unlike actor_id on the other membership events, which is
             required).
+
+    MFAResetPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - user_id
+        - actor_id
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+          description: The target whose MFA credentials were removed via RP-9.
+        actor_id:
+          type: string
+          format: uuid
+          description: The tenant_admin/tenant_owner who requested the reset.
 
     TenderAssigneeOverriddenPayload:
       type: object
@@ -3574,7 +3785,24 @@ components:
 
     TenantSuspendedPayload:
       type: object
-      description: No fields are read by this consumer — the projection is unconditional (status='suspended').
+      required: [source]
+      properties:
+        source:
+          type: string
+          enum: [billing_lapse, operator]
+          description: |
+            Why the tenant is being suspended. Confirmed by RP (LLD §16
+            OQ-7, resolved) — present on every TenantSuspended occurrence,
+            never omitted in practice. 'billing_lapse' is the normal
+            Billing-driven cancelled→suspended path, sent explicitly by
+            RP's lapse sweep (RP-C3) — this service also stamps
+            cancelled_at on that branch. 'operator' is an administrative
+            suspension (Realm Provisioner RP-14, §8.12) that may apply
+            directly from active/trial, skipping the grace path —
+            cancelled_at is deliberately left untouched on this branch
+            (LLD T-16). This service still defaults to 'billing_lapse' if
+            the field is ever absent (defensive fallback only; RP does
+            not rely on it).
 
     TenantOffboardedPayload:
       type: object

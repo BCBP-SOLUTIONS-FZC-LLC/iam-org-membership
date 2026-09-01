@@ -127,7 +127,7 @@ iam-org-membership/
 │           ├── eventbus/             # RoutingPublisher (2 topics) + ValidatingCodec + GlueCodec + outbox runner
 │           │   └── schemas/*.json    # Embedded JSON Schema Draft-07 (source of truth for schema-gov)
 │           ├── workflow/             # HTTP client — GetDelegateImpact/Reassign/Cancel (§8.8)
-│           ├── realmprovisioner/     # HTTP client — CreateInvitedUser/DeleteUser/PatchRealmConfig/RevokeUserSessions
+│           ├── realmprovisioner/     # HTTP client — CreateInvitedUser/DeleteUser/PatchRealmConfig/RevokeUserSessions/ResetMFA
 │           ├── catalogadmin/         # HTTP client — read-only departments/plans lookup (Catalog Service)
 │           ├── groupmappingclient/   # HTTP client — group→dept/role JIT resolution (Group Mapping Service)
 │           ├── delegationcheck/      # HTTP client — dept-scoped delegate lookup (Delegation Service)
@@ -181,7 +181,7 @@ Smoke tests (`make test-smoke` / CI `smoke` job, `.github/scripts/smoke-tests.sh
 | **Primary store** | PostgreSQL 17 | 8 domain tables (down from 10 — `departments`/`plans`/group-mapping/`tender_acl_entries`/`delegations` moved to sibling-service databases) plus `rls_violation_log`, a 9th, RLS-disabled audit table written by the sampled `log_rls_violation()` trigger function (Layer 3 detection). RLS on all 7 tenant-scoped domain tables (`FORCE ROW LEVEL SECURITY`); GUC `app.tenant_id` set **transaction-locally** per checkout (RLS-6). `record_version` optimistic lock on all 7 (all domain tables except `processed_events`) |
 | **Connection pooling** | PgBouncer transaction mode | App connects via PgBouncer; migrations connect direct-to-Postgres via `MIGRATION_DATABASE_URL` (CONFIG-2) |
 | **Cache** | Valkey (Redis-compatible) | Advisory-only (CACHE-2/9); 50 ms operation timeout = miss |
-| **Events (outbound)** | AWS SNS + transactional outbox | Two topics: `iam.membership.events` (11 event types — `DelegationStarted`/`DelegationEnded` moved to Delegation Service's own topic, `TenantMembershipsPurged` added), `iam.tenant.events` (2 — `TenantCreated`, `TrialStarted`) |
+| **Events (outbound)** | AWS SNS + transactional outbox | Two topics: `iam.membership.events` (12 event types — `DelegationStarted`/`DelegationEnded` moved to Delegation Service's own topic, `TenantMembershipsPurged` and `MFAReset` added), `iam.tenant.events` (2 — `TenantCreated`, `TrialStarted`) |
 | **Events (inbound)** | AWS SQS | Two queues: `tenant-orgm-q` (RP lifecycle), `billing-orgm-q` (plan/seat/status). DLQ `maxReceiveCount=5` |
 | **Schema registry** | AWS Glue | Two registries (`iam-membership-events`, `iam-tenant-events`); governed by `platform-schemagov` |
 
@@ -335,7 +335,7 @@ O&M publishes to **two** SNS topics via a transactional outbox and `RoutingPubli
 | `DepartmentMembershipLevelChanged` | `user_id`, `department_id`, `previous_level`, `new_level` | AuthZ cache invalidation |
 | `TenantRoleGranted` | `user_id`, `role_code`, `actor_id` (one event per role) | AuthZ cache; RP `requires-mfa` realm role for admin/owner |
 | `TenantRoleRevoked` (§16 A14) | `user_id`, `role_code`, `actor_id` | AuthZ cache; symmetric with granted |
-| `MembershipRevoked` | `tenant_id`, `user_id`, `actor_id` | Shared cascade signal on user removal — consumed by both the Delegation Service (ends the user's delegations) and the Tender ACL Service (soft-deletes the user's ACL overlays) |
+| `MembershipRevoked` | `tenant_id`, `user_id`, `actor_id` | Shared cascade signal on user removal — consumed by AuthZ Enrichment (`om:memberships` cache eviction, `membership-authz-q` filter policy), the Delegation Service (ends the user's delegations), and the Tender ACL Service (soft-deletes the user's ACL overlays) |
 | `TenderAssigneeOverridden` | `tender_id`, `user_id`, `actor_id` | Workflow node reassignment (I-13 validate-and-emit) |
 | `TenantSeatOverageStarted` | `tenant_id`, `licensed_seats`, `active_users`, `pending_invitations`, `overage_since` | Billing / CSM banner |
 | `TenantSeatOverageResolved` | `tenant_id`, `resolved_at` | Billing / CSM banner |
@@ -520,7 +520,7 @@ make docker-up
 
 | Resource | Type | Notes |
 |---|---|---|
-| `iam-membership-events` | SNS topic | 11 event types (delegation events moved to the Delegation Service's own topic) |
+| `iam-membership-events` | SNS topic | 12 event types (delegation events moved to the Delegation Service's own topic) |
 | `iam-tenant-events` | SNS topic | O&M produces only `TenantCreated` / `TrialStarted` |
 | `tenant-orgm-q` | SQS queue | Subscribed to `iam-tenant-events` (RP-produced lifecycle) |
 | `billing-orgm-q` | SQS queue | Subscribed to `billing.events` (plan/seat/status) |
@@ -775,7 +775,7 @@ The Helm chart in `deploy/helm/` renders a single `Deployment` (server) plus 7 `
 | `realm-config-sync` | `*/10 * * * *` | T-15 reconciler; disables prioritised (security-tightening) |
 | `seat-overage-reconcile` | `0 */6 * * *` | Seat-overage marker backstop (SEAT-5); drives past-grace alert |
 | `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor: soft-delete + PII-scrub for `trial_expired` past 15-d grace (§15.3) |
-| `outbox-prune` | `0 3 * * *` | `outbox.Runner.PrunePublished(24h, 10000)` |
+| `outbox-prune` | `0 3 * * *` | Batched raw-SQL delete at 8-day retention, capped per tick at `jctx.BatchLimit` (default 500) — not `outbox.Runner.PrunePublished` |
 | `processed-events-prune` | `0 4 * * *` | Delete `processed_events > 8 days` (PE-1 / IDEMP-4) |
 
 **HPA:** 2–8 replicas on CPU (70%) + memory (75%), plus an optional RPS-per-replica metric gated behind a prometheus-adapter rule.

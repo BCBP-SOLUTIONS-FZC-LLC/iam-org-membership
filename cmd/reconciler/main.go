@@ -1,6 +1,6 @@
 // Package main is the single-binary reconciler entry point (LLD §13.1).
 // Selects a job by --job flag or RECONCILER_JOB env var and dispatches to
-// the matching handler. Each of the 8 CronJobs in
+// the matching handler. Each of the 7 CronJobs in
 // deploy/helm/templates/cronjobs.yaml invokes this binary with a
 // different --job value.
 package main

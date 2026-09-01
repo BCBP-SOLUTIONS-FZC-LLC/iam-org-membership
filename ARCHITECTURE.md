@@ -40,7 +40,7 @@ graph TD
         valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only\nom:memberships · om:tenant · om:members\nom:dept_members · om:locale · om:roles\nom:grm/gdm/gtrm (+ :stale) · om:seat_usage\nom:plans/departments (+ :stale)"]
         eventbus["eventbus/\nRoutingPublisher — two topics by Envelope.Source\nValidatingCodec (fail-closed) · Outbox Runner\niam.membership.events · iam.tenant.events\nembedded schemas/*.json (go:embed)"]
         workflow["workflow/\nHTTPClient — GetDelegateImpact\nReassignDelegate · CancelByDelegate\n(§8.8 synchronous, WFI-7 — Workflow Service,\nunrelated to the delegation-domain extraction)"]
-        rp["realmprovisioner/\nHTTPClient — CreateInvitedUser · DeleteUser\nPatchRealmConfig · RevokeUserSessions\n(AUTH-8 · PI-9 · T-15)"]
+        rp["realmprovisioner/\nHTTPClient — CreateInvitedUser · DeleteUser\nPatchRealmConfig · RevokeUserSessions · ResetMFA\n(AUTH-8 · PI-9 · T-15 · OQ-8/F6)"]
         catalogadmin["catalogadmin/\nHTTPClient — GET /internal/plans\nGET /internal/departments\n(ADR-0007 Wave 1, NOT fail-open)"]
         groupmappingclient["groupmappingclient/\nHTTPClient — POST /internal/tenants/:id/group-resolution\nI-10 JIT resolution, mesh-only, fails OPEN\n(ADR-0007 Wave 2)"]
         delegationcheck["delegationcheck/\nHTTPClient — GET /internal/delegations/dept-delegate\n§8.8.4 dept-scope precision lookup, fails OPEN\n(ADR-0008)"]
@@ -195,7 +195,7 @@ The wrapper is at `internal/adapter/outbound/eventbus/routing_publisher.go` beca
 **Wire-format codec (`events.WithCodec`, v1.4.0).** Each of the two `RoutingPublisher` topic publishers is constructed with its own `GlueCodec` (`internal/adapter/outbound/eventbus/glue_codec.go`) implementing `events.Codec` — a fully adopted use of v1.4.0's codec hook, not a deferred one. Unlike `iam-user-profile`'s single-registry setup, this service maintains **two** AWS Glue Schema Registries (SCHEMA-7, one per SNS topic — `iam-membership-events`, `iam-tenant-events`), so two independent `GlueCodec` instances are built, each prepending the 18-byte Glue wire-format header (`[0x03][0x00][16-byte schema version UUID]`) at SNS-publish time. An unset `GLUE_REGISTRY_*_NAME` falls back to `events.NoopCodec{}` on that topic (plain JSON, no header) — this is the default in local dev. The codec never touches the `outbox_events` row itself; encoding happens only at the SNS-publish boundary, so it composes safely with `PG_BOUNCER_MODE=true`.
 
 **Substantive consumer of two topics at MVP:**
-- **`tenant-orgm-q`** ← `iam.tenant.events` (RP-produced): `TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`. O&M **never self-consumes** its own `TenantCreated`/`TrialStarted` (HLD §9.1.1 "No self-consumption").
+- **`tenant-orgm-q`** ← `iam.tenant.events` (RP-produced): `TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated{source=operator}` (new, resolves F1 of the RP↔O&M alignment review — RP-10 reversing RP-14, handled by the same case as `billing-orgm-q`'s `TenantReactivated`). O&M **never self-consumes** its own `TenantCreated`/`TrialStarted` (HLD §9.1.1 "No self-consumption").
 - **`billing-orgm-q`** ← `billing.events` (Billing-produced): `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantSeatsChanged`.
 
 Queue naming pattern: `<topic-short>-<consumer-short>-q` (HLD §9.1). Consumer short-name `orgm`. Both DLQs `tenant-orgm-q-dlq` / `billing-orgm-q-dlq`, `maxReceiveCount = 5`. Idempotency via the `processed_events` composite PK `(event_id, consumer)`.
@@ -210,7 +210,7 @@ The domain layer imports nothing external. Entities carry no persistence or tran
 
 | Type | Notes |
 |---|---|
-| `Tenant` | Root aggregate. Fields: `plan`, `status`, `trial_ends_at`, `realm_id`, `realm_type` (§16 A22), `keycloak_shard` (RP-owned projection T-12), `mfa_freshness_seconds ∈ [60,900]` (T-10), `local_accounts_enabled`, `licensed_seats > 0` (T-8, SEAT-1..5), `ownerless_since` (T-13), `overage_since` (SEAT-5), `realm_sync_pending` (T-15), `feature_flags jsonb` (override delta only — T-9). Immutable `slug` (T-1). |
+| `Tenant` | Root aggregate. Fields: `plan`, `status`, `trial_ends_at`, `cancelled_at`/`suspension_source` (T-11/T-16, new — `billing_lapse`\|`operator`, resolves RP-11), `realm_id`, `realm_type` (§16 A22), `keycloak_shard` (RP-owned projection T-12), `mfa_freshness_seconds ∈ [60,900]` (T-10), `local_accounts_enabled`, `licensed_seats > 0` (T-8, SEAT-1..5), `ownerless_since` (T-13), `overage_since` (SEAT-5), `realm_sync_pending` (T-15), `feature_flags jsonb` (override delta only — T-9). Immutable `slug` (T-1). |
 | `Plan` | Read-only projection of the Catalog Service's global entitlement catalogue (§16 A19) — this service has no local `plans` table. Per-tier entitlements — `workflow_template_limit`, `tender_limit`, `sso_enabled`, `custom_branding` (`none`/`logo`), `feature_set jsonb`, `trial_duration_days`. `NULL` on the two limit columns means unlimited. |
 | `Department` | Read-only projection of the Catalog Service's global department catalogue — this service has no local `departments` table. `is_system`/`is_active`/code-immutability semantics (D-2, D-9, OP-3) are enforced there, not here. Seeds: Engineering, Design, Procurement, Finance, Legal (§8.1). |
 | `TenantMembership` | Lifecycle only, no role data (§16 A14). `status ∈ (active, suspended, left)`. |
@@ -317,7 +317,7 @@ type RealmProvisionerClient interface {
 }
 ```
 
-Failure semantics vary by call site — invite creation is **fail-closed** (`503 realm_provisioner_unavailable`, no invitation, retryable); `PatchRealmConfig` failure is **fail-open + durable reconcile** (commits with `realm_sync_pending`, T-15 CronJob converges); `RevokeUserSessions` failure is **fail-open** (AUTH-8 privilege reduction commits regardless, TTL backstop covers ≤ access-token lifetime + 300 s `om:memberships` cache); `DeleteUser` compensation is **async + durable reconcile** via `kc_cleanup_pending`.
+Failure semantics vary by call site — invite creation is **fail-closed** (`503 realm_provisioner_unavailable`, no invitation, retryable); `PatchRealmConfig` failure is **fail-open + durable reconcile** (commits with `realm_sync_pending`, T-15 CronJob converges); `RevokeUserSessions` failure is **fail-open** (AUTH-8 privilege reduction commits regardless, TTL backstop covers ≤ access-token lifetime + 300 s `om:memberships` cache); `DeleteUser` compensation is **async + durable reconcile** via `kc_cleanup_pending`; `ResetMFA` failure is **fail-closed** (`503 realm_provisioner_unavailable`, no `MFAReset` emitted, retryable — unlike `RevokeUserSessions` there is no reconciler for "eventually reset MFA", §16 OQ-8/F6).
 
 ---
 
@@ -391,7 +391,7 @@ if tag.RowsAffected() == 0 {
 
 The `touch_row()` BEFORE-UPDATE trigger bumps `record_version` and `updated_at` on any real change (`WHEN OLD.* IS DISTINCT FROM NEW.*`) — no-op UPDATE leaves both untouched (TRG-3), preventing spurious event publishing on idempotent writes.
 
-Migrations live at `internal/adapter/outbound/postgres/migrations/` and are run at startup by `pgcommon.migrate.Runner`. The schema is a single consolidated migration, `000000_initial_schema` — this service has never been deployed, so the incremental history that built up the four-service extraction (`departments`/`plans` → Catalog; the three group-mapping tables → Group Mapping; `tender_acl_entries` → Tender ACL; `delegations` plus the tenant-level `delegation_max_duration_days`/`delegation_review_window_days` columns → Delegation) was squashed rather than preserved as dead migration history. See [`.claude/database-schema.md`](.claude/database-schema.md) for the 8-table catalogue, RLS invariants (RLS-1..RLS-6), tenant invariants (T-1..T-15), seat invariants (SEAT-1..SEAT-5), migration invariants (MIG-1..MIG-9), and trigger behavior.
+Migrations live at `internal/adapter/outbound/postgres/migrations/` and are run at startup by `pgcommon.migrate.Runner`. The schema is a single consolidated migration, `000000_initial_schema` — this service has never been deployed, so the incremental history that built up the four-service extraction (`departments`/`plans` → Catalog; the three group-mapping tables → Group Mapping; `tender_acl_entries` → Tender ACL; `delegations` plus the tenant-level `delegation_max_duration_days`/`delegation_review_window_days` columns → Delegation) was squashed rather than preserved as dead migration history. See [`.claude/database-schema.md`](.claude/database-schema.md) for the 8-table catalogue, RLS invariants (RLS-1..RLS-6), tenant invariants (T-1..T-16), seat invariants (SEAT-1..SEAT-5), migration invariants (MIG-1..MIG-9), and trigger behavior.
 
 ### Outbound Valkey — `adapter/outbound/valkey/`
 
@@ -464,14 +464,14 @@ Full table catalogue and every RLS/tenant/seat/migration/trigger invariant is in
 
 Two outbound SNS topics (via `RoutingPublisher`):
 
-- **`iam.membership.events`** (11 event types): `DepartmentMembershipGranted`, `DepartmentMembershipRevoked`, `DepartmentMembershipLevelChanged`, `TenantRoleGranted`, `TenantRoleRevoked` (§16 A14), `MembershipRevoked`, `TenderAssigneeOverridden`, `TenantSeatOverageStarted`, `TenantSeatOverageResolved`, `TenantStateChanged` (§16 A61 relay), `TenantMembershipsPurged`.
+- **`iam.membership.events`** (12 event types): `DepartmentMembershipGranted`, `DepartmentMembershipRevoked`, `DepartmentMembershipLevelChanged`, `TenantRoleGranted`, `TenantRoleRevoked` (§16 A14), `MembershipRevoked`, `TenderAssigneeOverridden`, `MFAReset` (§16 OQ-8/F6), `TenantSeatOverageStarted`, `TenantSeatOverageResolved`, `TenantStateChanged` (§16 A61 relay), `TenantMembershipsPurged`.
 - **`iam.tenant.events`** (2 event types produced by O&M): `TenantCreated`, `TrialStarted`. O&M is a co-producer with Realm Provisioner on this topic — RP produces the lifecycle events O&M consumes.
 
 `DelegationStarted`, `DelegationEnded`, and `DelegationReviewRequested` are no longer produced here — they moved to the Delegation Service's own `iam.delegation.events` topic (ADR-0008), and their JSON schemas are deleted from `internal/adapter/outbound/eventbus/schemas/`.
 
 Two events carry the user/tenant removal cascade for the extracted services (§15.2.2, LLD §15.2.2):
 
-- **`MembershipRevoked{tenant_id, user_id, actor_id}`** — emitted once per user removal (`MembershipService.RemoveUser`, P-8/I-5). A single shared event consumed by **both** the Delegation Service's cascade queue (ends the user's delegation rows) and the Tender ACL Service's equivalent queue (soft-deletes the user's ACL overlays) — replacing what used to be two separate emissions.
+- **`MembershipRevoked{tenant_id, user_id, actor_id}`** — emitted once per user removal (`MembershipService.RemoveUser`, P-8/I-5). A single shared event consumed by **three** services: the Delegation Service's cascade queue (ends the user's delegation rows), the Tender ACL Service's equivalent queue (soft-deletes the user's ACL overlays) — replacing what used to be two separate emissions — and AuthZ Enrichment's `membership-authz-q` (evicts the `om:memberships` cache entry for a user whose entire tenant membership, not just one department/role, was removed; LLD §7.3.2).
 - **`TenantMembershipsPurged{tenant_id, actor_id}`** — emitted when a consumed lifecycle event genuinely transitions a tenant into `offboarded`. Consumed by Delegation, Tender ACL, and Group Mapping services to run their own async tenant-scoped cascade-deletes (their tables live in separate databases, out of reach of Core's own cascade). This is Core's own outbound signal, distinct from — and not to be confused with — Realm Provisioner's `TenantOffboarded`, which Core only *consumes*.
 
 Two inbound SQS queues (unchanged by the decomposition):
@@ -577,7 +577,7 @@ Two-stage Dockerfile: a Go builder stage compiles both binaries, the runtime sta
 | `realm-config-sync` | `*/10 * * * *` | T-15 reconciler: sweep `realm_sync_pending`, call idempotent `PatchRealmConfig`; disables prioritised |
 | `seat-overage-reconcile` | `0 */6 * * *` | Seat-overage marker backstop (SEAT-5); drives past-grace alert |
 | `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor: soft-delete + PII-scrub for `trial_expired` past 15-d grace |
-| `outbox-prune` | `0 3 * * *` | `outbox.Runner.PrunePublished(24h, 10000)` |
+| `outbox-prune` | `0 3 * * *` | Batched raw-SQL delete at 8-day retention, capped per tick at `jctx.BatchLimit` (default 500) — not `outbox.Runner.PrunePublished` |
 | `processed-events-prune` | `0 4 * * *` | Delete `processed_events > 8 days` |
 
 `delegation-expiry`, `delegation-review`, and `delegation-cleanup` moved to the Delegation Service (ADR-0008); `acl-cleanup` moved to the Tender ACL Service (ADR-0007 Wave 3) — none of the four run here any more.
@@ -634,7 +634,7 @@ Coverage is measured over `./internal/...` and `./pkg/...` only. See [CONTRIBUTI
 | Cache never serves stale data across tenants | Tenant UUID prefix on every cache key (CACHE-1) |
 | User removal cannot strand active workflows | `WorkflowClient.GetDelegateImpact` synchronous pre-check; `409 workflow_resolution_required` if `active_workflows > 0` (§8.8, WFI-1/WFI-3) |
 | Dept-membership Assign/Remove degrades, never blocks, on Delegation Service outage | `DelegationCheckClient.DeptDelegate` fails open to tenant-wide impact scoping (§8.8.4, WFI-11) |
-| User-removal cascade to extracted services is signal-based, not owned | One `MembershipRevoked{tenant_id, user_id, actor_id}` per removal, consumed by both Delegation Service and Tender ACL Service for their own async cascades (§15.2.2) — Core neither ends `delegations` rows nor soft-deletes `tender_acl_entries` itself |
+| User-removal cascade to extracted services is signal-based, not owned | One `MembershipRevoked{tenant_id, user_id, actor_id}` per removal, consumed by Delegation Service and Tender ACL Service for their own async cascades (§15.2.2) — Core neither ends `delegations` rows nor soft-deletes `tender_acl_entries` itself — and by AuthZ Enrichment for `om:memberships` cache eviction (`membership-authz-q`, LLD §7.3.2) |
 | SEAT-1 hard cap enforced transactionally | `SELECT tenants.licensed_seats FOR UPDATE` + count in one `RunInTx` (never from cache; CONS-4) |
 | Last-owner protection (actor path) | TM-8 CHECK + service-layer guard on P-8/P-28; TM-13 concurrency serialization via row lock |
 | Last-owner escalation (identity path) | I-5 sets `tenants.ownerless_since = now()` when Keycloak deletes the last owner; O-7 is the only clear path (TM-12/T-13) |

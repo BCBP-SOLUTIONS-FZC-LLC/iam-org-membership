@@ -60,7 +60,7 @@ type internalProvisionRequest struct {
 // ProvisionTenant is I-1 — trial signup (5 depts + 3 labels + owner + 3 events in one tx).
 //
 // @Summary      I-1 — Provision tenant (trial signup)
-// @Description  Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called by the TrialTenantProvisioned consumer (not by external clients).
+// @Description  Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called directly by the Signup BFF / Realm Provisioner over the internal mesh — every tenant is created trial-shaped regardless of plan; a consumed TrialTenantProvisioned event, if received, is an idempotent no-op reconcile, not a trigger for this handler.
 // @Tags         internal
 // @Accept       json
 // @Produce      json
@@ -391,7 +391,7 @@ func (h *InternalHandler) DeleteMember(c *gin.Context) {
 // active membership in that tenant. See MembershipProjection for shape.
 //
 // @Summary      I-8 — HOT PATH: full membership projection (AuthZ Enrichment)
-// @Description  SLO 15 ms cache-hit / 30 ms miss (§21). Derived `member` role injected (TR-7). effective_feature_flags = planDefaults(plan) ⊕ tenants.feature_flags. Cache TTL 300s ± 30s jitter.
+// @Description  SLO 15 ms cache-hit / 30 ms miss (§21). Derived `member` role injected (TR-7). feature_flags is the sorted list of enabled flag names from planDefaults(plan) ⊕ tenants.feature_flags. Cache TTL 300s ± 30s jitter.
 // @Tags         internal
 // @Produce      json
 // @Param        id         path      string   true  "User UUID"    format(uuid)

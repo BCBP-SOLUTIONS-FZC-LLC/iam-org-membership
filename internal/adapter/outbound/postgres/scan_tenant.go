@@ -13,10 +13,11 @@ func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 	var t domain.Tenant
 	var featureFlagsJSON []byte
 	var plan, status, realmType string
+	var suspensionSource *string
 	err := row.Scan(
 		&t.ID, &t.Slug, &t.Name, &plan, &featureFlagsJSON, &status,
 		&t.TrialEndsAt, &t.TrialReactivationCount, &t.SubscriptionStartedAt,
-		&t.CancelledAt, &t.LastEventAt,
+		&t.CancelledAt, &suspensionSource, &t.LastEventAt,
 		&t.RealmID, &realmType, &t.KeycloakShard, &t.MFAFreshnessSeconds,
 		&t.LocalAccountsEnabled, &t.RealmSyncPending, &t.DefaultLocale,
 		&t.LicensedSeats, &t.OwnerlessSince, &t.OverageSince,
@@ -28,6 +29,10 @@ func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 	t.Plan = domain.TenantPlan(plan)
 	t.Status = domain.SubscriptionStatus(status)
 	t.RealmType = domain.RealmType(realmType)
+	if suspensionSource != nil {
+		src := domain.SuspensionSource(*suspensionSource)
+		t.SuspensionSource = &src
+	}
 	if len(featureFlagsJSON) > 0 && string(featureFlagsJSON) != "null" {
 		if err := json.Unmarshal(featureFlagsJSON, &t.FeatureFlags); err != nil {
 			return nil, err

@@ -27,6 +27,7 @@ DROP FUNCTION IF EXISTS public.touch_row();
 DROP FUNCTION IF EXISTS public.app_tenant_id();
 
 -- ── Enums ─────────────────────────────────────────────────────────────────
+DROP TYPE IF EXISTS public.suspension_source;
 DROP TYPE IF EXISTS public.invitation_status;
 DROP TYPE IF EXISTS public.realm_type;
 DROP TYPE IF EXISTS public.dept_role;

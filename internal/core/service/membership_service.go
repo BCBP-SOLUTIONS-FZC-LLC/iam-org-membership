@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// MembershipService owns P-4/P-5/P-7/P-8/P-26/P-27/P-28. P-6 (invite) lives
+// MembershipService owns P-4/P-5/P-7/P-8/P-26/P-27/P-28/P-34. P-6 (invite) lives
 // in InvitationService; P-11 (dept remove) in DeptMembershipService.
 // RemoveUser is the shared cascade for P-8 (actor) and I-5 (system) per
 // WFI-1.
@@ -671,6 +671,57 @@ func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context,
 				TenderID: tenderID, TenantID: tenantID,
 				UserID: newUserID, ActorID: actorID,
 			},
+		}
+		if rc, ok := requestctx.FromContext(txCtx); ok {
+			evt.IPAddress = rc.ClientIP
+			evt.UserAgent = rc.UserAgent
+		}
+		return pub.EnqueueCtx(txCtx, evt)
+	})
+}
+
+// ResetUserMFA is P-34 (§16 OQ-8/F6) — POST .../members/:user_id/reset-mfa.
+// Validates the target is an active member, then calls
+// RealmProvisionerClient.ResetMFA (RP-9) synchronously to clear the user's
+// TOTP/WebAuthn credentials. Fail-CLOSED, unlike RevokeUserSessions'
+// best-effort posture (AUTH-8): there is no reconciler for "eventually
+// reset MFA", so an RP-9 failure surfaces as realm_provisioner_unavailable
+// (503) and nothing is recorded — the caller must retry. On success, emits
+// MFAReset (§7.3) via the outbox for the Audit Log consumer, matching RP's
+// confirmed HLD §8.2.6 flow ("Audit Log records MFAReset with actor and
+// target").
+//
+// Role authorization (tenant_admin/tenant_owner) is enforced by the HTTP
+// handler (requireTenantAdmin), the same split P-8/P-28 use — this method
+// does not re-check it. The actor's own MFA step-up, also part of RP's
+// confirmed flow, is a gateway/AuthZ Enrichment concern: pkg/requestctx
+// carries no actor-MFA-freshness signal, so O&M's own code has nothing to
+// check here (§16 OQ-8).
+func (s *MembershipService) ResetUserMFA(ctx context.Context, tenantID, userID, actorID uuid.UUID) error {
+	mem, err := s.memberships.FindByUserID(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	if mem.Status != domain.MembershipActive {
+		return domain.NewError(domain.ErrMemberNotActive, "member is not active")
+	}
+
+	if s.rp == nil {
+		return domain.NewError(domain.ErrRealmProvisionerUnavailable, "realm provisioner not configured")
+	}
+	if err := s.rp.ResetMFA(ctx, tenantID, userID); err != nil {
+		return domain.NewError(domain.ErrRealmProvisionerUnavailable, "realm provisioner unavailable")
+	}
+
+	return s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		pub, _ := port.EventPublisherFromContext(txCtx)
+		if pub == nil {
+			return nil
+		}
+		evt := &domain.DomainEvent{
+			Type: domain.EventMFAReset, TenantID: tenantID,
+			Subject: userID.String(), Actor: actorID.String(),
+			Data: domain.MFAResetPayload{TenantID: tenantID, UserID: userID, ActorID: actorID},
 		}
 		if rc, ok := requestctx.FromContext(txCtx); ok {
 			evt.IPAddress = rc.ClientIP

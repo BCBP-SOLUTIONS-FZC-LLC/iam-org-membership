@@ -31,7 +31,7 @@
 --     Delegation) under ADR-0007/ADR-0008.
 --
 -- End-state: 9 tables (8 domain tables per LLD §4 + the rls_violation_log
--- audit table), 7 enums, RLS on 7 tenant-scoped tables (FORCE ROW LEVEL
+-- audit table), 8 enums, RLS on 7 tenant-scoped tables (FORCE ROW LEVEL
 -- SECURITY + REVOKE ALL FROM PUBLIC + tenant_isolation policy),
 -- record_version optimistic locking on 7 tables (all but processed_events).
 
@@ -42,7 +42,7 @@ CREATE EXTENSION IF NOT EXISTS citext   WITH SCHEMA public;
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;   -- gen_random_uuid()
 
 -- ─────────────────────────────────────────────────────────────────────────
--- Enums (§4.1) — 7 types.
+-- Enums (§4.1) — 8 types.
 -- ─────────────────────────────────────────────────────────────────────────
 -- 'member' is DERIVED-ONLY per TR-7 / §16 A29: never persisted in
 -- tenant_roles; injected by I-8 into the effective role set. Kept in the
@@ -54,6 +54,7 @@ CREATE TYPE public.membership_status   AS ENUM ('active', 'suspended', 'left');
 CREATE TYPE public.dept_role           AS ENUM ('preparator', 'reviewer', 'approver');
 CREATE TYPE public.realm_type          AS ENUM ('shared', 'dedicated');           -- §16 A22
 CREATE TYPE public.invitation_status   AS ENUM ('pending', 'accepted', 'expired', 'revoked'); -- §16 A11
+CREATE TYPE public.suspension_source   AS ENUM ('billing_lapse', 'operator');                 -- T-16, new — resolves RP-11
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- app_tenant_id() — reads the tenant GUC set by pgcommon's GUC bridge.
@@ -160,7 +161,7 @@ END;
 $$;
 
 -- ─────────────────────────────────────────────────────────────────────────
--- tenants (§4.2) — root aggregate. See T-1..T-15 for the full invariant
+-- tenants (§4.2) — root aggregate. See T-1..T-16 for the full invariant
 -- set. `plan` has no local FK (the plans catalog lives in the Catalog /
 -- Admin Config Service) — validated app-side against an om:plans
 -- read-through cache instead.
@@ -175,7 +176,8 @@ CREATE TABLE public.tenants (
     trial_ends_at            timestamptz,                                                          -- required for trial/trial_expired (T-4)
     trial_reactivation_count int                         NOT NULL DEFAULT 0,                       -- capped 0..1 (T-14, §16 A57)
     subscription_started_at  timestamptz,                                                          -- required for paid statuses (T-5)
-    cancelled_at             timestamptz,                                                          -- biconditional with status (T-11, §16 A24)
+    cancelled_at             timestamptz,                                                          -- biconditional with status (T-11, §16 A24); NOT set for an operator-sourced suspension (T-16)
+    suspension_source        public.suspension_source,                                             -- T-16, new — resolves RP-11; non-NULL iff status='suspended'
     last_event_at            timestamptz,                                                          -- EVT-14 recency high-water (§16 A33)
     realm_id                 text                        NOT NULL DEFAULT 'trial',
     realm_type               public.realm_type           NOT NULL DEFAULT 'shared',                -- §16 A22, T-6
@@ -204,11 +206,20 @@ CREATE TABLE public.tenants (
     CONSTRAINT chk_trial_ends_at_required
         CHECK (status NOT IN ('trial', 'trial_expired') OR trial_ends_at IS NOT NULL),
     CONSTRAINT chk_subscription_started_required
-        CHECK (status IN ('trial', 'trial_expired') OR subscription_started_at IS NOT NULL),
+        CHECK (status IN ('trial', 'trial_expired', 'suspended') OR subscription_started_at IS NOT NULL), -- 'suspended' exempted by T-16 — an operator can suspend a never-converted trial tenant
     CONSTRAINT chk_offboarded_soft_deleted
         CHECK (status <> 'offboarded' OR deleted_at IS NOT NULL),                                    -- PAID-1
     CONSTRAINT chk_cancelled_at_required
-        CHECK ((status IN ('cancelled', 'suspended', 'offboarded')) = (cancelled_at IS NOT NULL))    -- T-11
+        CHECK (
+            CASE status
+                WHEN 'cancelled'  THEN cancelled_at IS NOT NULL
+                WHEN 'offboarded' THEN cancelled_at IS NOT NULL
+                WHEN 'suspended'  THEN (suspension_source <> 'billing_lapse' OR cancelled_at IS NOT NULL)
+                ELSE cancelled_at IS NULL
+            END
+        ),                                                                                           -- T-11, CASE form (T-16, new — resolves RP-11): the 'suspended' branch is conditional on suspension_source so an operator-sourced suspension never enters the grace/retention clock
+    CONSTRAINT chk_suspension_source_required
+        CHECK ((status = 'suspended') = (suspension_source IS NOT NULL))                             -- T-16, new — resolves RP-11; same lockstep discipline as chk_cancelled_at_required's original form
 );
 
 -- ─────────────────────────────────────────────────────────────────────────
