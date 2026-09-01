@@ -109,6 +109,20 @@ func (r *azPlanReader) PlanByCode(_ context.Context, _ domain.TenantPlan) (*doma
 
 var _ port.PlanCatalogReader = (*azPlanReader)(nil)
 
+// azDeptReader is a stub DepartmentCatalogReader that satisfies the
+// NewAuthZService constructor; departments are not needed for the cache-hit
+// and feature-flag projection tests in this file.
+type azDeptReader struct{}
+
+func (r *azDeptReader) Departments(_ context.Context) ([]domain.Department, error) {
+	return nil, nil
+}
+func (r *azDeptReader) DepartmentByID(_ context.Context, _ uuid.UUID) (*domain.Department, error) {
+	return nil, nil
+}
+
+var _ port.DepartmentCatalogReader = (*azDeptReader)(nil)
+
 // ── helpers ───────────────────────────────────────────────────────────────
 
 // membershipCacheKey mirrors the unexported cacheKeyMemberships helper in
@@ -137,7 +151,7 @@ func sampleProjection(tenantID, userID uuid.UUID) *service.MembershipProjection 
 		Departments: []domain.DeptMembershipView{
 			{DepartmentID: deptID, RoleLevel: domain.DeptReviewer},
 		},
-		EffectiveFeatureFlags: map[string]any{"advanced_reports": true},
+		FeatureFlags: []string{"advanced_reports"},
 	}
 }
 
@@ -149,7 +163,7 @@ func sampleProjection(tenantID, userID uuid.UUID) *service.MembershipProjection 
 func TestAuthZService_NewAuthZService_ReturnsNonNil(t *testing.T) {
 	t.Parallel()
 
-	svc := service.NewAuthZService(nil, &azPlanReader{}, newAZCache())
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, newAZCache())
 
 	require.NotNil(t, svc, "NewAuthZService must return a non-nil *AuthZService")
 }
@@ -172,7 +186,7 @@ func TestAuthZService_GetMembership_CacheHit_ReturnsCachedProjection(t *testing.
 	cache.seed[membershipCacheKey(tenantID, userID)] = raw
 
 	// pool=nil is intentional: the test must never reach readFromDB.
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	got, err := svc.GetMembership(context.Background(), tenantID, userID)
 
@@ -220,7 +234,7 @@ func TestAuthZService_GetMembership_CacheHit_DifferentUser(t *testing.T) {
 	// Only seed for userA; userB has no entry.
 	cache.seed[membershipCacheKey(tenantID, userA)] = raw
 
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	// userA → cache hit — returned directly, pool is never touched.
 	gotA, err := svc.GetMembership(context.Background(), tenantID, userA)
@@ -258,7 +272,7 @@ func TestAuthZService_GetMembership_CacheHit_CancelledStatus_ReadOnly(t *testing
 	cache := newAZCache()
 	cache.seed[membershipCacheKey(tenantID, userID)] = raw
 
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	got, err := svc.GetMembership(context.Background(), tenantID, userID)
 	require.NoError(t, err)
@@ -291,7 +305,7 @@ func TestAuthZService_GetMembership_CacheHit_EmptyRolesAndDepts(t *testing.T) {
 		LocalAccountsEnabled:  false,
 		Roles:                 []domain.TenantRoleCode{domain.RoleMember},
 		Departments:           []domain.DeptMembershipView{},
-		EffectiveFeatureFlags: map[string]any{},
+		FeatureFlags: []string{},
 	}
 
 	raw, err := json.Marshal(proj)
@@ -300,7 +314,7 @@ func TestAuthZService_GetMembership_CacheHit_EmptyRolesAndDepts(t *testing.T) {
 	cache := newAZCache()
 	cache.seed[membershipCacheKey(tenantID, userID)] = raw
 
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	got, err := svc.GetMembership(context.Background(), tenantID, userID)
 	require.NoError(t, err)
@@ -309,7 +323,7 @@ func TestAuthZService_GetMembership_CacheHit_EmptyRolesAndDepts(t *testing.T) {
 	// Non-nil empty slices must survive the cache round-trip.
 	assert.NotNil(t, got.Roles)
 	assert.NotNil(t, got.Departments)
-	assert.NotNil(t, got.EffectiveFeatureFlags)
+	assert.NotNil(t, got.FeatureFlags)
 	assert.Empty(t, got.Departments)
 }
 
@@ -329,7 +343,7 @@ func TestAuthZService_GetMembership_CacheError_FallsThroughToPool(t *testing.T) 
 	cache := newAZCache()
 	cache.getErr = errors.New("valkey connection refused")
 
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	// getCached returns nil on cache error → readFromDB is reached → nil pool panic.
 	assert.Panics(t, func() {
@@ -352,7 +366,7 @@ func TestAuthZService_GetMembership_CacheInvalidJSON_FallsThroughToPool(t *testi
 	cache := newAZCache()
 	cache.seed[membershipCacheKey(tenantID, userID)] = []byte("not-valid-json{{{")
 
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	// getCached returns nil on JSON error → readFromDB is reached → nil pool panic.
 	assert.Panics(t, func() {
@@ -372,7 +386,7 @@ func TestAuthZService_GetMembership_NilCache_FallsThroughToPool(t *testing.T) {
 	userID := uuid.New()
 
 	// Explicitly nil cache — disables the entire cache layer.
-	svc := service.NewAuthZService(nil, &azPlanReader{}, nil)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, nil)
 
 	// getCached is a no-op (nil cache) → readFromDB is reached → nil pool panic.
 	assert.Panics(t, func() {

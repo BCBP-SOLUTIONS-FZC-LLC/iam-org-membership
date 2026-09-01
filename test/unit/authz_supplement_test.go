@@ -88,7 +88,7 @@ func TestAuthZService_SetCached_NilCache_DoesNotPanic(t *testing.T) {
 	cache.seed[membershipCacheKey(tenantID, userID)] = raw
 
 	// nil pool but cache hit — setCached is NOT called (cache hit path).
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	got, err := svc.GetMembership(context.Background(), tenantID, userID)
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestAuthZService_GetMembership_CacheHit_DoesNotCallSet(t *testing.T) {
 	cache := newAUSetCache()
 	cache.seed[membershipCacheKey(tenantID, userID)] = raw
 
-	svc := service.NewAuthZService(nil, &azPlanReader{}, cache)
+	svc := service.NewAuthZService(nil, &azPlanReader{}, &azDeptReader{}, cache)
 
 	got, err := svc.GetMembership(context.Background(), tenantID, userID)
 	require.NoError(t, err)

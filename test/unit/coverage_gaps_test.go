@@ -393,6 +393,9 @@ func (r *gapRealmProvisionerClient) PatchRealmConfig(context.Context, uuid.UUID,
 func (r *gapRealmProvisionerClient) RevokeUserSessions(context.Context, uuid.UUID, uuid.UUID) error {
 	return nil
 }
+func (r *gapRealmProvisionerClient) ResetMFA(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
 
 var _ port.RealmProvisionerClient = (*gapRealmProvisionerClient)(nil)
 

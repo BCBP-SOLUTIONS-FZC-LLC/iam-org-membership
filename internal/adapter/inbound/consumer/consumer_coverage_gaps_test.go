@@ -56,7 +56,7 @@ func TestHandle_EVT15_WithMetrics_IncrementsCounter(t *testing.T) {
 	ensureConsumerMetrics()
 
 	// pool=nil, outbox=nil — Handle must return before reaching the pool.
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, 1*time.Second, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 1*time.Second, nil)
 
 	env := futureEnv("TrialExpired")
 	err := c.Handle(context.Background(), env)
@@ -73,7 +73,7 @@ func TestHandle_EVT15_WithMetrics_IncrementsCounter(t *testing.T) {
 // is undefined), we test the poison-pill return directly: the nil check is a
 // guard, not the termination condition; the return at line 108 always fires.
 func TestHandle_EVT15_AlwaysReturnsPoisonPillRegardlessOfMetrics(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, 1*time.Second, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 1*time.Second, nil)
 
 	env := futureEnv("TenantOffboarded")
 	err := c.Handle(context.Background(), env)
@@ -104,7 +104,7 @@ var _ port.PlanCatalogReader = (*fakePlanReader)(nil)
 // TrialReactivated.
 func TestNewMembershipEventConsumer_WithCatalog_Stored(t *testing.T) {
 	cat := &fakePlanReader{}
-	c := NewMembershipEventConsumer(nil, nil, nil, cat, 300*time.Second, nil)
+	c := NewMembershipEventConsumer(nil, nil, nil, cat, nil, 300*time.Second, nil)
 	require.NotNil(t, c)
 	// The catalog is stored; we can't access it directly (unexported), but
 	// NewMembershipEventConsumer returns a valid struct with skew defaulted.

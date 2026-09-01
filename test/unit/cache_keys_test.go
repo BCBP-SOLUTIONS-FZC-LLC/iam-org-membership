@@ -151,6 +151,7 @@ func (r *ckRealmProvisionerClient) PatchRealmConfig(_ context.Context, _ uuid.UU
 func (r *ckRealmProvisionerClient) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error {
 	return nil
 }
+func (r *ckRealmProvisionerClient) ResetMFA(_ context.Context, _, _ uuid.UUID) error { return nil }
 
 var _ port.RealmProvisionerClient = (*ckRealmProvisionerClient)(nil)
 
@@ -773,10 +774,10 @@ func TestCacheKeys_DeptMembers_RemoveInvalidatesKey(t *testing.T) {
 
 	svc := service.NewDeptMembershipService(
 		repo,
-		nil,   // membership repo — not used on Remove path
-		nil,   // tenantDepts — not used when delegationCheck is nil
-		nil,   // catalog
-		nil,   // delegationCheck — nil causes dept-delegate lookup to be skipped
+		nil, // membership repo — not used on Remove path
+		nil, // tenantDepts — not used when delegationCheck is nil
+		nil, // catalog
+		nil, // delegationCheck — nil causes dept-delegate lookup to be skipped
 		&ckWorkflowClient{},
 		cache,
 		&ckTxRunner{},
