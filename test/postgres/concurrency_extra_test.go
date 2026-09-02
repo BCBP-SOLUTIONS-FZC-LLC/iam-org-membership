@@ -37,6 +37,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 )
 
 // ── P15-JIT-001 ─────────────────────────────────────────────────────────────
@@ -223,8 +225,8 @@ func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
 
 	// Spawn the reconciler + a live-insert goroutine concurrently.
 	jctx := &jobs.Context{
-		SysPool:    sysPool,
-		BatchLimit: 100,
+		Invitations: pgadapter.NewInvitationRepository(sysPool),
+		BatchLimit:  100,
 	}
 
 	var wg sync.WaitGroup
@@ -274,7 +276,7 @@ func TestExpiryReconcilerVsLiveInvites(t *testing.T) {
 // is the horizontal-scale safety property for the runner.
 func TestSkipLockedPreventsDuplicatePublish(t *testing.T) {
 	t.Parallel()
-	_, rawPool, _ := setupTestDB(t)
+	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
 	// Seed 20 outbox_events (unpublished).
@@ -294,29 +296,36 @@ func TestSkipLockedPreventsDuplicatePublish(t *testing.T) {
 	// Two concurrent claimers, each opens its own tx and claims up to
 	// batchSize rows. Under SKIP LOCKED they can never grab the same row.
 	claim := func(batchSize int) []string {
-		tx, err := rawPool.BeginTx(ctx, pgx.TxOptions{})
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback(ctx) }()
-
-		rows, err := tx.Query(ctx, `
+		var claimed []string
+		err := pgcommon.RunInTx(ctx, sysPool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+			rows, err := tx.Query(ctx, `
 			SELECT id FROM outbox_events
 			WHERE published_at IS NULL AND scheduled_at <= now()
 			ORDER BY scheduled_at, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT $1`, batchSize)
-		require.NoError(t, err)
-		defer rows.Close()
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
 
-		var claimed []string
-		for rows.Next() {
-			var id string
-			require.NoError(t, rows.Scan(&id))
-			claimed = append(claimed, id)
-		}
-		// Hold the transaction until sibling has claimed too — sleep just
-		// long enough that the second claimer racing us has time to
-		// acquire its own batch.
-		time.Sleep(200 * time.Millisecond)
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					return err
+				}
+				claimed = append(claimed, id)
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			// Hold the transaction until sibling has claimed too — sleep just
+			// long enough that the second claimer racing us has time to
+			// acquire its own batch.
+			time.Sleep(200 * time.Millisecond)
+			return nil
+		})
+		require.NoError(t, err)
 		return claimed
 	}
 

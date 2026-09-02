@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -198,8 +199,7 @@ func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domai
 			t.LocalAccountsEnabled, t.DefaultLocale, t.LicensedSeats)
 		found, scanErr := scanTenant(row)
 		if scanErr != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(scanErr, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "slug") {
+			if pgcommon.IsUniqueViolation(scanErr) && strings.Contains(pgcommon.ConstraintName(scanErr), "slug") {
 				return domain.NewError(domain.ErrSlugAlreadyTaken, "slug already taken")
 			}
 			if errors.Is(scanErr, pgx.ErrNoRows) {
@@ -223,6 +223,280 @@ func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domai
 		return nil, false, err
 	}
 	return out, wasCreated, nil
+}
+
+// ListSubscriptionLapses is I-16 (§16 RP-C3). Cross-tenant — must be called
+// against a BYPASSRLS-bound repository instance (sysPool), never the
+// RLS-scoped app pool; see the port.TenantRepository doc comment.
+func (r *TenantRepository) ListSubscriptionLapses(ctx context.Context, graceDays int) ([]domain.Tenant, error) {
+	var out []domain.Tenant
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT `+tenantSelectColumns+`
+			FROM tenants
+			WHERE status = 'cancelled'
+			  AND cancelled_at <= now() - ($1::int * interval '1 day')
+			  AND deleted_at IS NULL
+			ORDER BY cancelled_at ASC`, graceDays)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			t, scanErr := scanTenant(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			out = append(out, *t)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *TenantRepository) LockByID(ctx context.Context, id uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id)
+		return err
+	})
+}
+
+func (r *TenantRepository) LicensedSeatsForUpdate(ctx context.Context, id uuid.UUID) (int, error) {
+	var n int
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT licensed_seats FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&n)
+	})
+	return n, err
+}
+
+func (r *TenantRepository) SetFeatureFlags(ctx context.Context, id uuid.UUID, flags []byte, expectedVersion int64) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1 AND record_version = $3 AND deleted_at IS NULL`,
+			id, string(flags), expectedVersion)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			var current int64
+			probeErr := tx.QueryRow(ctx,
+				`SELECT record_version FROM tenants WHERE id = $1 AND deleted_at IS NULL`,
+				id).Scan(&current)
+			if probeErr != nil {
+				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+			}
+			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
+				WithDetails(map[string]any{"record_version": current})
+		}
+		return nil
+	})
+}
+
+func (r *TenantRepository) ClearOwnerlessSince(ctx context.Context, id uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE tenants SET ownerless_since = NULL WHERE id = $1`, id)
+		return err
+	})
+}
+
+func (r *TenantRepository) MarkOwnerlessIfUnset(ctx context.Context, id uuid.UUID) (bool, error) {
+	var flipped bool
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE tenants SET ownerless_since = now() WHERE id = $1 AND ownerless_since IS NULL`, id)
+		if err != nil {
+			return err
+		}
+		flipped = tag.RowsAffected() > 0
+		return nil
+	})
+	return flipped, err
+}
+
+func (r *TenantRepository) SetRealmFields(ctx context.Context, id uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND record_version = $5`,
+			id, realmID, string(realmType), shard, recordVersion)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			var current int64
+			probe := tx.QueryRow(ctx, `SELECT record_version FROM tenants WHERE id = $1`, id)
+			if perr := probe.Scan(&current); perr != nil {
+				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+			}
+			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
+				WithDetails(map[string]any{"record_version": current})
+		}
+		return nil
+	})
+}
+
+func (r *TenantRepository) LockSeatOccupancy(ctx context.Context, id uuid.UUID) (port.SeatOccupancy, error) {
+	var occ port.SeatOccupancy
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			SELECT licensed_seats, overage_since FROM tenants
+			WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).
+			Scan(&occ.LicensedSeats, &occ.OverageSince); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM tenant_memberships
+			WHERE tenant_id = $1 AND deleted_at IS NULL AND status = 'active'`, id).Scan(&occ.Active); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FROM pending_invitations
+			WHERE tenant_id = $1 AND status = 'pending' AND expires_at > now()`, id).Scan(&occ.Pending)
+	})
+	return occ, err
+}
+
+func (r *TenantRepository) SetOverageSince(ctx context.Context, id uuid.UUID, since *time.Time) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE tenants SET overage_since = $2 WHERE id = $1`, id, since)
+		return err
+	})
+}
+
+func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) (*port.TenantProjectionLock, error) {
+	var lock *port.TenantProjectionLock
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		var status, plan string
+		var lastEventAt *time.Time
+		err := tx.QueryRow(ctx, `
+			SELECT status, plan, last_event_at
+			FROM tenants WHERE id = $1 AND deleted_at IS NULL
+			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		lock = &port.TenantProjectionLock{
+			Status:      domain.SubscriptionStatus(status),
+			Plan:        domain.TenantPlan(plan),
+			LastEventAt: lastEventAt,
+		}
+		return nil
+	})
+	return lock, err
+}
+
+func (r *TenantRepository) SetLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE tenants SET last_event_at = $2 WHERE id = $1`, id, t)
+		return err
+	})
+}
+
+func (r *TenantRepository) ApplyLifecyclePatch(ctx context.Context, id uuid.UUID, patch port.TenantLifecyclePatch) (int64, error) {
+	var n int64
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := execLifecyclePatch(ctx, tx, id, patch)
+		if err != nil {
+			return err
+		}
+		n = rows
+		return nil
+	})
+	return n, err
+}
+
+func execLifecyclePatch(ctx context.Context, tx pgx.Tx, id uuid.UUID, patch port.TenantLifecyclePatch) (int64, error) {
+	var (
+		tag pgconn.CommandTag
+		err error
+	)
+	switch patch.Op {
+	case port.LifecycleSetRealm:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4
+			WHERE id = $1`, id, patch.RealmID, patch.RealmType, patch.KeycloakShard)
+	case port.LifecycleActivatePaid:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2,
+			                    suspension_source = NULL
+			WHERE id = $1`, id, string(patch.Plan))
+	case port.LifecycleSetStatusClearSuspension:
+		tag, err = tx.Exec(ctx, `UPDATE tenants SET status = $2, suspension_source = NULL WHERE id = $1`,
+			id, string(patch.Status))
+	case port.LifecycleTrialReactivate:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants t
+			SET status = 'trial',
+			    trial_ends_at = now() + make_interval(days => $2),
+			    trial_reactivation_count = trial_reactivation_count + 1,
+			    suspension_source = NULL
+			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, id, patch.TrialDurationDays)
+	case port.LifecycleSuspendBillingLapse:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET status = 'suspended',
+			                    suspension_source = $2,
+			                    cancelled_at = COALESCE(cancelled_at, now())
+			WHERE id = $1`, id, string(domain.SuspensionSourceBillingLapse))
+	case port.LifecycleSuspendOperator:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET status = 'suspended', suspension_source = $2
+			WHERE id = $1`, id, string(domain.SuspensionSourceOperator))
+	case port.LifecycleOffboard:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET status = 'offboarded', deleted_at = now(),
+			                    cancelled_at = COALESCE(cancelled_at, now()),
+			                    suspension_source = NULL
+			WHERE id = $1`, id)
+	case port.LifecycleSetPlan:
+		tag, err = tx.Exec(ctx, `UPDATE tenants SET plan = $2 WHERE id = $1`, id, string(patch.Plan))
+	case port.LifecycleCancel:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, now()),
+			                    suspension_source = NULL WHERE id = $1`, id)
+	case port.LifecycleReactivatePaid:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET status = 'active', cancelled_at = NULL, suspension_source = NULL
+			WHERE id = $1 AND subscription_started_at IS NOT NULL`, id)
+	case port.LifecycleReactivateTrial:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants SET status = 'trial', cancelled_at = NULL, suspension_source = NULL
+			WHERE id = $1 AND subscription_started_at IS NULL`, id)
+	case port.LifecycleSetLicensedSeats:
+		tag, err = tx.Exec(ctx, `UPDATE tenants SET licensed_seats = $2 WHERE id = $1`, id, patch.LicensedSeats)
+	default:
+		return 0, fmt.Errorf("unknown tenant lifecycle op %d", patch.Op)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// gdprWipeTables are Core's own tenant-scoped tables deleted on
+// TenantOffboarded (§15.5) — the tenants row itself is only soft-deleted,
+// so these are explicit deletes, never an ON DELETE CASCADE side effect.
+var gdprWipeTables = []string{
+	"pending_invitations",
+	"dept_memberships",
+	"tenant_roles",
+	"tenant_memberships",
+	"dept_role_labels",
+	"tenant_departments",
+}
+
+func (r *TenantRepository) WipeTenantChildren(ctx context.Context, id uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		for _, table := range gdprWipeTables {
+			if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE tenant_id = $1`, id); err != nil {
+				return fmt.Errorf("GDPR wipe: delete from %s: %w", table, err)
+			}
+		}
+		return nil
+	})
 }
 
 // optimisticConflictOrNotFound probes the row without a version predicate

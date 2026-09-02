@@ -7,7 +7,6 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 )
 
@@ -22,7 +21,6 @@ import (
 // ownership) mutate a specific tenant — the handler sets that tenant's id
 // in the GUCSet before calling in.
 type OperatorService struct {
-	pool     *pgcommon.Pool
 	tenants  port.TenantRepository
 	tenRoles port.TenantRoleRepository
 	memBs    port.MembershipRepository
@@ -31,13 +29,12 @@ type OperatorService struct {
 }
 
 func NewOperatorService(
-	pool *pgcommon.Pool,
 	tenants port.TenantRepository, roles port.TenantRoleRepository,
 	memberships port.MembershipRepository, cache port.Cache,
 	txRunner port.TxRunner,
 ) *OperatorService {
 	return &OperatorService{
-		pool: pool, tenants: tenants,
+		tenants:  tenants,
 		tenRoles: roles, memBs: memberships, cache: cache, txRunner: txRunner,
 	}
 }
@@ -78,35 +75,11 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 	}
 	flagsJSON, _ := json.Marshal(flags)
 
-	// Direct SQL — the tenant repository doesn't expose SetFeatureFlags,
-	// and operator writes deliberately bypass the app-scoped patch path.
-	// LLD O-4 optimistic-lock contract (CONC-1): UPDATE ... WHERE id AND
-	// record_version = $N — zero rows affected → 409 optimistic_lock_conflict.
+	// LLD O-4 optimistic-lock contract (CONC-1) lives in
+	// TenantRepository.SetFeatureFlags so the service never touches SQL.
 	var updated *domain.Tenant
 	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		tx, ok := pgadapterTxFromContext(txCtx)
-		if !ok {
-			return domain.NewError(domain.ErrConflict, "tx unavailable")
-		}
-		tag, err := tx.Exec(txCtx,
-			`UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1 AND record_version = $3 AND deleted_at IS NULL`,
-			tenantID, string(flagsJSON), expectedVersion)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			// Distinguish 404 (no such tenant) from 409 (version mismatch).
-			var current int64
-			probeErr := tx.QueryRow(txCtx,
-				`SELECT record_version FROM tenants WHERE id = $1 AND deleted_at IS NULL`,
-				tenantID).Scan(&current)
-			if probeErr != nil {
-				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
-			}
-			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
-				WithDetails(map[string]any{"record_version": current})
-		}
-		return nil
+		return s.tenants.SetFeatureFlags(txCtx, tenantID, flagsJSON, expectedVersion)
 	})
 	if err != nil {
 		return nil, err
@@ -142,10 +115,6 @@ func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerU
 	// requires the event so AuthZ/Audit/Notification see the reassignment.
 	var tr *domain.TenantRole
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		tx, ok := pgadapterTxFromContext(txCtx)
-		if !ok {
-			return domain.NewError(domain.ErrConflict, "tx unavailable")
-		}
 		granted, gerr := s.tenRoles.Grant(txCtx, &domain.TenantRole{
 			TenantID: tenantID, UserID: newOwnerUserID,
 			TenantMembershipID: mem.ID, RoleCode: domain.RoleTenantOwner, GrantedBy: actorID,
@@ -154,12 +123,12 @@ func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerU
 			return gerr
 		}
 		tr = granted
-		if _, uerr := tx.Exec(txCtx, `UPDATE tenants SET ownerless_since = NULL WHERE id = $1`, tenantID); uerr != nil {
+		if uerr := s.tenants.ClearOwnerlessSince(txCtx, tenantID); uerr != nil {
 			return uerr
 		}
 		pub, _ := port.EventPublisherFromContext(txCtx)
 		if pub != nil {
-			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTenantRoleGranted, TenantID: tenantID,
 				Subject: newOwnerUserID.String(), Actor: actorID.String(),
 				Data: domain.TenantRoleGrantedPayload{

@@ -6,63 +6,59 @@ import (
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// buildProvisioningWithTxRunner wires just the txRunner field, which is
-// all SetRealmFields uses now that it's routed through TxRunner.
-func buildProvisioningWithTxRunner(tr *ffPassthroughTxRunner) *ProvisioningService {
-	return &ProvisioningService{txRunner: tr}
+type srTenantRepo struct {
+	port.TenantRepositoryNoop
+	setRealmFieldsFn func(ctx context.Context, id uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) error
 }
 
-// ── SetRealmFields — happy path ─────────────────────────────────────────
+func (r *srTenantRepo) SetRealmFields(ctx context.Context, id uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) error {
+	if r.setRealmFieldsFn != nil {
+		return r.setRealmFieldsFn(ctx, id, realmID, realmType, shard, recordVersion)
+	}
+	return nil
+}
+
+func buildProvisioningWithTenants(tenants port.TenantRepository) *ProvisioningService {
+	return &ProvisioningService{tenants: tenants, txRunner: callThruTxRunner{}}
+}
 
 func TestProvisioning_SetRealmFields_UpdatesRealmColumns(t *testing.T) {
 	tenantID := uuid.New()
 	realmID, shard := "acme-realm", "shard-1"
-	var gotSQL string
-	var gotArgs []any
-	tx := &ffTx{
-		execFn: func(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-			gotSQL = sql
-			gotArgs = args
-			return pgconn.NewCommandTag("UPDATE 1"), nil
+	var gotID uuid.UUID
+	var gotRealm, gotShard string
+	var gotType domain.RealmType
+	var gotVer int64
+	tenants := &srTenantRepo{
+		setRealmFieldsFn: func(_ context.Context, id uuid.UUID, rid string, rt domain.RealmType, sh string, ver int64) error {
+			gotID, gotRealm, gotType, gotShard, gotVer = id, rid, rt, sh, ver
+			return nil
 		},
 	}
-	svc := buildProvisioningWithTxRunner(&ffPassthroughTxRunner{tx: tx})
+	svc := buildProvisioningWithTenants(tenants)
 
 	err := svc.SetRealmFields(context.Background(), tenantID, realmID, domain.RealmType("dedicated"), shard, 1)
 	require.NoError(t, err)
-	assert.Contains(t, gotSQL, "UPDATE tenants SET realm_id")
-	assert.Contains(t, gotSQL, "record_version = $5", "CONC-4: record_version guard added (BUG-I2-2 fix)")
-	require.Len(t, gotArgs, 5)
-	assert.Equal(t, tenantID, gotArgs[0])
-	assert.Equal(t, realmID, gotArgs[1])
-	assert.Equal(t, "dedicated", gotArgs[2])
-	assert.Equal(t, shard, gotArgs[3])
-	assert.Equal(t, int64(1), gotArgs[4], "record_version passed as 5th arg")
+	assert.Equal(t, tenantID, gotID)
+	assert.Equal(t, realmID, gotRealm)
+	assert.Equal(t, domain.RealmType("dedicated"), gotType)
+	assert.Equal(t, shard, gotShard)
+	assert.Equal(t, int64(1), gotVer)
 }
-
-// ── SetRealmFields — tx-unavailable → conflict ─────────────────────────
-
-func TestProvisioning_SetRealmFields_TxUnavailableSurfaces(t *testing.T) {
-	svc := &ProvisioningService{txRunner: noInjectTxRunner{}}
-	err := svc.SetRealmFields(context.Background(), uuid.New(), "r", domain.RealmType("shared"), "s", 1)
-	assert.ErrorIs(t, err, domain.ErrConflict)
-}
-
-// ── SetRealmFields — no rows affected → tenant_not_found (G12 fix) ─────
 
 func TestProvisioning_SetRealmFields_NoRowsAffected_TenantNotFound(t *testing.T) {
-	tx := &ffTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.NewCommandTag("UPDATE 0"), nil
+	tenants := &srTenantRepo{
+		setRealmFieldsFn: func(context.Context, uuid.UUID, string, domain.RealmType, string, int64) error {
+			return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
 		},
 	}
-	svc := buildProvisioningWithTxRunner(&ffPassthroughTxRunner{tx: tx})
+	svc := buildProvisioningWithTenants(tenants)
 	err := svc.SetRealmFields(context.Background(), uuid.New(), "acme", domain.RealmType("dedicated"), "shard-1", 1)
 	require.Error(t, err)
 	var de *domain.DomainError
@@ -70,16 +66,14 @@ func TestProvisioning_SetRealmFields_NoRowsAffected_TenantNotFound(t *testing.T)
 	assert.Equal(t, "tenant_not_found", de.Code)
 }
 
-// ── SetRealmFields — sql exec failure propagates ───────────────────────
-
 func TestProvisioning_SetRealmFields_ExecErrorPropagates(t *testing.T) {
 	execErr := errors.New("update failed")
-	tx := &ffTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, execErr
+	tenants := &srTenantRepo{
+		setRealmFieldsFn: func(context.Context, uuid.UUID, string, domain.RealmType, string, int64) error {
+			return execErr
 		},
 	}
-	svc := buildProvisioningWithTxRunner(&ffPassthroughTxRunner{tx: tx})
+	svc := buildProvisioningWithTenants(tenants)
 	err := svc.SetRealmFields(context.Background(), uuid.New(), "r", domain.RealmType("shared"), "s", 1)
 	assert.ErrorIs(t, err, execErr)
 }

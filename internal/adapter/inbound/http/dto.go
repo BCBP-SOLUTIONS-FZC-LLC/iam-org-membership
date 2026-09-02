@@ -424,6 +424,22 @@ type MemberExistsResponse struct {
 	TenantMembershipID *uuid.UUID `json:"tenant_membership_id,omitempty" format:"uuid"`
 }
 
+// SubscriptionLapseItem is one row of the I-16 (§16 RP-C3) response —
+// enough for RP to know which realm to suspend without a second lookup.
+type SubscriptionLapseItem struct {
+	TenantID    uuid.UUID `json:"tenant_id" format:"uuid"`
+	RealmID     string    `json:"realm_id" example:"acme"`
+	RealmType   string    `json:"realm_type" enums:"shared,dedicated"`
+	CancelledAt time.Time `json:"cancelled_at"`
+}
+
+// SubscriptionLapseListResponse is the I-16 success shape — GET
+// /api/v1/internal/subscription-lapses. Self-idempotent: once RP acts on
+// an entry (emitting TenantSuspended), it drops off the next poll.
+type SubscriptionLapseListResponse struct {
+	Tenants []SubscriptionLapseItem `json:"tenants"`
+}
+
 // InternalAddMemberRequest is the I-3 body. Realm Provisioner passes the
 // KC-fabricated user_id + email/keycloak_user_id (either resolves the
 // candidate pending_invitations row; no explicit invitation_id per PI-4).

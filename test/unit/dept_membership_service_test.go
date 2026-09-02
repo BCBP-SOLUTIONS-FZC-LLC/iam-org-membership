@@ -400,7 +400,7 @@ var _ port.MembershipRepository = (*activeMemberRepo)(nil)
 // deptPub captures DomainEvents emitted inside RunInTx.
 type deptPub struct{ events []*domain.DomainEvent }
 
-func (p *deptPub) EnqueueCtx(_ context.Context, e *domain.DomainEvent) error {
+func (p *deptPub) Enqueue(_ context.Context, e *domain.DomainEvent) error {
 	p.events = append(p.events, e)
 	return nil
 }

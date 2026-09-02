@@ -20,6 +20,7 @@ import (
 // ── InvitationRepository stub ──────────────────────────────────────────
 
 type fakeInviteRepo struct {
+	port.InvitationRepositoryNoop
 	listFn                func(ctx context.Context, tenantID uuid.UUID) ([]domain.PendingInvitation, error)
 	setStatusFn           func(ctx context.Context, tenantID, id uuid.UUID, status domain.InvitationStatus, expectedVersion int64) (*domain.PendingInvitation, error)
 	setKCCleanupPendingFn func(ctx context.Context, tenantID, id uuid.UUID, pending bool, expectedVersion int64) error

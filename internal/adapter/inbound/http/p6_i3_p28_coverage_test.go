@@ -486,7 +486,7 @@ func TestInvite_TenantNotFound(t *testing.T) {
 // When I-3 finds no matching pending invitation, it performs a plain-add.
 // No roles or depts are applied → no TenantRoleGranted / DeptMembershipGranted events.
 // Covered by wiring a passthrough runner that does NOT have a publisher in ctx
-// so any accidental EnqueueCtx would panic — the test passes means no enqueue was called.
+// so any accidental Enqueue would panic — the test passes means no enqueue was called.
 func TestAddMember_PlainAddEmitsNoEvents(t *testing.T) {
 	h := &InternalHandler{}
 	tenant := uuid.New()

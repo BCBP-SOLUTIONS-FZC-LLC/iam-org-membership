@@ -3,22 +3,23 @@ package eventbus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel/trace"
 
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
-	"github.com/jackc/pgx/v5"
 )
 
 // Publisher implements port.EventPublisher. It JSON-marshals the event
 // payload, validates it via the configured Codec (schema validation only —
 // no wire encoding), wraps it as plain JSON in an events.Envelope, and
-// inserts it into outbox_events within the caller's active pgx.Tx —
-// atomic with the business write (EVT-10, CONS-1..4).
+// inserts it into outbox_events on the transaction TxRunner attached to
+// ctx — atomic with the business write (EVT-10, CONS-1..4).
 //
 // Glue/wire encoding is NOT performed here. It is deferred to the SNS
 // publisher (outbox runner publish path) via events.WithCodec so the
@@ -47,15 +48,12 @@ func (p *Publisher) WithLogger(log port.Logger) *Publisher {
 	return p
 }
 
-// EnqueueInTx is the alias the inbound consumer uses to emit
-// TenantStateChanged (EVT-16) inside its projection tx.
-func (p *Publisher) EnqueueInTx(ctx context.Context, tx pgx.Tx, event *domain.DomainEvent) error {
-	return p.Enqueue(ctx, tx, event)
-}
+var _ port.EventPublisher = (*Publisher)(nil)
 
-// Enqueue validates and writes one plain-JSON envelope into outbox_events.
-// Glue encoding is deferred to the outbox runner's SNS publisher (WithCodec).
-func (p *Publisher) Enqueue(ctx context.Context, tx pgx.Tx, event *domain.DomainEvent) error {
+// Enqueue validates and writes one plain-JSON envelope into outbox_events
+// on the transaction TxRunner stored in ctx. Glue encoding is deferred to
+// the outbox runner's SNS publisher (WithCodec).
+func (p *Publisher) Enqueue(ctx context.Context, event *domain.DomainEvent) error {
 	raw, err := json.Marshal(event.Data)
 	if err != nil {
 		return fmt.Errorf("marshal event payload: %w", err)
@@ -87,6 +85,10 @@ func (p *Publisher) Enqueue(ctx context.Context, tx pgx.Tx, event *domain.Domain
 	env := events.NewEnvelope(event.Type, p.source, json.RawMessage(raw), opts...)
 	envBytes, _ := json.Marshal(env)
 	p.log.Debug("outbox.Enqueue", "type", event.Type, "envelope", string(envBytes))
+	tx, ok := pgadapter.TxFromContext(ctx)
+	if !ok {
+		return errors.New("event enqueue requires an open RunInTx transaction")
+	}
 	if err := outbox.Enqueue(ctx, tx, env); err != nil {
 		p.log.Error("outbox.Enqueue failed", "type", event.Type, "error", err.Error(), "envelope", string(envBytes))
 		return err

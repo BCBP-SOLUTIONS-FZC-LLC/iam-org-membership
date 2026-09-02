@@ -1,6 +1,6 @@
 # Architecture diagrams
 
-Standalone Mermaid source files. `ARCHITECTURE.md` carries its own independent (and more detailed) versions of the layer-model and cross-service-dependency diagrams inline as fenced code blocks — these `.mmd` files are a separate, narrower diagram set covering specific flows, not embedded in or generated from `ARCHITECTURE.md`. Keep both in sync by hand when either changes.
+Standalone Mermaid source files. `ARCHITECTURE.md` embeds every one of these `.mmd` files verbatim as a fenced code block, each under a `> Source:` link back to the file here — so a diagram only needs to be correct in one place. Keep both in sync by hand when either changes.
 
 | File | Diagram | Related section |
 |------|---------|------------|

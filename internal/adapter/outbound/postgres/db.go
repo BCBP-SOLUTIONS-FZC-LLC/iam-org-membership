@@ -8,14 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // DSNFromEnv builds a PostgreSQL connection URL for the application pool by
@@ -55,10 +54,41 @@ func ApplyStatementTimeout(dsn string) string {
 	}
 	if t := os.Getenv("PG_STATEMENT_TIMEOUT"); t != "" {
 		if d, err := time.ParseDuration(t); err == nil && d > 0 {
+			if strings.Contains(dsn, "statement_timeout") {
+				return dsn
+			}
 			dsn += fmt.Sprintf("&options=-c%%20statement_timeout%%3D%d", d.Milliseconds())
 		}
 	}
 	return dsn
+}
+
+// SystemPoolConfig returns pgcommon.Config for the BYPASSRLS system pool
+// (LLD §4.4), matching iam-user-profile. The system pool deliberately has
+// no GUCProvider — cross-tenant reconciler / exporter / I-16 queries run
+// under a BYPASSRLS role — but still connects through PgBouncer in
+// production, so PGBouncerMode is forced true unconditionally
+// (SimpleProtocol + MinConns:0). A bare pgcommon.Config{DSN, Logger}
+// literal would leave PGBouncerMode at the Go zero-value false and drop
+// ConfigFromEnv pool sizing, breaking transaction-pooling deployments
+// even when the app pool correctly reads PG_BOUNCER_MODE.
+//
+// Pool sizing, lifetimes, and SlowQueryThreshold are copied from
+// ConfigFromEnv so sysPool and the app pool share one env-driven source
+// of truth. Tracer is left unset — call sites wire NewOTelTracer so
+// db.query spans export through gincommon's TracerProvider.
+func SystemPoolConfig(dsn string, log port.Logger) pgcommon.Config {
+	cfg, _ := pgcommon.ConfigFromEnv()
+	cfg.DSN = ApplyStatementTimeout(dsn)
+	cfg.GUCProvider = nil
+	cfg.PGBouncerMode = true
+	cfg.Tracer = nil
+	if log != nil {
+		cfg.Logger = NewLoggerAdapter(log)
+	} else {
+		cfg.Logger = nil
+	}
+	return cfg
 }
 
 // SystemDSNFromEnv returns the DSN for the privileged cross-tenant pool used
@@ -79,7 +109,7 @@ func SystemDSNFromEnv() string {
 // MIGRATION_DATABASE_URL must be set whenever PG_BOUNCER_MODE=true.
 func MigrationDSNFromEnv() string {
 	if dsn := os.Getenv("MIGRATION_DATABASE_URL"); dsn != "" {
-		return dsn
+		return ApplyStatementTimeout(dsn)
 	}
 	return DSNFromEnv()
 }
@@ -99,44 +129,41 @@ func NewTxRunner(pool *pgcommon.Pool, events port.EventPublisher) *TxRunner {
 	return &TxRunner{pool: pool, events: events}
 }
 
+// writeRetryOpts is pgcommon's documented high-throughput OLTP preset.
+// Deadlock (40P01) and serialization failure (40001) retry with exponential
+// backoff + jitter. Nested withPool joins (already inside a tx) do not
+// retry — the outer TxRunner owns the attempt.
+var writeRetryOpts = pgcommon.RetryOptions{
+	MaxAttempts:    3,
+	InitialWait:    10 * time.Millisecond,
+	MaxWait:        500 * time.Millisecond,
+	Multiplier:     2.0,
+	JitterFraction: 0.25,
+}
+
 // RunInTx runs fn inside a transaction, injects a tx-bound publisher into
 // the ctx, and maps low-level connection errors into
 // domain.ErrDependencyUnavailable (503) so handlers get a consistent 5xx
 // shape (§17). SQL-level errors (unique violation, FK, check) bubble up
-// unchanged for service-layer classification.
+// unchanged for service-layer classification. Contended writes retry via
+// pgcommon.RunInTxWithRetryOpts on deadlock / serialization failure.
 func (r *TxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return wrapConnErr(pgcommon.RunInTx(ctx, r.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		txCtx := withTx(ctx, tx)
-		// Also expose the running tx via the service-layer key so
-		// provisioning code that must UPDATE tables lacking dedicated
-		// repo methods (e.g. tenants.ownerless_since in I-5) can reach it
-		// without importing this package.
-		txCtx = service.WithTx(txCtx, tx)
+	return wrapConnErr(pgcommon.RunInTxWithRetryOpts(ctx, r.pool, pgx.TxOptions{}, writeRetryOpts, func(ctx context.Context, tx pgx.Tx) error {
+		txCtx := WithTx(ctx, tx)
 		if r.events != nil {
-			txCtx = port.WithEventPublisher(txCtx, &txBoundPublisher{pub: r.events, tx: tx})
+			txCtx = port.WithEventPublisher(txCtx, r.events)
 		}
 		return fn(txCtx)
 	}))
 }
 
-// txBoundPublisher adapts port.EventPublisher (requires pgx.Tx) to
-// port.ContextEventPublisher (used via context lookup by the service layer).
-type txBoundPublisher struct {
-	pub port.EventPublisher
-	tx  pgx.Tx
-}
-
-func (p *txBoundPublisher) EnqueueCtx(ctx context.Context, event *domain.DomainEvent) error {
-	return p.pub.Enqueue(ctx, p.tx, event)
-}
-
-// txKey stores the active pgx.Tx in context so repository methods can join
-// an in-flight transaction rather than opening a nested one.
-type txKey struct{}
-
-func withTx(ctx context.Context, tx pgx.Tx) context.Context {
+// WithTx stores the active pgx.Tx in ctx so repository withPool joins and
+// EventPublisher.Enqueue writes the outbox on the same transaction.
+func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
 	return context.WithValue(ctx, txKey{}, tx)
 }
+
+type txKey struct{}
 
 // TxFromContext retrieves the active pgx.Tx set by RunInTx, if any.
 // Repository helpers call withPool which joins the tx when present.
@@ -158,9 +185,14 @@ func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgx.Tx) error) e
 }
 
 // wrapConnErr converts non-protocol database errors into
-// ErrDependencyUnavailable. SQL-protocol errors (pgconn.PgError) and
-// context cancellations pass through unchanged so the service layer can
+// ErrDependencyUnavailable. SQL-protocol errors (*pgconn.PgError) that are
+// not connectivity/resource classes pass through so the service layer can
 // distinguish an integrity violation from a network outage.
+//
+// SQLSTATE class 08 (connection exception), 53 (insufficient resources),
+// 57 (operator intervention) and 58 (system error) are remapped to
+// domain.ErrDBUnavailable here so HTTP HandleError never needs to inspect
+// a raw *pgconn.PgError — those classes are availability failures (503).
 func wrapConnErr(err error) error {
 	if err == nil {
 		return nil
@@ -169,8 +201,10 @@ func wrapConnErr(err error) error {
 	if errors.As(err, &de) {
 		return err
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err) {
+		return domain.NewError(domain.ErrDBUnavailable, "database unavailable")
+	}
+	if pgcommon.IsPgError(err) {
 		return err // server responded with a SQL error — not a connectivity failure
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -180,6 +214,18 @@ func wrapConnErr(err error) error {
 		return err
 	}
 	return domain.NewError(domain.ErrDependencyUnavailable, "database unavailable")
+}
+
+// isOperatorOrSystemErrorSQLState reports whether err is a Postgres error
+// in SQLSTATE class 57 or 58. pgcommon v1.3.0 has dedicated helpers for
+// 08/53 but not these two; we classify via the pgconn Error() text
+// ("… (SQLSTATE 57P01)") so callers never import pgconn.
+func isOperatorOrSystemErrorSQLState(err error) bool {
+	if !pgcommon.IsPgError(err) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLSTATE 57") || strings.Contains(msg, "SQLSTATE 58")
 }
 
 // suppress unused-import warning until we add repositories in later phases;

@@ -17,12 +17,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 )
 
@@ -71,7 +72,7 @@ func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
 	unpubIDs := insertOutboxRows(t, ctx, rawPool, tenantID, 2, "-30 days", false)
 
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
-		SysPool:             sysPool,
+		Reconciler:          pgadapter.NewReconcilerStore(sysPool),
 		OutboxRetentionDays: 8,
 	})
 	require.NoError(t, err)
@@ -96,7 +97,7 @@ func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
-		SysPool:             sysPool,
+		Reconciler:          pgadapter.NewReconcilerStore(sysPool),
 		OutboxRetentionDays: 8,
 	})
 	require.NoError(t, err)
@@ -119,7 +120,7 @@ func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 	activeTrial := seedTenantStatus(t, ctx, rawPool, "trial-active-018", "trial", "+15 days")
 
 	res, err := jobs.TrialCleanup(ctx, &jobs.Context{
-		SysPool:        sysPool,
+		Reconciler:     pgadapter.NewReconcilerStore(sysPool),
 		TrialGraceDays: 15,
 	})
 	require.NoError(t, err)
@@ -148,7 +149,8 @@ func TestREC_REALM_001_SweepClearsMarkerOnSuccess(t *testing.T) {
 
 	rp := &recFakeRP{}
 	res, err := jobs.RealmConfigSync(ctx, &jobs.Context{
-		SysPool:          sysPool,
+		Reconciler:       pgadapter.NewReconcilerStore(sysPool),
+		Invitations:      pgadapter.NewInvitationRepository(sysPool),
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -182,7 +184,8 @@ func TestREC_REALM_002_MarkerRemainsOnRPFailure(t *testing.T) {
 
 	rp := &recFakeRP{patchErr: errors.New("simulated RP outage")}
 	res, err := jobs.RealmConfigSync(ctx, &jobs.Context{
-		SysPool:          sysPool,
+		Reconciler:       pgadapter.NewReconcilerStore(sysPool),
+		Invitations:      pgadapter.NewInvitationRepository(sysPool),
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -228,7 +231,8 @@ func TestREC_REALM_003_DisablesPrioritizedUnderBacklog(t *testing.T) {
 
 	rp := &recFakeRP{}
 	res, err := jobs.RealmConfigSync(ctx, &jobs.Context{
-		SysPool:          sysPool,
+		Reconciler:       pgadapter.NewReconcilerStore(sysPool),
+		Invitations:      pgadapter.NewInvitationRepository(sysPool),
 		BatchLimit:       2,
 		RealmProvisioner: rp,
 	})
@@ -268,7 +272,8 @@ func TestREC_KC_001_ClearsMarkerAfterDeleteUserSuccess(t *testing.T) {
 
 	rp := &recFakeRP{}
 	res, err := jobs.InvitationKCCleanup(ctx, &jobs.Context{
-		SysPool:          sysPool,
+		Reconciler:       pgadapter.NewReconcilerStore(sysPool),
+		Invitations:      pgadapter.NewInvitationRepository(sysPool),
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -296,7 +301,8 @@ func TestREC_KC_002_SkipsWhenNoKeycloakUserID(t *testing.T) {
 
 	rp := &recFakeRP{}
 	res, err := jobs.InvitationKCCleanup(ctx, &jobs.Context{
-		SysPool:          sysPool,
+		Reconciler:       pgadapter.NewReconcilerStore(sysPool),
+		Invitations:      pgadapter.NewInvitationRepository(sysPool),
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -325,7 +331,8 @@ func TestREC_KC_003_MarkerRemainsOnRPFailure(t *testing.T) {
 
 	rp := &recFakeRP{deleteUserErr: errors.New("simulated RP outage")}
 	res, err := jobs.InvitationKCCleanup(ctx, &jobs.Context{
-		SysPool:          sysPool,
+		Reconciler:       pgadapter.NewReconcilerStore(sysPool),
+		Invitations:      pgadapter.NewInvitationRepository(sysPool),
 		BatchLimit:       10,
 		RealmProvisioner: rp,
 	})
@@ -341,7 +348,7 @@ func TestREC_KC_003_MarkerRemainsOnRPFailure(t *testing.T) {
 
 // ── local helpers ───────────────────────────────────────────────────────────
 
-func insertOutboxRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, n int, ageInterval string, published bool) []string {
+func insertOutboxRows(t *testing.T, ctx context.Context, pool *dbseed.Pool, tenantID uuid.UUID, n int, ageInterval string, published bool) []string {
 	t.Helper()
 	ids := make([]string, n)
 	for i := 0; i < n; i++ {
@@ -364,14 +371,14 @@ func insertOutboxRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool, ten
 
 func quoteInterval(s string) string { return "'" + s + "'" }
 
-func outboxRowExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id string) bool {
+func outboxRowExists(t *testing.T, ctx context.Context, pool *dbseed.Pool, id string) bool {
 	t.Helper()
 	var n int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE id = $1`, id).Scan(&n))
 	return n == 1
 }
 
-func seedTenantStatus(t *testing.T, ctx context.Context, pool *pgxpool.Pool, slug, status, trialInterval string) uuid.UUID {
+func seedTenantStatus(t *testing.T, ctx context.Context, pool *dbseed.Pool, slug, status, trialInterval string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	_, err := pool.Exec(ctx, `
@@ -382,14 +389,14 @@ func seedTenantStatus(t *testing.T, ctx context.Context, pool *pgxpool.Pool, slu
 	return id
 }
 
-func tenantExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) bool {
+func tenantExists(t *testing.T, ctx context.Context, pool *dbseed.Pool, id uuid.UUID) bool {
 	t.Helper()
 	var n int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM tenants WHERE id = $1`, id).Scan(&n))
 	return n == 1
 }
 
-func insertInvitationWithKC(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, email string, kcUserID *uuid.UUID, cleanupPending bool) uuid.UUID {
+func insertInvitationWithKC(t *testing.T, ctx context.Context, pool *dbseed.Pool, tenantID uuid.UUID, email string, kcUserID *uuid.UUID, cleanupPending bool) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	_, err := pool.Exec(ctx, `
@@ -406,4 +413,4 @@ func insertInvitationWithKC(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	return id
 }
 
-// (helpers above accept *pgxpool.Pool directly — no shim types needed.)
+// (helpers above accept *dbseed.Pool directly — no shim types needed.)

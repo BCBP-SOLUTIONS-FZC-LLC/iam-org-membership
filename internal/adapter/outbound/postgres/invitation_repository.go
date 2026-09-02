@@ -74,6 +74,22 @@ func (r *InvitationRepository) List(ctx context.Context, tenantID uuid.UUID) ([]
 	return out, err
 }
 
+func (r *InvitationRepository) LockByID(ctx context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
+	var out *domain.PendingInvitation
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		inv, err := scanInvitation(tx.QueryRow(ctx, `SELECT `+inviteCols+` FROM pending_invitations WHERE id = $1 FOR UPDATE`, id))
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		out = inv
+		return nil
+	})
+	return out, err
+}
+
 func (r *InvitationRepository) FindByID(ctx context.Context, tenantID, id uuid.UUID) (*domain.PendingInvitation, error) {
 	var out *domain.PendingInvitation
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
@@ -332,4 +348,32 @@ func (r *InvitationRepository) CountCreatedInWindow(ctx context.Context, tenantI
 			tenantID, since).Scan(&n)
 	})
 	return n, err
+}
+
+func (r *InvitationRepository) ExpireOverdue(ctx context.Context, limit int) (int, error) {
+	var n int
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE pending_invitations
+			SET status = 'expired', kc_cleanup_pending = true
+			WHERE id IN (
+				SELECT id FROM pending_invitations
+				WHERE status = 'pending' AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $1
+			)`, limit)
+		if err != nil {
+			return err
+		}
+		n = int(tag.RowsAffected())
+		return nil
+	})
+	return n, err
+}
+
+func (r *InvitationRepository) ClearKCCleanupPendingByID(ctx context.Context, id uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE pending_invitations SET kc_cleanup_pending = false WHERE id = $1`, id)
+		return err
+	})
 }

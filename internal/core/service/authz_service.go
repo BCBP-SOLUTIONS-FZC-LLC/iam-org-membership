@@ -9,23 +9,30 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // AuthZService owns I-8 (the hot path — every authenticated request goes
 // through it). Returns the full membership projection AuthZ Enrichment
 // uses to inject headers. See LLD §5.4 / §8.3 / §21.
+//
+// Depends only on port.AuthZRepository, never on *pgcommon.Pool directly
+// (that would be a Clean Architecture violation — core/service importing
+// a vendor DB type instead of a port). The four-table join itself lives
+// in internal/adapter/outbound/postgres.AuthZRepository; this service owns
+// the cross-port composition on top of it: TR-7's derived "member" role,
+// department-code enrichment (port.DepartmentCatalogReader), and PLAN-6's
+// effective-feature-flags merge (port.PlanCatalogReader) — none of which
+// belong in a Postgres adapter.
 type AuthZService struct {
-	pool  *pgcommon.Pool
+	repo  port.AuthZRepository
 	plans port.PlanCatalogReader
 	depts port.DepartmentCatalogReader
 	cache port.Cache
 }
 
-func NewAuthZService(pool *pgcommon.Pool, plans port.PlanCatalogReader, depts port.DepartmentCatalogReader, cache port.Cache) *AuthZService {
-	return &AuthZService{pool: pool, plans: plans, depts: depts, cache: cache}
+func NewAuthZService(repo port.AuthZRepository, plans port.PlanCatalogReader, depts port.DepartmentCatalogReader, cache port.Cache) *AuthZService {
+	return &AuthZService{repo: repo, plans: plans, depts: depts, cache: cache}
 }
 
 // MembershipProjection is the I-8 response envelope.
@@ -89,153 +96,92 @@ func (s *AuthZService) GetMembership(ctx context.Context, tenantID, userID uuid.
 	return proj, nil
 }
 
-// readFromDB executes the single joined query. Arrays are COALESCE'd to
-// [] so the response body never carries JSON null in the collection
-// positions (I8-4).
+// readFromDB composes the I-8 projection over port.AuthZRepository's raw
+// join result. Arrays are COALESCE'd to [] so the response body never
+// carries JSON null in the collection positions (I8-4).
 func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUID) (*MembershipProjection, error) {
-	var proj *MembershipProjection
-
-	err := pgcommon.RunInTx(ctx, s.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
-		// Membership + tenant fields joined.
-		var (
-			mStatus, tStatus, tPlan, tLocale string
-			mfaFresh                         int
-			localAccountsEnabled             bool
-			tenantFeatureFlagsJSON           []byte
-		)
-		err := tx.QueryRow(txCtx, `
-			SELECT tm.status, t.status, t.plan, t.default_locale, t.mfa_freshness_seconds,
-			       t.local_accounts_enabled, t.feature_flags
-			FROM tenant_memberships tm
-			JOIN tenants t ON t.id = tm.tenant_id
-			WHERE tm.tenant_id = $1 AND tm.user_id = $2 AND tm.deleted_at IS NULL`,
-			tenantID, userID,
-		).Scan(&mStatus, &tStatus, &tPlan, &tLocale, &mfaFresh, &localAccountsEnabled, &tenantFeatureFlagsJSON)
-		if err != nil {
-			if err == pgx.ErrNoRows {
-				return nil // 404 → caller sees ErrMemberNotFound
-			}
-			return err
-		}
-
-		// TR-7: "member" is derived at read time (never persisted in tenant_roles).
-		// LLD §6.2 requires it to be injected first in the effective role set
-		// so the gateway's x-tenant-roles header always carries it.
-		roles := []domain.TenantRoleCode{domain.RoleMember}
-		rows, err := tx.Query(txCtx, `
-			SELECT role_code FROM tenant_roles
-			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL
-			ORDER BY role_code`,
-			tenantID, userID)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var r string
-			if err := rows.Scan(&r); err != nil {
-				rows.Close()
-				return err
-			}
-			roles = append(roles, domain.TenantRoleCode(r))
-		}
-		rows.Close()
-
-		// Department code lookup (LLD §5.4 I-8 response shape) — a single
-		// om:departments cache read (CatalogService.Departments, 600s TTL),
-		// not a per-department cross-service call; degrades to an empty
-		// code (never fails I-8) on a cold-cache/Catalog-down intersection,
-		// same posture as the feature-flags plan lookup below.
-		deptCodes := map[uuid.UUID]string{}
-		if s.depts != nil {
-			if all, dErr := s.depts.Departments(ctx); dErr == nil {
-				for _, d := range all {
-					deptCodes[d.ID] = d.Code
-				}
-			}
-		}
-
-		// Dept memberships.
-		depts := []domain.DeptMembershipView{}
-		drows, err := tx.Query(txCtx, `
-			SELECT department_id, role_level FROM dept_memberships
-			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-			tenantID, userID)
-		if err != nil {
-			return err
-		}
-		for drows.Next() {
-			var view domain.DeptMembershipView
-			var lvl string
-			if err := drows.Scan(&view.DepartmentID, &lvl); err != nil {
-				drows.Close()
-				return err
-			}
-			view.RoleLevel = domain.DeptRole(lvl)
-			view.Code = deptCodes[view.DepartmentID]
-			depts = append(depts, view)
-		}
-		drows.Close()
-
-		// Effective feature flags = planDefaults(plan) ⊕ tenants.feature_flags (PLAN-6).
-		// Errors from PlanByCode are deliberately swallowed (err == nil
-		// gate below), unchanged from this method's pre-cutover behavior:
-		// a catalog-admin-config outage degrades I-8 to "no plan
-		// baseline" rather than failing the request — this service has
-		// no caller relationship with the catalog service (LLD §3), and
-		// must not newly acquire one via an unswallowed error here.
-		effective := map[string]any{}
-		plan, err := s.plans.PlanByCode(ctx, domain.TenantPlan(tPlan))
-		if err == nil && plan != nil {
-			for k, v := range plan.FeatureSet {
-				effective[k] = v
-			}
-		}
-		tenantFlags := map[string]any{}
-		if len(tenantFeatureFlagsJSON) > 0 && string(tenantFeatureFlagsJSON) != "null" {
-			_ = json.Unmarshal(tenantFeatureFlagsJSON, &tenantFlags)
-		}
-		for k, v := range tenantFlags {
-			effective[k] = v
-		}
-
-		// Project the effective map down to the sorted list of enabled flag
-		// names (LLD §5.4 I-8 shape). A bool value must be true to count;
-		// any other non-nil value is treated as "set" (this codebase's
-		// feature_flags values are boolean in practice, but the domain type
-		// is map[string]any, so this doesn't assume that).
-		enabledFlags := make([]string, 0, len(effective))
-		for k, v := range effective {
-			switch b, ok := v.(bool); {
-			case ok && b:
-				enabledFlags = append(enabledFlags, k)
-			case !ok && v != nil:
-				enabledFlags = append(enabledFlags, k)
-			}
-		}
-		sort.Strings(enabledFlags)
-
-		subStatus := domain.SubscriptionStatus(tStatus)
-		proj = &MembershipProjection{
-			UserID:               userID,
-			TenantID:             tenantID,
-			Status:               domain.MembershipStatus(mStatus),
-			Plan:                 domain.TenantPlan(tPlan),
-			TenantStatus:         subStatus, // deprecated alias
-			SubscriptionStatus:   subStatus,
-			ReadOnly:             readOnlyForStatus(subStatus),
-			Locale:               tLocale,
-			MFAFreshnessSeconds:  mfaFresh,
-			LocalAccountsEnabled: localAccountsEnabled,
-			Roles:                roles,
-			Departments:          depts,
-			FeatureFlags:         enabledFlags,
-		}
-		return nil
-	})
+	row, err := s.repo.FindMembershipProjection(ctx, tenantID, userID)
 	if err != nil {
 		return nil, err
 	}
-	return proj, nil
+	if row == nil {
+		return nil, nil // 404 → caller (GetMembership) sees ErrMemberNotFound
+	}
+
+	// TR-7: "member" is derived at read time (never persisted in
+	// tenant_roles). LLD §6.2 requires it to be injected first in the
+	// effective role set so the gateway's x-tenant-roles header always
+	// carries it.
+	roles := append([]domain.TenantRoleCode{domain.RoleMember}, row.Roles...)
+
+	// Department code lookup (LLD §5.4 I-8 response shape) — a single
+	// om:departments cache read (CatalogService.Departments, 600s TTL),
+	// not a per-department cross-service call; degrades to an empty
+	// code (never fails I-8) on a cold-cache/Catalog-down intersection,
+	// same posture as the feature-flags plan lookup below.
+	deptCodes := map[uuid.UUID]string{}
+	if s.depts != nil {
+		if all, dErr := s.depts.Departments(ctx); dErr == nil {
+			for _, d := range all {
+				deptCodes[d.ID] = d.Code
+			}
+		}
+	}
+	depts := make([]domain.DeptMembershipView, len(row.Departments))
+	for i, d := range row.Departments {
+		d.Code = deptCodes[d.DepartmentID]
+		depts[i] = d
+	}
+
+	// Effective feature flags = planDefaults(plan) ⊕ tenants.feature_flags (PLAN-6).
+	// Errors from PlanByCode are deliberately swallowed (err == nil
+	// gate below), unchanged from this method's pre-cutover behavior:
+	// a catalog-admin-config outage degrades I-8 to "no plan
+	// baseline" rather than failing the request — this service has
+	// no caller relationship with the catalog service (LLD §3), and
+	// must not newly acquire one via an unswallowed error here.
+	effective := map[string]any{}
+	plan, planErr := s.plans.PlanByCode(ctx, row.TenantPlan)
+	if planErr == nil && plan != nil {
+		for k, v := range plan.FeatureSet {
+			effective[k] = v
+		}
+	}
+	for k, v := range row.TenantFeatureFlags {
+		effective[k] = v
+	}
+
+	// Project the effective map down to the sorted list of enabled flag
+	// names (LLD §5.4 I-8 shape). A bool value must be true to count;
+	// any other non-nil value is treated as "set" (this codebase's
+	// feature_flags values are boolean in practice, but the domain type
+	// is map[string]any, so this doesn't assume that).
+	enabledFlags := make([]string, 0, len(effective))
+	for k, v := range effective {
+		switch b, ok := v.(bool); {
+		case ok && b:
+			enabledFlags = append(enabledFlags, k)
+		case !ok && v != nil:
+			enabledFlags = append(enabledFlags, k)
+		}
+	}
+	sort.Strings(enabledFlags)
+
+	return &MembershipProjection{
+		UserID:               userID,
+		TenantID:             tenantID,
+		Status:               row.MembershipStatus,
+		Plan:                 row.TenantPlan,
+		TenantStatus:         row.SubscriptionStatus, // deprecated alias
+		SubscriptionStatus:   row.SubscriptionStatus,
+		ReadOnly:             readOnlyForStatus(row.SubscriptionStatus),
+		Locale:               row.Locale,
+		MFAFreshnessSeconds:  row.MFAFreshnessSeconds,
+		LocalAccountsEnabled: row.LocalAccountsEnabled,
+		Roles:                roles,
+		Departments:          depts,
+		FeatureFlags:         enabledFlags,
+	}, nil
 }
 
 // ── cache with jitter ─────────────────────────────────────────────────

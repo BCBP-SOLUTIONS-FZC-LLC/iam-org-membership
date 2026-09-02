@@ -166,7 +166,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 		}
 		if previous == nil {
 			// Fresh grant.
-			return pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			return pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventDepartmentMembershipGranted, TenantID: tenantID,
 				Subject: userID.String(), Actor: actorID.String(),
 				IPAddress: rcIP, UserAgent: rcUA,
@@ -177,7 +177,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 		}
 		if previous.RoleLevel != level {
 			// Level change.
-			return pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			return pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventDepartmentMembershipLevelChanged, TenantID: tenantID,
 				Subject: userID.String(), Actor: actorID.String(),
 				IPAddress: rcIP, UserAgent: rcUA,
@@ -237,7 +237,7 @@ func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, de
 			evt.IPAddress = rc.ClientIP
 			evt.UserAgent = rc.UserAgent
 		}
-		return pub.EnqueueCtx(txCtx, evt)
+		return pub.Enqueue(txCtx, evt)
 	})
 	if err != nil {
 		return nil, err

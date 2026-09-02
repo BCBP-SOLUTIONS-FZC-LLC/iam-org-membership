@@ -15,11 +15,11 @@ import (
 	"time"
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -40,13 +40,13 @@ const (
 //	appPool     — pgcommon.Pool bound as org_membership_app, RLS enforced,
 //	              GUC-provider wired so `SET LOCAL app.tenant_id` fires on
 //	              every checkout (mirrors production).
-//	rawPool     — raw pgxpool bound as postgres superuser, used only to
+//	rawPool     — dbseed.Pool (pgcommon-backed superuser) used only to
 //	              seed rows (bypasses RLS naturally).
 //	sysPool     — pgcommon.Pool bound as postgres superuser, no GUCProvider,
 //	              for tests that exercise jobs.Context.SysPool (a real
 //	              *pgcommon.Pool in production, deliberately without RLS GUC
 //	              injection so a BYPASSRLS-equivalent role sees every tenant).
-func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool, *pgcommon.Pool) {
+func setupTestDB(t testing.TB) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping postgres integration test in short mode")
@@ -89,7 +89,7 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *pgxpool.Pool, *pgcommon.Pool) {
 	require.NoError(t, err, "postgres testcontainer failed after %d attempts", maxContainerAttempts)
 	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
 
-	rawPool, err := pgxpool.New(ctx, superDSN)
+	rawPool, err := dbseed.New(ctx, superDSN)
 	require.NoError(t, err)
 	t.Cleanup(rawPool.Close)
 
@@ -159,7 +159,7 @@ func withTenant(ctx context.Context, tenantID uuid.UUID) context.Context {
 
 // seedTenant inserts a tenants row via the superuser pool. Bypasses RLS.
 // Returns the tenant id.
-func seedTenant(t testing.TB, ctx context.Context, rawPool *pgxpool.Pool, slug string) uuid.UUID {
+func seedTenant(t testing.TB, ctx context.Context, rawPool *dbseed.Pool, slug string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	_, err := rawPool.Exec(ctx, `

@@ -153,7 +153,7 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 			case previous == nil:
 				// New (or reactivated after soft-delete) → Granted.
 				if pub != nil {
-					_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventDepartmentMembershipGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: "iam-system",
 						Data: domain.DepartmentMembershipGrantedPayload{
@@ -166,7 +166,7 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 			case previous.RoleLevel != assigned.RoleLevel:
 				// Active membership at a different level → LevelChanged.
 				if pub != nil {
-					_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventDepartmentMembershipLevelChanged, TenantID: tenantID,
 						Subject: userID.String(), Actor: "iam-system",
 						Data: domain.DepartmentMembershipLevelChangedPayload{
@@ -204,7 +204,7 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 			}
 			res.GrantedTenantRoles = append(res.GrantedTenantRoles, granted.RoleCode)
 			if pub != nil {
-				_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventTenantRoleGranted, TenantID: tenantID,
 					Subject: userID.String(), Actor: "iam-system",
 					Data: domain.TenantRoleGrantedPayload{

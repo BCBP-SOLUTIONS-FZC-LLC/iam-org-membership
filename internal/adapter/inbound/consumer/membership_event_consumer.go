@@ -29,9 +29,8 @@
 //
 // Idempotency (IDEMP-2/4) is provided by port.IdempotencyStore against
 // processed_events, keyed by (event_id, consumer) — same port shape as
-// iam-user-profile's IdempotencyStore, but MarkProcessedInTx joins the
-// caller's transaction (rather than iam-user-profile's decoupled,
-// mark-after-success call) so the dedup write commits atomically with the
+// iam-user-profile's IdempotencyStore. MarkProcessed joins the caller's
+// TxRunner transaction so the dedup write commits atomically with the
 // EVT-14 row lock and projection update below. Beyond-window duplicates
 // (SQS max 14d + DLQ dwell) are backstopped by EVT-14 recency.
 //
@@ -53,7 +52,6 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // consumerName is the (event_id, consumer) key component in processed_events.
@@ -64,16 +62,9 @@ const consumerName = "iam-org-membership"
 // recording processed_events. Used for EVT-15 future-time clamp.
 var ErrPoisonPill = errors.New("event rejected as poison pill (EVT-15 future-time clamp)")
 
-// OutboxEnqueuer is the contract the consumer uses to emit TenantStateChanged
-// (EVT-16) inside the projection tx. The concrete implementation is the
-// eventbus Publisher's Enqueue method, wrapped in a tx-scoped closure.
-type OutboxEnqueuer interface {
-	EnqueueInTx(ctx context.Context, tx pgx.Tx, event *domain.DomainEvent) error
-}
-
 type MembershipEventConsumer struct {
-	pool        *pgcommon.Pool
-	outbox      OutboxEnqueuer
+	txRunner    port.TxRunner
+	tenants     port.TenantRepository
 	idempotency port.IdempotencyStore
 	catalog     port.PlanCatalogReader
 	cache       port.Cache
@@ -93,11 +84,11 @@ type MembershipEventConsumer struct {
 // be nil — the TenantOffboarded GDPR wipe's cache-invalidation step (§15.5)
 // is best-effort and skipped entirely when cache is nil, consistent with
 // CACHE-2/9 (advisory-only, never a correctness dependency).
-func NewMembershipEventConsumer(pool *pgcommon.Pool, outbox OutboxEnqueuer, idempotency port.IdempotencyStore, catalog port.PlanCatalogReader, cache port.Cache, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
+func NewMembershipEventConsumer(txRunner port.TxRunner, tenants port.TenantRepository, idempotency port.IdempotencyStore, catalog port.PlanCatalogReader, cache port.Cache, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
 	if skew <= 0 {
 		skew = 300 * time.Second
 	}
-	return &MembershipEventConsumer{pool: pool, outbox: outbox, idempotency: idempotency, catalog: catalog, cache: cache, skew: skew, logger: port.NewSlogStyleLogger(logger)}
+	return &MembershipEventConsumer{txRunner: txRunner, tenants: tenants, idempotency: idempotency, catalog: catalog, cache: cache, skew: skew, logger: port.NewSlogStyleLogger(logger)}
 }
 
 // Handle is the entry point for platform-events SQS consumer.
@@ -119,8 +110,8 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		}
 		c.logger.Info("unknown event type — silently acknowledging",
 			"event_id", env.ID, "event_type", env.Type)
-		return pgcommon.RunInTx(ctx, c.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
-			return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
+		return c.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
 		})
 	}
 
@@ -154,70 +145,65 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	// own transaction, committed and closed before the HTTP call.
 	var trialDurationDays int
 	if env.Type == "TrialReactivated" {
-		var planCode string
-		peekErr := pgcommon.RunInTx(gucCtx, c.pool, pgx.TxOptions{}, func(peekCtx context.Context, tx pgx.Tx) error {
-			return tx.QueryRow(peekCtx, `SELECT plan FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&planCode)
-		})
+		tenant, peekErr := c.tenants.FindByID(gucCtx, tenantID)
 		switch {
-		case errors.Is(peekErr, pgx.ErrNoRows):
+		case peekErr != nil && errors.Is(peekErr, domain.ErrTenantNotFound):
 			// Tenant absent — the write tx below will hit the same
-			// ErrNoRows and take the standard "record dedup, drop" path.
+			// missing-row path and take the standard "record dedup, drop" path.
 		case peekErr != nil:
 			return fmt.Errorf("peek current plan for TrialReactivated: %w", peekErr)
+		case tenant == nil:
+			// Same as not-found: write tx records dedup and drops.
 		case c.catalog == nil:
 			return errors.New("TrialReactivated: no PlanCatalogReader configured")
 		default:
-			plan, err := c.catalog.PlanByCode(ctx, domain.TenantPlan(planCode))
+			plan, err := c.catalog.PlanByCode(ctx, tenant.Plan)
 			if err != nil {
-				return fmt.Errorf("resolve plan %q for TrialReactivated: %w", planCode, err)
+				return fmt.Errorf("resolve plan %q for TrialReactivated: %w", tenant.Plan, err)
 			}
 			trialDurationDays = plan.TrialDurationDays
 		}
 	}
 
 	var gdprWipeRan bool
-	txErr := pgcommon.RunInTx(gucCtx, c.pool, pgx.TxOptions{}, func(txCtx context.Context, tx pgx.Tx) error {
-		// Lock the tenant row (EVT-14 needs consistent last_event_at read).
-		var currentStatus, currentPlan string
-		var lastEventAt *time.Time
-		err := tx.QueryRow(txCtx, `
-			SELECT status, plan, last_event_at
-			FROM tenants WHERE id = $1 AND deleted_at IS NULL
-			FOR UPDATE`, tenantID).Scan(&currentStatus, &currentPlan, &lastEventAt)
+	txErr := c.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+		locked, err := c.tenants.LockForProjection(txCtx, tenantID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				// Tenant absent (already offboarded / never provisioned) —
-				// record dedup and drop silently.
-				return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
-			}
 			return err
+		}
+		if locked == nil {
+			// Tenant absent (already offboarded / never provisioned) —
+			// record dedup and drop silently.
+			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
 		}
 
 		// ── EVT-14 recency guard ─────────────────────────────────────────
-		if lastEventAt != nil && !env.Timestamp.After(*lastEventAt) {
+		if locked.LastEventAt != nil && !env.Timestamp.After(*locked.LastEventAt) {
 			if metrics.StaleLifecycleEventSkipped != nil {
 				metrics.StaleLifecycleEventSkipped.WithLabelValues(env.Type).Inc()
 			}
 			c.logger.Info("EVT-14 stale — projection unchanged", "event_id", env.ID, "event_type", env.Type)
-			return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
+			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
 		}
 
-		prevStatus := domain.SubscriptionStatus(currentStatus)
-		prevPlan := domain.TenantPlan(currentPlan)
+		prevStatus := locked.Status
+		prevPlan := locked.Plan
 
-		newStatus, newPlan, err := c.applyProjection(txCtx, tx, tenantID, env, prevStatus, prevPlan, trialDurationDays)
+		newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trialDurationDays)
 		if err != nil {
 			return err
 		}
 
 		// Bump last_event_at only when projection actually ran.
-		if _, err := tx.Exec(txCtx, `UPDATE tenants SET last_event_at = $2 WHERE id = $1`, tenantID, env.Timestamp); err != nil {
+		if err := c.tenants.SetLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
 			return err
 		}
 
+		pub, _ := port.EventPublisherFromContext(txCtx)
+
 		// ── EVT-16 tenant-state relay ────────────────────────────────────
-		if c.outbox != nil && (newStatus != prevStatus || newPlan != prevPlan) {
-			if err := c.outbox.EnqueueInTx(txCtx, tx, &domain.DomainEvent{
+		if pub != nil && (newStatus != prevStatus || newPlan != prevPlan) {
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type:      domain.EventTenantStateChanged,
 				TenantID:  tenantID,
 				Subject:   tenantID.String(),
@@ -262,16 +248,14 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			// effect. Order doesn't matter for FK ordering here — none of
 			// these six tables reference each other, only tenants (which
 			// is never itself deleted).
-			for _, table := range gdprWipeTables {
-				if _, err := tx.Exec(txCtx, `DELETE FROM `+table+` WHERE tenant_id = $1`, tenantID); err != nil {
-					return fmt.Errorf("GDPR wipe: delete from %s: %w", table, err)
-				}
+			if err := c.tenants.WipeTenantChildren(txCtx, tenantID); err != nil {
+				return err
 			}
 			gdprWipeRan = true
 		}
 
-		if c.outbox != nil && prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
-			if err := c.outbox.EnqueueInTx(txCtx, tx, &domain.DomainEvent{
+		if pub != nil && prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type:      domain.EventTenantMembershipsPurged,
 				TenantID:  tenantID,
 				Subject:   tenantID.String(),
@@ -287,7 +271,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			}
 		}
 
-		return c.idempotency.MarkProcessedInTx(txCtx, tx, consumerName, env.ID)
+		return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
 	})
 	if txErr != nil {
 		return txErr
@@ -304,18 +288,6 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		}
 	}
 	return nil
-}
-
-// gdprWipeTables are Core's own tenant-scoped tables deleted on
-// TenantOffboarded (§15.5) — the tenants row itself is only soft-deleted,
-// so these are explicit deletes, never an ON DELETE CASCADE side effect.
-var gdprWipeTables = []string{
-	"pending_invitations",
-	"dept_memberships",
-	"tenant_roles",
-	"tenant_memberships",
-	"dept_role_labels",
-	"tenant_departments",
 }
 
 // gdprWipeCacheKeys returns the exactly-known, bounded tenant-scoped cache
@@ -341,23 +313,35 @@ func gdprWipeCacheKeys(tenantID uuid.UUID) []string {
 	}
 }
 
-func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int) (domain.SubscriptionStatus, domain.TenantPlan, error) {
+func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int) (domain.SubscriptionStatus, domain.TenantPlan, error) {
 	switch env.Type {
 	// ── tenant-orgm-q (Realm-Provisioner-produced) ──────────────────────
 	case "TrialTenantProvisioned":
 		return prevStatus, prevPlan, nil
 	case "TenantRealmReady":
+		// RP's frozen TenantRealmReadyPayload (§25) carries the realm name
+		// under json:"realm", not "realm_id" — and has no realm_type field
+		// at all. Corrected: a prior version of this handler read
+		// nonexistent "realm_id"/"realm_type" fields, so every real event
+		// silently blanked tenants.realm_id/realm_type to empty strings
+		// (execLifecyclePatch's UPDATE has no COALESCE guard). RP's own doc
+		// comment on TenantRealmReadyPayload confirms this event is "emitted
+		// by RP-2 or RP-3 (never for trial)" — both dedicated-realm paths —
+		// so realm_type is hardcoded rather than read from a field RP never
+		// sends.
 		var payload struct {
-			RealmID       string `json:"realm_id"`
-			RealmType     string `json:"realm_type"`
+			Realm         string `json:"realm"`
 			KeycloakShard string `json:"keycloak_shard"`
 		}
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return prevStatus, prevPlan, err
 		}
-		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4
-			WHERE id = $1`, tenantID, payload.RealmID, payload.RealmType, payload.KeycloakShard)
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:            port.LifecycleSetRealm,
+			RealmID:       payload.Realm,
+			RealmType:     string(domain.RealmDedicated),
+			KeycloakShard: payload.KeycloakShard,
+		})
 		return prevStatus, prevPlan, err
 	case "TenantConverted":
 		var payload struct {
@@ -370,12 +354,10 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		if newPlan == "" {
 			newPlan = prevPlan
 		}
-		// T-16: suspension_source cleared defensively — 'active' requires it NULL
-		// (chk_suspension_source_required) regardless of what prevStatus was.
-		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2,
-			                    suspension_source = NULL
-			WHERE id = $1`, tenantID, string(newPlan))
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:   port.LifecycleActivatePaid,
+			Plan: newPlan,
+		})
 		return domain.StatusActive, newPlan, err
 	case "DirectPaidSignup":
 		var payload struct {
@@ -388,15 +370,16 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		if newPlan == "" {
 			newPlan = prevPlan
 		}
-		// T-16: suspension_source cleared defensively — see TenantConverted above.
-		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2,
-			                    suspension_source = NULL
-			WHERE id = $1`, tenantID, string(newPlan))
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:   port.LifecycleActivatePaid,
+			Plan: newPlan,
+		})
 		return domain.StatusActive, newPlan, err
 	case "TrialExpired":
-		// T-16: suspension_source cleared defensively (see TenantConverted).
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'trial_expired', suspension_source = NULL WHERE id = $1`, tenantID)
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:     port.LifecycleSetStatusClearSuspension,
+			Status: domain.StatusTrialExpired,
+		})
 		return domain.StatusTrialExpired, prevPlan, err
 	case "TrialReactivated":
 		// TR2 (§15.4, LLD line 4237): trial_ends_at uses per-tier plan.trial_duration_days,
@@ -405,17 +388,14 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		// trial_duration_days is resolved from the Catalog Service before this tx opened
 		// (Handle's pre-tx peek) — the `plans` table moved out of this service's own
 		// database under ADR-0007, so it can no longer be read via a local subquery.
-		tag, err := tx.Exec(ctx, `
-			UPDATE tenants t
-			SET status = 'trial',
-			    trial_ends_at = now() + make_interval(days => $2),
-			    trial_reactivation_count = trial_reactivation_count + 1,
-			    suspension_source = NULL
-			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, tenantID, trialDurationDays)
+		rows, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:                port.LifecycleTrialReactivate,
+			TrialDurationDays: trialDurationDays,
+		})
 		if err != nil {
 			return prevStatus, prevPlan, err
 		}
-		if tag.RowsAffected() == 0 {
+		if rows == 0 {
 			c.logger.Warn("TrialReactivated: reactivation cap reached (TRIAL-5), no-op",
 				"tenant_id", tenantID, "event_id", env.ID)
 			return prevStatus, prevPlan, nil
@@ -434,27 +414,11 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return prevStatus, prevPlan, err
 		}
-		source := domain.SuspensionSourceBillingLapse
+		op := port.LifecycleSuspendBillingLapse
 		if domain.SuspensionSource(payload.Source) == domain.SuspensionSourceOperator {
-			source = domain.SuspensionSourceOperator
+			op = port.LifecycleSuspendOperator
 		}
-		var err error
-		if source == domain.SuspensionSourceBillingLapse {
-			// T-11 biconditional (chk_cancelled_at_required): cancelled_at IS NOT
-			// NULL for suspended+billing_lapse. COALESCE preserves an existing
-			// timestamp (idempotent replay after a manual suspend).
-			_, err = tx.Exec(ctx, `
-				UPDATE tenants SET status = 'suspended',
-				                    suspension_source = $2,
-				                    cancelled_at = COALESCE(cancelled_at, now())
-				WHERE id = $1`, tenantID, string(source))
-		} else {
-			// operator branch: cancelled_at deliberately left untouched — this
-			// tenant never enters the §15.5 grace/retention clock (T-16).
-			_, err = tx.Exec(ctx, `
-				UPDATE tenants SET status = 'suspended', suspension_source = $2
-				WHERE id = $1`, tenantID, string(source))
-		}
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{Op: op})
 		return domain.StatusSuspended, prevPlan, err
 	case "TenantOffboarded":
 		// PAID-1: terminal. Per tenant-offboarding-workflow doc — O&M
@@ -462,11 +426,7 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		// T-16: suspension_source cleared — 'offboarded' requires it NULL
 		// (chk_suspension_source_required), including when reached from
 		// an operator-suspended tenant.
-		_, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'offboarded', deleted_at = now(),
-			                    cancelled_at = COALESCE(cancelled_at, now()),
-			                    suspension_source = NULL
-			WHERE id = $1`, tenantID)
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{Op: port.LifecycleOffboard})
 		return domain.StatusOffboarded, prevPlan, err
 
 	// ── billing-orgm-q (Billing-produced) ───────────────────────────────
@@ -481,19 +441,23 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		if newPlan == "" {
 			newPlan = prevPlan
 		}
-		// feature_flags untouched (T-9).
-		_, err := tx.Exec(ctx, `UPDATE tenants SET plan = $2 WHERE id = $1`, tenantID, string(newPlan))
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:   port.LifecycleSetPlan,
+			Plan: newPlan,
+		})
 		return prevStatus, newPlan, err
 	case "TenantPaymentPastDue":
-		// T-16: suspension_source cleared defensively (see TenantConverted).
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'past_due', suspension_source = NULL WHERE id = $1`, tenantID)
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:     port.LifecycleSetStatusClearSuspension,
+			Status: domain.StatusPastDue,
+		})
 		return domain.StatusPastDue, prevPlan, err
 	case "TenantSubscriptionCancelled":
 		// Preserve any existing cancelled_at (e.g. tenant was previously suspended
 		// with cancelled_at set). Replaying this event must NOT reset the §15.5
 		// retention/grace clock. Parity with TenantSuspended/TenantOffboarded.
 		// T-16: suspension_source cleared — 'cancelled' requires it NULL.
-		_, err := tx.Exec(ctx, `UPDATE tenants SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, now()), suspension_source = NULL WHERE id = $1`, tenantID)
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{Op: port.LifecycleCancel})
 		return domain.StatusCancelled, prevPlan, err
 	case "TenantReactivated":
 		if prevStatus == domain.StatusOffboarded {
@@ -509,19 +473,15 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		// A tenant that was ever paid (subscription_started_at set) still resolves
 		// to 'active', unchanged from the prior behavior. Two conditioned UPDATEs
 		// (not a QueryRow+RETURNING) to keep this Exec-only, matching every other
-		// case in this switch and the fakeTx unit-test seam.
-		tag, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'active', cancelled_at = NULL, suspension_source = NULL
-			WHERE id = $1 AND subscription_started_at IS NOT NULL`, tenantID)
+		// case in this switch.
+		rows, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{Op: port.LifecycleReactivatePaid})
 		if err != nil {
 			return prevStatus, prevPlan, err
 		}
-		if tag.RowsAffected() > 0 {
+		if rows > 0 {
 			return domain.StatusActive, prevPlan, nil
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE tenants SET status = 'trial', cancelled_at = NULL, suspension_source = NULL
-			WHERE id = $1 AND subscription_started_at IS NULL`, tenantID); err != nil {
+		if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{Op: port.LifecycleReactivateTrial}); err != nil {
 			return prevStatus, prevPlan, err
 		}
 		return domain.StatusTrial, prevPlan, nil
@@ -532,8 +492,10 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tx pgx.Tx
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return prevStatus, prevPlan, err
 		}
-		// SEAT-2: unconditional accept.
-		_, err := tx.Exec(ctx, `UPDATE tenants SET licensed_seats = $2 WHERE id = $1`, tenantID, payload.LicensedSeats)
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:            port.LifecycleSetLicensedSeats,
+			LicensedSeats: payload.LicensedSeats,
+		})
 		return prevStatus, prevPlan, err
 	}
 	return prevStatus, prevPlan, nil

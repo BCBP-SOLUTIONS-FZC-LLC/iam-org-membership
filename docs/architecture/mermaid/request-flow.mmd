@@ -31,7 +31,7 @@ sequenceDiagram
 
         H ->>+ SVC: GetMemberships(ctx, tenantID, userID)
         SVC ->>+ DB: Four-table joined SELECT over<br/>tenant_memberships + tenants + tenant_roles + dept_memberships<br/>WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.deleted_at IS NULL<br/>(NO delegations join — dropped under ADR-0008 Option C, one fewer table than before)
-        Note over DB: RLS policy on app.tenant_id — fails closed (0 rows) on missing GUC<br/>array_agg(...) FILTER (...) + COALESCE(...,'{}') so departments[]<br/>always []-typed, never null (I8-4). No active_delegations field exists any more.
+        Note over DB: RLS policy on app.tenant_id — fails closed (0 rows) on missing GUC<br/>array_agg(...) FILTER (...) + COALESCE(...,{}) so departments[]<br/>always []-typed, never null (I8-4). No active_delegations field exists any more.
         DB -->>- SVC: aggregated row (or empty → 404 I8-3)
 
         SVC -->>- H: *domain.MembershipView

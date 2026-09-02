@@ -29,6 +29,7 @@ package realmprovisioner
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -131,6 +132,12 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.setInternalHeaders(httpReq, req.TenantID)
+	// RP-5 requires Idempotency-Key (RequireIdempotencyKey — 400
+	// missing_idempotency_key otherwise). Derived deterministically from
+	// (tenant_id, email) rather than a fresh UUID per call, so a network-
+	// level retry of the SAME invite reuses RP's stored result (IDEMP-3)
+	// instead of risking a second Keycloak user create.
+	httpReq.Header.Set("Idempotency-Key", createInvitedUserIdempotencyKey(req.TenantID, req.Email))
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
@@ -277,6 +284,15 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("rp: ResetMFA returned %d: %s", resp.StatusCode, string(msg))
+}
+
+// createInvitedUserIdempotencyKey derives a stable RP-5 Idempotency-Key from
+// (tenantID, email) — hashed rather than the raw email so the header value
+// is always short, ASCII, and free of any character an email address could
+// legally contain.
+func createInvitedUserIdempotencyKey(tenantID uuid.UUID, email string) string {
+	sum := sha256.Sum256([]byte(tenantID.String() + ":" + email))
+	return fmt.Sprintf("invite-%x", sum)
 }
 
 func (c *HTTPClient) setInternalHeaders(req *http.Request, tenantID uuid.UUID) {

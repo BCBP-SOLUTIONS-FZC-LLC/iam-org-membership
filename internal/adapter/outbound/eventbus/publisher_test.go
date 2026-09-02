@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -66,7 +67,7 @@ func TestPublisher_Enqueue_MarshalPayloadFailure(t *testing.T) {
 	// A channel type cannot be JSON-marshalled → the first branch of
 	// Enqueue returns an error before touching tx or codec.
 	p := New("test", fakeCodec{})
-	err := p.Enqueue(context.Background(), nil, &domain.DomainEvent{
+	err := p.Enqueue(context.Background(), &domain.DomainEvent{
 		Type: "X",
 		Data: make(chan int),
 	})
@@ -78,7 +79,7 @@ func TestPublisher_Enqueue_CodecErrorPropagates(t *testing.T) {
 	// codec.Encode error → early return, no tx access needed.
 	codecErr := errors.New("glue schema unknown")
 	p := New("test", fakeCodec{encodeErr: codecErr})
-	err := p.Enqueue(context.Background(), nil, &domain.DomainEvent{
+	err := p.Enqueue(context.Background(), &domain.DomainEvent{
 		Type:     "TenantCreated",
 		TenantID: uuid.New(),
 		Data:     map[string]any{"foo": "bar"},
@@ -88,14 +89,12 @@ func TestPublisher_Enqueue_CodecErrorPropagates(t *testing.T) {
 	assert.ErrorIs(t, err, codecErr)
 }
 
-// ── insertEnvelope — oversize guard fires before tx.Exec ───────────────
-
-// ── Enqueue happy path via fakeTx (covers option branches too) ────────
+// ── Enqueue happy path via fakeTx on ctx (covers option branches too) ──
 
 func TestPublisher_Enqueue_HappyPathInsertsIntoOutbox(t *testing.T) {
 	tx := &fakeTx{}
 	p := New("iam-org-membership", NoopCodec{})
-	err := p.Enqueue(context.Background(), tx, &domain.DomainEvent{
+	err := p.Enqueue(pgadapter.WithTx(context.Background(), tx), &domain.DomainEvent{
 		Type:      "TenantCreated",
 		TenantID:  uuid.New(),
 		Subject:   "sub",
@@ -109,15 +108,14 @@ func TestPublisher_Enqueue_HappyPathInsertsIntoOutbox(t *testing.T) {
 	assert.Contains(t, tx.lastSQL, "outbox_events")
 }
 
-func TestPublisher_EnqueueInTx_DelegatesToEnqueue(t *testing.T) {
-	tx := &fakeTx{}
+func TestPublisher_Enqueue_RequiresOpenTx(t *testing.T) {
 	p := New("iam-org-membership", NoopCodec{})
-	err := p.EnqueueInTx(context.Background(), tx, &domain.DomainEvent{
-		Type: "TenantRoleGranted", TenantID: uuid.New(),
-		Data: map[string]any{"x": 1},
+	err := p.Enqueue(context.Background(), &domain.DomainEvent{
+		Type: "TenantCreated", TenantID: uuid.New(),
+		Data: map[string]any{"foo": "bar"},
 	})
-	require.NoError(t, err)
-	assert.True(t, tx.execCalled, "EnqueueInTx must reach the underlying Enqueue path")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RunInTx")
 }
 
 func TestPublisher_Enqueue_TxExecErrorPropagates(t *testing.T) {
@@ -126,7 +124,7 @@ func TestPublisher_Enqueue_TxExecErrorPropagates(t *testing.T) {
 		return pgconn.CommandTag{}, execErr
 	}}
 	p := New("test", NoopCodec{})
-	err := p.Enqueue(context.Background(), tx, &domain.DomainEvent{
+	err := p.Enqueue(pgadapter.WithTx(context.Background(), tx), &domain.DomainEvent{
 		Type: "TenantRoleGranted", TenantID: uuid.New(),
 		Data: map[string]any{"x": 1},
 	})
@@ -139,7 +137,7 @@ func TestPublisher_Enqueue_CodecReturnIgnoredPayloadIsPlainJSON(t *testing.T) {
 	// encoding is deferred to the SNS publisher via WithCodec (publish path).
 	tx := &fakeTx{}
 	p := New("test", fakeCodec{encoded: []byte(`GLUE_BYTES`), schemaID: "arn:aws:glue:us-east-1:123:schemaVersion/abc"})
-	err := p.Enqueue(context.Background(), tx, &domain.DomainEvent{
+	err := p.Enqueue(pgadapter.WithTx(context.Background(), tx), &domain.DomainEvent{
 		Type: "TenantCreated", TenantID: uuid.New(),
 		Data: map[string]any{"a": "b"},
 	})

@@ -1,8 +1,8 @@
 package metrics
 
 import (
+	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -10,21 +10,32 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 )
+
+func TestMain(m *testing.M) {
+	// ObservabilityMiddlewares is gincommon's public metrics-init API.
+	// Call it before Register() so collectors pick up {service, version}
+	// const labels and land on gincommon's registerer — the same order
+	// cmd/server/main.go uses.
+	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
+		ServiceName:  "iam-org-membership",
+		BuildVersion: "test",
+	})
+	os.Exit(m.Run())
+}
 
 // Phase 18 · 0%-units sweep — metrics/business.go was partial coverage
 // only (via test B13). This file exercises Register() itself + label
 // stability + observation semantics.
 
-// registerOnce guards Register() across tests — it uses the global
-// prometheus.DefaultRegisterer via MustRegister which panics on double
-// registration. First test to run calls it; the rest reuse the registered
-// metrics.
-var registerOnce sync.Once
+// ensureRegistered calls Register() once per test process. Register() is
+// itself idempotent (sync.Once in business.go).
 
 func ensureRegistered(t testing.TB) {
 	t.Helper()
-	registerOnce.Do(func() { Register() })
+	Register()
 }
 
 // TestRegisterSucceedsAndPopulatesAllVars — Register()
@@ -215,4 +226,19 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 			"Help text of %s must mention invariant %s (got: %q)",
 			mf.GetName(), want, mf.GetHelp())
 	}
+}
+
+func TestGincommonLabels_MatchObservabilityConstLabels(t *testing.T) {
+	ensureRegistered(t)
+
+	got := gincommonLabels()
+	want := gincommon.MetricsConstLabels()
+	assert.Equal(t, want, got, "business collectors must carry gincommon {service, version} const labels")
+	assert.Equal(t, "iam-org-membership", got["service"])
+	assert.Equal(t, "test", got["version"])
+
+	xsvc := gincommonLabels("service")
+	_, hasService := xsvc["service"]
+	assert.False(t, hasService, "iam_xsvc_* already labels downstream as 'service'")
+	assert.Equal(t, "test", xsvc["version"])
 }

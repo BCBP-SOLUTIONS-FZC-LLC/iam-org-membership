@@ -83,6 +83,37 @@ const docTemplate = `{
                 }
             }
         },
+        "/internal/subscription-lapses": {
+            "get": {
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ],
+                "description": "Returns tenants with status='cancelled' whose cancelled_at is older than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes it from the next poll.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "List tenants past their subscription-cancellation grace period (RP-C3 subscription-lapse sweep)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.SubscriptionLapseListResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/internal/tenants": {
             "post": {
                 "security": [
@@ -3333,6 +3364,40 @@ const docTemplate = `{
                 "pending_invitations": {
                     "type": "integer",
                     "example": 3
+                }
+            }
+        },
+        "http.SubscriptionLapseItem": {
+            "type": "object",
+            "properties": {
+                "cancelled_at": {
+                    "type": "string"
+                },
+                "realm_id": {
+                    "type": "string",
+                    "example": "acme"
+                },
+                "realm_type": {
+                    "type": "string",
+                    "enum": [
+                        "shared",
+                        "dedicated"
+                    ]
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "http.SubscriptionLapseListResponse": {
+            "type": "object",
+            "properties": {
+                "tenants": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/http.SubscriptionLapseItem"
+                    }
                 }
             }
         },

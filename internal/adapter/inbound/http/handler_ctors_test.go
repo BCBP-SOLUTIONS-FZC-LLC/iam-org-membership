@@ -32,7 +32,7 @@ func TestNewInvitationHandler_Constructs(t *testing.T) {
 }
 
 func TestNewInternalHandler_Constructs(t *testing.T) {
-	h := NewInternalHandler(nil, nil, nil, nil, nil, nil)
+	h := NewInternalHandler(nil, nil, nil, nil, nil, nil, nil)
 	assert.NotNil(t, h)
 }
 

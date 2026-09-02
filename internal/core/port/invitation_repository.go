@@ -53,4 +53,30 @@ type InvitationRepository interface {
 
 	// ListPendingKCCleanup is the invitation-kc-cleanup reconciler query.
 	ListPendingKCCleanup(ctx context.Context, limit int) ([]domain.PendingInvitation, error)
+
+	// LockByID takes SELECT … FOR UPDATE on the pending_invitations row
+	// (PI-4/PI-8 accept-vs-revoke serialization). Returns (nil, nil) when
+	// the row is gone.
+	LockByID(ctx context.Context, id uuid.UUID) (*domain.PendingInvitation, error)
+
+	// ExpireOverdue flips pending invitations past expires_at to expired
+	// and sets kc_cleanup_pending (PI-5 / PI-9). Cross-tenant; callers
+	// MUST construct this repository against a BYPASSRLS pool.
+	ExpireOverdue(ctx context.Context, limit int) (int, error)
+
+	// ClearKCCleanupPendingByID clears PI-9's durable marker after RP
+	// DeleteUser succeeds (or when there is no Keycloak user to delete).
+	ClearKCCleanupPendingByID(ctx context.Context, id uuid.UUID) error
+}
+
+// InvitationRepositoryNoop supplies LockByID (and can be embedded so new
+// methods don't break test fakes that already implement the rest).
+type InvitationRepositoryNoop struct{}
+
+func (InvitationRepositoryNoop) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
+	return nil, nil
+}
+func (InvitationRepositoryNoop) ExpireOverdue(context.Context, int) (int, error) { return 0, nil }
+func (InvitationRepositoryNoop) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error {
+	return nil
 }

@@ -23,7 +23,7 @@ import (
 // for the error-path tests. Pass a planRepo for success-path tests.
 func buildTrialSvc() *service.ProvisioningService {
 	return service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 

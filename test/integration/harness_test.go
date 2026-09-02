@@ -44,14 +44,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
-	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 )
 
 // ── Shared LocalStack container ────────────────────────────────────────────
@@ -113,8 +113,8 @@ func startLocalStack(t *testing.T) string {
 			Image:        localstackImage,
 			ExposedPorts: []string{"4566/tcp"},
 			Env: map[string]string{
-				"SERVICES":       "sns,sqs",
-				"DEBUG":          "0",
+				"SERVICES":           "sns,sqs",
+				"DEBUG":              "0",
 				"AWS_DEFAULT_REGION": localstackRegion,
 			},
 			WaitingFor: wait.ForLog("Ready.").
@@ -168,7 +168,7 @@ type phase12Env struct {
 	// RLS pool isn't needed at the SNS/SQS boundary. If a test wants to
 	// exercise projection it uses the raw pool for setup then invokes the
 	// consumer with its own pgcommon.Pool wired inline.
-	rawPool *pgxpool.Pool
+	rawPool *dbseed.Pool
 	dsn     string
 
 	// Unique per-test suffix so parallel tests don't cross-contaminate.
@@ -202,7 +202,7 @@ func newPhase12Env(t *testing.T) *phase12Env {
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: pgDSN}))
 	require.NoError(t, pgadapter.RunMigrations(ctx, pgDSN))
 
-	rawPool, err := pgxpool.New(ctx, pgDSN)
+	rawPool, err := dbseed.New(ctx, pgDSN)
 	require.NoError(t, err)
 	t.Cleanup(rawPool.Close)
 

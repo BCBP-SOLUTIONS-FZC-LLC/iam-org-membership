@@ -9,70 +9,40 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // ── stubs (whitebox, package-private) ──────────────────────────────────
 
-type ffPassthroughTxRunner struct {
-	tx     pgx.Tx
+type callThruTxRunner struct {
 	runErr error
 }
 
-func (r *ffPassthroughTxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
+func (r callThruTxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	if r.runErr != nil {
 		return r.runErr
 	}
-	// Inject the tx via the service-layer key so pgadapterTxFromContext can
-	// read it — mirroring what postgres.TxRunner does in production.
-	return fn(WithTx(ctx, r.tx))
+	return fn(ctx)
 }
-
-type ffTx struct {
-	pgx.Tx
-	execFn     func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	queryRowFn func(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-func (f *ffTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if f.execFn != nil {
-		return f.execFn(ctx, sql, args...)
-	}
-	return pgconn.CommandTag{}, nil
-}
-
-func (f *ffTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if f.queryRowFn != nil {
-		return f.queryRowFn(ctx, sql, args...)
-	}
-	// Default: simulate not-found (no row) for the OL probe query.
-	return &ffNoRow{}
-}
-
-// ffNoRow is a pgx.Row that always returns ErrNoRows on Scan.
-type ffNoRow struct{}
-
-func (r *ffNoRow) Scan(dest ...any) error { return pgx.ErrNoRows }
 
 type ffTenantRepo struct {
-	findByIDFn func(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+	port.TenantRepositoryNoop
+	findByIDFn        func(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+	setFeatureFlagsFn func(ctx context.Context, id uuid.UUID, flags []byte, expectedVersion int64) error
 }
 
 func (r *ffTenantRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
-	return r.findByIDFn(ctx, id)
+	if r.findByIDFn != nil {
+		return r.findByIDFn(ctx, id)
+	}
+	return nil, errors.New("FindByID not stubbed")
 }
-func (r *ffTenantRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
-	return r.FindByID(ctx, id)
-}
-func (r *ffTenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
-	return nil, nil
-}
-func (r *ffTenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
-func (r *ffTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
-	return nil, false, nil
+func (r *ffTenantRepo) SetFeatureFlags(ctx context.Context, id uuid.UUID, flags []byte, expectedVersion int64) error {
+	if r.setFeatureFlagsFn != nil {
+		return r.setFeatureFlagsFn(ctx, id, flags, expectedVersion)
+	}
+	return nil
 }
 
 type ffCache struct {
@@ -97,8 +67,6 @@ func (c *ffCache) Close() error                 { return nil }
 var _ port.Cache = (*ffCache)(nil)
 var _ port.TenantRepository = (*ffTenantRepo)(nil)
 
-// buildOperatorWithPool wires an OperatorService for the SetFeatureFlags
-// tests. Only the tenants repo, tx runner, cache are populated.
 func buildOperatorWithPool(tenants port.TenantRepository, tr port.TxRunner, cache port.Cache) *OperatorService {
 	return &OperatorService{
 		tenants: tenants, txRunner: tr, cache: cache,
@@ -109,8 +77,6 @@ func buildOperatorWithPool(tenants port.TenantRepository, tr port.TxRunner, cach
 
 func TestOperator_SetFeatureFlags_NestedObjectRejected(t *testing.T) {
 	svc := buildOperatorWithPool(nil, nil, nil)
-	// Use an allow-listed key so the scalar-value check is what fires, not
-	// the allow-list check (which runs first).
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(),
 		map[string]any{"custom_branding": map[string]string{"k": "v"}}, 1)
 
@@ -133,9 +99,6 @@ func TestOperator_SetFeatureFlags_ArrayRejected(t *testing.T) {
 
 func TestOperator_SetFeatureFlags_UnknownKeyRejected(t *testing.T) {
 	svc := buildOperatorWithPool(nil, nil, nil)
-	// LLD O-4: keys must be in the allow-list; a typo like "sso_enable"
-	// (missing 'd') is rejected with 400 unknown_feature_flag rather than
-	// silently stored as a dead override.
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(),
 		map[string]any{"sso_enable": true}, 1)
 
@@ -153,13 +116,7 @@ func TestOperator_SetFeatureFlags_AllScalarTypesAccepted(t *testing.T) {
 			return &domain.Tenant{ID: id}, nil
 		},
 	}
-	// Exec must report 1 row affected so the optimistic-lock branch does
-	// not misfire in the mocked path.
-	tx := &ffTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-		return pgconn.NewCommandTag("UPDATE 1"), nil
-	}}
-	tr := &ffPassthroughTxRunner{tx: tx}
-	svc := buildOperatorWithPool(tenants, tr, nil)
+	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, nil)
 
 	_, err := svc.SetFeatureFlags(context.Background(), tenantID, map[string]any{
 		"sso_enabled":           true,
@@ -169,37 +126,32 @@ func TestOperator_SetFeatureFlags_AllScalarTypesAccepted(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// ── SetFeatureFlags — happy path invokes SQL exec on the injected tx ───
-
 func TestOperator_SetFeatureFlags_HappyPathUpdatesTenant(t *testing.T) {
 	tenantID := uuid.New()
-	var gotSQL string
-	tx := &ffTx{
-		execFn: func(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
-			gotSQL = sql
-			return pgconn.NewCommandTag("UPDATE 1"), nil
-		},
-	}
+	var gotID uuid.UUID
+	var gotFlags []byte
+	var gotVer int64
 	tenants := &ffTenantRepo{
 		findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
 			return &domain.Tenant{ID: id, RecordVersion: 2}, nil
 		},
+		setFeatureFlagsFn: func(_ context.Context, id uuid.UUID, flags []byte, ver int64) error {
+			gotID, gotFlags, gotVer = id, flags, ver
+			return nil
+		},
 	}
 	cache := &ffCache{}
-	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: tx}, cache)
+	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, cache)
 
 	got, err := svc.SetFeatureFlags(context.Background(), tenantID, map[string]any{"sso_enabled": true}, 2)
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Contains(t, gotSQL, "UPDATE tenants SET feature_flags")
-	assert.Contains(t, gotSQL, "record_version = $3")
-	assert.Contains(t, gotSQL, "deleted_at IS NULL")
+	assert.Equal(t, tenantID, gotID)
+	assert.JSONEq(t, `{"sso_enabled":true}`, string(gotFlags))
+	assert.EqualValues(t, 2, gotVer)
 	assert.EqualValues(t, 2, got.RecordVersion)
-	// Cache eviction on success — the tenant row was mutated.
 	assert.Contains(t, cache.deleteCalls, "om:tenant:"+tenantID.String())
 }
-
-// ── SetFeatureFlags — nil flags map is defaulted to {} ─────────────────
 
 func TestOperator_SetFeatureFlags_NilMapDefaultsToEmpty(t *testing.T) {
 	tenants := &ffTenantRepo{
@@ -207,40 +159,20 @@ func TestOperator_SetFeatureFlags_NilMapDefaultsToEmpty(t *testing.T) {
 			return &domain.Tenant{ID: id}, nil
 		},
 	}
-	tx := &ffTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-		return pgconn.NewCommandTag("UPDATE 1"), nil
-	}}
-	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: tx}, nil)
+	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, nil)
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), nil, 1)
 	require.NoError(t, err, "nil flags map must be treated as empty, not rejected")
 }
 
-// ── SetFeatureFlags — tx-unavailable branch (defense in depth) ─────────
-
-func TestOperator_SetFeatureFlags_TxUnavailableSurfaces(t *testing.T) {
-	// TxRunner returns fn(ctx) WITHOUT injecting a tx → pgadapterTxFromContext
-	// finds nothing → conflict error.
-	tr := &noInjectTxRunner{}
-	svc := buildOperatorWithPool(nil, tr, nil)
-	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{}, 1)
-	assert.ErrorIs(t, err, domain.ErrConflict)
-}
-
-// ── SetFeatureFlags — sql exec failure propagates ──────────────────────
-
 func TestOperator_SetFeatureFlags_ExecErrorPropagates(t *testing.T) {
 	execErr := errors.New("db down")
-	tx := &ffTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, execErr
-		},
+	tenants := &ffTenantRepo{
+		setFeatureFlagsFn: func(context.Context, uuid.UUID, []byte, int64) error { return execErr },
 	}
-	svc := buildOperatorWithPool(nil, &ffPassthroughTxRunner{tx: tx}, nil)
+	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, nil)
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{}, 1)
 	assert.ErrorIs(t, err, execErr)
 }
-
-// ── SetFeatureFlags — post-commit FindByID failure surfaces ────────────
 
 func TestOperator_SetFeatureFlags_TenantReadErrorAfterUpdateSurfaces(t *testing.T) {
 	tenants := &ffTenantRepo{
@@ -248,19 +180,7 @@ func TestOperator_SetFeatureFlags_TenantReadErrorAfterUpdateSurfaces(t *testing.
 			return nil, errors.New("tenant gone")
 		},
 	}
-	tx := &ffTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-		return pgconn.NewCommandTag("UPDATE 1"), nil
-	}}
-	svc := buildOperatorWithPool(tenants, &ffPassthroughTxRunner{tx: tx}, nil)
+	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, nil)
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{"sso_enabled": true}, 1)
 	assert.ErrorContains(t, err, "tenant gone")
-}
-
-// noInjectTxRunner is a TxRunner that calls fn(ctx) WITHOUT injecting a
-// tx via service.WithTx — used to exercise the "tx unavailable" error
-// path in SetFeatureFlags / SetRealmFields.
-type noInjectTxRunner struct{}
-
-func (noInjectTxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return fn(ctx)
 }

@@ -58,56 +58,56 @@ func TestP19Consumer_Classify_EnumCoverage(t *testing.T) {
 	assert.Equal(t, kindUnknown, classify(""))
 }
 
-// applyProjection malformed-JSON branches — these run against the fakeTx
-// declared in membership_event_consumer_test.go and don't require a real
-// pool.
+// applyProjection malformed-JSON branches — these run against the
+// recordingTenants in membership_event_consumer_test.go and don't require
+// a real pool.
 func TestP19Consumer_ApplyProjection_TenantConverted_MalformedPayload(t *testing.T) {
-	c := newConsumer()
+	c, _ := newConsumer()
 	env := events.Envelope[json.RawMessage]{
 		Type:    "TenantConverted",
 		Payload: json.RawMessage([]byte(`{not json`)),
 	}
-	_, _, err := applyOn(c, &fakeTx{}, env, domain.StatusTrial, domain.TenantPlan("free"))
+	_, _, err := applyOn(c, env, domain.StatusTrial, domain.TenantPlan("free"))
 	assert.Error(t, err)
 }
 
 func TestP19Consumer_ApplyProjection_DirectPaidSignup_MalformedPayload(t *testing.T) {
-	c := newConsumer()
+	c, _ := newConsumer()
 	env := events.Envelope[json.RawMessage]{
 		Type:    "DirectPaidSignup",
 		Payload: json.RawMessage([]byte(`{not json`)),
 	}
-	_, _, err := applyOn(c, &fakeTx{}, env, domain.StatusTrial, domain.TenantPlan("free"))
+	_, _, err := applyOn(c, env, domain.StatusTrial, domain.TenantPlan("free"))
 	assert.Error(t, err)
 }
 
 func TestP19Consumer_ApplyProjection_TenantPlanChanged_MalformedPayload(t *testing.T) {
-	c := newConsumer()
+	c, _ := newConsumer()
 	env := events.Envelope[json.RawMessage]{
 		Type:    "TenantPlanChanged",
 		Payload: json.RawMessage([]byte(`{not json`)),
 	}
-	_, _, err := applyOn(c, &fakeTx{}, env, domain.StatusActive, domain.TenantPlan("free"))
+	_, _, err := applyOn(c, env, domain.StatusActive, domain.TenantPlan("free"))
 	assert.Error(t, err)
 }
 
 func TestP19Consumer_ApplyProjection_TenantSeatsChanged_MalformedPayload(t *testing.T) {
-	c := newConsumer()
+	c, _ := newConsumer()
 	env := events.Envelope[json.RawMessage]{
 		Type:    "TenantSeatsChanged",
 		Payload: json.RawMessage([]byte(`{not json`)),
 	}
-	_, _, err := applyOn(c, &fakeTx{}, env, domain.StatusActive, domain.TenantPlan("free"))
+	_, _, err := applyOn(c, env, domain.StatusActive, domain.TenantPlan("free"))
 	assert.Error(t, err)
 }
 
 // T-16 (resolves RP-11): TenantSuspended's "source" field decode failure.
 func TestP19Consumer_ApplyProjection_TenantSuspended_MalformedPayload(t *testing.T) {
-	c := newConsumer()
+	c, _ := newConsumer()
 	env := events.Envelope[json.RawMessage]{
 		Type:    "TenantSuspended",
 		Payload: json.RawMessage([]byte(`{not json`)),
 	}
-	_, _, err := applyOn(c, &fakeTx{}, env, domain.StatusActive, domain.TenantPlan("free"))
+	_, _, err := applyOn(c, env, domain.StatusActive, domain.TenantPlan("free"))
 	assert.Error(t, err)
 }

@@ -2,14 +2,12 @@ package service
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // normalizeEmail trims surrounding whitespace and lowercases the address so
@@ -197,19 +195,16 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 	var created *domain.PendingInvitation
 	var seatLimitErr *domain.DomainError
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		tx, ok := pgadapterTxFromContext(txCtx)
-		if !ok {
-			return domain.NewError(domain.ErrConflict, "tx unavailable")
-		}
-		var licensedSeats int
-		if err := tx.QueryRow(txCtx, `SELECT licensed_seats FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, tenantID).Scan(&licensedSeats); err != nil {
+		licensedSeats, err := s.tenants.LicensedSeatsForUpdate(txCtx, tenantID)
+		if err != nil {
 			return err
 		}
-		var active, pending int
-		if err := tx.QueryRow(txCtx, `SELECT count(*) FROM tenant_memberships WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL`, tenantID).Scan(&active); err != nil {
+		active, err := s.memberships.CountActive(txCtx, tenantID)
+		if err != nil {
 			return err
 		}
-		if err := tx.QueryRow(txCtx, `SELECT count(*) FROM pending_invitations WHERE tenant_id = $1 AND status = 'pending' AND expires_at > now()`, tenantID).Scan(&pending); err != nil {
+		pending, err := s.invites.CountPending(txCtx, tenantID)
+		if err != nil {
 			return err
 		}
 		if active+pending >= licensedSeats {
@@ -351,12 +346,8 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 
 	var mem *domain.TenantMembership
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		tx, ok := pgadapterTxFromContext(txCtx)
-		if !ok {
-			return domain.NewError(domain.ErrConflict, "tx unavailable")
-		}
 		// TM-13 lock on tenants for the entire acceptance.
-		if _, err := tx.Exec(txCtx, `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, tenantID); err != nil {
+		if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 			return err
 		}
 
@@ -366,43 +357,39 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 		// conflict. If status flipped under us between the outer lookup
 		// and this lock, treat as no-op (idempotent plain-add path).
 		if pending != nil {
-			var lockedStatus string
-			var lockedVersion int64
-			err := tx.QueryRow(txCtx,
-				`SELECT status, record_version FROM pending_invitations WHERE id = $1 FOR UPDATE`,
-				pending.ID).Scan(&lockedStatus, &lockedVersion)
+			locked, err := s.invites.LockByID(txCtx, pending.ID)
 			switch {
-			case errors.Is(err, pgx.ErrNoRows):
-				pending = nil // row vanished — proceed as plain add
 			case err != nil:
 				return err
-			case lockedStatus != string(domain.InvitePending):
+			case locked == nil:
+				pending = nil // row vanished — proceed as plain add
+			case locked.Status != domain.InvitePending:
 				pending = nil // already accepted/revoked/expired — plain add
-			case !pending.ExpiresAt.IsZero() && !pending.ExpiresAt.After(time.Now().UTC()):
+			case !locked.ExpiresAt.IsZero() && !locked.ExpiresAt.After(time.Now().UTC()):
 				// Invitation is status=pending but past expires_at (expiry cron
 				// hasn't run yet). Per LLD I-3: acceptance is still honoured on a
 				// best-effort basis, but the seat is re-checked under the tenant
 				// FOR UPDATE lock (already held above) since expired invitations no
 				// longer hold a seat (SEAT-1 counts status='pending' AND
 				// expires_at > now() only). On over-cap → reject with 409.
-				var occupied, licensed int
-				if err := tx.QueryRow(txCtx, `
-					SELECT
-						(SELECT count(*) FROM tenant_memberships
-						 WHERE tenant_id=$1 AND deleted_at IS NULL AND status='active') +
-						(SELECT count(*) FROM pending_invitations
-						 WHERE tenant_id=$1 AND status='pending' AND expires_at > now()),
-						licensed_seats
-					FROM tenants WHERE id=$1 AND deleted_at IS NULL`,
-					tenantID).Scan(&occupied, &licensed); err != nil {
+				licensed, err := s.tenants.LicensedSeatsForUpdate(txCtx, tenantID)
+				if err != nil {
 					return err
 				}
-				if occupied >= licensed {
+				active, err := s.memberships.CountActive(txCtx, tenantID)
+				if err != nil {
+					return err
+				}
+				pendCount, err := s.invites.CountPending(txCtx, tenantID)
+				if err != nil {
+					return err
+				}
+				if active+pendCount >= licensed {
 					return domain.NewError(domain.ErrSeatLimitReached, "seat limit reached; expired invitation cannot be honoured")
 				}
-				pending.RecordVersion = lockedVersion
+				pending.RecordVersion = locked.RecordVersion
 			default:
-				pending.RecordVersion = lockedVersion
+				pending.RecordVersion = locked.RecordVersion
 			}
 		}
 
@@ -435,7 +422,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 					return gerr
 				}
 				if pub != nil {
-					_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventTenantRoleGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: pending.InvitedBy.String(),
 						Data: domain.TenantRoleGrantedPayload{
@@ -451,7 +438,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 					return aerr
 				}
 				if pub != nil {
-					_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventDepartmentMembershipGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: pending.InvitedBy.String(),
 						Data: domain.DepartmentMembershipGrantedPayload{

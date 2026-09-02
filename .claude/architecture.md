@@ -28,6 +28,7 @@ iam-org-membership/
 │   │   │                               # NO delegation.go, NO acl.go — moved to Delegation Service / Tender ACL Service
 │   │   ├── port/                       # interfaces required by the core
 │   │   │   ├── tenant_repository.go
+│   │   │   ├── authz_repository.go     # NEW. AuthZRepository — the I-8 four-table join, moved out of authz_service.go so core/service depends on a port, not *pgcommon.Pool directly
 │   │   │   ├── department_repository.go # TenantDepartmentRepository — per-tenant activation junction only; the global catalog itself is external
 │   │   │   ├── membership_repository.go # MembershipRepository, TenantRoleRepository, DeptMembershipRepository, DeptRoleLabelRepository
 │   │   │   ├── invitation_repository.go
@@ -36,7 +37,6 @@ iam-org-membership/
 │   │   │   ├── outbound_clients.go     # WorkflowClient (§8.8), RealmProvisionerClient, CatalogAdminClient (NEW), DelegationCheckClient (NEW, ADR-0008) — NO UserProfileClient
 │   │   │   ├── cache.go                # Valkey interface (advisory)
 │   │   │   ├── event_publisher.go
-│   │   │   ├── event_publisher_context.go
 │   │   │   └── tx_runner.go
 │   │   │                               # NO delegation_repository.go, NO acl_repository.go, NO user_profile_client.go, NO standalone workflow_client.go/realm_provisioner_client.go (folded into outbound_clients.go)
 │   │   └── service/                    # use cases
@@ -48,9 +48,10 @@ iam-org-membership/
 │   │       ├── role_label_service.go
 │   │       ├── provisioning_service.go
 │   │       ├── operator_service.go
-│   │       ├── authz_service.go
+│   │       ├── authz_service.go        # I-8 hot path; depends on port.AuthZRepository (NEW), not *pgcommon.Pool — the four-table join itself lives in the postgres adapter, this owns TR-7/PLAN-6 composition
 │   │       ├── catalog_service.go      # NEW (ADR-0007). Read-through + stale-if-error cache over CatalogAdminClient — NOT a table owner
-│   │       └── group_mapping_service.go # client-side resolve over GroupMappingClient — NOT a table owner, fails open
+│   │       ├── group_mapping_service.go # client-side resolve over GroupMappingClient — NOT a table owner, fails open
+│   │       └── subscription_lapse_service.go # NEW (I-16, §16 OQ-9/RP-C3). Cross-tenant read; its TenantRepository MUST be sysPool-bound (BYPASSRLS), not the RLS-scoped app pool
 │   │                                   # NO delegation_service.go, NO acl_service.go, NO role_service.go (renamed role_label_service.go — tenant_roles grants now live in membership_service.go)
 │   └── adapter/
 │       ├── inbound/
@@ -63,7 +64,7 @@ iam-org-membership/
 │       │   │   ├── role_label_handler.go
 │       │   │   ├── invitation_handler.go
 │       │   │   ├── operator_handler.go
-│       │   │   ├── internal_handler.go # I-1..I-15, incl. NEW I-15 GET .../members/:user_id/exists (grant-time check for Delegation/Tender-ACL services)
+│       │   │   ├── internal_handler.go # I-1..I-16, incl. I-15 GET .../members/:user_id/exists (grant-time check for Delegation/Tender-ACL services) and NEW I-16 GET /subscription-lapses (RP-C3 bulk read)
 │       │   │   ├── middleware.go
 │       │   │   └── dto.go
 │       │   │                           # NO delegation_handler.go, NO acl_handler.go, NO group_mapping_handler.go (admin group-mapping CRUD moved to Group Mapping Service)
@@ -98,9 +99,9 @@ iam-org-membership/
 
 ```go
 require (
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon    v1.2.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon    v1.3.0
     github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events        v1.4.0
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon      v1.1.1
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon      v1.3.0
 )
 ```
 
@@ -110,7 +111,7 @@ require (
 
 ### `platform-gincommon` integration
 
-Middleware stack identical to `iam-user-profile`: `PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → RequireAuth → ContextMiddleware`, plus the GUC-bridge middleware. `ServiceName = "iam-org-membership"`. **No gRPC server** — Gin HTTP only. `TimeoutMiddleware`, `DefaultMiddlewares`, `HealthHandler`, `RequestContext`, `ErrorResponse`, `InitTracingFromEnv`, `Shutdown`. `gincommon.PropagateHeaders` carries W3C `traceparent` to every outbound client (Workflow, Realm Provisioner, Catalog Admin, Group Mapping, Delegation Check — no User Profile client any more, that adapter was deleted as dead code).
+`router.go` (`NewRouter`) chains, in order: a 1 MB body cap → `gincommon.TimeoutMiddleware(30s)` → `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging`) → `NormalizeAuthErrors()` (G-13, adds a `code` field to gincommon's bare 401 body) — then, per `/api/v1` sub-group, `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → this repo's own `GUCBridgeMiddleware` → `RequireJSONContentType`, followed by route-specific gates (`RequireActiveTenant`/`RequireActiveMembership` on public `/tenants/*`, `RequireOperatorRole` on `/operator/*`, `RequireSystemRole` on `/internal/*`). `ServiceName = "iam-org-membership"`. **No gRPC server** — Gin HTTP only. `gincommon.PropagateHeaders` carries W3C `traceparent` to every outbound client (Workflow, Realm Provisioner, Catalog Admin, Group Mapping, Delegation Check — no User Profile client any more, that adapter was deleted as dead code).
 
 ### `platform-pgcommon` integration
 
@@ -139,6 +140,8 @@ Queue naming: `<topic-short>-<consumer-short>-q` (HLD §9.1). Consumer short-nam
 - `core/port` — imports only `core/domain`
 - `core/service` — imports only `core/domain`, `core/port`, and `pkg/requestctx`
 - `adapter/*` implements `core/port`; **nothing in `core/` imports `adapter/`**
-- `internal/adapter/outbound/metrics` is its own cross-cutting **`observability`** component (plain Prometheus instrumentation, no internal deps). `.go-arch-lint.yml` lists it as importable by `adapters_inbound`, `adapters_outbound`, and the composition root `cmd`. In practice `core/service` also imports it directly in several files (`membership_service.go`, `catalog_service.go`, `provisioning_service.go`, `group_mapping_service.go`) to record business-outcome counters at the point of the outcome rather than only at the HTTP/consumer boundary — note the `service` component's `mayDependOn` list in `.go-arch-lint.yml` does not yet enumerate `observability`, so this is worth confirming with whoever owns the lint config.
-- `adapters_outbound` (`postgres`, `valkey`, `eventbus`, `workflow`, `realmprovisioner`, `catalogadmin`, `groupmappingclient`, `delegationcheck`) — no `userprofile` component any more, and no delegation/tender-ACL adapters
+- `internal/adapter/outbound/metrics` is its own cross-cutting **`observability`** component (plain Prometheus instrumentation, no internal deps). `.go-arch-lint.yml` lists it as importable by `adapters_inbound`, `adapters_outbound`, and the composition root `cmd` — and its own `service` component's `mayDependOn` list **does** explicitly enumerate `observability` (confirmed directly against `.go-arch-lint.yml`, not just inferred), which is why `core/service` importing it directly in several files (`membership_service.go`, `catalog_service.go`, `provisioning_service.go`, `group_mapping_service.go`) to record business-outcome counters at the point of the outcome is a declared, sanctioned dependency, not a lint gap.
+- `eventschema` (`internal/adapter/outbound/eventbus/schemas`) and `apispec` (`api/`, embedding `api/asyncapi.yaml`) are standalone `anyVendorDeps: true` leaves — `eventbus` may depend on `eventschema`; `adapters_inbound` may depend on `apispec` (`docs.go`/`asyncapi.go` serve the embedded spec directly).
+- `adapters_outbound` (`postgres`, `valkey`, `eventbus`, `workflow`, `realmprovisioner`, `catalogadmin`, `groupmappingclient`, `delegationcheck`) — no `userprofile` component any more, and no delegation/tender-ACL adapters. **A real, currently-open violation:** `eventbus/publisher.go` imports `postgres` (for `pgadapter.TxFromContext`) — a cross-adapter dependency `adapters_outbound`'s own `mayDependOn` list (`port`/`domain`/`eventschema`/`observability`) forbids, so `go-arch-lint check --project-path .` fails on it today. Pre-existing, not yet fixed.
+- `docs_swagger` (`docs/swagger`, the `make swag`-generated output blank-imported in `cmd/server/main.go`) is a pure `anyVendorDeps: true` leaf, declared solely so arch-lint doesn't flag that import.
 - `cmd` (`cmd/server`, `cmd/reconciler`) is the composition root; may import everything else, including the generated `docs_swagger` assets

@@ -19,6 +19,7 @@ import (
 // ── LOCAL fakes (prefix "iah") ────────────────────────────────────────
 
 type iahInviteRepo struct {
+	port.InvitationRepositoryNoop
 	listFn                      func(context.Context, uuid.UUID) ([]domain.PendingInvitation, error)
 	findByIDFn                  func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error)
 	findPendingByEmailFn        func(context.Context, uuid.UUID, string) (*domain.PendingInvitation, error)

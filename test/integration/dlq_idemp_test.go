@@ -25,7 +25,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -36,14 +35,14 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 )
 
-// noopOutbox implements consumer.OutboxEnqueuer with a mutex-guarded slice —
+// noopOutbox implements port.EventPublisher with a mutex-guarded slice —
 // enough for wire-integration assertions where projection is the observable.
 type noopOutbox struct {
 	mu     sync.Mutex
 	events []*domain.DomainEvent
 }
 
-func (o *noopOutbox) EnqueueInTx(_ context.Context, _ pgx.Tx, e *domain.DomainEvent) error {
+func (o *noopOutbox) Enqueue(_ context.Context, e *domain.DomainEvent) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.events = append(o.events, e)
@@ -183,7 +182,7 @@ func TestProcessedEventsDedupOnRedelivery(t *testing.T) {
 	tenantID := seedTenantForConsumer(t, e, "idemp-dup-wire")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)
@@ -253,7 +252,7 @@ func TestSecondConsumerReceivesIndependently(t *testing.T) {
 	tenantID := seedTenantForConsumer(t, e, "idemp-multi-consumer")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(appPool, outbox, pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)

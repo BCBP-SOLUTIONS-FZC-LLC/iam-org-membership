@@ -36,6 +36,7 @@ import (
 //     other package-http test files).
 
 type happyTenantRepo struct {
+	port.TenantRepositoryNoop
 	findByIDFn func(context.Context, uuid.UUID) (*domain.Tenant, error)
 	updateFn   func(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error)
 	insertFn   func(context.Context, *domain.Tenant) (*domain.Tenant, bool, error)
@@ -64,6 +65,9 @@ func (f *happyTenantRepo) Insert(ctx context.Context, t *domain.Tenant) (*domain
 		return f.insertFn(ctx, t)
 	}
 	return nil, false, errors.New("not implemented")
+}
+func (f *happyTenantRepo) ListSubscriptionLapses(context.Context, int) ([]domain.Tenant, error) {
+	return nil, nil
 }
 
 var _ port.TenantRepository = (*happyTenantRepo)(nil)

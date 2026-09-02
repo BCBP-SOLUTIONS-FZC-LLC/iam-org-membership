@@ -1,14 +1,10 @@
 package port
 
-import (
-	"context"
-
-	"github.com/jackc/pgx/v5"
-)
+import "context"
 
 // IdempotencyStore is the persistence port backing the processed_events
 // table (§9.2 IDEMP-2/4), named and shaped to mirror iam-user-profile's
-// port.IdempotencyStore — with one deliberate difference in MarkProcessedInTx.
+// port.IdempotencyStore.
 //
 // iam-user-profile's store is decoupled from the caller's transaction by
 // design: IsProcessed and MarkProcessed are two independent calls, and
@@ -22,11 +18,10 @@ import (
 // recency guard: a row-locked comparison of the event's timestamp against
 // tenants.last_event_at, which must observe a consistent view alongside
 // the projection update and the dedup write, or a concurrent/out-of-order
-// delivery could race past it. MarkProcessedInTx therefore takes the
-// caller's already-open pgx.Tx so the dedup write commits or rolls back
-// atomically with the row lock and the projection update in the same
-// transaction — a decoupled, post-hoc mark (as IsProcessed/MarkProcessed
-// alone would give) is not sufficient here.
+// delivery could race past it. MarkProcessed therefore joins the caller's
+// already-open transaction (via TxRunner + withPool) so the dedup write
+// commits or rolls back atomically with the row lock and the projection
+// update — a decoupled, post-hoc mark is not sufficient here.
 type IdempotencyStore interface {
 	// IsProcessed reports whether eventID has already been recorded as
 	// processed by consumer. A standalone read, not tied to any caller
@@ -34,9 +29,10 @@ type IdempotencyStore interface {
 	// on an obvious replay before the main transaction opens.
 	IsProcessed(ctx context.Context, consumer, eventID string) (bool, error)
 
-	// MarkProcessedInTx records eventID as processed by consumer inside
-	// tx, so the write commits or rolls back atomically with whatever
-	// business state change tx also contains. Safe to call more than once
-	// for the same (consumer, eventID) pair (ON CONFLICT DO NOTHING).
-	MarkProcessedInTx(ctx context.Context, tx pgx.Tx, consumer, eventID string) error
+	// MarkProcessed records eventID as processed by consumer. When called
+	// inside TxRunner.RunInTx the write joins that transaction so it
+	// commits or rolls back atomically with the projection. Safe to call
+	// more than once for the same (consumer, eventID) pair
+	// (ON CONFLICT DO NOTHING).
+	MarkProcessed(ctx context.Context, consumer, eventID string) error
 }

@@ -446,6 +446,21 @@ func TestHandleError_DBResourceExhaustionSQLState_Returns503(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "db_unavailable")
 }
 
+// pgcommon v1.3.0 added IsConnectionException/IsInsufficientResources for
+// classes 08/53, but has no dedicated helper for 57 (operator_intervention)
+// or 58 (system_error) — isOperatorOrSystemErrorSQLState's hand-rolled
+// fallback must still catch these two.
+func TestHandleError_OperatorOrSystemErrorSQLState_Returns503(t *testing.T) {
+	for _, code := range []string{"57P01", "58030"} { // admin_shutdown, io_error
+		t.Run(code, func(t *testing.T) {
+			c, w := newTestContext(nil)
+			HandleError(c, &pgconn.PgError{Code: code})
+			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+			assert.Contains(t, w.Body.String(), "db_unavailable")
+		})
+	}
+}
+
 // Constraint violations (class 23) are logic errors that should have been
 // caught by the repository layer — if they leak here it is an internal bug,
 // so they still return 500, not 503.

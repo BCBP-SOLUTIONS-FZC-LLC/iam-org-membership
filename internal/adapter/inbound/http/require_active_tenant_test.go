@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -24,6 +25,7 @@ import (
 
 // stubTenantRepo returns a preset tenant from FindByID.
 type stubTenantRepo struct {
+	port.TenantRepositoryNoop
 	tenant *domain.Tenant
 	err    error
 }
@@ -40,6 +42,9 @@ func (s *stubTenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch)
 func (s *stubTenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
 func (s *stubTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
 	return nil, false, nil
+}
+func (s *stubTenantRepo) ListSubscriptionLapses(context.Context, int) ([]domain.Tenant, error) {
+	return nil, nil
 }
 
 func runGate(t *testing.T, method string, status domain.SubscriptionStatus, roles []string) (*httptest.ResponseRecorder, bool) {

@@ -12,8 +12,8 @@ var SystemActorID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
 // DomainEvent is the framework-agnostic event carrier passed from services
 // into the outbox layer. The eventbus adapter wraps this in an
-// events.Envelope[json.RawMessage] and inserts it into outbox_events within
-// the caller's active pgx.Tx (EVT-10).
+// events.Envelope[json.RawMessage] and inserts it into outbox_events on
+// the transaction TxRunner attached to ctx (EVT-10).
 //
 // Type is the LLD-canonical PascalCase event name from §7.3
 // (e.g. "TenantCreated", "DepartmentMembershipGranted"). The eventbus adapter

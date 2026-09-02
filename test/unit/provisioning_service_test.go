@@ -20,7 +20,7 @@ import (
 // uses (the membership repo); every other dependency stays nil.
 func buildProvisioningSvc(m *fakeMembershipRepo) *service.ProvisioningService {
 	return service.NewProvisioningService(
-		nil, nil, m, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, m, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 
@@ -61,7 +61,7 @@ func TestProvisioning_SetMembershipStatus_PropagatesRepoError(t *testing.T) {
 // ── Constructor smoke — every ctor field set, no panic on nil deps ────
 
 func TestProvisioning_NewProvisioningService_ReturnsNonNil(t *testing.T) {
-	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	assert.NotNil(t, svc, "constructor must not fail on nil collaborators — production wiring supplies them")
 }
 
@@ -97,7 +97,7 @@ func TestProvisioning_DeleteMember_WorkflowNotRequired(t *testing.T) {
 	// NewProvisioningService has no WorkflowClient parameter — the WFI-3
 	// pre-check is architecturally absent from the I-5 path.
 	svc := service.NewProvisioningService(
-		nil, nil, mem, roles, deptMems, nil, nil, nil, nil,
+		nil, mem, roles, deptMems, nil, nil, nil, nil,
 		&passthroughTxRunner{}, nil, nil,
 	)
 
