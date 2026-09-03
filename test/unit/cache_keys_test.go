@@ -115,6 +115,7 @@ var _ port.CatalogAdminClient = (*ckCatalogAdminClient)(nil)
 // ── ckTenantRepo — stub TenantRepository ─────────────────────────────────
 
 type ckTenantRepo struct {
+	port.TenantRepositoryNoop
 	findByIDFn func(context.Context, uuid.UUID) (*domain.Tenant, error)
 }
 
@@ -577,6 +578,7 @@ func TestCacheKeys_Locale_InvalidatedOnPatch(t *testing.T) {
 // TestCacheKeys_Locale_InvalidatedOnPatch.  It is distinct from tsRepo
 // (defined in tenant_service_test.go) to avoid a redeclaration error.
 type ckFullTenantRepo struct {
+	port.TenantRepositoryNoop
 	findByIDFn func(context.Context, uuid.UUID) (*domain.Tenant, error)
 	updateFn   func(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error)
 }
@@ -595,10 +597,6 @@ func (r *ckFullTenantRepo) Update(ctx context.Context, id uuid.UUID, patch *doma
 		return r.updateFn(ctx, id, patch)
 	}
 	return nil, errors.New("not configured")
-}
-func (r *ckFullTenantRepo) SetRealmSyncPending(_ context.Context, _ uuid.UUID) error { return nil }
-func (r *ckFullTenantRepo) Insert(_ context.Context, _ *domain.Tenant) (*domain.Tenant, bool, error) {
-	return nil, false, errors.New("not implemented")
 }
 
 var _ port.TenantRepository = (*ckFullTenantRepo)(nil)

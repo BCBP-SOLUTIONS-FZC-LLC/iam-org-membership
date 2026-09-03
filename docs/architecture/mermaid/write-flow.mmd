@@ -34,8 +34,8 @@ sequenceDiagram
         Note over Codec: ValidatingCodec runs schema-gov Draft-07 validation<br/>against embedded schemas/*.json (fail-closed, CLOSED schemas — additionalProperties:false).<br/>On invalid/unknown type → error → TX rolls back (nothing persisted).<br/>GlueCodec prepends 18-byte header from Glue registry version ID.<br/>NoopCodec pass-through in dev (GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME unset).
         Codec -->>- TX: (encoded bytes, schemaVersionID)
 
-        TX ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type, payload JSONB envelope,<br/>  source ('iam.membership.events' for RoutingPublisher key),<br/>  tenant_id, trace_id, created_at, scheduled_at<br/>)
-        Note over OB: Business row + outbox row commit atomically (EVT-10, CONS-1)<br/>No event without state; no state without event.
+        TX ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type, payload JSONB envelope,<br/>  source (iam.membership.events for RoutingPublisher key),<br/>  tenant_id, trace_id, created_at, scheduled_at<br/>)
+        Note over OB: Business row + outbox row commit atomically (EVT-10, CONS-1)<br/>No event without state — no state without event.
         OB -->>- TX: inserted
 
         TX ->>+ DB: COMMIT
@@ -62,4 +62,4 @@ sequenceDiagram
 
     Runner ->>+ OB: UPDATE outbox_events SET published_at = now() WHERE id = $1
     OB -->>- Runner: marked published
-    Note over Runner: retry up to OUTBOX_MAX_ATTEMPTS (5) with backoff; DLQ on exceed (EVT-5, outbox_dead_letters_total pages)
+    Note over Runner: retry up to OUTBOX_MAX_ATTEMPTS (5) with backoff — DLQ on exceed (EVT-5, outbox_dead_letters_total pages)

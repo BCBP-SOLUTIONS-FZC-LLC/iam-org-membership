@@ -1,7 +1,6 @@
 // Full-cascade unit tests for MembershipService.RemoveUser (P-8 §8.8).
 //
-// Uses dedicated stubs (all methods scripted) plus a passthrough TxRunner
-// that injects a fakeTx via service.WithTx AND a fake event publisher via
+// Passthrough TxRunner that injects a fake event publisher via
 // port.WithEventPublisher — mirroring the production postgres.TxRunner.
 package unit_test
 
@@ -14,35 +13,17 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// ── fakeTx exposing Exec (for the TM-13 FOR UPDATE lock) ──────────────
-
-type ruFakeTx struct {
-	pgx.Tx
-	execFn func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
-func (f *ruFakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if f.execFn != nil {
-		return f.execFn(ctx, sql, args...)
-	}
-	return pgconn.CommandTag{}, nil
-}
-
 // ── injecting TxRunner ─────────────────────────────────────────────────
 
 type ruTxRunner struct {
-	tx  pgx.Tx
-	pub port.ContextEventPublisher
+	pub port.EventPublisher
 }
 
 func (r *ruTxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	ctx = service.WithTx(ctx, r.tx)
 	if r.pub != nil {
 		ctx = port.WithEventPublisher(ctx, r.pub)
 	}
@@ -55,7 +36,7 @@ type ruPublisher struct {
 	events []*domain.DomainEvent
 }
 
-func (p *ruPublisher) EnqueueCtx(_ context.Context, e *domain.DomainEvent) error {
+func (p *ruPublisher) Enqueue(_ context.Context, e *domain.DomainEvent) error {
 	p.events = append(p.events, e)
 	return nil
 }
@@ -159,7 +140,7 @@ func buildRemoveUserSvc(
 	m port.MembershipRepository, r port.TenantRoleRepository, dm port.DeptMembershipRepository,
 	rp port.RealmProvisionerClient, wf port.WorkflowClient, tr port.TxRunner,
 ) *service.MembershipService {
-	return service.NewMembershipService(m, r, dm, nil, nil, nil, rp, wf, tr, nil, 30)
+	return service.NewMembershipService(m, r, dm, &port.TenantRepositoryNoop{}, nil, nil, rp, wf, tr, nil, 30)
 }
 
 // happyRemoveUserFakes returns fakes primed for a fully-successful cascade.
@@ -167,7 +148,6 @@ type removeUserSetup struct {
 	svc *service.MembershipService
 	pub *ruPublisher
 	rp  *ruRPClient
-	tx  *ruFakeTx
 }
 
 func setupHappyRemoveUser(t *testing.T, tenantID, userID uuid.UUID) *removeUserSetup {
@@ -204,12 +184,11 @@ func setupHappyRemoveUser(t *testing.T, tenantID, userID uuid.UUID) *removeUserS
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	tx := &ruFakeTx{}
 	pub := &ruPublisher{}
-	tr := &ruTxRunner{tx: tx, pub: pub}
+	tr := &ruTxRunner{pub: pub}
 	svc := buildRemoveUserSvc(m, r, dm, rp, wf, tr)
 
-	return &removeUserSetup{svc: svc, pub: pub, rp: rp, tx: tx}
+	return &removeUserSetup{svc: svc, pub: pub, rp: rp}
 }
 
 // ── Happy path — full cascade emits Revoked events + calls RP revoke ──
@@ -266,7 +245,7 @@ func TestMembership_RemoveUser_LastOwnerRefused(t *testing.T) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{})
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, uuid.New())
 	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval)
@@ -297,7 +276,7 @@ func TestMembership_RemoveUser_OwnerWithOtherOwnersProceeds(t *testing.T) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(m, r, dm, &ruRPClient{}, wf, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, r, dm, &ruRPClient{}, wf, &ruTxRunner{})
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, uuid.New())
 	assert.NoError(t, err)
@@ -305,19 +284,23 @@ func TestMembership_RemoveUser_OwnerWithOtherOwnersProceeds(t *testing.T) {
 
 // ── Tenant lock error propagates ────────────────────────────────────────
 
+type ruTenantRepo struct {
+	port.TenantRepositoryNoop
+	lockErr error
+}
+
+func (r *ruTenantRepo) LockByID(context.Context, uuid.UUID) error {
+	return r.lockErr
+}
+
 func TestMembership_RemoveUser_TenantLockErrorPropagates(t *testing.T) {
 	lockErr := errors.New("lock timeout")
-	tx := &ruFakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, lockErr
-		},
-	}
 	wf := &fakeWorkflowClient{
 		getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(nil, nil, nil, nil, wf, &ruTxRunner{tx: tx})
+	svc := service.NewMembershipService(nil, nil, nil, &ruTenantRepo{lockErr: lockErr}, nil, nil, nil, wf, &ruTxRunner{}, nil, 30)
 	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, lockErr)
 }
@@ -335,7 +318,7 @@ func TestMembership_RemoveUser_MembershipNotFoundInsideTx(t *testing.T) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(m, nil, nil, nil, wf, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, nil, nil, nil, wf, &ruTxRunner{})
 	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, domain.ErrMemberNotFound)
 }
@@ -359,26 +342,10 @@ func TestMembership_RemoveUser_NilWorkflowSkipsPreCheck(t *testing.T) {
 	dm := &ruDeptMemRepo{
 		softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil },
 	}
-	svc := buildRemoveUserSvc(m, r, dm, nil, nil, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, r, dm, nil, nil, &ruTxRunner{})
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, uuid.New())
 	assert.NoError(t, err)
-}
-
-// ── tx-unavailable branch ──────────────────────────────────────────────
-
-func TestMembership_RemoveUser_TxUnavailable(t *testing.T) {
-	// txRunner passes ctx WITHOUT injecting a tx → pgadapterTxFromContext
-	// finds nothing → ErrConflict.
-	tr := &passthroughTxRunner{} // from dept_membership_service_test — doesn't inject tx
-	wf := &fakeWorkflowClient{
-		getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
-			return &port.DelegateImpact{}, nil
-		},
-	}
-	svc := buildRemoveUserSvc(nil, nil, nil, nil, wf, tr)
-	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
-	assert.ErrorIs(t, err, domain.ErrConflict)
 }
 
 // ── cascade error propagates ─ role.SoftDeleteAllForUser fails ─────────
@@ -400,7 +367,7 @@ func TestMembership_RemoveUser_RolesCascadeErrorPropagates(t *testing.T) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{})
 	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, rolesErr)
 }
@@ -444,7 +411,7 @@ func TestMembership_RemoveUser_SelfRemovalAsAdmin(t *testing.T) {
 		},
 	}
 	pub := &ruPublisher{}
-	tr := &ruTxRunner{tx: &ruFakeTx{}, pub: pub}
+	tr := &ruTxRunner{pub: pub}
 	svc := buildRemoveUserSvc(m, r, dm, &ruRPClient{}, wf, tr)
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, actorID)
@@ -485,7 +452,7 @@ func TestMembership_RemoveUser_ConcurrentOwnerDropSecondRequestSees1(t *testing.
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{})
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, uuid.New())
 	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval,
@@ -499,7 +466,7 @@ func TestMembership_RemoveUser_ConcurrentOwnerDropSecondRequestSees1(t *testing.
 func TestMembership_RemoveUser_PlainMember_NoRoleRevokedEvents(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
 	pub := &ruPublisher{}
-	tr := &ruTxRunner{tx: &ruFakeTx{}, pub: pub}
+	tr := &ruTxRunner{pub: pub}
 
 	m := &ruMembershipRepo{
 		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {

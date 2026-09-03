@@ -5,7 +5,7 @@
 ### 10.1 Tenant Isolation — Three Layers
 
 - **Layer 1** — Keycloak realm boundary.
-- **Layer 2** — PostgreSQL RLS with `app.tenant_id` GUC, `FORCE ROW LEVEL SECURITY`, `WITH CHECK`. `tenants` policy uses `id = current_setting('app.tenant_id')::uuid` (single-row visibility).
+- **Layer 2** — PostgreSQL RLS with `app.tenant_id` GUC, `ENABLE` + `FORCE ROW LEVEL SECURITY`, `WITH CHECK`. `tenants` policy uses `id = current_setting('app.tenant_id')::uuid` (single-row visibility).
 - **Layer 3** — Audit-tagged cross-tenant detection via `rls_violation_log` + CloudWatch alarms.
 
 ### 10.2 Network Isolation
@@ -64,40 +64,35 @@ moved to the Catalog / Admin Config Service's own LLD (those operator routes are
 
 ### 11.2 Prometheus Metrics
 
-All `iam_`-prefixed. Cardinality-bounded: `tenant_id` labels capped by tenant count (~1500–2000 target); other labels are small enum fan-outs.
+All `iam_`-prefixed, registered once in `metrics.Register()` (`internal/adapter/outbound/metrics/business.go`) onto gincommon's registerer (same `{service, version}` const labels as HTTP metrics). The table below is the actual registered set (verified directly against `business.go`, not the earlier planned/aspirational list this section used to carry) — **16 `CounterVec`s, 2 `HistogramVec`s, 4 `Gauge`s**. Cardinality-bounded: no `tenant_id`/`user_id`/`email` label anywhere (§16 A48) — every label is a small, fixed enum.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `iam_membership_joins_total` | Counter | `tenant_id`, `source` | Members added |
-| `iam_membership_leaves_total` | Counter | `tenant_id`, `reason` | Members removed |
-| `iam_memberships_cache_hit_ratio` | Gauge | — | Valkey hit rate for `om:memberships:*` |
-| `iam_membership_lookup_latency_seconds` | Histogram | `result (hit\|miss)` | I-8 latency; source for SLO-1 |
-| `iam_processed_events_duplicates_total` | Counter | `consumer` | Duplicates skipped (IDEMP-2) |
-| `iam_lifecycle_consumer_lag_seconds` | Gauge | `queue` | SQS `ApproximateAgeOfOldestMessage` — SLO-3 primary drift signal |
-| `iam_xsvc_call_latency_seconds` | Histogram | `service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint` | Latency of the three synchronous cross-service client calls added by the ADR-0007/ADR-0008 decomposition |
-| `iam_xsvc_call_errors_total` | Counter | `service`, `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failures; `fallback_served` recorded by the calling `CatalogService`/`GroupMappingService`, not the client |
-| `iam_membership_exists_check_total` | Counter | `caller`, `result` (`active`\|`inactive`) | I-15 grant-time membership-existence checks served (Delegation Service, Tender ACL Service) |
-| `outbox_dead_letters_total` | Counter | `event_type` | Dead letters |
-| `iam_delegate_removal_blocked_total` | Counter | `tenant_id`, `trigger (full_removal\|dept_demotion\|dept_removal)` | `409 workflow_resolution_required` |
-| `iam_delegate_reassignment_total` | Counter | `tenant_id` | Successful `replace_delegate` |
-| `iam_delegate_workflow_cancel_total` | Counter | `tenant_id` | Successful `stop_workflows` |
-| `iam_delegate_suspend_impact_total` | Counter | `tenant_id` | P-7 suspend advisory fired (§8.8.5, not a block) |
-| `iam_session_revoke_failed_total` | Counter | `tenant_id`, `trigger (suspend\|removal\|deprivilege)` | AUTH-8 RP call failed — sustained rate pages |
-| `iam_seat_limit_reached_total` | Counter | `tenant_id` | P-6 refused (SEAT-1) |
-| `iam_seat_overage_tenants` | Gauge | — | `count(*) WHERE overage_since IS NOT NULL` |
-| `iam_seat_overage_started_total` | Counter | `tenant_id` | `overage_since` stamped |
-| `iam_invitations_created_total` / `_accepted_total` / `_expired_total` / `_revoked_total` | Counter | `tenant_id` | Invitation lifecycle |
-| `iam_invite_throttled_total` | Counter | `tenant_id`, `reason (cooldown\|rate_limit)` | Pre-RP-call throttle (PI-11/PI-12) |
-| `iam_pending_invitations` | Gauge | `tenant_id` | Current unexpired pending count |
-| `iam_stale_lifecycle_event_skipped_total` | Counter | `event_type` | EVT-14 stale skip (post-DLQ-redrive spikes are expected) |
-| `iam_future_lifecycle_event_rejected_total` | Counter | `event_type` | EVT-15 clamp — **any nonzero pages** |
-| `iam_invite_kc_cleanup_pending` | Gauge | — | `count(*) WHERE kc_cleanup_pending` |
-| `iam_invite_kc_cleanup_failed_total` | Counter | `tenant_id` | PI-9 reconciler RP failures |
-| `iam_realm_sync_pending` | Gauge | — | `count(*) WHERE realm_sync_pending` |
-| `iam_realm_sync_failed_total` | Counter | `tenant_id` | T-15 reconciler failures (security-relevant on disable) |
-| `iam_tenant_ownerless_total` | Counter | `tenant_id` | TM-12 escalations set |
-| `iam_tenant_ownerless` | Gauge | — | `count(*) WHERE ownerless_since IS NOT NULL` — any nonzero pages `platform_operator` |
-| `iam_group_mapping_resolution_errors_total` | Counter | `tenant_id` | JIT no-match |
+| `iam_rls_violations_total` | Counter | `violation_type` | RLS violations scraped from `rls_violation_log` by a 5-min exporter goroutine |
+| `iam_unknown_event_acknowledged_total` | Counter | `topic`, `event_type` | Consumed event of a type this service doesn't handle — silently ack'd; sustained nonzero means a producer added a new type |
+| `iam_stale_lifecycle_event_skipped_total` | Counter | `event_type` | EVT-14 recency-guard skip (post-DLQ-redrive spikes are expected) |
+| `iam_future_lifecycle_event_rejected_total` | Counter | `event_type` | EVT-15 future-time clamp — **any nonzero rate pages** (producer clock skew) |
+| `iam_session_revoke_failed_total` | Counter | `reason` | RP `RevokeUserSessions` non-2xx/error (AUTH-8 fail-open) |
+| `iam_delegate_suspend_impact_total` | Counter | `checked` | P-7 suspend WFI-13 advisory fired (§8.8.5, never a block) |
+| `iam_tenant_ownerless_escalated_total` | Counter | `reason` | Event-time signal: a removal just dropped the last active `tenant_owner` (TM-12) — every increment should page |
+| `iam_seat_overage_started_total` | Counter | `cause` | Under-cap → over-cap transition (SEAT-5) |
+| `iam_seat_limit_reached_total` | Counter | `plan` | P-6 invite blocked by SEAT-1 cap |
+| `iam_invite_throttled_total` | Counter | `reason` (`cooldown`\|`rate_limit`) | Pre-RP-call throttle (PI-11/PI-12) |
+| `iam_realm_sync_failed_total` | Counter | `stage` | `realm-config-sync` reconciler failure (T-15, security-relevant on disable) |
+| `iam_delegate_removal_blocked_total` | Counter | `scope` | `409 workflow_resolution_required` (WFI-3) |
+| `iam_delegate_reassignment_total` | Counter | `action` (`replace_delegate`\|`stop_workflows`) | P-26 removal-resolution completion |
+| `iam_processed_events_duplicates_total` | Counter | `consumer` | SQS redelivery filtered by `processed_events` PK (IDEMP-4) |
+| `iam_xsvc_call_errors_total` | Counter | `service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failure; `fallback_served` is recorded by the calling `CatalogService`/`GroupMappingService`, not the client |
+| `iam_membership_exists_check_total` | Counter | `caller`, `result` | I-15 grant-time existence checks served (Tender ACL Service, Delegation Service) |
+| `iam_lifecycle_consumer_lag_seconds` | Histogram | `event_type` | Seconds between `event.time` and consumer apply — **SLO-3 primary drift signal** (buckets 0.05s–1800s) |
+| `iam_xsvc_call_latency_seconds` | Histogram | `service`, `endpoint` | Latency of the three ADR-0007/ADR-0008 synchronous cross-service calls (buckets 5ms–3s) |
+| `iam_tenant_ownerless` | Gauge | — | `count(*) WHERE ownerless_since IS NOT NULL` (T-13) — 5-min exporter; sustained >0 pages `platform_operator` |
+| `iam_realm_sync_pending` | Gauge | — | `count(*) WHERE realm_sync_pending` (T-15) — 5-min exporter |
+| `iam_seat_overage_active` | Gauge | — | `count(*) WHERE overage_since IS NOT NULL` (SEAT-5) — 5-min exporter |
+| `iam_pending_invitations_stale` | Gauge | — | Pending invitations past `expires_at` that `invitation-expiry` hasn't flipped yet — 5-min exporter |
+| `outbox_dead_letters_total` | Counter | `event_type` | `platform-events` dead letters (not an `iam_`-prefixed metric — library-owned) |
+
+Not implemented (do not treat as current): `iam_membership_joins_total`/`_leaves_total`, `iam_memberships_cache_hit_ratio`, `iam_membership_lookup_latency_seconds`, `iam_invitations_created_total`/`_accepted_total`/`_expired_total`/`_revoked_total`, `iam_invite_kc_cleanup_pending`/`_failed_total`, `iam_group_mapping_resolution_errors_total`, `iam_delegate_workflow_cancel_total` (separate from `iam_delegate_reassignment_total{action=stop_workflows}`, which already covers that case) — these were on an earlier planned metric surface that was never built; this whole line is a Phase-6 note, not a current gap list.
 
 **Alerts:**
 - `outbox_dead_letters_total rate > 0` → page
@@ -105,12 +100,13 @@ All `iam_`-prefixed. Cardinality-bounded: `tenant_id` labels capped by tenant co
 - `iam_future_lifecycle_event_rejected_total rate > 0` → page (producer clock skew / bad replay)
 - Sustained `iam_session_revoke_failed_total` → page (AUTH-8 fast-kill degraded, only TTL-bounded)
 - `iam_lifecycle_consumer_lag_seconds > 30` for ~2 min → page (SLO-3 breach, primary drift signal)
-- `iam_realm_sync_pending > 0` sustained beyond ~10 min OR any un-applied disable → page (T-15)
+- `iam_realm_sync_pending > 0` sustained beyond ~10 min → page (T-15)
 - Sustained `iam_realm_sync_failed_total` → page
 - Sustained `iam_invite_throttled_total` for one tenant → warn (email abuse / bad client)
-- Sustained `iam_delegate_removal_blocked_total` without matching `_reassignment_total`/`_workflow_cancel_total` → warn (admins hitting block, not completing resolution)
+- Sustained `iam_delegate_removal_blocked_total` without matching `iam_delegate_reassignment_total` → warn (admins hitting block, not completing resolution)
 - Spike in `iam_seat_limit_reached_total` for a tenant → **informational Slack to CSM/Billing** (not on-call — genuine "buy more seats" signal)
-- Tenant `overage_since` older than `SEAT_OVERAGE_GRACE_DAYS` → notify Billing (enforcement owner)
+- `iam_pending_invitations_stale > 0` sustained → warn (`invitation-expiry` cron not keeping up)
+- Sustained `iam_xsvc_call_errors_total{service=catalog}` → warn (the one ADR-0007/ADR-0008 dependency that is NOT fail-open — see §20.7)
 
 **Metric naming (§16 A50/J4):** `iam_` subsystem prefix kept; emitting service disambiguated by Prometheus `job` label. Names unique across IAM (no collisions). Dashboards/alerts on shared names aggregate `by (job)`.
 
@@ -126,37 +122,47 @@ Slow queries > 200 ms at WARN (`tenant_id` redacted). RLS violations at ERROR (1
 
 ## 12. Configuration
 
+Table below is verified directly against the current `.env-example` (not just prose) — variable names, not just values, were wrong in a prior version of this table (`SNS_TOPIC_ARN_MEMBERSHIP`/`SNS_TOPIC_ARN_TENANT`/`SQS_QUEUE_URL_TENANT_EVENTS`/`SQS_QUEUE_URL_BILLING_EVENTS`/`OUTBOX_POLL_INTERVAL_MS`/`OUTBOX_DRAIN_TIMEOUT_S`/`OUTBOX_STARTUP_JITTER_S` do not exist; `VALKEY_TIMEOUT_MS` does not exist — the Valkey client hardcodes 50 ms read/write / 100 ms dial with no env override).
+
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | (required) | Postgres DSN for `org_membership` |
+| `DATABASE_URL` or `PG_HOST`/`PG_PORT`/`PG_USER`/`PG_PASSWORD`/`PG_DBNAME`/`PG_SSLMODE` | — | Postgres DSN for `org_membership` (one or the other) |
+| `PG_MAX_CONNS` / `PG_MIN_CONNS` | `20` / `0` | Pool sizing per pod |
+| `PG_SLOW_QUERY_THRESHOLD` | `200ms` | WARN log threshold (`tenant_id` redacted) |
+| `PG_BOUNCER_MODE` | `true` (dev) | `true` in prod/staging |
 | `MIGRATION_DATABASE_URL` | (required) | Direct Postgres DSN for migrations (bypasses PgBouncer, CONFIG-2) |
-| `PG_BOUNCER_MODE` | `false` | `true` in prod/staging |
-| `PG_MAX_CONNS` | `15` | Pool max per pod |
-| `VALKEY_URL` | (required) | ElastiCache endpoint |
-| `VALKEY_TIMEOUT_MS` | `50` | Cache operation timeout (miss on timeout, CONFIG-3) |
-| `SNS_TOPIC_ARN_MEMBERSHIP` | (required) | `iam.membership.events` |
-| `SNS_TOPIC_ARN_TENANT` | (required) | `iam.tenant.events` |
-| `SQS_QUEUE_URL_TENANT_EVENTS` | (required) | `tenant-orgm-q` |
-| `SQS_QUEUE_URL_BILLING_EVENTS` | (required) | `billing-orgm-q` |
-| `WORKFLOW_SERVICE_BASE_URL` / `_TIMEOUT_MS` | required / 3000 | §8.8 delegate-impact/reassign/cancel |
-| `REALM_PROVISIONER_BASE_URL` / `_TIMEOUT_MS` | required / 3000 | Invited-user create/delete, realm-config patch, session revoke |
-| `CATALOG_ADMIN_BASE_URL` / `_TIMEOUT_MS` | required / 3000 | Catalog / Admin Config Service (ADR-0007 Wave 1) — `om:plans`/`om:departments` source. **Not fail-open**: an unconfigured/failed call with no cache surfaces `catalog_unavailable` (503) |
-| `GROUP_MAPPING_BASE_URL` / `_TIMEOUT_MS` | required / 300 | Group Mapping / JIT Config Service (ADR-0007 Wave 2) — I-10 SAML group→dept/role resolution. Fails **open** (ADR-0007 Action Item 4): cold-cache-plus-failure serves an empty resolution rather than blocking login |
-| `DELEGATION_BASE_URL` / `_TIMEOUT_MS` | required / 300 | Delegation Service (ADR-0008) — §8.8.4 dept-scope delegate pre-filter on admin Assign/Remove. Fails **open**: degrades to tenant-wide delegate-impact scoping, never blocks the operation. (Previously missing from `.env-example`/Helm values — a real bug, fixed in the ADR-0007/ADR-0008 decomposition pass: the client always failed to construct and every call silently degraded to tenant-wide scoping in every environment.) |
+| `SYSTEM_DATABASE_URL` | — | BYPASSRLS `sysPool` DSN (`org_membership_migrator`) — reconciler jobs, business-metric exporters, I-16. Falls back to the app DSN in dev with a startup warning (cross-tenant queries then RLS-filter to 0 rows) |
+| `VALKEY_URL` | `localhost:6379` | Cache endpoint — no separate timeout env var (see above) |
+| `SNS_TOPIC_MEMBERSHIP_ARN` | (required outside dev) | `iam.membership.events` |
+| `SNS_TOPIC_TENANT_ARN` | (required outside dev) | `iam.tenant.events` |
+| `SQS_TENANT_ORGM_QUEUE_URL` | (required outside dev) | `tenant-orgm-q` |
+| `SQS_BILLING_ORGM_QUEUE_URL` | (required outside dev) | `billing-orgm-q` |
+| `GLUE_REGISTRY_MEMBERSHIP_NAME` / `_ARN` | — | `iam-membership-events` registry — unset ⇒ `NoopCodec` (plain JSON) on that topic |
+| `GLUE_REGISTRY_TENANT_NAME` / `_ARN` | — | `iam-tenant-events` registry (**shared with Realm Provisioner** — disjoint schema names) — unset ⇒ `NoopCodec` on that topic |
+| `WORKFLOW_SERVICE_BASE_URL` / `WORKFLOW_TIMEOUT_MS` | — / `3000` | §8.8 delegate-impact/reassign/cancel — fail-closed |
+| `REALM_PROVISIONER_BASE_URL` / `REALM_PROVISIONER_TIMEOUT_MS` | — / `3000` | Invited-user create/delete, realm-config patch, session revoke, MFA reset |
+| `CATALOG_ADMIN_BASE_URL` / `CATALOG_ADMIN_TIMEOUT_MS` | — / `3000` | Catalog / Admin Config Service (ADR-0007 Wave 1) — `om:plans`/`om:departments` source. **Not fail-open**: cold-cache-plus-failure surfaces `catalog_unavailable` (503) |
+| `GROUP_MAPPING_BASE_URL` / `GROUP_MAPPING_TIMEOUT_MS` | — / `300` | Group Mapping / JIT Config Service (ADR-0007 Wave 2) — I-10 SAML group→dept/role resolution. Fails **open**: cold-cache-plus-failure serves an empty resolution rather than blocking login |
+| `DELEGATION_BASE_URL` / `DELEGATION_TIMEOUT_MS` | — / `300` | Delegation Service (ADR-0008) — §8.8.4 dept-scope delegate pre-filter. Fails **open**: degrades to tenant-wide delegate-impact scoping |
 | `INVITATION_EXPIRY_DAYS` | `7` | Pending invitation window; **must equal Keycloak invite action-token lifespan** |
-| `INVITE_REINVITE_COOLDOWN_MINUTES` | `60` | Per-email cooldown (PI-11); `0` disables |
-| `INVITE_MAX_PER_TENANT_PER_HOUR` | `200` | Per-tenant hourly ceiling (PI-12); `0` disables |
+| `INVITE_REINVITE_COOLDOWN_MINUTES` | `15` | Per-email cooldown (PI-11); `0` disables |
+| `INVITE_MAX_PER_TENANT_PER_HOUR` | `60` | Per-tenant hourly ceiling (PI-12); `0` disables |
 | `SEAT_OVERAGE_GRACE_DAYS` | `30` | Drives `grace_ends_at` + past-grace alert. **Not** an auto-action trigger (SEAT-3/SEAT-4) — Billing's enforcement decision |
+| `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's (§16 OQ-9/RP-C3) cancellation-to-suspension threshold — `ListSubscriptionLapses` filters `cancelled_at` against this. O&M owns the value so RP's sweep isn't a second, driftable copy of the same rule |
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300` | EVT-15 future-time clamp threshold |
-| `OUTBOX_POLL_INTERVAL_MS` | `500` | Outbox poll |
+| `OUTBOX_POLL_INTERVAL` | `500ms` | Go duration string, not a bare ms integer |
 | `OUTBOX_BATCH_SIZE` | `50` | Publish batch size |
 | `OUTBOX_MAX_ATTEMPTS` | `5` | DLQ threshold (EVT-5) |
-| `OUTBOX_DRAIN_TIMEOUT_S` | `30` | Shutdown drain |
-| `OUTBOX_STARTUP_JITTER_S` | `7` | HPA scaling jitter |
-| `GLUE_REGISTRY_MEMBERSHIP_NAME` | (required) | `iam-membership-events` — omit for `NoopCodec` (plain JSON) on that topic |
-| `GLUE_REGISTRY_TENANT_NAME` | (required) | `iam-tenant-events` — omit for `NoopCodec` (plain JSON) on that topic |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | (required) | OTLP collector |
-| `BUILD_VERSION` | (required) | CI-injected |
+| `OUTBOX_DRAIN_TIMEOUT` | `30s` | Shutdown drain |
+| `OUTBOX_PUBLISH_CONCURRENCY` | `4` | Concurrent publish workers |
+| `OUTBOX_PUBLISH_TIMEOUT` | `10s` | Per-publish timeout |
+| `OUTBOX_STARTUP_JITTER` | `2s` | Avoids every replica's runner waking in lockstep |
+| `OUTBOX_CLAIM_LEASE_DURATION` | `10m` | Claimed-row lease before another replica can retry it |
+| `PROCESSED_EVENTS_TTL_DAYS` | `8` | Consumer dedup retention (PE-1, > 7-day SQS max lifetime) |
+| `CACHE_TTL_SECONDS` | `300` | Base TTL for `om:*` keys |
+| `DOCS_ENABLED` / `DOCS_AUTH_TOKEN` | `false` / — | Swagger UI + AsyncAPI viewer gating in production |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — (opt-in) | OTLP collector — unset means spans stay in-process only |
+| `BUILD_VERSION` | (CI-injected) | `-ldflags` at build time |
 
 **CONFIG-1..5:** All infra endpoints env-supplied (no compiled config, only `BUILD_VERSION`). Same image runs everywhere.
 
@@ -166,17 +172,19 @@ Helm chart mirrors `iam-user-profile`. `terminationGracePeriodSeconds = 75`. HPA
 
 ### 13.1 CronJobs
 
+Schedules verified directly against `deploy/helm/values.yaml`'s `cronjobs:` map (a prior version of this table had every schedule wrong except `trial-cleanup`):
+
 | CronJob | Schedule | Purpose |
 |---|---|---|
-| `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor: soft-delete + PII-scrub for `trial_expired` past 15-d grace (§15.3) |
-| `processed-events-prune` | `0 * * * *` | Delete `processed_events > 8 days` |
-| `invitation-expiry` | `*/15 * * * *` | Past-`expires_at` pending → `expired` + `kc_cleanup_pending=true` (PI-5/PI-9) |
+| `invitation-expiry` | `*/5 * * * *` | Past-`expires_at` pending → `expired` + `kc_cleanup_pending=true` (PI-5/PI-9) |
 | `invitation-kc-cleanup` | `*/10 * * * *` | Saga-compensation reconciler (PI-9): sweep `kc_cleanup_pending`, call `RealmProvisioner.DeleteUser`, clear flag |
-| `seat-overage-reconcile` | `0 * * * *` | Seat-overage marker backstop (SEAT-5): recompute `overage_since`; also drives past-grace alert |
-| `realm-config-sync` | `*/2 * * * *` | Realm-config reconciler (T-15): sweep `realm_sync_pending`, call idempotent `PatchRealmConfig`; **prioritises disables** (security-tightening) |
-| `outbox-prune` | `0 3 * * *` | Batched raw-SQL delete at 8-day retention, capped per tick at `jctx.BatchLimit` (default 500) — not `outbox.Runner.PrunePublished` |
+| `realm-config-sync` | `*/10 * * * *` | Realm-config reconciler (T-15): sweep `realm_sync_pending`, call idempotent `PatchRealmConfig`; **prioritises disables** (security-tightening) |
+| `seat-overage-reconcile` | `0 */6 * * *` | Seat-overage marker backstop (SEAT-5): recompute `overage_since`; also drives past-grace alert |
+| `trial-cleanup` | `0 2 * * *` | Phase-2 DB executor: soft-delete + PII-scrub for `trial_expired` past 15-d grace (§15.3) |
+| `outbox-prune` | `0 3 * * *` | Batched delete via `port.ReconcilerStore.PruneOutbox` at 8-day retention (`OUTBOX_RETENTION_DAYS`) |
+| `processed-events-prune` | `0 4 * * *` | Batched delete via `port.ReconcilerStore.PruneProcessedEvents` at `PROCESSED_EVENTS_TTL_DAYS` (8) |
 
-Exactly **7** CronJobs, dispatched via `cmd/reconciler/main.go --job=<name>` (verified against `cmd/reconciler/jobs/` and `main.go`'s `registry` map). `quota-reset` and `quota-utilization-metrics` **removed** (§16 A26 — moved to Usage & Metering). `delegation-expiry`, `delegation-review`, `delegation-cleanup` (→ Delegation Service) and `acl-cleanup` (→ Tender ACL Service) **removed** by the ADR-0007/ADR-0008 decomposition — those tables and their lifecycle no longer live in this database.
+Exactly **7** CronJobs, dispatched via `cmd/reconciler/main.go --job=<name>` (verified against `cmd/reconciler/jobs/` and `main.go`'s `registry` map). All cross-tenant reconciler queries now go through `port.ReconcilerStore` (`internal/adapter/outbound/postgres/reconciler_store.go`, `sysPool`-bound) rather than the jobs issuing raw SQL directly. `quota-reset` and `quota-utilization-metrics` **removed** (§16 A26 — moved to Usage & Metering). `delegation-expiry`, `delegation-review`, `delegation-cleanup` (→ Delegation Service) and `acl-cleanup` (→ Tender ACL Service) **removed** by the ADR-0007/ADR-0008 decomposition — those tables and their lifecycle no longer live in this database.
 
 ### 13.3 Migration Safety
 
@@ -221,12 +229,13 @@ There is no `port.UserProfileClient`/`adapter/outbound/userprofile` integration 
 
 ### 18.3 `realm-provisioner`
 
-- RP → O&M: `POST /internal/tenants` (I-1); `PATCH /internal/tenants/:id` (I-2, sets realm_id/realm_type/keycloak_shard together).
-- O&M → RP: `POST /internal/tenants/:id/users` (invited-user create, §16 A11); `DELETE /internal/tenants/:id/users/:keycloak_user_id` (compensating delete, PI-9 durable via `kc_cleanup_pending`); `PATCH /internal/tenants/:id/realm-config` (T-15 realm-config propagation, Option A local-first commit-then-call, durable via `realm_sync_pending`); `POST /internal/tenants/:id/users/:keycloak_user_id/logout` (AUTH-8 session revocation, best-effort/fail-open).
-- RP → events → O&M: `iam.tenant.events` (TenantRealmReady, TenantConverted, TenantSuspended, TenantOffboarded, …) via `tenant-orgm-q`.
-- O&M → events → RP (new, resolves RP-4): `iam.tenant.events` `TrialStarted{tenant_id, plan, trial_ends_at}` via RP's own `tenant-realm-q`. RP tracks the trial timer locally (`tenant_realms`) and runs its own expiry sweep off it — O&M exposes no batch "expired trials" endpoint, and neither side polls the other.
+- RP → O&M: `POST /internal/tenants` (I-1, actually called by the Signup BFF, not RP directly — confirmed by a full-repo grep of `iam-realm-provisioner` finding zero callers of either I-1 or I-2 from RP's own codebase). `PATCH /internal/tenants/:id` (I-2) similarly has **no real caller today** — the actual realm-identity propagation path is the `TenantRealmReady` **event** below, not a synchronous I-2 call. I-2 is registered and documented but appears to be dead/aspirational; worth either wiring a real caller or retiring it.
+- O&M → RP: `POST /internal/tenants/:id/users` (invited-user create, §16 A11 — now sends an `Idempotency-Key` header, a bug fix: RP's route hard-requires one and this client never sent it before, so every real invite failed once `REALM_PROVISIONER_BASE_URL` was actually set); `DELETE /internal/tenants/:id/users/:keycloak_user_id` (compensating delete, PI-9 durable via `kc_cleanup_pending`); `PATCH /internal/tenants/:id/realm-config` (T-15 realm-config propagation, Option A local-first commit-then-call, durable via `realm_sync_pending`); `POST /internal/tenants/:id/users/:keycloak_user_id/revoke-sessions` (AUTH-8 session revocation, best-effort/fail-open — the actual path is `/revoke-sessions`, not `/logout`); `POST /internal/tenants/:id/users/:keycloak_user_id/mfa-reset` (P-34's RP-9 call, fail-closed, no reconciler).
+- RP → events → O&M: `iam.tenant.events` via `tenant-orgm-q` — `TrialTenantProvisioned` (idempotent no-op reconcile on O&M's side, not the creation trigger), `TenantRealmReady` (sets `realm_id`/`keycloak_shard` — **bug fixed**: RP's frozen payload only ever carries `json:"realm"` + `json:"keycloak_shard"`, no `realm_type` field at all; O&M's consumer used to read nonexistent `realm_id`/`realm_type` keys and silently blanked both columns to empty strings on every real event — it now reads `realm` and hardcodes `realm_type='dedicated'`, since this event is only ever emitted by RP-2/RP-3, never the shared trial realm), `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated{source=operator}`.
+- O&M → events → RP (resolves RP-4): `iam.tenant.events` `TrialStarted{tenant_id, plan, trial_ends_at}` via RP's own `tenant-realm-q`. RP tracks the trial timer locally (`tenant_realms`) and runs its own expiry sweep off it — O&M exposes no batch "expired trials" endpoint, and neither side polls the other.
+- RP → O&M (pull, resolves RP-C3): `GET /internal/subscription-lapses` (I-16) — RP's subscription-lapse sweep polls this cross-tenant, BYPASSRLS-bound endpoint instead of O&M pushing a stream of cancellation-state transitions (deliberately pull, not push, since cancellation is reversible — contrast the push-only `TrialStarted` above, a one-directional transition). RP's caller sends a sentinel `x-tenant-id: 00000000-0000-0000-0000-000000000000` on this call — not because the read is tenant-scoped (it isn't; O&M's handler queries `sysPool` unconditionally and never reads the header), but because `platform-gincommon`'s shared `RequireAuth` middleware requires that header, unconditionally, on every `/api/v1` route in every IAM service, with no per-route opt-out.
 
-`port.RealmProvisionerClient` — `CreateInvitedUser`, `DeleteUser`, `PatchRealmConfig`, `RevokeUserSessions`, `ResetMFA` (new, §16 OQ-8/F6). Failure maps to `503 realm_provisioner_unavailable` at invite time and at MFA-reset time (P-34, fail-closed — no reconciler for "eventually reset MFA", unlike `RevokeUserSessions`'s best-effort posture); both convergence paths idempotent and retried by reconcilers.
+`port.RealmProvisionerClient` — `CreateInvitedUser`, `DeleteUser`, `PatchRealmConfig`, `RevokeUserSessions`, `ResetMFA` (§16 OQ-8/F6). Failure maps to `503 realm_provisioner_unavailable` at invite time and at MFA-reset time (P-34, fail-closed — no reconciler for "eventually reset MFA", unlike `RevokeUserSessions`'s best-effort posture); both convergence paths idempotent and retried by reconcilers.
 
 ### 18.4 `event-consumer`
 

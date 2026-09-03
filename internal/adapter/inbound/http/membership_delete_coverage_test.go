@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
@@ -34,7 +35,7 @@ func (t *p8FakeTx) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTa
 type p8TxRunner struct{}
 
 func (p8TxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
-	return fn(service.WithTx(ctx, &p8FakeTx{}))
+	return fn(postgres.WithTx(ctx, &p8FakeTx{}))
 }
 
 var _ port.TxRunner = p8TxRunner{}

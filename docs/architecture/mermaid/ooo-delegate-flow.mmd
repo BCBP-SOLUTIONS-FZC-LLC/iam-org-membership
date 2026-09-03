@@ -40,12 +40,12 @@ sequenceDiagram
     SVC ->>+ DCC: DeptDelegate(ctx, tenantID, userID, deptID)
     DCC ->>+ Delegation: GET /internal/delegations/dept-delegate?tenant_id=&user_id=&dept_id=
     alt Delegation Service reachable
-        Delegation -->>- DCC: active scope='department' delegation.id, or null
+        Delegation -->>- DCC: active scope=department delegation.id, or null
         DCC -->>- SVC: *uuid.UUID (delegationID) or nil
     else Delegation Service 5xx/timeout
         Delegation -->>- DCC: error
         DCC -->>- SVC: error
-        Note over SVC: Fails OPEN (WFI-11) — degrade to tenant-wide impact scoping,<br/>i.e. call GetDelegateImpact with delegationID=nil instead of failing the request.<br/>Over-blocks/over-acts at worst; never under-blocks, never a hard failure.
+        Note over SVC: Fails OPEN (WFI-11) — degrade to tenant-wide impact scoping,<br/>i.e. call GetDelegateImpact with delegationID=nil instead of failing the request.<br/>Over-blocks/over-acts at worst — never under-blocks, never a hard failure.
     end
     SVC ->>+ WFC: GetDelegateImpact(tenantID, userID, delegationID)
     WFC ->>+ Workflow: GET /internal/workflows/delegate-impact (scoped by delegation_id if present)

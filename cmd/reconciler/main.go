@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
@@ -54,6 +55,11 @@ func main() {
 	}
 	log := port.NewSlogStyleLogger(rawLog)
 
+	// Same TracerProvider as cmd/server so db.query spans from this job
+	// export through gincommon's OTLP pipeline when the collector is set.
+	shutdownTracing := gincommon.InitTracingFromEnv()
+	defer shutdownTracing()
+
 	log.Info("reconciler starting", "job", jobName)
 
 	timeout := 5 * time.Minute
@@ -75,37 +81,60 @@ func main() {
 	pgCfg.DSN = pgadapter.DSNFromEnv()
 	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
 	pgCfg.Logger = pgadapter.NewLoggerAdapter(rawLog)
+	pgCfg.Tracer = pgadapter.NewOTelTracer(envOr("APP_NAME", "iam-org-membership"))
 	pool, err := pgcommon.NewPool(ctx, pgCfg)
 	if err != nil {
 		die("connect to postgres: %v", err)
 	}
-	defer pool.Close()
 
-	// *pgcommon.Pool (not a raw pgxpool.Pool), deliberately with no
-	// GUCProvider — same rationale as cmd/server/main.go's sysPool — wired
-	// with the same Logger so slow cross-tenant queries are traced through
-	// the same structured sink instead of nowhere.
-	sysPool, err := pgcommon.NewPool(ctx, pgcommon.Config{
-		DSN:    pgadapter.SystemDSNFromEnv(),
-		Logger: pgadapter.NewLoggerAdapter(rawLog),
-	})
+	// DrainAndClose is pgcommon's graceful path (wait for in-flight
+	// WithConn/RunInTx, then close). A CronJob is short-lived and
+	// os.Exit(1) on job failure skips defers, so drain is also invoked
+	// explicitly on those paths. sync.Once keeps DrainAndClose and a
+	// later defer from running concurrently (pgcommon forbids that).
+	var sysPool *pgcommon.Pool
+	var drainOnce sync.Once
+	drainPools := func() {
+		drainOnce.Do(func() {
+			drainCtx, cancelDrain := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancelDrain()
+			if err := pool.DrainAndClose(drainCtx); err != nil {
+				log.Error("app pool drain error", "error", err.Error())
+			}
+			if sysPool != nil {
+				if err := sysPool.DrainAndClose(drainCtx); err != nil {
+					log.Error("sysPool drain error", "error", err.Error())
+				}
+			}
+		})
+	}
+	defer drainPools()
+
+	// *pgcommon.Pool via SystemPoolConfig — same helper as cmd/server
+	// (no GUCProvider, PGBouncerMode forced true, ConfigFromEnv pool
+	// sizing). Tracer is wired separately so db.query spans export
+	// through gincommon's TracerProvider.
+	sysCfg := pgadapter.SystemPoolConfig(pgadapter.SystemDSNFromEnv(), rawLog)
+	sysCfg.Tracer = pgadapter.NewOTelTracer(envOr("APP_NAME", "iam-org-membership"))
+	sysPool, err = pgcommon.NewPool(ctx, sysCfg)
 	if err != nil {
+		drainPools()
 		die("connect sysPool: %v", err)
 	}
-	defer sysPool.Close()
 
 	rawCodec := eventbusadapter.Codec(eventbusadapter.NoopCodec{})
 	codec, err := eventbusadapter.NewValidatingCodec(rawCodec)
 	if err != nil {
+		drainPools()
 		die("init validating codec: %v", err)
 	}
 	outboxPublisher := eventbusadapter.New("iam-org-membership-reconciler", codec).WithLogger(rawLog)
 
 	jctx := &jobs.Context{
-		Pool:                   pool,
-		SysPool:                sysPool,
-		OutboxPublisher:        outboxPublisher,
 		TxRunner:               pgadapter.NewTxRunner(pool, outboxPublisher),
+		Tenants:                pgadapter.NewTenantRepository(pool),
+		Invitations:            pgadapter.NewInvitationRepository(sysPool),
+		Reconciler:             pgadapter.NewReconcilerStore(sysPool),
 		RealmProvisioner:       realmprovisionerclient.New(rawLog),
 		Logger:                 log,
 		BatchLimit:             envInt("RECONCILER_BATCH_LIMIT", 500),
@@ -118,11 +147,14 @@ func main() {
 	res, err := fn(ctx, jctx)
 	if err != nil {
 		log.Error("reconciler job failed", "job", jobName, "error", err.Error())
+		drainPools()
+		shutdownTracing()
 		_ = gincommon.Shutdown(rawLog)
 		os.Exit(1)
 	}
 	log.Info("reconciler complete", "job", jobName,
 		"attempted", res.Attempted, "succeeded", res.Succeeded, "failed", res.Failed, "skipped", res.Skipped)
+	drainPools()
 	_ = gincommon.Shutdown(rawLog)
 }
 

@@ -521,11 +521,11 @@ func TestMembershipService_ReconcileRoles_LastOwnerStrip_Returns422(t *testing.T
 // TestOperatorService_SetFeatureFlags_NilFlags_NormalisedToEmpty verifies that
 // passing nil flags does not panic — the nil-to-empty normalisation is covered.
 func TestOperatorService_SetFeatureFlags_NilFlags_NormalisedToEmpty(t *testing.T) {
-	svc := service.NewOperatorService(nil, nil, nil, nil, nil, nil)
+	svc := service.NewOperatorService(nil, nil, nil, nil, nil)
 
 	// nil flags → normalised to {} → allow-list check passes (no keys) →
 	// reaches txRunner which is nil → panics or errors. Use a passthroughTxRunner.
-	svc2 := service.NewOperatorService(nil, nil, nil, nil, nil, &passthroughTxRunner{})
+	svc2 := service.NewOperatorService(nil, nil, nil, nil, &passthroughTxRunner{})
 
 	_, err := svc2.SetFeatureFlags(context.Background(), uuid.New(), nil, 1)
 	// Error expected (pgadapterTxFromContext !ok → ErrConflict), but must not panic.
@@ -546,7 +546,7 @@ func TestOperatorService_ReassignOwner_FindByIDError_Propagates(t *testing.T) {
 			return nil, findErr
 		},
 	}
-	svc := service.NewOperatorService(nil, tenants, nil, nil, nil, nil)
+	svc := service.NewOperatorService(tenants, nil, nil, nil, nil)
 
 	_, err := svc.ReassignOwner(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	require.Error(t, err)

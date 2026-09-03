@@ -45,7 +45,7 @@ func (f *fakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comm
 
 // injectTx puts fakeTx into ctx so withPool picks it up instead of the pool.
 func injectTx(ctx context.Context, tx pgx.Tx) context.Context {
-	return withTx(ctx, tx)
+	return WithTx(ctx, tx)
 }
 
 // ── fakeRow ────────────────────────────────────────────────────────────

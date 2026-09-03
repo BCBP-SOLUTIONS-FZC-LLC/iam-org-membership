@@ -177,13 +177,7 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 			// TM-8 last-owner guard inside the lock (same pattern as P-8/P-28).
 			var txErr error
 			err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-				tx, ok := pgadapterTxFromContext(txCtx)
-				if !ok {
-					return domain.NewError(domain.ErrConflict, "tx unavailable")
-				}
-				if _, err := tx.Exec(txCtx,
-					`SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
-					tenantID); err != nil {
+				if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 					return err
 				}
 				owners, err := s.roles.CountActiveOwners(txCtx, tenantID)
@@ -315,13 +309,8 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 		// so two concurrent P-28 calls stripping different owners serialize
 		// correctly and the last-owner invariant holds under contention.
 		if strippingOwner {
-			tx, ok := pgadapterTxFromContext(txCtx)
-			if ok {
-				if _, err := tx.Exec(txCtx,
-					`SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
-					tenantID); err != nil {
-					return err
-				}
+			if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
+				return err
 			}
 			owners, err := s.roles.CountActiveOwners(txCtx, tenantID)
 			if err != nil {
@@ -350,7 +339,7 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 			}
 			granted = append(granted, *tr)
 			if pub != nil {
-				_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type:      domain.EventTenantRoleGranted,
 					TenantID:  tenantID,
 					Subject:   userID.String(),
@@ -373,7 +362,7 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 			}
 			revoked = append(revoked, *tr)
 			if pub != nil {
-				_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type:      domain.EventTenantRoleRevoked,
 					TenantID:  tenantID,
 					Subject:   userID.String(),
@@ -451,12 +440,8 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 	}
 
 	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		tx, ok := pgadapterTxFromContext(txCtx)
-		if !ok {
-			return domain.NewError(domain.ErrConflict, "tx unavailable")
-		}
 		// Step 2 — TM-13 lock (LLD line 1183).
-		if _, err := tx.Exec(txCtx, `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, tenantID); err != nil {
+		if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 			return err
 		}
 		mem, err := s.memberships.FindByUserID(txCtx, tenantID, userID)
@@ -501,7 +486,7 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		}
 		for _, r := range revokedRoles {
 			if pub != nil {
-				if err := pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventTenantRoleRevoked, TenantID: tenantID,
 					Subject: userID.String(), Actor: actorID.String(),
 					IPAddress: rcIP, UserAgent: rcUA,
@@ -519,7 +504,7 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		}
 		for _, d := range revokedDepts {
 			if pub != nil {
-				if err := pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventDepartmentMembershipRevoked, TenantID: tenantID,
 					Subject: userID.String(), Actor: actorID.String(),
 					IPAddress: rcIP, UserAgent: rcUA,
@@ -541,7 +526,7 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		// user actually held any delegation/ACL rows; both consumers are
 		// idempotent regardless.
 		if pub != nil {
-			if err := pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventMembershipRevoked, TenantID: tenantID,
 				Subject: userID.String(), Actor: actorID.String(),
 				IPAddress: rcIP, UserAgent: rcUA,
@@ -676,7 +661,7 @@ func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context,
 			evt.IPAddress = rc.ClientIP
 			evt.UserAgent = rc.UserAgent
 		}
-		return pub.EnqueueCtx(txCtx, evt)
+		return pub.Enqueue(txCtx, evt)
 	})
 }
 
@@ -727,7 +712,7 @@ func (s *MembershipService) ResetUserMFA(ctx context.Context, tenantID, userID, 
 			evt.IPAddress = rc.ClientIP
 			evt.UserAgent = rc.UserAgent
 		}
-		return pub.EnqueueCtx(txCtx, evt)
+		return pub.Enqueue(txCtx, evt)
 	})
 }
 

@@ -1,4 +1,4 @@
-// Package jobs holds the concrete reconciler bodies for each of the 8
+// Package jobs holds the concrete reconciler bodies for each of the 7
 // CronJobs (§13.1). Every job is package-visible so the top-level
 // cmd/reconciler dispatcher can wire it into the --job registry without
 // touching implementation details.
@@ -14,16 +14,17 @@ import (
 	"context"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 )
 
 // Context is the dependency bag every reconciler function accepts.
 // Populated by cmd/reconciler/main.go from env + Postgres/AWS clients.
+// Pools stay in main.go — jobs talk to repositories, TxRunner, and
+// RealmProvisioner. Seat-overage events go through TxRunner's ctx publisher.
 type Context struct {
-	Pool             *pgcommon.Pool
-	SysPool          *pgcommon.Pool              // BYPASSRLS pool (§4.4) — no GUCProvider, sees across every tenant
-	OutboxPublisher  port.EventPublisher         // for jobs that emit events (SEAT-5 pair, DEL-7 delegate_removed)
 	TxRunner         port.TxRunner               // for atomic state + event emit
+	Tenants          port.TenantRepository       // SEAT-5 occupancy lock + overage_since (app pool)
+	Invitations      port.InvitationRepository   // invitation-expiry / kc-cleanup (sysPool)
+	Reconciler       port.ReconcilerStore        // cross-tenant sweeps (sysPool)
 	RealmProvisioner port.RealmProvisionerClient // PI-9 DeleteUser, T-15 PatchRealmConfig
 	// Logger is the shared gincommon-backed Logger, wrapped for slog-style
 	// call sites (Warn/Info(msg, "key", val, ...)) — every job file calls it

@@ -181,6 +181,10 @@ Admin → POST /tenants/:id/members {email, full_name, initial_tenant_roles, ini
 
   RealmProvisioner.CreateInvitedUser(tenantID, {email, full_name, required_actions:[VERIFY_EMAIL, UPDATE_PASSWORD, CONFIGURE_TOTP?]})
     -- required_actions computed here from initial_tenant_roles/initial_dept_mappings, sent verbatim (RP-5, F5 resolved)
+    -- Idempotency-Key header REQUIRED by RP-5 (RequireIdempotencyKey, 400 missing_idempotency_key otherwise) --
+    -- derived deterministically as sha256(tenant_id:email), prefixed "invite-", so a network-level retry of the
+    -- same invite reuses RP's stored result instead of risking a second Keycloak user create. Found missing
+    -- (never sent at all) and fixed this pass -- every real invite failed once REALM_PROVISIONER_BASE_URL was set.
     5xx/timeout → 503 realm_provisioner_unavailable (retryable)
     → keycloak_user_id
 
@@ -221,6 +225,27 @@ POST /tenants/:id/members/:user_id/reset-mfa (requireTenantAdmin: tenant_admin/t
 ```
 
 Actor's-own-MFA-step-up (also part of RP's confirmed flow) is a gateway/AuthZ Enrichment routing concern, not enforced in this service's code — `pkg/requestctx` carries no actor-MFA-freshness claim (mirrors AUTH-7's "gateway enforces, O&M configures" split for other layers).
+
+## 8.12 Subscription-Lapse Bulk Read (I-16, §16 OQ-9/RP-C3)
+
+RP-C3 (RP's own lapse sweep) needs `cancelled_at` to know when a tenant's grace period elapses; O&M never pushes it, so RP polls instead:
+
+```text
+GET /internal/subscription-lapses  -- cross-tenant by design; RP sends a sentinel
+                                    -- x-tenant-id: 00000000-0000-0000-0000-000000000000
+                                    -- (never read by this handler) rather than omitting
+                                    -- the header entirely -- platform-gincommon's shared
+                                    -- RequireAuth middleware requires x-tenant-id on every
+                                    -- /api/v1 route, unconditionally, with no per-route
+                                    -- opt-out, so a genuinely absent header 401s before
+                                    -- this handler ever runs (found + fixed on RP's side
+                                    -- this pass -- every real poll 401'd until then)
+  ListSubscriptionLapses(SUBSCRIPTION_GRACE_DAYS)  -- against sysPool (BYPASSRLS), NOT the RLS-scoped app pool
+    SELECT ... FROM tenants WHERE status='cancelled' AND cancelled_at <= now() - grace_days
+  → 200 {tenants: [{tenant_id, realm_id, realm_type, cancelled_at}, ...]}  -- [] is a normal response
+```
+
+Deliberately **pull, not push** — unlike RP-4's resolution for trial-expiry (§8.1b's sibling case), a cancellation is reversible (`TenantReactivated` before grace elapses), so a push/event model would force RP to also consume and reconcile an "un-cancel" signal against its own local state. Pull sidesteps that: O&M's `tenants` row is already the source of truth. Self-idempotent — once RP suspends a tenant (emitting `TenantSuspended`), it drops off the next poll on its own.
 
 ## 9. Concurrency, Consistency, Failure
 

@@ -59,7 +59,7 @@ var _ port.TenantRoleRepository = (*extRoleRepo)(nil)
 // so RunInTx-based paths (P-28 owner operations) don't panic on nil txRunner.
 func buildMembershipSvcWithTx(m port.MembershipRepository, r port.TenantRoleRepository) *service.MembershipService {
 	return service.NewMembershipService(
-		m, r, nil, nil, nil, nil,
+		m, r, nil, &port.TenantRepositoryNoop{}, nil, nil,
 		&fakeRPClient{}, // rp: non-nil so RevokeUserSessions doesn't panic
 		nil,             // workflow
 		&passthroughTxRunner{}, nil, 0,

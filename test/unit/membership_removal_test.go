@@ -46,7 +46,7 @@ func (s *spyWorkflowClient) CancelByDelegate(ctx context.Context, tenantID, user
 var _ port.WorkflowClient = (*spyWorkflowClient)(nil)
 
 func buildMembershipSvcForRemoval(m port.MembershipRepository, r port.TenantRoleRepository, dm port.DeptMembershipRepository, wf port.WorkflowClient, tr port.TxRunner) *service.MembershipService {
-	return service.NewMembershipService(m, r, dm, nil, nil, nil, nil, wf, tr, nil, 30)
+	return service.NewMembershipService(m, r, dm, &port.TenantRepositoryNoop{}, nil, nil, nil, wf, tr, nil, 30)
 }
 
 // ── RemoveUser — WFI-3 pre-check branches ──────────────────────────────

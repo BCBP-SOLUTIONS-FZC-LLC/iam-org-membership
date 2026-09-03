@@ -16,9 +16,9 @@ import (
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -298,7 +298,7 @@ func TestTenantsRLSPolicy_UsesHelperFunction(t *testing.T) {
 // backing — the departments table (and its FK) was dropped per
 // migration-runbook Phase 4 (LLD §12 step 4); any UUID satisfies
 // tenant_departments' remaining constraints.
-func seedForDeptAssign(t *testing.T, ctx context.Context, rawPool *pgxpool.Pool, slug string) (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) {
+func seedForDeptAssign(t *testing.T, ctx context.Context, rawPool *dbseed.Pool, slug string) (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) {
 	t.Helper()
 	tenantID := seedTenant(t, ctx, rawPool, slug)
 	userID := uuid.New()

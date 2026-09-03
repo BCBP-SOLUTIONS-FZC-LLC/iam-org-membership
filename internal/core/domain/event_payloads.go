@@ -11,7 +11,7 @@ import (
 // names in the LLD's schema tables.
 //
 // Producer contract: services fill these and hand them to
-// port.EventPublisher via EnqueueCtx. The eventbus adapter wraps them in
+// port.EventPublisher via Enqueue. The eventbus adapter wraps them in
 // an events.Envelope[json.RawMessage] and inserts into outbox_events
 // atomically with the business tx (EVT-10, CONS-1..4).
 

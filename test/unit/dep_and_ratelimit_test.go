@@ -70,6 +70,11 @@ func (r *depInviteRepo) MostRecentCreatedAt(context.Context, uuid.UUID, string) 
 func (r *depInviteRepo) CountCreatedInWindow(_ context.Context, _ uuid.UUID, _ time.Time) (int, error) {
 	return r.countInWindowResult, r.countInWindowErr
 }
+func (r *depInviteRepo) ExpireOverdue(context.Context, int) (int, error)       { return 0, nil }
+func (r *depInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error { return nil }
+func (r *depInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
+	return nil, nil
+}
 
 var _ port.InvitationRepository = (*depInviteRepo)(nil)
 
@@ -159,7 +164,7 @@ func TestProvisioning_SetMembershipStatus_DBUnavailable_Propagates(t *testing.T)
 			return nil, dbErr
 		},
 	}
-	svc := service.NewProvisioningService(nil, nil, memRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := service.NewProvisioningService(nil, memRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	_, err := svc.SetMembershipStatus(context.Background(),
 		uuid.New(), uuid.New(), domain.MembershipActive, 1)
 
@@ -183,7 +188,7 @@ func TestProvisioning_SetMembershipStatus_DBUnavailable_Propagates(t *testing.T)
 func TestProvisioning_DeleteMember_DBError_Propagates(t *testing.T) {
 	dbErr := domain.NewError(domain.ErrDBUnavailable, "connection pool exhausted")
 	txRunner := &passthroughTxRunner{runErr: dbErr}
-	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil, txRunner, nil, nil)
+	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, txRunner, nil, nil)
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 
@@ -229,7 +234,7 @@ func TestOperator_ReassignOwner_TxError_Propagates(t *testing.T) {
 		},
 	}
 
-	svc := service.NewOperatorService(nil, tenantRepo, noOwnerRoleRepo{}, memRepo, nil,
+	svc := service.NewOperatorService(tenantRepo, noOwnerRoleRepo{}, memRepo, nil,
 		&passthroughTxRunner{runErr: txErr})
 
 	_, err := svc.ReassignOwner(context.Background(), tenantID, newOwnerID, uuid.New())
@@ -255,17 +260,16 @@ func TestProvisioning_TrialSignup_TxError_Propagates(t *testing.T) {
 	dbErr := domain.NewError(domain.ErrDBUnavailable, "pool exhausted")
 	txRunner := &passthroughTxRunner{runErr: dbErr}
 	svc := service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil,
 		&depDeptReader{}, &depPlanReader{},
 		txRunner, nil, nil)
 
 	_, _, err := svc.TrialSignup(context.Background(), service.TrialSignupInput{
-		TenantID:      uuid.New(),
-		Slug:          "test-tenant",
-		Name:          "Test Tenant",
-		Plan:          domain.PlanStarter,
-		OwnerUserID:   uuid.New(),
-		LicensedSeats: 10,
+		TenantID:    uuid.New(),
+		Slug:        "test-tenant",
+		Name:        "Test Tenant",
+		Plan:        domain.PlanStarter,
+		OwnerUserID: uuid.New(),
 	})
 
 	require.Error(t, err)

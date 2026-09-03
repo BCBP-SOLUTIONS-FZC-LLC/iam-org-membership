@@ -114,7 +114,7 @@ func (f *fakeMembershipRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uu
 var _ port.MembershipRepository = (*fakeMembershipRepo)(nil)
 
 func buildMembershipSvcForSetStatus(m port.MembershipRepository, cache port.Cache, rp port.RealmProvisionerClient, wf port.WorkflowClient) *service.MembershipService {
-	return service.NewMembershipService(m, noOwnerRoleRepo{}, nil, nil, nil, cache, rp, wf, nil, nil, 30)
+	return service.NewMembershipService(m, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, cache, rp, wf, nil, nil, 30)
 }
 
 // ── SetStatus — reactivate path (no side-effects) ──────────────────────
@@ -306,8 +306,8 @@ var _ port.TenantRoleRepository = (*ownerRoleRepo)(nil)
 func TestMembership_SetStatus_SuspendLastOwner_422LastOwnerRemoval(t *testing.T) {
 	roles := &ownerRoleRepo{countFn: func(context.Context, uuid.UUID) (int, error) { return 1, nil }}
 	svc := service.NewMembershipService(
-		&fakeMembershipRepo{}, roles, nil, nil, nil,
-		nil, &fakeRPClient{}, nil, &ruTxRunner{tx: &ruFakeTx{}}, nil, 30,
+		&fakeMembershipRepo{}, roles, nil, &port.TenantRepositoryNoop{}, nil,
+		nil, &fakeRPClient{}, nil, &ruTxRunner{}, nil, 30,
 	)
 
 	_, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
@@ -326,8 +326,8 @@ func TestMembership_SetStatus_SuspendOwnerWithOtherOwnersAllowed(t *testing.T) {
 		},
 	}
 	svc := service.NewMembershipService(
-		m, roles, nil, nil, nil,
-		nil, &fakeRPClient{}, nil, &ruTxRunner{tx: &ruFakeTx{}}, nil, 30,
+		m, roles, nil, &port.TenantRepositoryNoop{}, nil,
+		nil, &fakeRPClient{}, nil, &ruTxRunner{}, nil, 30,
 	)
 
 	got, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)

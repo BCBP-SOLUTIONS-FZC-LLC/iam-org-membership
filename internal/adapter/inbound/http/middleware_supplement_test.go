@@ -14,10 +14,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// isDBUnavailableSQLState reports whether a raw SQLSTATE code indicates a
+// DB-unavailable condition. Wraps the three helpers used by HandleError
+// (IsConnectionException for class 08, IsInsufficientResources for class 53,
+// isOperatorOrSystemErrorSQLState for classes 57/58) so that existing tests
+// that call isDBUnavailableSQLState(code) continue to work after the rename.
+func isDBUnavailableSQLState(code string) bool {
+	err := &pgconn.PgError{Code: code}
+	return pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err)
+}
 
 // newBufferedWriter creates a bufferedWriter backed by a gin.CreateTestContext
 // gin.ResponseWriter so the embedded gin.ResponseWriter interface is satisfied.

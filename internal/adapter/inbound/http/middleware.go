@@ -18,7 +18,6 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // errorLogger is the shared gincommon-backed Logger, set once by NewRouter
@@ -389,20 +388,17 @@ func HandleError(c *gin.Context, err error) {
 		return
 	}
 	// Raw pgconn.PgError that was not caught and translated by the service
-	// layer. SQLSTATE class 08 (connection exception) and 53 (insufficient
-	// resources) are genuine DB-availability failures → 503 db_unavailable
-	// per LLD §17 (line 2544). All other classes (constraint violations,
-	// syntax errors, etc.) are surfaced as a plain 500 — those should
-	// have been translated to DomainErrors by the repository layer before
-	// reaching here.
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		if isDBUnavailableSQLState(pgErr.Code) {
-			er := newErrorResponse(c, domain.ErrDBUnavailable.Error(), "database unavailable", nil)
-			er.Status = http.StatusServiceUnavailable
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
-			return
-		}
+	// layer. wrapConnErr maps classes 08/53/57/58 to ErrDBUnavailable, so
+	// the DomainError branch above is the production path. This fallback
+	// still classifies a leaked PgError (tests, future missed wrap) into
+	// 503 db_unavailable per LLD §17 without importing pgconn: classes
+	// 08/53 via pgcommon helpers, 57/58 via the SQLSTATE text pgconn
+	// puts in Error().
+	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err) {
+		er := newErrorResponse(c, domain.ErrDBUnavailable.Error(), "database unavailable", nil)
+		er.Status = http.StatusServiceUnavailable
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
+		return
 	}
 	if errorLogger != nil {
 		errorLogger.Error("unhandled 500 error", map[string]any{"error_type": fmt.Sprintf("%T", err), "error": err.Error()})
@@ -412,23 +408,17 @@ func HandleError(c *gin.Context, err error) {
 	c.AbortWithStatusJSON(http.StatusInternalServerError, er)
 }
 
-// isDBUnavailableSQLState returns true for SQLSTATE classes that indicate
-// a connectivity or resource-exhaustion failure rather than a logic error.
-// See https://www.postgresql.org/docs/current/errcodes-appendix.html.
-//
-//	Class 08 — connection_exception (connection lost, server gone)
-//	Class 53 — insufficient_resources (too many connections, out of memory)
-//	Class 57 — operator_intervention (admin forced disconnect)
-//	Class 58 — system_error (I/O or undefined error at the OS level)
-func isDBUnavailableSQLState(code string) bool {
-	if len(code) < 2 {
+// isOperatorOrSystemErrorSQLState reports whether err is a Postgres error
+// in SQLSTATE class 57 (operator_intervention) or 58 (system_error).
+// pgcommon v1.3.0 has no dedicated helper for these two, so we match the
+// "(SQLSTATE 57…)" / "(SQLSTATE 58…)" text pgconn puts in Error() instead
+// of type-asserting *pgconn.PgError (inbound HTTP must not import pgconn).
+func isOperatorOrSystemErrorSQLState(err error) bool {
+	if !pgcommon.IsPgError(err) {
 		return false
 	}
-	switch strings.ToUpper(code[:2]) {
-	case "08", "53", "57", "58":
-		return true
-	}
-	return false
+	msg := err.Error()
+	return strings.Contains(msg, "SQLSTATE 57") || strings.Contains(msg, "SQLSTATE 58")
 }
 
 // errorResponseWithDetails renders the flat ErrorResponse envelope with

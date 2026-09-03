@@ -39,7 +39,7 @@ flowchart TD
 
     subgraph ttl["TTL Self-Healing (CACHE-9, FAIL-2)"]
         T1[Cache unavailable / DEL fails / 50 ms timeout] --> T2["Advisory — Postgres (or, for read-through keys, the owning service) is source of truth"]
-        T2 --> T3[Stale entry expires at TTL boundary\nNext read fetches from source and re-populates"]
+        T2 --> T3["Stale entry expires at TTL boundary\nNext read fetches from source and re-populates"]
         T3 --> T4["/readyz reports degraded, stays ready while Postgres healthy"]
     end
 

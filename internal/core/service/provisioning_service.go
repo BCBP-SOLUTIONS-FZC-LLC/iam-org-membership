@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -12,14 +11,12 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // ProvisioningService owns I-1 (tenant creation), I-2 (RP realm patch),
 // I-4 (Keycloak lifecycle status), I-5 (delete cascade). Called by Realm
 // Provisioner + Signup BFF + Event Consumer over the /internal/* mesh.
 type ProvisioningService struct {
-	pool        *pgcommon.Pool
 	tenants     port.TenantRepository
 	memberships port.MembershipRepository
 	roles       port.TenantRoleRepository
@@ -44,7 +41,6 @@ func (s *ProvisioningService) WithLogger(log port.Logger) *ProvisioningService {
 }
 
 func NewProvisioningService(
-	pool *pgcommon.Pool,
 	tenants port.TenantRepository, memberships port.MembershipRepository,
 	roles port.TenantRoleRepository, deptMems port.DeptMembershipRepository,
 	labels port.DeptRoleLabelRepository, tenantDepts port.TenantDepartmentRepository,
@@ -53,7 +49,7 @@ func NewProvisioningService(
 	txRunner port.TxRunner, cache port.Cache, rp port.RealmProvisionerClient,
 ) *ProvisioningService {
 	return &ProvisioningService{
-		pool: pool, tenants: tenants, memberships: memberships,
+		tenants: tenants, memberships: memberships,
 		roles: roles, deptMems: deptMems, labels: labels,
 		tenantDepts: tenantDepts, depts: depts,
 		plans:    plans,
@@ -70,7 +66,6 @@ type TrialSignupInput struct {
 	Plan          domain.TenantPlan
 	OwnerUserID   uuid.UUID
 	DefaultLocale string
-	LicensedSeats int
 }
 
 // TrialSignup is I-1: creates the tenant row + 5 system dept activations
@@ -129,11 +124,11 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	// still globally active) is preserved here via the explicit IsActive
 	// filter below.
 	trialCodes := map[string]struct{}{
-		"engineering": {},
-		"design":      {},
-		"procurement": {},
-		"finance":     {},
-		"legal":       {},
+		"ENGINEERING": {},
+		"DESIGN":      {},
+		"PROCUREMENT": {},
+		"FINANCE":     {},
+		"LEGAL":       {},
 	}
 	allDepts, err := s.depts.Departments(ctx)
 	if err != nil {
@@ -144,7 +139,7 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 		if !d.IsSystem || !d.IsActive {
 			continue
 		}
-		if _, ok := trialCodes[strings.ToLower(d.Code)]; !ok {
+		if _, ok := trialCodes[d.Code]; !ok {
 			continue
 		}
 		trialDeptIDs = append(trialDeptIDs, d.ID)
@@ -160,10 +155,6 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	locale := req.DefaultLocale
 	if locale == "" {
 		locale = "en-US"
-	}
-	licensedSeats := req.LicensedSeats
-	if licensedSeats <= 0 {
-		licensedSeats = 10 // DB column default (SEAT-1, T-8)
 	}
 
 	var created *domain.Tenant
@@ -186,7 +177,7 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			MFAFreshnessSeconds:  300,
 			LocalAccountsEnabled: true,
 			DefaultLocale:        locale,
-			LicensedSeats:        licensedSeats,
+			LicensedSeats:        10,
 		})
 		if err != nil {
 			return err
@@ -239,14 +230,14 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 		// via RoutingPublisher).
 		pub, _ := port.EventPublisherFromContext(txCtx)
 		if pub != nil {
-			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTenantCreated, TenantID: req.TenantID,
 				Subject: req.TenantID.String(), Actor: "iam-system",
 				Data: domain.TenantCreatedPayload{
 					TenantID: req.TenantID, Slug: req.Slug, Plan: req.Plan, Status: domain.StatusTrial,
 				},
 			})
-			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTrialStarted, TenantID: req.TenantID,
 				Subject: req.TenantID.String(), Actor: "iam-system",
 				Data: domain.TrialStartedPayload{
@@ -257,7 +248,7 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			// LLD I-1: granted_by = owner_user_id itself, since no other
 			// admin exists yet — mirror that in the event payload so the
 			// ActorID matches tenant_roles.granted_by written above.
-			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTenantRoleGranted, TenantID: req.TenantID,
 				Subject: req.OwnerUserID.String(), Actor: "iam-system",
 				Data: domain.TenantRoleGrantedPayload{
@@ -281,47 +272,21 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 // Intentionally includes offboarded (deleted_at IS NOT NULL) tenants — RP
 // must be able to write realm fields during KC realm cleanup even after O&M
 // has soft-deleted the tenant row (§15.5 offboarding sequence).
-func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) (int64, error) {
+func (s *ProvisioningService) SetRealmFields(ctx context.Context, tenantID uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) error {
 	g, _ := pgcommon.GUCSetFromContext(ctx)
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-	var newVersion int64
 	if err := s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
-		tx, ok := pgadapterTxFromContext(txCtx)
-		if !ok {
-			return domain.NewError(domain.ErrConflict, "tx unavailable")
-		}
-		// CONC-4: include record_version in WHERE clause so concurrent I-2
-		// calls fail with 409 optimistic_lock_conflict (BUG-I2-2).
-		// RETURNING record_version captures the post-trigger value so the
-		// caller can propagate it to the response without a second round-trip.
-		row := tx.QueryRow(txCtx,
-			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND record_version = $5 RETURNING record_version`,
-			tenantID, realmID, string(realmType), shard, recordVersion)
-		if err := row.Scan(&newVersion); err != nil {
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return err // propagate SQL errors directly
-			}
-			// 0 rows: probe to distinguish tenant_not_found vs stale record_version.
-			// No deleted_at filter — RP must be able to act on offboarded tenants.
-			var current int64
-			probe := tx.QueryRow(txCtx, `SELECT record_version FROM tenants WHERE id = $1`, tenantID)
-			if perr := probe.Scan(&current); perr != nil {
-				return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
-			}
-			return domain.NewError(domain.ErrOptimisticLockConflict, "record version conflict").
-				WithDetails(map[string]any{"record_version": current})
-		}
-		return nil
+		return s.tenants.SetRealmFields(txCtx, tenantID, realmID, realmType, shard, recordVersion)
 	}); err != nil {
-		return 0, err
+		return err
 	}
 	// BUG-I2-1: evict cached tenant so I-8 hot-path reads updated realm fields (CACHE-6).
 	if s.cache != nil {
 		_ = s.cache.Delete(gucCtx, cacheKeyTenant(tenantID), cacheKeyLocale(tenantID))
 	}
-	return newVersion, nil
+	return nil
 }
 
 // SetMembershipStatus is I-4: Event Consumer updates lifecycle status.
@@ -402,7 +367,7 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		}
 		for _, r := range revokedRoles {
 			if pub != nil {
-				_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventTenantRoleRevoked, TenantID: tenantID,
 					Subject: userID.String(), Actor: "iam-system",
 					Data: domain.TenantRoleRevokedPayload{
@@ -419,7 +384,7 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		}
 		for _, d := range revokedDepts {
 			if pub != nil {
-				_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventDepartmentMembershipRevoked, TenantID: tenantID,
 					Subject: userID.String(), Actor: "iam-system",
 					Data: domain.DepartmentMembershipRevokedPayload{
@@ -438,7 +403,7 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		// mirroring MembershipService.RemoveUser's identical emission) and
 		// run their own cascades.
 		if pub != nil {
-			_ = pub.EnqueueCtx(txCtx, &domain.DomainEvent{
+			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventMembershipRevoked, TenantID: tenantID,
 				Subject: userID.String(), Actor: "iam-system",
 				Data: domain.MembershipRevokedPayload{
@@ -453,33 +418,30 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		}
 
 		// TM-12: if we just removed the last active owner, set
-		// ownerless_since. Uses TxFromContext to hit the running tx.
-		// LLD §11.4 / TM-12 line 3807: fire an event-time counter + ERROR
-		// log so on-call is paged the moment escalation triggers, without
-		// waiting for the periodic ownerless-scanner gauge.
+		// ownerless_since. LLD §11.4 / TM-12 line 3807: fire an event-time
+		// counter + ERROR log so on-call is paged the moment escalation
+		// triggers, without waiting for the periodic ownerless-scanner gauge.
 		if wasOwner {
 			ownerRemaining, err := s.roles.CountActiveOwners(txCtx, tenantID)
 			if err != nil {
 				return err
 			}
 			if ownerRemaining == 0 {
-				if tx, ok := pgadapterTxFromContext(txCtx); ok {
-					cmd, err := tx.Exec(txCtx, `UPDATE tenants SET ownerless_since = now() WHERE id = $1 AND ownerless_since IS NULL`, tenantID)
-					if err != nil {
-						return err
+				flipped, err := s.tenants.MarkOwnerlessIfUnset(txCtx, tenantID)
+				if err != nil {
+					return err
+				}
+				// Only page if this call actually flipped the flag (idempotent
+				// re-removals during retries must not double-alert).
+				if flipped {
+					if metrics.TenantOwnerlessEscalated != nil {
+						metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
 					}
-					// Only page if this call actually flipped the flag (idempotent
-					// re-removals during retries must not double-alert).
-					if cmd.RowsAffected() > 0 {
-						if metrics.TenantOwnerlessEscalated != nil {
-							metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
-						}
-						s.log.ErrorContext(txCtx, "tenant_ownerless_escalation",
-							"tenant_id", tenantID.String(),
-							"removed_user_id", userID.String(),
-							"reason", "last_active_owner_removed",
-						)
-					}
+					s.log.ErrorContext(txCtx, "tenant_ownerless_escalation",
+						"tenant_id", tenantID.String(),
+						"removed_user_id", userID.String(),
+						"reason", "last_active_owner_removed",
+					)
 				}
 			}
 		}

@@ -29,10 +29,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
@@ -88,12 +90,9 @@ func enqueueDomainEvent(t *testing.T, env *phase12Env, evt *domain.DomainEvent) 
 	require.NoError(t, err)
 	pub := eventbusadapter.New("iam-org-membership-test", codec)
 
-	tx, err := env.rawPool.Begin(env.ctx)
-	require.NoError(t, err)
-	defer func() { _ = tx.Rollback(env.ctx) }()
-
-	require.NoError(t, pub.Enqueue(env.ctx, tx, evt))
-	require.NoError(t, tx.Commit(env.ctx))
+	require.NoError(t, env.rawPool.WithTx(env.ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return pub.Enqueue(pgadapter.WithTx(ctx, tx), evt)
+	}))
 
 	// Grab the just-inserted envelope ID so callers can correlate the
 	// downstream SQS message.

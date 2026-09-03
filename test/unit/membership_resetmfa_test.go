@@ -21,7 +21,7 @@ import (
 )
 
 func buildMembershipSvcForResetMFA(m *fakeMembershipRepo, rp port.RealmProvisionerClient, pub *ruPublisher) *service.MembershipService {
-	txRunner := &ruTxRunner{tx: &ruFakeTx{}, pub: pub}
+	txRunner := &ruTxRunner{pub: pub}
 	return service.NewMembershipService(m, nil, nil, nil, nil, nil, rp, nil, txRunner, nil, 30)
 }
 

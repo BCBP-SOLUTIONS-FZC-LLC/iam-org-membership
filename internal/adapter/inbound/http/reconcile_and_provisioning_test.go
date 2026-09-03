@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
@@ -123,6 +124,7 @@ func TestReconcileRoles_NoWorkflow_StillGrants(t *testing.T) {
 
 // i1TenantRepo is a minimal TenantRepository for TrialSignup tests.
 type i1TenantRepo struct {
+	port.TenantRepositoryNoop
 	freshInsert bool
 }
 
@@ -135,10 +137,6 @@ func (r *i1TenantRepo) FindByID(_ context.Context, id uuid.UUID) (*domain.Tenant
 func (r *i1TenantRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	return r.FindByID(ctx, id)
 }
-func (r *i1TenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
-	return nil, nil
-}
-func (r *i1TenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
 
 var _ port.TenantRepository = (*i1TenantRepo)(nil)
 
@@ -246,7 +244,6 @@ var _ port.PlanCatalogReader = (*i1PlanCatalogReader)(nil)
 // buildI1ProvisioningSvc wires a ProvisioningService for I-1 TrialSignup tests.
 func buildI1ProvisioningSvc(fresh bool) *service.ProvisioningService {
 	return service.NewProvisioningService(
-		nil,
 		&i1TenantRepo{freshInsert: fresh},
 		&i1MemRepo{},
 		&i1RoleRepo{},
@@ -338,7 +335,7 @@ func TestProvisionTenant_IdempotentReplay_Not201(t *testing.T) {
 type addMemberTxRunner struct{}
 
 func (addMemberTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
-	return fn(service.WithTx(ctx, &i2FakeTx{newVersion: 1}))
+	return fn(postgres.WithTx(ctx, &i2FakeTx{newVersion: 1}))
 }
 
 // ── I3-EVT-03: AddMember plain add (no pending invite) → 201 ─────────────────

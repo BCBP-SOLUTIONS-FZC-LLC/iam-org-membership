@@ -201,20 +201,15 @@ func (r *igPreflightCountPendingErrRepo) CountPending(context.Context, uuid.UUID
 	return 0, r.countPendingErr
 }
 
-type igPreflightTenantRepo struct{}
+type igPreflightTenantRepo struct {
+	port.TenantRepositoryNoop
+}
 
 func (r *igPreflightTenantRepo) FindByID(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	return &domain.Tenant{ID: id, LicensedSeats: 10, Status: domain.StatusActive}, nil
 }
 func (r *igPreflightTenantRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	return r.FindByID(ctx, id)
-}
-func (r *igPreflightTenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
-	return nil, nil
-}
-func (r *igPreflightTenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
-func (r *igPreflightTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
-	return nil, false, nil
 }
 
 var _ port.TenantRepository = (*igPreflightTenantRepo)(nil)

@@ -25,9 +25,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,15 +34,13 @@ import (
 // ── shared mocks ────────────────────────────────────────────────────────
 
 // captureEventPublisher records every event enqueued (for reconciler outbox
-// assertions). Enqueue accepts a pgx.Tx but we ignore it here — the caller's
-// TxRunner wraps this via port.WithEventPublisher and the tx round-trip is
-// verified by other tests.
+// assertions). TxRunner injects this via port.WithEventPublisher.
 type captureEventPublisher struct {
 	mu     sync.Mutex
 	events []*domain.DomainEvent
 }
 
-func (p *captureEventPublisher) Enqueue(_ context.Context, _ pgx.Tx, event *domain.DomainEvent) error {
+func (p *captureEventPublisher) Enqueue(_ context.Context, event *domain.DomainEvent) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.events = append(p.events, event)
@@ -67,17 +64,17 @@ func (p *captureEventPublisher) byType(typ string) []*domain.DomainEvent {
 // that need to seed/assert state directly (rawPool is a real
 // *pgcommon.Pool, matching production, and has no .Exec/.Query/.QueryRow of
 // its own — those go through pgcommon.RunInTx/WithConn instead).
-func newJobContext(t *testing.T, ctx context.Context) (*jobs.Context, *captureEventPublisher, *pgxpool.Pool) {
+func newJobContext(t *testing.T, ctx context.Context) (*jobs.Context, *captureEventPublisher, *dbseed.Pool) {
 	t.Helper()
 	appPool, rawPool, sysPool := setupTestDB(t)
 	// Reconcilers use SysPool (BYPASSRLS) for cross-tenant sweeps AND the
 	// app pool wrapped in a TxRunner for atomic state+event emission.
 	publisher := &captureEventPublisher{}
 	jctx := &jobs.Context{
-		Pool:                   appPool,
-		SysPool:                sysPool,
-		OutboxPublisher:        publisher,
 		TxRunner:               postgres.NewTxRunner(appPool, publisher),
+		Tenants:                postgres.NewTenantRepository(appPool),
+		Invitations:            postgres.NewInvitationRepository(sysPool),
+		Reconciler:             postgres.NewReconcilerStore(sysPool),
 		BatchLimit:             100,
 		ProcessedEventsTTLDays: 8,
 	}

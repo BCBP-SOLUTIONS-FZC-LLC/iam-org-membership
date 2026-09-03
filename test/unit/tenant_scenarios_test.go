@@ -68,8 +68,8 @@ func TestProvisioningService_SetRealmFields_TenantNotFound(t *testing.T) {
 	// simulating RowsAffected()==0 from the UPDATE.
 	txRunner := &notFoundTxRunner{}
 	svc := service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, txRunner, nil, nil)
-	_, err := svc.SetRealmFields(context.Background(), uuid.New(),
+		nil, nil, nil, nil, nil, nil, nil, nil, txRunner, nil, nil)
+	err := svc.SetRealmFields(context.Background(), uuid.New(),
 		"realm-123", domain.RealmDedicated, "shard-0", 1)
 	assert.ErrorIs(t, err, domain.ErrTenantNotFound)
 }
@@ -96,7 +96,7 @@ func TestInternalHandler_PatchTenantRealm_EmptyRealmID_Returns400(t *testing.T) 
 	// Covered by handler_validation_test.go TestPatchInternalTenant_MissingRealmFields.
 	// Note: service.SetRealmFields itself does not validate empty realmID.
 	svc := service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	// With nil txRunner, calling SetRealmFields with empty realmID will panic at txRunner.
 	// The validation guard is at the handler, not service — mark as handler-layer coverage.
 	_ = svc

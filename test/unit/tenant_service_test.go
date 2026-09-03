@@ -169,6 +169,7 @@ func TestTenantService_Patch_EmptyLocale_ValidationError(t *testing.T) {
 
 // tsRepo is a fuller TenantRepository fake with Update behavior.
 type tsRepo struct {
+	port.TenantRepositoryNoop
 	findByIDFn func(context.Context, uuid.UUID) (*domain.Tenant, error)
 	updateFn   func(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error)
 }
@@ -191,6 +192,9 @@ func (r *tsRepo) Update(ctx context.Context, id uuid.UUID, patch *domain.TenantP
 func (r *tsRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
 func (r *tsRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
 	return nil, false, nil
+}
+func (r *tsRepo) ListSubscriptionLapses(context.Context, int) ([]domain.Tenant, error) {
+	return nil, nil
 }
 
 var _ port.TenantRepository = (*tsRepo)(nil)

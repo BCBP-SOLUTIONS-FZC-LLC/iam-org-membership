@@ -22,12 +22,12 @@ import (
 
 // buildProvisioningForI4 wires a minimal ProvisioningService for I-4 tests.
 func buildProvisioningForI4(mem *mhMemRepo) *service.ProvisioningService {
-	return service.NewProvisioningService(nil, nil, mem, nil, nil, nil, nil, nil, nil, nil, happyCacheStub{}, nil)
+	return service.NewProvisioningService(nil, mem, nil, nil, nil, nil, nil, nil, nil, happyCacheStub{}, nil)
 }
 
 // buildProvisioningForI5 wires a minimal ProvisioningService for I-5 tests.
 func buildProvisioningForI5(txr port.TxRunner) *service.ProvisioningService {
-	return service.NewProvisioningService(nil, nil, &mhMemRepo{
+	return service.NewProvisioningService(nil, &mhMemRepo{
 		findByUserFn: func(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
 			return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: domain.MembershipActive, RecordVersion: 1}, nil
 		},
@@ -188,7 +188,7 @@ func TestPatchMemberLifecycle_CacheEvicted(t *testing.T) {
 	mem := &mhMemRepo{setStatusFn: func(_ context.Context, tid, uid uuid.UUID, s domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
 		return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
 	}}
-	svc := service.NewProvisioningService(nil, nil, mem, nil, nil, nil, nil, nil, nil, nil, cache, nil)
+	svc := service.NewProvisioningService(nil, mem, nil, nil, nil, nil, nil, nil, nil, cache, nil)
 	h := &InternalHandler{provisioning: svc}
 
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, iamSystemCtx(tenantID))
@@ -238,7 +238,7 @@ func TestDeleteMemberInternal_IdempotentNotFound_200(t *testing.T) {
 			return nil, domain.NewError(domain.ErrMemberNotFound, "already deleted")
 		},
 	}
-	svc := service.NewProvisioningService(nil, nil, mem, &mhRoleRepo{}, nil, nil, nil, nil, nil, happyTxRunner{}, happyCacheStub{}, nil)
+	svc := service.NewProvisioningService(nil, mem, &mhRoleRepo{}, nil, nil, nil, nil, nil, happyTxRunner{}, happyCacheStub{}, nil)
 	h := &InternalHandler{provisioning: svc}
 	c, w := buildCtx(http.MethodDelete, "/", "", iamSystemCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())

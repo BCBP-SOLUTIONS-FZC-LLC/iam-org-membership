@@ -27,9 +27,9 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +38,7 @@ import (
 // the RLS-enforcing appPool.
 type testFixtures struct {
 	appPool *pgcommon.Pool
-	rawPool *pgxpool.Pool
+	rawPool *dbseed.Pool
 
 	// Repos (all directly usable in assertions).
 	Tenants     port.TenantRepository
@@ -59,16 +59,17 @@ type testFixtures struct {
 	CatalogPlans *fakeCatalogPlans
 
 	// Services under test.
-	Provisioning   *service.ProvisioningService
-	Membership     *service.MembershipService
-	DeptMembership *service.DeptMembershipService
-	Operator       *service.OperatorService
-	GroupMapping   *service.GroupMappingService
-	Invitation     *service.InvitationService
-	AuthZ          *service.AuthZService
-	Tenant         *service.TenantService
-	Department     *service.DepartmentService
-	RoleLabel      *service.RoleLabelService
+	Provisioning      *service.ProvisioningService
+	Membership        *service.MembershipService
+	DeptMembership    *service.DeptMembershipService
+	Operator          *service.OperatorService
+	GroupMapping      *service.GroupMappingService
+	Invitation        *service.InvitationService
+	AuthZ             *service.AuthZService
+	Tenant            *service.TenantService
+	Department        *service.DepartmentService
+	RoleLabel         *service.RoleLabelService
+	SubscriptionLapse *service.SubscriptionLapseService
 
 	// Overridable stubs — tests can reach in and swap behaviour (e.g.
 	// fx.RP.PatchRealmConfigFailNext = true to simulate an RP outage).
@@ -102,9 +103,14 @@ var _ port.GroupMappingClient = (*fakeGroupMappingClient)(nil)
 // no-op results so the service flows don't fail on external dependencies.
 func buildTestFixtures(t testing.TB) *testFixtures {
 	t.Helper()
-	appPool, rawPool, _ := setupTestDB(t)
+	appPool, rawPool, sysPool := setupTestDB(t)
 
 	tenants := pgadapter.NewTenantRepository(appPool)
+	authzRepo := pgadapter.NewAuthZRepository(appPool)
+	// sysTenants is BYPASSRLS-bound (sysPool, postgres superuser) — the
+	// only repo instance that may safely call ListSubscriptionLapses
+	// (I-16); see the port.TenantRepository doc comment.
+	sysTenants := pgadapter.NewTenantRepository(sysPool)
 	memberships := pgadapter.NewMembershipRepository(appPool)
 	roles := pgadapter.NewTenantRoleRepository(appPool)
 	deptMems := pgadapter.NewDeptMembershipRepository(appPool)
@@ -112,7 +118,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	tenantDepts := pgadapter.NewTenantDepartmentRepository(appPool)
 	invitations := pgadapter.NewInvitationRepository(appPool)
 
-	// Outbox publisher — writes to outbox_events table on EnqueueCtx.
+	// Outbox publisher — writes to outbox_events table on Enqueue.
 	// NoopCodec passes payloads through as JSON bytes.
 	codec, err := eventbusadapter.NewValidatingCodec(eventbusadapter.NoopCodec{})
 	require.NoError(t, err)
@@ -144,7 +150,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	}
 
 	fx.Provisioning = service.NewProvisioningService(
-		appPool, tenants, memberships, roles, deptMems, labels,
+		tenants, memberships, roles, deptMems, labels,
 		tenantDepts, catalogDepts, catalogPlans,
 		txRunner, nil, // cache=nil (advisory)
 		&fakeRealmProvisioner{}, // no-op RP client
@@ -163,7 +169,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		txRunner, nil, 30, // seatOverageDays
 	)
 	fx.Operator = service.NewOperatorService(
-		appPool, tenants, roles, memberships, nil, txRunner,
+		tenants, roles, memberships, nil, txRunner,
 	)
 	// RP client is injected via fx.RP so individual tests can override
 	// behaviour (fx.RP.PatchRealmConfigFailNext = true) or inspect calls
@@ -174,10 +180,11 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		invitations, memberships, roles, deptMems, tenants,
 		fx.RP, nil, txRunner, nil, 7,
 	)
-	fx.AuthZ = service.NewAuthZService(appPool, catalogPlans, catalogDepts, nil)
+	fx.AuthZ = service.NewAuthZService(authzRepo, catalogPlans, catalogDepts, nil)
 	fx.Tenant = service.NewTenantService(tenants, nil, fx.RP)
 	fx.Department = service.NewDepartmentService(catalogDepts, tenantDepts, nil)
 	fx.RoleLabel = service.NewRoleLabelService(labels, nil)
+	fx.SubscriptionLapse = service.NewSubscriptionLapseService(sysTenants, 30) // SUBSCRIPTION_GRACE_DAYS default
 
 	return fx
 }

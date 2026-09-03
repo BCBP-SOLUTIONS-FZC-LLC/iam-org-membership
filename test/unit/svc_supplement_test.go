@@ -39,7 +39,7 @@ var _ port.Logger = (*ssLogger)(nil)
 // can be chained at wire-up time.
 func TestProvisioningService_WithLogger_ReturnsSelf(t *testing.T) {
 	svc := service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	got := svc.WithLogger(&ssLogger{})
 
@@ -91,7 +91,7 @@ var _ port.DepartmentCatalogReader = (*ssDeptReader)(nil)
 func TestProvisioningService_TrialSignup_PlanCatalogError(t *testing.T) {
 	catalogErr := errors.New("catalog_unavailable")
 	svc := service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil,
 		&ssDeptReader{},
 		&ssPlanReader{
 			planByCodeFn: func(context.Context, domain.TenantPlan) (*domain.Plan, error) {
@@ -120,7 +120,7 @@ func TestProvisioningService_TrialSignup_PlanCatalogError(t *testing.T) {
 func TestProvisioningService_TrialSignup_DeptCatalogError(t *testing.T) {
 	catalogErr := errors.New("departments_unavailable")
 	svc := service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil,
 		&ssDeptReader{
 			departmentsFn: func(context.Context) ([]domain.Department, error) {
 				return nil, catalogErr
@@ -248,7 +248,7 @@ func buildDeleteMemberSvc(
 	deptMems port.DeptMembershipRepository,
 ) *service.ProvisioningService {
 	return service.NewProvisioningService(
-		nil, nil, mem, roles, deptMems,
+		nil, mem, roles, deptMems,
 		nil, nil, nil, nil,
 		&passthroughTxRunner{}, nil, nil,
 	)
@@ -366,7 +366,7 @@ func TestProvisioningService_DeleteMember_DeptSoftDeleteError_Propagates(t *test
 // verifies the allow-list guard (LLD O-4) rejects an unknown flag key with
 // code "unknown_feature_flag" before any SQL is attempted.
 func TestOperatorService_SetFeatureFlags_UnknownFlagKey_ReturnsValidationError(t *testing.T) {
-	svc := service.NewOperatorService(nil, nil, nil, nil, nil, nil)
+	svc := service.NewOperatorService(nil, nil, nil, nil, nil)
 
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(),
 		map[string]any{"sso_enable": true}, 1) // typo: should be "sso_enabled"
@@ -382,7 +382,7 @@ func TestOperatorService_SetFeatureFlags_UnknownFlagKey_ReturnsValidationError(t
 // verifies that a nested object value is rejected with "invalid_feature_value"
 // (PLAN-6(d) scalar-only guard) before any SQL is attempted.
 func TestOperatorService_SetFeatureFlags_NonScalarValue_ReturnsValidationError(t *testing.T) {
-	svc := service.NewOperatorService(nil, nil, nil, nil, nil, nil)
+	svc := service.NewOperatorService(nil, nil, nil, nil, nil)
 
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(),
 		map[string]any{"custom_branding": []string{"a", "b"}}, 1) // slice is not a scalar
@@ -397,6 +397,7 @@ func TestOperatorService_SetFeatureFlags_NonScalarValue_ReturnsValidationError(t
 
 // ssTenantRepoOp is a TenantRepository stub for OperatorService tests.
 type ssTenantRepoOp struct {
+	port.TenantRepositoryNoop
 	findByIDFn func(context.Context, uuid.UUID) (*domain.Tenant, error)
 }
 
@@ -408,13 +409,6 @@ func (r *ssTenantRepoOp) FindByID(ctx context.Context, id uuid.UUID) (*domain.Te
 }
 func (r *ssTenantRepoOp) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	return r.FindByID(ctx, id)
-}
-func (r *ssTenantRepoOp) Update(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
-	return nil, nil
-}
-func (r *ssTenantRepoOp) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
-func (r *ssTenantRepoOp) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
-	return nil, false, nil
 }
 
 var _ port.TenantRepository = (*ssTenantRepoOp)(nil)
@@ -458,7 +452,7 @@ func TestOperatorService_ReassignOwner_OffboardedTenant_ReturnsErrTenantOffboard
 			return &domain.Tenant{ID: id, Status: domain.StatusOffboarded}, nil
 		},
 	}
-	svc := service.NewOperatorService(nil, tenants, nil, nil, nil, nil)
+	svc := service.NewOperatorService(tenants, nil, nil, nil, nil)
 
 	_, err := svc.ReassignOwner(context.Background(), uuid.New(), uuid.New(), uuid.New())
 
@@ -479,7 +473,7 @@ func TestOperatorService_ReassignOwner_MemberNotFound_ReturnsErrInvalidOwnerCand
 			return nil, domain.NewError(domain.ErrMemberNotFound, "not a member")
 		},
 	}
-	svc := service.NewOperatorService(nil, tenants, nil, memberships, nil, nil)
+	svc := service.NewOperatorService(tenants, nil, memberships, nil, nil)
 
 	_, err := svc.ReassignOwner(context.Background(), uuid.New(), uuid.New(), uuid.New())
 
@@ -504,7 +498,7 @@ func TestOperatorService_ReassignOwner_InactiveMember_ReturnsErrInvalidOwnerCand
 			}, nil
 		},
 	}
-	svc := service.NewOperatorService(nil, tenants, nil, memberships, nil, nil)
+	svc := service.NewOperatorService(tenants, nil, memberships, nil, nil)
 
 	_, err := svc.ReassignOwner(context.Background(), uuid.New(), uuid.New(), uuid.New())
 
@@ -519,7 +513,8 @@ func TestOperatorService_ReassignOwner_InactiveMember_ReturnsErrInvalidOwnerCand
 // FindByID vs FindByIDIncludingDeleted, so GetIncludingOffboarded can be
 // tested independently of Get.
 type ssTenantRepoIncDel struct {
-	findByIDFn                func(context.Context, uuid.UUID) (*domain.Tenant, error)
+	port.TenantRepositoryNoop
+	findByIDFn                 func(context.Context, uuid.UUID) (*domain.Tenant, error)
 	findByIDIncludingDeletedFn func(context.Context, uuid.UUID) (*domain.Tenant, error)
 }
 
@@ -534,13 +529,6 @@ func (r *ssTenantRepoIncDel) FindByIDIncludingDeleted(ctx context.Context, id uu
 		return r.findByIDIncludingDeletedFn(ctx, id)
 	}
 	return nil, domain.NewError(domain.ErrTenantNotFound, "not found")
-}
-func (r *ssTenantRepoIncDel) Update(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
-	return nil, nil
-}
-func (r *ssTenantRepoIncDel) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
-func (r *ssTenantRepoIncDel) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
-	return nil, false, nil
 }
 
 var _ port.TenantRepository = (*ssTenantRepoIncDel)(nil)
@@ -616,7 +604,7 @@ func TestTenantService_Patch_UpdateError_Propagates(t *testing.T) {
 // req.Plan is not one of {starter, pro, enterprise}.
 func TestProvisioningService_TrialSignup_InvalidPlan_ReturnsErrInvalidPlan(t *testing.T) {
 	svc := service.NewProvisioningService(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 
 	_, _, err := svc.TrialSignup(context.Background(), service.TrialSignupInput{

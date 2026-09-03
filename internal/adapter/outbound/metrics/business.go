@@ -9,9 +9,11 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 )
 
 var (
@@ -154,126 +156,170 @@ func XsvcOutcome(err error) string {
 	return "5xx"
 }
 
-// Register wires business metrics into the default Prometheus registry.
-// Call once at startup BEFORE the /metrics endpoint is served.
-// Every counter carries a "version" label (BUILD_VERSION env var) so
-// per-deploy rates can be isolated during rolling updates.
-func Register() {
-	version := os.Getenv("BUILD_VERSION")
-	if version == "" {
-		version = "dev"
+// gincommonLabels returns a copy of gincommon's {service, version} const
+// labels so business collectors scrape on the same registry and labels as
+// HTTP metrics. skip drops names that collide with a variable label (the
+// iam_xsvc_* collectors already use "service" for the downstream peer).
+// Returns nil when ObservabilityMiddlewares has not run yet, matching
+// prometheus's "no const labels" zero value so unit tests that never
+// bootstrap gincommon still register cleanly.
+func gincommonLabels(skip ...string) prometheus.Labels {
+	labels := gincommon.MetricsConstLabels()
+	for _, k := range skip {
+		delete(labels, k)
 	}
+	if len(labels) == 0 {
+		return nil
+	}
+	return labels
+}
+
+var registerOnce sync.Once
+
+// Register wires business metrics onto gincommon's Prometheus registerer
+// (same registry and {service, version} const labels as HTTP metrics).
+// Call once at startup AFTER ObservabilityMiddlewares has run and BEFORE
+// the /metrics endpoint is served. Idempotent.
+func Register() {
+	registerOnce.Do(registerMetrics)
+}
+
+func registerMetrics() {
+	labels := gincommonLabels()
+	xsvcLabels := gincommonLabels("service")
 
 	RLSViolations = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_rls_violations_total",
-		Help: "Row-level-security violations scraped from rls_violation_log, by violation_type.",
+		Name:        "iam_rls_violations_total",
+		Help:        "Row-level-security violations scraped from rls_violation_log, by violation_type.",
+		ConstLabels: labels,
 	}, []string{"violation_type"})
 
 	UnknownEventAcknowledged = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_unknown_event_acknowledged_total",
-		Help: "Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type.",
+		Name:        "iam_unknown_event_acknowledged_total",
+		Help:        "Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type.",
+		ConstLabels: labels,
 	}, []string{"topic", "event_type"})
 
 	StaleLifecycleEventSkipped = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_stale_lifecycle_event_skipped_total",
-		Help: "Lifecycle events skipped by EVT-14 recency guard (event.time <= tenants.last_event_at).",
+		Name:        "iam_stale_lifecycle_event_skipped_total",
+		Help:        "Lifecycle events skipped by EVT-14 recency guard (event.time <= tenants.last_event_at).",
+		ConstLabels: labels,
 	}, []string{"event_type"})
 
 	FutureLifecycleEventRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_future_lifecycle_event_rejected_total",
-		Help: "Lifecycle events rejected by EVT-15 future-time clamp (event.time > now() + skew) — any nonzero rate pages.",
+		Name:        "iam_future_lifecycle_event_rejected_total",
+		Help:        "Lifecycle events rejected by EVT-15 future-time clamp (event.time > now() + skew) — any nonzero rate pages.",
+		ConstLabels: labels,
 	}, []string{"event_type"})
 
 	SessionRevokeFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_session_revoke_failed_total",
-		Help: "RP RevokeUserSessions calls that returned non-2xx or errored (AUTH-8 fail-open).",
+		Name:        "iam_session_revoke_failed_total",
+		Help:        "RP RevokeUserSessions calls that returned non-2xx or errored (AUTH-8 fail-open).",
+		ConstLabels: labels,
 	}, []string{"reason"})
 
 	DelegateSuspendImpact = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_delegate_suspend_impact_total",
-		Help: "P-7 suspensions where the user was a delegate on active workflows and the WFI-13 advisory fired (advisory, never a block).",
+		Name:        "iam_delegate_suspend_impact_total",
+		Help:        "P-7 suspensions where the user was a delegate on active workflows and the WFI-13 advisory fired (advisory, never a block).",
+		ConstLabels: labels,
 	}, []string{"checked"})
 
 	TenantOwnerlessEscalated = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_tenant_ownerless_escalated_total",
-		Help: "Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page.",
+		Name:        "iam_tenant_ownerless_escalated_total",
+		Help:        "Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page.",
+		ConstLabels: labels,
 	}, []string{"reason"})
 
 	SeatOverageStarted = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_seat_overage_started_total",
-		Help: "Transitions from under-cap to over-cap on tenant seat consumption (SEAT-5).",
+		Name:        "iam_seat_overage_started_total",
+		Help:        "Transitions from under-cap to over-cap on tenant seat consumption (SEAT-5).",
+		ConstLabels: labels,
 	}, []string{"cause"})
 
 	SeatLimitReached = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_seat_limit_reached_total",
-		Help: "P-6 invite attempts blocked by SEAT-1 cap.",
+		Name:        "iam_seat_limit_reached_total",
+		Help:        "P-6 invite attempts blocked by SEAT-1 cap.",
+		ConstLabels: labels,
 	}, []string{"plan"})
 
 	InviteThrottled = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_invite_throttled_total",
-		Help: "P-6 invites rate-limited (§16 A41).",
+		Name:        "iam_invite_throttled_total",
+		Help:        "P-6 invites rate-limited (§16 A41).",
+		ConstLabels: labels,
 	}, []string{"reason"})
 
 	RealmSyncFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_realm_sync_failed_total",
-		Help: "realm-config-sync reconciler failures (T-15).",
+		Name:        "iam_realm_sync_failed_total",
+		Help:        "realm-config-sync reconciler failures (T-15).",
+		ConstLabels: labels,
 	}, []string{"stage"})
 
 	DelegateRemovalBlocked = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_delegate_removal_blocked_total",
-		Help: "P-7 removals blocked by WFI-3 delegate-impact pre-check (409 workflow_resolution_required).",
+		Name:        "iam_delegate_removal_blocked_total",
+		Help:        "P-7 removals blocked by WFI-3 delegate-impact pre-check (409 workflow_resolution_required).",
+		ConstLabels: labels,
 	}, []string{"scope"})
 
 	DelegateReassignment = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_delegate_reassignment_total",
-		Help: "P-26 removal-resolution completions by action (replace_delegate | stop_workflows).",
+		Name:        "iam_delegate_reassignment_total",
+		Help:        "P-26 removal-resolution completions by action (replace_delegate | stop_workflows).",
+		ConstLabels: labels,
 	}, []string{"action"})
 
 	ProcessedEventsDuplicates = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_processed_events_duplicates_total",
-		Help: "SQS redeliveries filtered by processed_events composite PK (IDEMP-4).",
+		Name:        "iam_processed_events_duplicates_total",
+		Help:        "SQS redeliveries filtered by processed_events composite PK (IDEMP-4).",
+		ConstLabels: labels,
 	}, []string{"consumer"})
 
 	LifecycleConsumerLagSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "iam_lifecycle_consumer_lag_seconds",
-		Help:    "Seconds between event.time and consumer apply time. Sustained high P99 flags backlog.",
-		Buckets: []float64{0.05, 0.1, 0.5, 1, 5, 15, 60, 300, 1800},
+		Name:        "iam_lifecycle_consumer_lag_seconds",
+		Help:        "Seconds between event.time and consumer apply time. Sustained high P99 flags backlog.",
+		Buckets:     []float64{0.05, 0.1, 0.5, 1, 5, 15, 60, 300, 1800},
+		ConstLabels: labels,
 	}, []string{"event_type"})
 
 	XsvcCallLatencySeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "iam_xsvc_call_latency_seconds",
-		Help:    "Latency of synchronous cross-service client calls (catalog/group_mapping/delegation), by endpoint.",
-		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
+		Name:        "iam_xsvc_call_latency_seconds",
+		Help:        "Latency of synchronous cross-service client calls (catalog/group_mapping/delegation), by endpoint.",
+		Buckets:     []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
+		ConstLabels: xsvcLabels,
 	}, []string{"service", "endpoint"})
 
 	XsvcCallErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_xsvc_call_errors_total",
-		Help: "Cross-service call failures by service/endpoint/outcome (5xx|timeout|fallback_served).",
+		Name:        "iam_xsvc_call_errors_total",
+		Help:        "Cross-service call failures by service/endpoint/outcome (5xx|timeout|fallback_served).",
+		ConstLabels: xsvcLabels,
 	}, []string{"service", "endpoint", "outcome"})
 
 	MembershipExistsCheck = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "iam_membership_exists_check_total",
-		Help: "I-15 grant-time membership-existence checks served, by caller and result.",
+		Name:        "iam_membership_exists_check_total",
+		Help:        "I-15 grant-time membership-existence checks served, by caller and result.",
+		ConstLabels: labels,
 	}, []string{"caller", "result"})
 
 	TenantOwnerless = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "iam_tenant_ownerless",
-		Help: "Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages.",
+		Name:        "iam_tenant_ownerless",
+		Help:        "Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages.",
+		ConstLabels: labels,
 	})
 	RealmSyncPending = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "iam_realm_sync_pending",
-		Help: "Tenants with realm_sync_pending=true (T-15).",
+		Name:        "iam_realm_sync_pending",
+		Help:        "Tenants with realm_sync_pending=true (T-15).",
+		ConstLabels: labels,
 	})
 	SeatOverageActive = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "iam_seat_overage_active",
-		Help: "Tenants with overage_since IS NOT NULL (SEAT-5).",
+		Name:        "iam_seat_overage_active",
+		Help:        "Tenants with overage_since IS NOT NULL (SEAT-5).",
+		ConstLabels: labels,
 	})
 	PendingInvitationsStale = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "iam_pending_invitations_stale",
-		Help: "Pending invitations past expires_at that invitation-expiry hasn't flipped yet.",
+		Name:        "iam_pending_invitations_stale",
+		Help:        "Pending invitations past expires_at that invitation-expiry hasn't flipped yet.",
+		ConstLabels: labels,
 	})
 
-	prometheus.MustRegister(
+	gincommon.MetricsRegisterer().MustRegister(
 		RLSViolations,
 		UnknownEventAcknowledged,
 		StaleLifecycleEventSkipped,
@@ -302,6 +348,4 @@ func Register() {
 	RLSViolations.WithLabelValues("missing_or_invalid_guc")
 	RLSViolations.WithLabelValues("cross_tenant_access")
 	SessionRevokeFailed.WithLabelValues("transport")
-
-	_ = version
 }

@@ -622,6 +622,29 @@ definitions:
         example: 3
         type: integer
     type: object
+  http.SubscriptionLapseItem:
+    properties:
+      cancelled_at:
+        type: string
+      realm_id:
+        example: acme
+        type: string
+      realm_type:
+        enum:
+        - shared
+        - dedicated
+        type: string
+      tenant_id:
+        format: uuid
+        type: string
+    type: object
+  http.SubscriptionLapseListResponse:
+    properties:
+      tenants:
+        items:
+          $ref: '#/definitions/http.SubscriptionLapseItem'
+        type: array
+    type: object
   http.TenantDepartmentActivatedResponse:
     properties:
       department_id:
@@ -744,6 +767,26 @@ paths:
       summary: Liveness probe
       tags:
       - infra
+  /internal/subscription-lapses:
+    get:
+      description: Returns tenants with status='cancelled' whose cancelled_at is older
+        than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes
+        it from the next poll.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.SubscriptionLapseListResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: List tenants past their subscription-cancellation grace period (RP-C3
+        subscription-lapse sweep)
+      tags:
+      - internal
   /internal/tenants:
     post:
       consumes:

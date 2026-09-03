@@ -372,4 +372,10 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// (ADR-0007 Wave 3). ID never reused.
 	internal.POST("/tenants/:id/tenders/:tender_id/assignee-override", internalH.AssigneeOverride) // I-13
 	internal.GET("/tenants/:id/members/:user_id/exists", internalH.CheckMemberExists)              // I-15
+	// I-16 (§16 RP-C3) is cross-tenant at the DB layer (BYPASSRLS sysPool)
+	// but the caller still authenticates like every other internal route —
+	// gincommon's RequireAuth requires x-tenant-id on every /api/v1 request
+	// regardless, so RP's client sends a sentinel uuid.Nil value for it
+	// (never read by this handler, which queries sysPool unconditionally).
+	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses) // I-16 (§16 RP-C3)
 }

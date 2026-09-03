@@ -373,7 +373,7 @@ func TestMembership_RemoveUser_RolesListInsideTxError_Propagates(t *testing.T) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, r, nil, nil, wf, &ruTxRunner{})
 	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, rolesErr)
 }
@@ -405,7 +405,7 @@ func TestMembership_RemoveUser_DeptCascadeError_Propagates(t *testing.T) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := buildRemoveUserSvc(m, r, dm, nil, wf, &ruTxRunner{tx: &ruFakeTx{}})
+	svc := buildRemoveUserSvc(m, r, dm, nil, wf, &ruTxRunner{})
 	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, deptErr)
 }
@@ -439,7 +439,7 @@ func TestMembership_RemoveUser_SoftDeleteMembershipError_Propagates(t *testing.T
 		},
 	}
 	pub := &ruPublisher{}
-	tr := &ruTxRunner{tx: &ruFakeTx{}, pub: pub}
+	tr := &ruTxRunner{pub: pub}
 	svc := buildRemoveUserSvc(m, r, dm, nil, wf, tr)
 	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, softDelErr)
@@ -509,21 +509,21 @@ func TestMembership_ValidateAndEmitAssigneeOverride_WithPub_EmitsEvent(t *testin
 	assert.Equal(t, domain.EventTenderAssigneeOverridden, evtCapture.events[0].Type)
 }
 
-// assigneeOverridePub captures events via EnqueueCtx.
+// assigneeOverridePub captures events via Enqueue.
 type assigneeOverridePub struct {
 	events []*domain.DomainEvent
 }
 
-func (p *assigneeOverridePub) EnqueueCtx(_ context.Context, e *domain.DomainEvent) error {
+func (p *assigneeOverridePub) Enqueue(_ context.Context, e *domain.DomainEvent) error {
 	p.events = append(p.events, e)
 	return nil
 }
 
-var _ port.ContextEventPublisher = (*assigneeOverridePub)(nil)
+var _ port.EventPublisher = (*assigneeOverridePub)(nil)
 
 // assigneeTxRunner injects an event publisher into the tx context.
 type assigneeTxRunner struct {
-	pub port.ContextEventPublisher
+	pub port.EventPublisher
 }
 
 func (r assigneeTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {

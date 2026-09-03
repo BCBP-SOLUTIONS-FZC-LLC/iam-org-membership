@@ -56,9 +56,10 @@ CREATE POLICY tenant_isolation FOR ALL
   USING      (rls_check_tenant(tenant_id, 'table_name'))
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 ```
+(Re-verified directly against `internal/adapter/outbound/postgres/migrations/000000_initial_schema.up.sql` and `test/postgres/rls_test.go`'s `TestRLS_Case1_EveryTenantScopedTableEnabled`, which asserts `relforcerowsecurity = true` for exactly these 7 tables — both `ENABLE` and `FORCE` are separate `ALTER TABLE` statements in the migration, double-spaced for column alignment, which is why a naive single-space grep for the literal string can miss the `FORCE` lines.)
 **Special case — `tenants` table.** Policy matches `id = current_setting('app.tenant_id')::uuid` (a tenant can only read/write its own row).
 
-**Cross-tenant admin access** requires the `BYPASSRLS` role **`org_membership_migrator`** (never the app role `org_membership_app` — CI-verified).
+**Cross-tenant admin access** requires the `BYPASSRLS` role **`org_membership_migrator`** (never the app role `org_membership_app` — CI-verified). I-16's `ListSubscriptionLapses` (§16 OQ-9/RP-C3) is the one HTTP-served read that needs this — its `TenantRepository` instance is constructed against `sysPool`, not the RLS-scoped app pool, the same BYPASSRLS binding the reconciler jobs and business-metric exporters already use.
 
 **Provisioning writes** use the reserved system principal `iam-system` (`…00a1`) with the **target tenant's** `x-tenant-id`, so `GUCSet{UserID: system, TenantID: target}` makes the new row's `WITH CHECK` pass. Accepted **only** on `/api/v1/internal/*` routes (RLS-5, IAPI-2).
 

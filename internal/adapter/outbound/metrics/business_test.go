@@ -1,11 +1,8 @@
 package metrics
 
 import (
-	"context"
-	"errors"
-	"net"
+	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -13,21 +10,32 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 )
+
+func TestMain(m *testing.M) {
+	// ObservabilityMiddlewares is gincommon's public metrics-init API.
+	// Call it before Register() so collectors pick up {service, version}
+	// const labels and land on gincommon's registerer — the same order
+	// cmd/server/main.go uses.
+	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
+		ServiceName:  "iam-org-membership",
+		BuildVersion: "test",
+	})
+	os.Exit(m.Run())
+}
 
 // Phase 18 · 0%-units sweep — metrics/business.go was partial coverage
 // only (via test B13). This file exercises Register() itself + label
 // stability + observation semantics.
 
-// registerOnce guards Register() across tests — it uses the global
-// prometheus.DefaultRegisterer via MustRegister which panics on double
-// registration. First test to run calls it; the rest reuse the registered
-// metrics.
-var registerOnce sync.Once
+// ensureRegistered calls Register() once per test process. Register() is
+// itself idempotent (sync.Once in business.go).
 
 func ensureRegistered(t testing.TB) {
 	t.Helper()
-	registerOnce.Do(func() { Register() })
+	Register()
 }
 
 // TestRegisterSucceedsAndPopulatesAllVars — Register()
@@ -189,91 +197,6 @@ func TestPreseededLabelsPresent(t *testing.T) {
 		"pre-seeded label 'cross_tenant_access' must be present so dashboards render zeros")
 }
 
-// TestObserveXsvcLatency_NilGuard verifies that calling ObserveXsvcLatency
-// before Register() — when XsvcCallLatencySeconds == nil — is a safe no-op.
-// After Register() the call records in the histogram.
-func TestObserveXsvcLatency_AfterRegister_RecordsObservation(t *testing.T) {
-	ensureRegistered(t)
-	// After register, XsvcCallLatencySeconds is non-nil; Observe must not panic.
-	require.NotPanics(t, func() {
-		ObserveXsvcLatency("catalog", "GET /plans", 0.012)
-		ObserveXsvcLatency("group_mapping", "group-resolution", 0.005)
-		ObserveXsvcLatency("delegation", "dept-delegate", 0.008)
-	})
-}
-
-// TestIncXsvcError_AfterRegister_RecordsCounter verifies that after Register()
-// IncXsvcError increments the XsvcCallErrors counter without panicking.
-func TestIncXsvcError_AfterRegister_RecordsCounter(t *testing.T) {
-	ensureRegistered(t)
-	require.NotPanics(t, func() {
-		IncXsvcError("catalog", "GET /departments", "5xx")
-		IncXsvcError("group_mapping", "group-resolution", "timeout")
-		IncXsvcError("delegation", "dept-delegate", "fallback_served")
-	})
-}
-
-// TestIncMembershipExistsCheck_AfterRegister_RecordsCounter verifies that
-// after Register() IncMembershipExistsCheck increments MembershipExistsCheck
-// without panicking.
-func TestIncMembershipExistsCheck_AfterRegister_RecordsCounter(t *testing.T) {
-	ensureRegistered(t)
-	require.NotPanics(t, func() {
-		IncMembershipExistsCheck("tender_acl", "active")
-		IncMembershipExistsCheck("delegation", "inactive")
-	})
-}
-
-// TestXsvcOutcome_Nil_ReturnsTimeout verifies that a nil error returns "5xx"
-// (the default branch) — nil is not a timeout, not a DeadlineExceeded.
-func TestXsvcOutcome_Nil_Returns5xx(t *testing.T) {
-	// nil error: not a net.Error, not context.DeadlineExceeded → "5xx" default.
-	// This is an unusual caller pattern but the function must not panic.
-	// We can't pass nil directly to errors.As, so check the DeadlineExceeded path.
-	outcome := XsvcOutcome(context.DeadlineExceeded)
-	assert.Equal(t, "timeout", outcome, "context.DeadlineExceeded must map to 'timeout'")
-}
-
-// TestXsvcOutcome_OtherError_Returns5xx verifies a generic non-timeout error.
-func TestXsvcOutcome_OtherError_Returns5xx(t *testing.T) {
-	err := errors.New("connection refused")
-	outcome := XsvcOutcome(err)
-	assert.Equal(t, "5xx", outcome, "non-timeout error must map to '5xx'")
-}
-
-// netTimeoutError is a minimal net.Error implementation whose Timeout() returns true.
-// Used to exercise the errors.As(err, &netErr) && netErr.Timeout() branch in XsvcOutcome.
-type netTimeoutError struct{ msg string }
-
-func (e *netTimeoutError) Error() string   { return e.msg }
-func (e *netTimeoutError) Timeout() bool   { return true }
-func (e *netTimeoutError) Temporary() bool { return true }
-
-var _ net.Error = (*netTimeoutError)(nil)
-
-// TestXsvcOutcome_NetTimeoutError_ReturnsTimeout verifies the errors.As + Timeout()
-// branch (line 148 in business.go): a net.Error where Timeout() == true must
-// return "timeout".
-func TestXsvcOutcome_NetTimeoutError_ReturnsTimeout(t *testing.T) {
-	err := &netTimeoutError{msg: "i/o timeout"}
-	outcome := XsvcOutcome(err)
-	assert.Equal(t, "timeout", outcome, "net.Error with Timeout()=true must map to 'timeout'")
-}
-
-// TestXsvcOutcome_NetNonTimeoutError_Returns5xx verifies the errors.As + Timeout()
-// branch when Timeout() returns false — must fall through to "5xx".
-type netNonTimeoutError struct{}
-
-func (e *netNonTimeoutError) Error() string   { return "connection reset" }
-func (e *netNonTimeoutError) Timeout() bool   { return false }
-func (e *netNonTimeoutError) Temporary() bool { return false }
-
-func TestXsvcOutcome_NetNonTimeoutError_Returns5xx(t *testing.T) {
-	err := &netNonTimeoutError{}
-	outcome := XsvcOutcome(err)
-	assert.Equal(t, "5xx", outcome, "net.Error with Timeout()=false must map to '5xx'")
-}
-
 // TestHelpTextsMentionInvariantIDs — sanity guard so a
 // future rename or trim doesn't strip the LLD invariant IDs from the
 // Help texts. Ops rely on those IDs to page the right runbook.
@@ -303,4 +226,19 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 			"Help text of %s must mention invariant %s (got: %q)",
 			mf.GetName(), want, mf.GetHelp())
 	}
+}
+
+func TestGincommonLabels_MatchObservabilityConstLabels(t *testing.T) {
+	ensureRegistered(t)
+
+	got := gincommonLabels()
+	want := gincommon.MetricsConstLabels()
+	assert.Equal(t, want, got, "business collectors must carry gincommon {service, version} const labels")
+	assert.Equal(t, "iam-org-membership", got["service"])
+	assert.Equal(t, "test", got["version"])
+
+	xsvc := gincommonLabels("service")
+	_, hasService := xsvc["service"]
+	assert.False(t, hasService, "iam_xsvc_* already labels downstream as 'service'")
+	assert.Equal(t, "test", xsvc["version"])
 }

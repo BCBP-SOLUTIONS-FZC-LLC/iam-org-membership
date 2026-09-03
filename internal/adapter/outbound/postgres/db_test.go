@@ -1,10 +1,14 @@
 package postgres
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -134,10 +138,17 @@ func TestSystemDSNFromEnv_FallsBackToDSNFromEnv(t *testing.T) {
 // ── MigrationDSNFromEnv ────────────────────────────────────────────────
 
 func TestMigrationDSNFromEnv_UsesMigrationVarWhenSet(t *testing.T) {
+	_ = os.Unsetenv("PG_STATEMENT_TIMEOUT")
 	t.Setenv("MIGRATION_DATABASE_URL", "postgres://m:x@migrations.example:5432/omdb")
 	assert.Equal(t,
 		"postgres://m:x@migrations.example:5432/omdb",
 		MigrationDSNFromEnv())
+}
+
+func TestMigrationDSNFromEnv_AppliesStatementTimeout(t *testing.T) {
+	t.Setenv("MIGRATION_DATABASE_URL", "postgres://m:x@migrations.example:5432/omdb?sslmode=disable")
+	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
+	assert.Contains(t, MigrationDSNFromEnv(), "statement_timeout%3D5000")
 }
 
 func TestMigrationDSNFromEnv_FallsBackToDSNFromEnv(t *testing.T) {
@@ -145,4 +156,75 @@ func TestMigrationDSNFromEnv_FallsBackToDSNFromEnv(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://a:b@app.example:5432/omdb")
 	assert.Equal(t, DSNFromEnv(), MigrationDSNFromEnv(),
 		"unset MIGRATION_DATABASE_URL falls through to the app DSN")
+}
+
+// ── SystemPoolConfig ───────────────────────────────────────────────────
+
+func TestSystemPoolConfig_ForcesPGBouncerMode(t *testing.T) {
+	// Env would otherwise leave PGBouncerMode false; sysPool must force it.
+	t.Setenv("PG_BOUNCER_MODE", "false")
+	t.Setenv("PG_MAX_CONNS", "20")
+	t.Setenv("PG_SLOW_QUERY_THRESHOLD", "200ms")
+	_ = os.Unsetenv("PG_STATEMENT_TIMEOUT")
+
+	cfg := SystemPoolConfig("postgres://sys@host/db", nil)
+	assert.Equal(t, "postgres://sys@host/db", cfg.DSN)
+	assert.True(t, cfg.PGBouncerMode, "sysPool must force PGBouncerMode:true — zero-value false breaks PgBouncer txn pooling")
+	assert.Nil(t, cfg.GUCProvider, "sysPool must not inject tenant GUCs")
+	assert.Nil(t, cfg.Tracer, "Tracer is wired by the call site, not SystemPoolConfig")
+	assert.Nil(t, cfg.Logger, "nil log must leave Logger unset")
+	assert.Equal(t, int32(20), cfg.MaxConns, "sysPool inherits pool sizing from ConfigFromEnv")
+}
+
+func TestSystemPoolConfig_AppliesStatementTimeout(t *testing.T) {
+	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
+	cfg := SystemPoolConfig("postgres://sys@host/db?sslmode=disable", nil)
+	assert.Contains(t, cfg.DSN, "statement_timeout%3D5000")
+}
+
+func TestApplyStatementTimeout_Idempotent(t *testing.T) {
+	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
+	once := ApplyStatementTimeout("postgres://u@h/db?sslmode=disable")
+	assert.Equal(t, once, ApplyStatementTimeout(once))
+}
+
+// ── wrapConnErr ──────────────────────────────────────────────────────────
+
+// wrapConnErr remaps SQLSTATE class 08/53/57/58 (availability failures)
+// to domain.ErrDBUnavailable. Other PgErrors (e.g. 23505 unique_violation)
+// still pass through so the service layer can classify them.
+func TestWrapConnErr_AvailabilitySQLStateMapsToDBUnavailable(t *testing.T) {
+	for _, code := range []string{"08006", "53300", "57P01", "58030"} {
+		t.Run(code, func(t *testing.T) {
+			pgErr := &pgconn.PgError{Code: code}
+			got := wrapConnErr(pgErr)
+			assert.ErrorIs(t, got, domain.ErrDBUnavailable)
+		})
+	}
+}
+
+func TestWrapConnErr_ConstraintPgErrorPassesThroughUnchanged(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "23505"}
+	got := wrapConnErr(pgErr)
+	assert.Same(t, pgErr, got, "non-availability PgError must pass through, not get remapped")
+}
+
+func TestWrapConnErr_DomainErrorPassesThroughUnchanged(t *testing.T) {
+	de := domain.NewError(domain.ErrValidation, "bad input")
+	got := wrapConnErr(de)
+	assert.Same(t, error(de), got)
+}
+
+func TestWrapConnErr_PgxNoRowsPassesThroughUnchanged(t *testing.T) {
+	got := wrapConnErr(pgx.ErrNoRows)
+	assert.ErrorIs(t, got, pgx.ErrNoRows)
+}
+
+func TestWrapConnErr_UnknownErrorMapsToDependencyUnavailable(t *testing.T) {
+	got := wrapConnErr(errors.New("dial tcp: connection refused"))
+	assert.ErrorIs(t, got, domain.ErrDependencyUnavailable)
+}
+
+func TestWrapConnErr_NilPassesThrough(t *testing.T) {
+	assert.NoError(t, wrapConnErr(nil))
 }

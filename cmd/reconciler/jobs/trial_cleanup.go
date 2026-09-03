@@ -2,9 +2,6 @@ package jobs
 
 import (
 	"context"
-	"fmt"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // TrialCleanup hard-deletes trial_expired tenants past the grace window
@@ -17,24 +14,12 @@ import (
 // retained (TRIAL-2 one-lifetime-trial).
 func TrialCleanup(ctx context.Context, jctx *Context) (Result, error) {
 	var res Result
-
-	err := runInTxWithSysPool(ctx, jctx.SysPool, func(ctx context.Context, tx pgx.Tx) error {
-		cmd, err := tx.Exec(ctx, fmt.Sprintf(`
-			DELETE FROM tenants
-			WHERE status = 'trial_expired'
-			  AND trial_ends_at < now() - INTERVAL '%d days'
-			  AND deleted_at IS NULL`, jctx.TrialGraceDays))
-		if err != nil {
-			return err
-		}
-		n := int(cmd.RowsAffected())
-		res.Attempted = n
-		res.Succeeded = n
-		return nil
-	})
+	n, err := jctx.Reconciler.HardDeleteExpiredTrials(ctx, jctx.TrialGraceDays)
 	if err != nil {
 		return res, err
 	}
+	res.Attempted = n
+	res.Succeeded = n
 	jctx.Logger.Info("trial-cleanup complete",
 		"deleted", res.Succeeded, "grace_days", jctx.TrialGraceDays)
 	return res, nil

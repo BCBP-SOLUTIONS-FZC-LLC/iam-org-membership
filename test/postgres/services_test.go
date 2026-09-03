@@ -28,16 +28,16 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	pmodel "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // pgxpoolPoolReal is the concrete pool type used by helpers below.
-type pgxpoolPoolReal = pgxpool.Pool
+type pgxpoolPoolReal = dbseed.Pool
 
 // ─────────────────────────────────────────────────────────────────────────
 // G1: Trial signup activates exactly the 5 named system departments per
@@ -318,9 +318,8 @@ func TestReassignOwner_EmitsTenantRoleGranted(t *testing.T) {
 
 func TestTM12Escalation_IncrementsCounter(t *testing.T) {
 	t.Parallel()
-	// Register metrics once per test process. Register() uses
-	// prometheus.MustRegister which panics on duplicate — guard with a
-	// package-level sync.Once (see phase4TestMetricsInit at file bottom).
+	// Register metrics once per test process. Register() is idempotent
+	// (sync.Once) but we still gate so a parallel-package helper stays cheap.
 	phase4TestMetricsInit()
 	require.NotNil(t, metrics.TenantOwnerlessEscalated,
 		"metrics must be initialised before this test")

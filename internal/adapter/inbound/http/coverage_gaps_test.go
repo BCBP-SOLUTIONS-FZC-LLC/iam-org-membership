@@ -26,16 +26,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ── middleware.go: isDBUnavailableSQLState len < 2 branch (424.19,426.3) ──
+// ── middleware.go: isOperatorOrSystemErrorSQLState non-PgError branch ──
 
-// TestIsDBUnavailableSQLState_ShortCode_ReturnsFalse covers the `len(code) < 2`
-// guard branch (line 424-426) — a code shorter than 2 characters returns false
-// without panicking.
-func TestIsDBUnavailableSQLState_ShortCode_ReturnsFalse(t *testing.T) {
-	assert.False(t, isDBUnavailableSQLState(""),
-		"empty string must return false (len < 2 guard)")
-	assert.False(t, isDBUnavailableSQLState("0"),
-		"single-char code must return false (len < 2 guard)")
+// TestIsOperatorOrSystemErrorSQLState_NonPgError_ReturnsFalse covers the
+// non-PgError early-return — any non-Postgres error returns false.
+func TestIsOperatorOrSystemErrorSQLState_NonPgError_ReturnsFalse(t *testing.T) {
+	assert.False(t, isOperatorOrSystemErrorSQLState(errors.New("")),
+		"non-PgError must return false")
+	assert.False(t, isOperatorOrSystemErrorSQLState(errors.New("0")),
+		"non-PgError must return false")
 }
 
 // ── middleware.go: errorLogger != nil path in HandleError (407.24,409.3) ──

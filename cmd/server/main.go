@@ -48,6 +48,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgmetrics"
 )
 
 // buildVersion is injected by -ldflags at build time (see Dockerfile / Makefile).
@@ -64,35 +65,37 @@ func main() {
 	// in the first request path.
 	validateRequiredEnv(appEnv)
 
-	// ── 1. Logger ─────────────────────────────────────────────────────────
+	// ── 1. Logger — Zap via platform-gincommon (same sink as iam-user-profile)
 	log, err := logger.NewLogger(appEnv)
 	if err != nil {
 		panic("init logger: " + err.Error())
 	}
 
-	metrics.Register()
-
-	// ── 2. Tracing (opt-in) ───────────────────────────────────────────────
-	var shutdownTracing func()
-	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
-		shutdownTracing = gincommon.InitTracingFromEnv()
-	} else {
-		shutdownTracing = func() {}
-	}
+	// ── 2. Tracing — always install gincommon's TracerProvider so in-process
+	// spans get valid trace IDs even when OTEL_EXPORTER_OTLP_ENDPOINT is unset
+	// (dev). ObservabilityMiddlewares' EnsureInitTelemetry is then a no-op.
+	shutdownTracing := gincommon.InitTracingFromEnv()
 
 	cfg := gincommon.Config{
 		Logger:       log,
 		ServiceName:  envOr("APP_NAME", "iam-org-membership"),
 		BuildVersion: envOr("BUILD_VERSION", buildVersion),
 	}
-	// events.Init registers platform-events' own outbox/publish/consume
-	// metrics (outbox_dead_letters_total, events_published_total,
-	// outbox_pending_total, sqs_receive_errors_total, ~20 total) on the same
-	// default Prometheus registry metrics.Register() above uses. Without
-	// this call those metrics stay dark on /metrics even though
-	// api/asyncapi.yaml already documents outbox_dead_letters_total as if
-	// it were live.
-	events.Init(cfg.ServiceName, cfg.BuildVersion)
+	// ObservabilityMiddlewares is gincommon's public metrics-init API. Call
+	// it here (before any collector registration or exporter goroutine) so
+	// business / events / pgcommon metrics land on gincommon.MetricsRegisterer
+	// with matching {service, version} const labels. NewRouter applies the
+	// same middleware slice to the Gin engine; metrics.Init is sync.Once.
+	_ = gincommon.ObservabilityMiddlewares(cfg)
+
+	metrics.Register()
+
+	// platform-events outbox/publish/consume metrics and platform-pgcommon
+	// query/pool metrics share gincommon's registerer so a single /metrics
+	// scrape (promhttp on METRICS_PORT) serves HTTP + business + outbox +
+	// pg collectors together.
+	events.InitWithRegisterer(cfg.ServiceName, cfg.BuildVersion, gincommon.MetricsRegisterer())
+	pgmetrics.InitWithRegisterer(cfg.ServiceName, cfg.BuildVersion, gincommon.MetricsRegisterer())
 
 	// ── 3. Database — pgcommon.ConfigFromEnv reads DATABASE_URL/PG_* directly
 	// so pool sizing, PgBouncer mode, and DSN assembly have exactly one
@@ -119,6 +122,10 @@ func main() {
 	// Zap-backed sink as everything else, at the SlowQueryThreshold already
 	// resolved by ConfigFromEnv above.
 	pgCfg.Logger = pgadapter.NewLoggerAdapter(log)
+	// db.query spans export through the TracerProvider
+	// gincommon.InitTracingFromEnv installed above — same OTLP pipeline as
+	// HTTP spans from ObservabilityMiddlewares.
+	pgCfg.Tracer = pgadapter.NewOTelTracer(cfg.ServiceName)
 	pool, err := pgcommon.NewPool(context.Background(), pgCfg)
 	if err != nil {
 		panic(fmt.Sprintf("connect to postgres: %v", err))
@@ -126,23 +133,20 @@ func main() {
 	defer pool.Close()
 
 	// sysPool: BYPASSRLS pool used by reconciler jobs, cross-tenant metric
-	// exporters, and the seat-overage reconciler (LLD §4.4). In production
-	// SYSTEM_DATABASE_URL must point to org_membership_migrator (RLS-4). In
-	// dev it falls back to DSNFromEnv() so single-role setups keep working,
-	// with a warning so the operator knows cross-tenant queries will
-	// RLS-filter to zero rows.
+	// exporters, I-16, and the seat-overage reconciler (LLD §4.4). In
+	// production SYSTEM_DATABASE_URL must point to org_membership_migrator
+	// (RLS-4). In dev it falls back to DSNFromEnv() so single-role setups
+	// keep working, with a warning so the operator knows cross-tenant
+	// queries will RLS-filter to zero rows.
 	//
-	// *pgcommon.Pool (not a raw pgxpool.Pool), deliberately with no
-	// GUCProvider — a BYPASSRLS role must see across every tenant — but
-	// still wired with the same Logger as the app pool above, so slow
-	// cross-tenant queries are traced through the same structured logger
-	// instead of nowhere, and this pool gets a real Health()/Ping() for
-	// /readyz.
+	// Built via SystemPoolConfig (same helper as iam-user-profile): no
+	// GUCProvider, PGBouncerMode forced true, pool sizing inherited from
+	// ConfigFromEnv. Tracer is wired separately so db.query spans export
+	// through gincommon's TracerProvider.
 	sysDSN := pgadapter.SystemDSNFromEnv()
-	sysPool, err := pgcommon.NewPool(context.Background(), pgcommon.Config{
-		DSN:    sysDSN,
-		Logger: pgadapter.NewLoggerAdapter(log),
-	})
+	sysCfg := pgadapter.SystemPoolConfig(sysDSN, log)
+	sysCfg.Tracer = pgadapter.NewOTelTracer(cfg.ServiceName)
+	sysPool, err := pgcommon.NewPool(context.Background(), sysCfg)
 	if err != nil {
 		panic(fmt.Sprintf("connect sysPool: %v", err))
 	}
@@ -288,7 +292,7 @@ func main() {
 	// identity in processed_events (§16 A33 / PE-1).
 	skew := envDuration("MAX_LIFECYCLE_EVENT_SKEW_SECONDS", 300*time.Second)
 	idempotencyStore := pgadapter.NewIdempotencyRepository(pool)
-	membershipConsumer := consumeradapter.NewMembershipEventConsumer(pool, outboxPublisher, idempotencyStore, catalogReader, cache, skew, log)
+	membershipConsumer := consumeradapter.NewMembershipEventConsumer(txRunner, pgadapter.NewTenantRepository(pool), idempotencyStore, catalogReader, cache, skew, log)
 
 	var sqsConsumers []events.Consumer
 	if url := os.Getenv("SQS_TENANT_ORGM_QUEUE_URL"); url != "" {
@@ -347,6 +351,7 @@ func main() {
 	deptMemRepo := pgadapter.NewDeptMembershipRepository(pool)
 	deptRoleLabelRepo := pgadapter.NewDeptRoleLabelRepository(pool)
 	invitationRepo := pgadapter.NewInvitationRepository(pool)
+	authzRepo := pgadapter.NewAuthZRepository(pool)
 
 	// Outbound clients — Phase 2 fail-open stubs; Phase 4 wires real HTTP.
 	// log is threaded through so their transport-error warnings flow through
@@ -367,12 +372,18 @@ func main() {
 	groupMappingClient := groupmappingclient.New(log)
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
+	// I-16 (§16 RP-C3): bound against sysPool (BYPASSRLS), NOT pool — RP's
+	// subscription-lapse sweep needs every tenant past grace, cross-tenant,
+	// the same reason the reconciler jobs and business-metric exporters
+	// above already use sysPool instead of the RLS-scoped app pool.
+	subscriptionGraceDays := envInt("SUBSCRIPTION_GRACE_DAYS", 30)
+	sysTenantRepo := pgadapter.NewTenantRepository(sysPool)
 	invitationExpiryDays := envInt("INVITATION_EXPIRY_DAYS", 7)
 	reinviteCooldownMin := envInt("INVITE_REINVITE_COOLDOWN_MINUTES", 60) // PI-11
 	inviteMaxPerHour := envInt("INVITE_MAX_PER_TENANT_PER_HOUR", 200)     // PI-12
 
-	authzSvc := service.NewAuthZService(pool, catalogReader, catalogReader, cache)
-	provisioningSvc := service.NewProvisioningService(pool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
+	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
+	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays)
@@ -382,7 +393,8 @@ func main() {
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, log, invitationExpiryDays).
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour)
-	operatorSvc := service.NewOperatorService(pool, tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
+	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
+	subscriptionLapseSvc := service.NewSubscriptionLapseService(sysTenantRepo, subscriptionGraceDays)
 
 	tenantH := httpadapter.NewTenantHandler(tenantSvc)
 	deptH := httpadapter.NewDepartmentHandler(deptSvc)
@@ -397,7 +409,7 @@ func main() {
 	// IDs never reused.
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc)
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc)
 
 	// ── Router — all routing/middleware wiring lives in the inbound HTTP
 	// adapter (internal/adapter/inbound/http/router.go), not here. main.go's
@@ -513,6 +525,16 @@ func main() {
 		}
 	}
 	cancelBackground()
+	// DrainAndClose waits for in-flight WithConn/RunInTx callbacks then
+	// force-closes — pgcommon's documented graceful path. defer Close()
+	// above remains a safety net for panic/early-return and is idempotent
+	// after DrainAndClose returns (must not run concurrently).
+	if err := pool.DrainAndClose(shutdownCtx); err != nil {
+		log.Error("app pool drain error", map[string]interface{}{"error": err.Error()})
+	}
+	if err := sysPool.DrainAndClose(shutdownCtx); err != nil {
+		log.Error("sysPool drain error", map[string]interface{}{"error": err.Error()})
+	}
 	shutdownTracing()
 	if err := gincommon.Shutdown(log); err != nil {
 		log.Error("logger/tracer flush error", map[string]interface{}{"error": err.Error()})

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
@@ -335,6 +336,13 @@ func (r *miscInviteRepo) MostRecentCreatedAt(context.Context, uuid.UUID, string)
 func (r *miscInviteRepo) CountCreatedInWindow(context.Context, uuid.UUID, time.Time) (int, error) {
 	return 0, nil
 }
+func (r *miscInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error {
+	return nil
+}
+func (r *miscInviteRepo) ExpireOverdue(context.Context, int) (int, error) { return 0, nil }
+func (r *miscInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
+	return nil, nil
+}
 
 var _ port.InvitationRepository = (*miscInviteRepo)(nil)
 
@@ -349,7 +357,7 @@ func TestSetRealmFields_ReturnsNewRecordVersion(t *testing.T) {
 	// Stub via the provisioning service cache eviction path
 	called := false
 	cache := &spyCacheForI4{onDelete: func() { called = true }}
-	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil,
 		buildSetRealmTxRunner(2), cache, nil)
 	h2 := &InternalHandler{provisioning: svc}
 
@@ -368,7 +376,7 @@ type setRealmTxRunner struct{ newVersion int64 }
 func buildSetRealmTxRunner(ver int64) *setRealmTxRunner { return &setRealmTxRunner{ver} }
 
 func (r *setRealmTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
-	return fn(service.WithTx(ctx, &i2FakeTx{newVersion: r.newVersion}))
+	return fn(postgres.WithTx(ctx, &i2FakeTx{newVersion: r.newVersion}))
 }
 
 type i2FakeTx struct {
@@ -387,7 +395,7 @@ func TestSetRealmFields_CacheEvicted_200(t *testing.T) {
 	tenantID := uuid.New()
 	deleted := false
 	cache := &spyCacheForI4{onDelete: func() { deleted = true }}
-	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil,
 		buildSetRealmTxRunner(2), cache, nil)
 	h := &InternalHandler{provisioning: svc}
 
@@ -425,7 +433,7 @@ func TestSetFeatureFlags_CrossTenant_403(t *testing.T) {
 			return nil, domain.NewError(domain.ErrTenantNotFound, "tenant not found (rls)")
 		},
 	}
-	svc := service.NewOperatorService(nil, tenantRepo, &mhRoleRepo{}, &mhMemRepo{}, happyCacheStub{}, happyTxRunner{})
+	svc := service.NewOperatorService(tenantRepo, &mhRoleRepo{}, &mhMemRepo{}, happyCacheStub{}, happyTxRunner{})
 	h := &OperatorHandler{svc: svc}
 	rc := &requestctx.RequestContext{
 		UserID:   uuid.New(),
@@ -450,7 +458,7 @@ func TestReassignOwner_CrossTenant_403(t *testing.T) {
 			return nil, domain.NewError(domain.ErrTenantNotFound, "tenant not found (rls)")
 		},
 	}
-	svc := service.NewOperatorService(nil, tenantRepo, &mhRoleRepo{}, &mhMemRepo{}, happyCacheStub{}, happyTxRunner{})
+	svc := service.NewOperatorService(tenantRepo, &mhRoleRepo{}, &mhMemRepo{}, happyCacheStub{}, happyTxRunner{})
 	h := &OperatorHandler{svc: svc}
 	rc := &requestctx.RequestContext{
 		UserID:   uuid.New(),

@@ -17,7 +17,7 @@ sequenceDiagram
     SNS_T ->>+ SQS_T: fan-out (subscription filter matches tenant-orgm-q)
     SQS_T -->>- EC: message
 
-    EC ->>+ EC: Check processed_events(event_id, consumer='orgm') → dedup (EVT-4/IDEMP-2)
+    EC ->>+ EC: Check processed_events(event_id, consumer=iam-org-membership) → dedup (EVT-4/IDEMP-2)
     Note over EC: EVT-15 clamp: event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS (300)<br/>→ NACK to DLQ, iam_future_lifecycle_event_rejected_total++<br/>NOT recorded in processed_events (any nonzero pages)
 
     EC ->>+ TSVC: TrialSignup(ctx, envelope)
@@ -32,10 +32,10 @@ sequenceDiagram
 
     TX ->>+ DB: BEGIN (SET LOCAL app.tenant_id = tenant_id, RLS-6)<br/>SELECT ... FOR UPDATE on tenants row (EVT-14 recency check)
     DB -->> TX: last_event_at
-    Note over TX,DB: EVT-14 recency guard (§16 A33 last-writer-wins):<br/>event.time <= last_event_at → skip state change, still record processed_events<br/>(iam_stale_lifecycle_event_skipped_total{event_type}++); return early
+    Note over TX,DB: EVT-14 recency guard (§16 A33 last-writer-wins):<br/>event.time <= last_event_at → skip state change, still record processed_events<br/>(iam_stale_lifecycle_event_skipped_total{event_type}++) — return early
 
-    TX ->>+ DB: (1) INSERT tenants (id, slug, plan, status='trial', trial_ends_at, ...)<br/>ON CONFLICT (id) DO NOTHING
-    Note over DB: Idempotent — safe on redelivery; ON CONFLICT DO NOTHING per §9.2
+    TX ->>+ DB: (1) INSERT tenants (id, slug, plan, status=trial, trial_ends_at, ...)<br/>ON CONFLICT (id) DO NOTHING
+    Note over DB: Idempotent — safe on redelivery — ON CONFLICT DO NOTHING per §9.2
     DB -->>- TX: inserted (or existed)
 
     TX ->>+ DB: (2) INSERT tenant_departments — activate 5 system depts over global catalog<br/>Engineering · Design · Procurement · Finance · Legal (§8.1)
@@ -44,10 +44,10 @@ sequenceDiagram
     TX ->>+ DB: (3) INSERT dept_role_labels — 3 default labels<br/>preparator · reviewer · approver
     DB -->>- TX: 3 rows
 
-    TX ->>+ DB: (4) INSERT tenant_memberships (owner, status='active')
+    TX ->>+ DB: (4) INSERT tenant_memberships (owner, status=active)
     DB -->>- TX: 1 row
 
-    TX ->>+ DB: (5) INSERT tenant_roles (owner, tenant_membership_id, role_code='tenant_owner',<br/>granted_by = owner_user_id)  — I1-3, TM-8, TR-8
+    TX ->>+ DB: (5) INSERT tenant_roles (owner, tenant_membership_id, role_code=tenant_owner,<br/>granted_by = owner_user_id)  — I1-3, TM-8, TR-8
     DB -->>- TX: 1 row
 
     TX ->>+ OB: (6a) outbox.Enqueue(TenantCreated {tenant_id, slug, plan, status})<br/>source = iam.tenant.events
@@ -66,14 +66,14 @@ sequenceDiagram
 
     TSVC -->>- EC: ok
 
-    EC ->>+ DB: INSERT processed_events(event_id, consumer='orgm', processed_at)<br/>ON CONFLICT DO NOTHING (8-day retention, PE-1)
+    EC ->>+ DB: INSERT processed_events(event_id, consumer=iam-org-membership, processed_at)<br/>ON CONFLICT DO NOTHING (8-day retention, PE-1)
     DB -->>- EC: recorded
 
     EC ->>+ SQS_T: DeleteMessage (ACK)
     SQS_T -->>- EC: deleted
     deactivate EC
 
-    Note over Router,SNS_M: Outbox runner picks up all three events; RoutingPublisher routes by Source →<br/>TenantCreated/TrialStarted go to iam.tenant.events (O&M's only two produced events on that topic — §7.3);<br/>TenantRoleGranted goes to iam.membership.events
+    Note over Router,SNS_M: Outbox runner picks up all three events — RoutingPublisher routes by Source →<br/>TenantCreated/TrialStarted go to iam.tenant.events (O&M's only two produced events on that topic — §7.3)<br/>TenantRoleGranted goes to iam.membership.events
     Router ->> SNS_M: Publish TenantCreated
     Router ->> SNS_M: Publish TrialStarted
     Router ->> SNS_M: Publish TenantRoleGranted

@@ -81,7 +81,7 @@ func (r *ptdTenantDeptRepo) SetActive(context.Context, uuid.UUID, uuid.UUID, boo
 
 var _ port.TenantDepartmentRepository = (*ptdTenantDeptRepo)(nil)
 
-type ptdTenantRepo struct{}
+type ptdTenantRepo struct{ port.TenantRepositoryNoop }
 
 func (f *ptdTenantRepo) FindByID(context.Context, uuid.UUID) (*domain.Tenant, error) { return nil, nil }
 func (f *ptdTenantRepo) FindByIDIncludingDeleted(context.Context, uuid.UUID) (*domain.Tenant, error) {
@@ -93,6 +93,9 @@ func (f *ptdTenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch) 
 func (f *ptdTenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
 func (f *ptdTenantRepo) Insert(_ context.Context, t *domain.Tenant) (*domain.Tenant, bool, error) {
 	return t, true, nil
+}
+func (f *ptdTenantRepo) ListSubscriptionLapses(context.Context, int) ([]domain.Tenant, error) {
+	return nil, nil
 }
 
 var _ port.TenantRepository = (*ptdTenantRepo)(nil)
@@ -164,7 +167,6 @@ var _ port.DeptRoleLabelRepository = (*ptdLabelRepo)(nil)
 func buildTrialProvisioningSvc(catalogDepts port.DepartmentCatalogReader) (*service.ProvisioningService, *ptdTenantDeptRepo) {
 	tenantDepts := &ptdTenantDeptRepo{}
 	svc := service.NewProvisioningService(
-		nil,                                                         // pool — unused by TrialSignup directly
 		&ptdTenantRepo{}, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil, /* deptMems: unused by TrialSignup */
 		&ptdLabelRepo{}, tenantDepts, catalogDepts,
 		&ptdCatalogPlans{},
@@ -307,7 +309,7 @@ func TestTrialSignup_PlanLookupError_NeverReachesDepartmentFetch(t *testing.T) {
 	}}
 	tenantDepts := &ptdTenantDeptRepo{}
 	svc := service.NewProvisioningService(
-		nil, &ptdTenantRepo{}, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil,
+		&ptdTenantRepo{}, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil,
 		&ptdLabelRepo{}, tenantDepts, catalog,
 		&ptdCatalogPlans{planByCodeFn: func(context.Context, domain.TenantPlan) (*domain.Plan, error) {
 			return nil, planErr
@@ -333,7 +335,7 @@ func TestTrialSignup_IdempotentReplay_SkipsDepartmentActivation(t *testing.T) {
 	tenantDepts := &ptdTenantDeptRepo{}
 	tenants := &ptdTenantRepoReplay{}
 	svc := service.NewProvisioningService(
-		nil, tenants, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil,
+		tenants, &ptdMembershipRepo{}, &ptdRoleRepo{}, nil,
 		&ptdLabelRepo{}, tenantDepts, catalog,
 		&ptdCatalogPlans{}, &passthroughTxRunner{}, nil, nil,
 	)
@@ -353,7 +355,7 @@ func TestTrialSignup_IdempotentReplay_SkipsDepartmentActivation(t *testing.T) {
 
 // ptdTenantRepoReplay simulates the ON CONFLICT (id) DO NOTHING replay
 // path: Insert reports the row already existed (wasCreated=false).
-type ptdTenantRepoReplay struct{}
+type ptdTenantRepoReplay struct{ port.TenantRepositoryNoop }
 
 func (f *ptdTenantRepoReplay) FindByID(context.Context, uuid.UUID) (*domain.Tenant, error) {
 	return nil, nil
@@ -367,6 +369,9 @@ func (f *ptdTenantRepoReplay) Update(context.Context, uuid.UUID, *domain.TenantP
 func (f *ptdTenantRepoReplay) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
 func (f *ptdTenantRepoReplay) Insert(_ context.Context, t *domain.Tenant) (*domain.Tenant, bool, error) {
 	return t, false, nil // already existed
+}
+func (f *ptdTenantRepoReplay) ListSubscriptionLapses(context.Context, int) ([]domain.Tenant, error) {
+	return nil, nil
 }
 
 var _ port.TenantRepository = (*ptdTenantRepoReplay)(nil)

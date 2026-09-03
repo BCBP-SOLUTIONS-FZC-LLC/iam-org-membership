@@ -2,9 +2,6 @@ package jobs
 
 import (
 	"context"
-	"fmt"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // defaultPruneBatchLimit is used by OutboxPrune/ProcessedEventsPrune when
@@ -35,26 +32,12 @@ func OutboxPrune(ctx context.Context, jctx *Context) (Result, error) {
 		batchLimit = defaultPruneBatchLimit
 	}
 	var res Result
-	err := runInTxWithSysPool(ctx, jctx.SysPool, func(ctx context.Context, tx pgx.Tx) error {
-		cmd, err := tx.Exec(ctx, fmt.Sprintf(`
-			DELETE FROM outbox_events
-			WHERE id IN (
-				SELECT id FROM outbox_events
-				WHERE published_at IS NOT NULL
-				  AND published_at < now() - INTERVAL '%d days'
-				LIMIT $1
-			)`, jctx.OutboxRetentionDays), batchLimit)
-		if err != nil {
-			return err
-		}
-		n := int(cmd.RowsAffected())
-		res.Attempted = n
-		res.Succeeded = n
-		return nil
-	})
+	n, err := jctx.Reconciler.PruneOutbox(ctx, jctx.OutboxRetentionDays, batchLimit)
 	if err != nil {
 		return res, err
 	}
+	res.Attempted = n
+	res.Succeeded = n
 	jctx.Logger.Info("outbox-prune complete",
 		"deleted", res.Succeeded, "retention_days", jctx.OutboxRetentionDays)
 	return res, nil

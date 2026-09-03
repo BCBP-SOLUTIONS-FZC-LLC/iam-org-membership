@@ -10,8 +10,8 @@ import (
 
 // IdempotencyRepository implements port.IdempotencyStore against the
 // processed_events table (§4.2), shared by every SQS consumer this service
-// runs. See port.IdempotencyStore's doc comment for why MarkProcessedInTx
-// takes the caller's transaction (EVT-14) rather than opening its own, the
+// runs. See port.IdempotencyStore's doc comment for why MarkProcessed
+// joins the caller's transaction (EVT-14) rather than opening its own, the
 // one deliberate difference from iam-user-profile's equivalent store.
 type IdempotencyRepository struct {
 	pool *pgcommon.Pool
@@ -40,14 +40,15 @@ func (r *IdempotencyRepository) IsProcessed(ctx context.Context, consumer, event
 	return exists, nil
 }
 
-// MarkProcessedInTx records eventID as processed by consumer inside tx, so
-// the dedup write commits or rolls back atomically with whatever business
-// state change tx also contains. Safe to call more than once for the same
-// (consumer, eventID) pair.
-func (r *IdempotencyRepository) MarkProcessedInTx(ctx context.Context, tx pgx.Tx, consumer, eventID string) error {
-	_, err := tx.Exec(ctx, `
-		INSERT INTO processed_events (event_id, consumer)
-		VALUES ($1, $2)
-		ON CONFLICT (event_id, consumer) DO NOTHING`, eventID, consumer)
-	return err
+// MarkProcessed records eventID as processed by consumer. Inside
+// TxRunner.RunInTx this joins the outer transaction so the dedup write
+// commits or rolls back atomically with the projection.
+func (r *IdempotencyRepository) MarkProcessed(ctx context.Context, consumer, eventID string) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO processed_events (event_id, consumer)
+			VALUES ($1, $2)
+			ON CONFLICT (event_id, consumer) DO NOTHING`, eventID, consumer)
+		return err
+	})
 }

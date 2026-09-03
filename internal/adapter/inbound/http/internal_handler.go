@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -23,12 +24,13 @@ import (
 // All internal routes are gated by RequireSystemRole middleware (RLS-5,
 // IAPI-2, AUTH-5).
 type InternalHandler struct {
-	provisioning  *service.ProvisioningService
-	authz         *service.AuthZService
-	membership    *service.MembershipService
-	invitation    *service.InvitationService
-	groupMappings *service.GroupMappingService
-	tenants       *service.TenantService
+	provisioning      *service.ProvisioningService
+	authz             *service.AuthZService
+	membership        *service.MembershipService
+	invitation        *service.InvitationService
+	groupMappings     *service.GroupMappingService
+	tenants           *service.TenantService
+	subscriptionLapse *service.SubscriptionLapseService
 }
 
 func NewInternalHandler(
@@ -38,10 +40,11 @@ func NewInternalHandler(
 	inv *service.InvitationService,
 	gm *service.GroupMappingService,
 	tenants *service.TenantService,
+	subscriptionLapse *service.SubscriptionLapseService,
 ) *InternalHandler {
 	return &InternalHandler{
 		provisioning: prov, authz: authz, membership: mem, invitation: inv,
-		groupMappings: gm, tenants: tenants,
+		groupMappings: gm, tenants: tenants, subscriptionLapse: subscriptionLapse,
 	}
 }
 
@@ -108,7 +111,6 @@ func (h *InternalHandler) ProvisionTenant(c *gin.Context) {
 		Plan:          domain.TenantPlan(req.Plan),
 		OwnerUserID:   req.OwnerUserID,
 		DefaultLocale: req.DefaultLocale,
-		LicensedSeats: req.LicensedSeats,
 	})
 	if err != nil {
 		HandleError(c, err)
@@ -182,12 +184,11 @@ func (h *InternalHandler) PatchTenantRealm(c *gin.Context) {
 			WithDetails(map[string]any{"received": req.RealmType}))
 		return
 	}
-	newVersion, err := h.provisioning.SetRealmFields(c.Request.Context(), tenantID, req.RealmID, domain.RealmType(req.RealmType), req.KeycloakShard, req.RecordVersion)
-	if err != nil {
+	if err := h.provisioning.SetRealmFields(c.Request.Context(), tenantID, req.RealmID, domain.RealmType(req.RealmType), req.KeycloakShard, req.RecordVersion); err != nil {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "realm_id": req.RealmID, "realm_type": req.RealmType, "record_version": newVersion})
+	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "realm_id": req.RealmID, "realm_type": req.RealmType})
 }
 
 // ── I-4 PATCH /tenants/:id/members/:user_id (KC lifecycle) ─────────────
@@ -596,6 +597,50 @@ func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 	}
 	metrics.IncMembershipExistsCheck(caller, "active")
 	c.JSON(http.StatusOK, gin.H{"active": true, "tenant_membership_id": m.ID})
+}
+
+// ── I-16 GET /subscription-lapses ──────────────────────────────────────
+
+// ListSubscriptionLapses is I-16 (§16 RP-C3 of the RP↔O&M alignment
+// review): the Realm Provisioner's subscription-lapse sweep has no way to
+// learn a tenant's cancelled_at, so it polls this instead of tracking
+// cancellation timestamps itself. O&M does the grace-period math
+// (SUBSCRIPTION_GRACE_DAYS) so the 30-day rule stays single-sourced.
+//
+// Cross-tenant by design — not scoped to a single :id like every other
+// internal route, so it deliberately does not sit under /tenants/:id.
+// Self-idempotent: once RP acts on an entry (emitting TenantSuspended),
+// the tenant naturally drops off the next poll.
+//
+// @Summary      List tenants past their subscription-cancellation grace period (RP-C3 subscription-lapse sweep)
+// @Description  Returns tenants with status='cancelled' whose cancelled_at is older than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes it from the next poll.
+// @Tags         internal
+// @Produce      json
+// @Success      200 {object} SubscriptionLapseListResponse
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /internal/subscription-lapses [get]
+func (h *InternalHandler) ListSubscriptionLapses(c *gin.Context) {
+	tenants, err := h.subscriptionLapse.List(c.Request.Context())
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	items := make([]SubscriptionLapseItem, len(tenants))
+	for i, t := range tenants {
+		var cancelledAt time.Time
+		if t.CancelledAt != nil {
+			cancelledAt = *t.CancelledAt
+		}
+		items[i] = SubscriptionLapseItem{
+			TenantID:    t.ID,
+			RealmID:     t.RealmID,
+			RealmType:   string(t.RealmType),
+			CancelledAt: cancelledAt,
+		}
+	}
+	c.JSON(http.StatusOK, SubscriptionLapseListResponse{Tenants: items})
 }
 
 // ── I-13 POST /tenants/:id/tenders/:tender_id/assignee-override ───────

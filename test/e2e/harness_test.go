@@ -35,7 +35,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -47,6 +46,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
@@ -70,7 +70,7 @@ func (noopPinger) Health(context.Context) error { return nil }
 type e2eEnv struct {
 	ctx     context.Context
 	appPool *pgcommon.Pool
-	rawPool *pgxpool.Pool
+	rawPool *dbseed.Pool
 	server  *httptest.Server
 	baseURL string
 
@@ -92,6 +92,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 
 	// Repositories.
 	tenantRepo := pgadapter.NewTenantRepository(appPool)
+	authzRepo := pgadapter.NewAuthZRepository(appPool)
 	tenantDeptRepo := pgadapter.NewTenantDepartmentRepository(appPool)
 	membershipRepo := pgadapter.NewMembershipRepository(appPool)
 	tenantRoleRepo := pgadapter.NewTenantRoleRepository(appPool)
@@ -118,8 +119,8 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	catalogPlans := newFakeCatalogPlans()
 
 	// Services.
-	authzSvc := service.NewAuthZService(appPool, catalogPlans, catalogDepts, nil)
-	provisioningSvc := service.NewProvisioningService(appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogDepts, catalogPlans, txRunner, nil, rp)
+	authzSvc := service.NewAuthZService(authzRepo, catalogPlans, catalogDepts, nil)
+	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogDepts, catalogPlans, txRunner, nil, rp)
 	tenantSvc := service.NewTenantService(tenantRepo, nil, rp)
 	deptSvc := service.NewDepartmentService(catalogDepts, tenantDeptRepo, nil)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, nil, rp, wf, txRunner, nil, 30)
@@ -127,7 +128,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, nil)
 	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, nil, nil)
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rp, nil, txRunner, nil, 7)
-	operatorSvc := service.NewOperatorService(appPool, tenantRepo, tenantRoleRepo, membershipRepo, nil, txRunner)
+	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, nil, txRunner)
 
 	// Handlers.
 	tenantH := httpadapter.NewTenantHandler(tenantSvc)
@@ -143,7 +144,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	// to iam-tender-acl's TAC-1/2/3/4; IDs never reused).
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc)
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, nil) // I-16 untested here — no sysPool in this harness
 
 	// Router — the exact same constructor cmd/server/main.go calls, so this
 	// harness can never drift from production routing again (it used to be
@@ -183,7 +184,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 
 // ── Postgres setup (mirrors sibling test/postgres pattern) ────────────────
 
-func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *pgxpool.Pool) {
+func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *dbseed.Pool) {
 	t.Helper()
 	pgContainer, err := tcpostgres.Run(ctx,
 		"postgres:17-alpine",
@@ -202,7 +203,7 @@ func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *pgxpool.Poo
 	superDSN, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	rawPool, err := pgxpool.New(ctx, superDSN)
+	rawPool, err := dbseed.New(ctx, superDSN)
 	require.NoError(t, err)
 	t.Cleanup(rawPool.Close)
 

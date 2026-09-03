@@ -41,12 +41,84 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// ── azCache — in-memory port.Cache for authz supplement tests ─────────────
+
+// azCache is a minimal in-memory port.Cache used by authz_supplement_test.go.
+// seed is pre-populated by tests; stored records what was written via Set.
+type azCache struct {
+	seed   map[string][]byte
+	stored map[string][]byte
+}
+
+func newAZCache() *azCache {
+	return &azCache{seed: map[string][]byte{}, stored: map[string][]byte{}}
+}
+
+func (c *azCache) Get(_ context.Context, key string) ([]byte, error) {
+	return c.seed[key], nil
+}
+func (c *azCache) MGet(_ context.Context, keys []string) ([][]byte, error) {
+	out := make([][]byte, len(keys))
+	for i, k := range keys {
+		out[i] = c.seed[k]
+	}
+	return out, nil
+}
+func (c *azCache) Set(_ context.Context, key string, v []byte, _ time.Duration) error {
+	c.stored[key] = v
+	return nil
+}
+func (c *azCache) SetNX(_ context.Context, _ string, _ []byte, _ time.Duration) (bool, error) {
+	return true, nil
+}
+func (c *azCache) Delete(_ context.Context, _ ...string) error { return nil }
+func (c *azCache) Health(_ context.Context) error              { return nil }
+func (c *azCache) Close() error                                { return nil }
+
+var _ port.Cache = (*azCache)(nil)
+
+// membershipCacheKey mirrors the unexported cacheKeyMemberships from service.
+func membershipCacheKey(tenantID, userID uuid.UUID) string {
+	return "om:memberships:" + tenantID.String() + ":" + userID.String()
+}
+
+// sampleProjection returns a minimal MembershipProjection for testing the cache path.
+func sampleProjection(tenantID, userID uuid.UUID) *service.MembershipProjection {
+	return &service.MembershipProjection{
+		TenantID: tenantID,
+		UserID:   userID,
+		Status:   domain.MembershipActive,
+		Plan:     domain.PlanStarter,
+	}
+}
+
+// azPlanReader is a minimal PlanCatalogReader stub for authz supplement tests.
+type azPlanReader struct{}
+
+func (r *azPlanReader) Plans(context.Context) ([]domain.Plan, error) { return nil, nil }
+func (r *azPlanReader) PlanByCode(context.Context, domain.TenantPlan) (*domain.Plan, error) {
+	return &domain.Plan{Code: domain.PlanStarter}, nil
+}
+
+var _ port.PlanCatalogReader = (*azPlanReader)(nil)
+
+// azDeptReader is a minimal DepartmentCatalogReader stub for authz supplement tests.
+type azDeptReader struct{}
+
+func (r *azDeptReader) Departments(context.Context) ([]domain.Department, error) { return nil, nil }
+func (r *azDeptReader) DepartmentByID(context.Context, uuid.UUID) (*domain.Department, error) {
+	return nil, nil
+}
+
+var _ port.DepartmentCatalogReader = (*azDeptReader)(nil)
 
 // ── setCached — nil proj guard ────────────────────────────────────────────
 

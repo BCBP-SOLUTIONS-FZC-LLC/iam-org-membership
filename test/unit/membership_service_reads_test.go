@@ -49,6 +49,7 @@ var _ port.TenantRoleRepository = (*fakeRoleRepo)(nil)
 // ── TenantRepository stub ──────────────────────────────────────────────
 
 type fakeTenantRepo struct {
+	port.TenantRepositoryNoop
 	findByIDFn func(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
 }
 
@@ -66,6 +67,9 @@ func (f *fakeTenantRepo) Update(context.Context, uuid.UUID, *domain.TenantPatch)
 func (f *fakeTenantRepo) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
 func (f *fakeTenantRepo) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
 	return nil, false, nil
+}
+func (f *fakeTenantRepo) ListSubscriptionLapses(context.Context, int) ([]domain.Tenant, error) {
+	return nil, nil
 }
 
 var _ port.TenantRepository = (*fakeTenantRepo)(nil)
