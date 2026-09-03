@@ -51,17 +51,23 @@ func TestTenantRoleRepo_ListByRole_ExecutesRoleFilteredQuery(t *testing.T) {
 	assert.Equal(t, domain.RoleTenantOwner, got[0].RoleCode)
 }
 
-func TestTenantRoleRepo_ListByRole_ConnectivityErrorMapsToDependencyUnavailable(t *testing.T) {
-	// wrapConnErr in db.go converts unknown (non-pgconn, non-context)
-	// errors to ErrDependencyUnavailable so handlers get a clean 503.
+// CRITICAL: an unrecognized error from the underlying Query call — the same
+// shape a caller's own RunInTx/withPool callback could return for its own
+// business reasons — must pass through wrapConnErr unchanged, not get
+// silently reclassified as ErrDependencyUnavailable (see db_test.go's
+// TestWrapConnErr_UnrecognizedGenericErrorPassesThroughUnchanged for the
+// full rationale — this test pins the same contract at the repository
+// layer specifically).
+func TestTenantRoleRepo_ListByRole_UnrecognizedQueryErrorPassesThroughUnchanged(t *testing.T) {
+	queryErr := errors.New("dial tcp: connection refused")
 	tx := &fakeTx{
 		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			return nil, errors.New("dial tcp: connection refused")
+			return nil, queryErr
 		},
 	}
 	repo := NewTenantRoleRepository(nil)
 	_, err := repo.ListByRole(injectTx(context.Background(), tx), uuid.New(), domain.RoleTenantAdmin)
-	assert.ErrorIs(t, err, domain.ErrDependencyUnavailable)
+	assert.ErrorIs(t, err, queryErr)
 }
 
 func TestTenantRoleRepo_ListByRole_PgxErrNoRowsPassesThrough(t *testing.T) {
@@ -89,15 +95,17 @@ func TestTenantRoleRepo_ListByRole_PropagatesScanError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestTenantRoleRepo_ListByRole_RowsIteratorErrorMapsToDependencyUnavailable(t *testing.T) {
-	// A rows.Err() from a mid-stream connectivity blip flows through the
-	// same wrapConnErr mapping.
+func TestTenantRoleRepo_ListByRole_RowsIteratorErrorPassesThroughUnchanged(t *testing.T) {
+	// A rows.Err() mid-stream is, like the Query-level case above, not
+	// positively identifiable as a connectivity failure — it flows through
+	// wrapConnErr unchanged rather than getting silently reclassified.
+	iterErr := errors.New("network reset mid-stream")
 	tx := &fakeTx{
 		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			return &fakeRows{iterErr: errors.New("network reset mid-stream")}, nil
+			return &fakeRows{iterErr: iterErr}, nil
 		},
 	}
 	repo := NewTenantRoleRepository(nil)
 	_, err := repo.ListByRole(injectTx(context.Background(), tx), uuid.New(), domain.RoleTenantAdmin)
-	assert.ErrorIs(t, err, domain.ErrDependencyUnavailable)
+	assert.ErrorIs(t, err, iterErr)
 }

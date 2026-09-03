@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/puddle/v2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -220,9 +222,44 @@ func TestWrapConnErr_PgxNoRowsPassesThroughUnchanged(t *testing.T) {
 	assert.ErrorIs(t, got, pgx.ErrNoRows)
 }
 
-func TestWrapConnErr_UnknownErrorMapsToDependencyUnavailable(t *testing.T) {
-	got := wrapConnErr(errors.New("dial tcp: connection refused"))
-	assert.ErrorIs(t, got, domain.ErrDependencyUnavailable)
+// CRITICAL: an unrecognized plain Go error — the shape a caller's own
+// RunInTx/withPool callback returns for its own business reasons — must
+// pass through completely unchanged, not get silently reclassified as
+// ErrDependencyUnavailable. wrapConnErr has no way to distinguish "the pool
+// itself failed" from "fn's own business logic failed" for anything it
+// can't positively identify as a connectivity/resource failure, so
+// defaulting an unrecognized error to ErrDependencyUnavailable would
+// discard the caller's real error under a misleading 503 — exactly the
+// bug this test guards against (found and fixed in the same wrapConnErr
+// pattern in the sibling iam-realm-provisioner service, then found here
+// too on a cross-service alignment check).
+func TestWrapConnErr_UnrecognizedGenericErrorPassesThroughUnchanged(t *testing.T) {
+	businessErr := errors.New("dial tcp: connection refused")
+
+	got := wrapConnErr(businessErr)
+
+	assert.Same(t, businessErr, got)
+	assert.ErrorIs(t, got, businessErr)
+}
+
+// puddle.ErrClosedPool (surfaced by pgxpool.Pool.BeginTx/Acquire on a
+// closed pool) is the one non-PgError shape wrapConnErr does positively
+// recognize as a genuine connectivity failure — a closed pool is never a
+// SQL-protocol response, but is unambiguously "the database is
+// unavailable", not a caller's business error.
+func TestWrapConnErr_ClosedPoolMapsToDBUnavailable(t *testing.T) {
+	got := wrapConnErr(puddle.ErrClosedPool)
+	assert.ErrorIs(t, got, domain.ErrDBUnavailable)
+}
+
+func TestWrapConnErr_ContextCanceledPassesThroughUnchanged(t *testing.T) {
+	got := wrapConnErr(context.Canceled)
+	assert.ErrorIs(t, got, context.Canceled)
+}
+
+func TestWrapConnErr_DeadlineExceededPassesThroughUnchanged(t *testing.T) {
+	got := wrapConnErr(context.DeadlineExceeded)
+	assert.ErrorIs(t, got, context.DeadlineExceeded)
 }
 
 func TestWrapConnErr_NilPassesThrough(t *testing.T) {

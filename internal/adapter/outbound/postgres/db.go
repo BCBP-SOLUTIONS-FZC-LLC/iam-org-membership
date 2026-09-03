@@ -15,6 +15,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/puddle/v2"
 )
 
 // DSNFromEnv builds a PostgreSQL connection URL for the application pool by
@@ -185,7 +186,7 @@ func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgx.Tx) error) e
 }
 
 // wrapConnErr converts non-protocol database errors into
-// ErrDependencyUnavailable. SQL-protocol errors (*pgconn.PgError) that are
+// ErrDBUnavailable. SQL-protocol errors (*pgconn.PgError) that are
 // not connectivity/resource classes pass through so the service layer can
 // distinguish an integrity violation from a network outage.
 //
@@ -193,6 +194,30 @@ func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgx.Tx) error) e
 // 57 (operator intervention) and 58 (system error) are remapped to
 // domain.ErrDBUnavailable here so HTTP HandleError never needs to inspect
 // a raw *pgconn.PgError — those classes are availability failures (503).
+// puddle.ErrClosedPool (surfaced by pgxpool.Pool.BeginTx/Acquire on a
+// closed pool — pgcommon's own equivalent sentinel is unexported outside
+// that module, so puddle's is the one this package can actually check) is
+// the other positively-identifiable connectivity failure: a closed pool is
+// never a SQL-protocol response, but is unambiguously "the database is
+// unavailable", not a caller's business error.
+//
+// Everything else — including a plain Go error a caller's own RunInTx/
+// withPool callback returns for its own business reasons — passes through
+// completely unchanged. This function has no way to distinguish "the pool
+// itself failed" from "fn's own business logic failed" for any error
+// shape beyond the ones positively recognized above, since
+// pgcommon.RunInTxWithRetryOpts returns both shapes identically; defaulting
+// the unrecognized case to ErrDependencyUnavailable (as this used to) — a
+// bug found and fixed in iam-realm-provisioner's identical wrapConnErr,
+// then found here too during a cross-service alignment check — silently
+// discarded the caller's real error under a misleading "database
+// unavailable" 503 for every unrecognized failure, including deliberate
+// business-rule errors a service intentionally returns from inside a
+// transaction. HTTP HandleError already re-classifies a leaked raw PgError
+// of these same connectivity/resource classes into 503 independently, so a
+// genuine low-level connectivity failure that somehow isn't positively
+// recognized here still degrades no worse than a generic 500, never a
+// masked/wrong business error.
 func wrapConnErr(err error) error {
 	if err == nil {
 		return nil
@@ -201,19 +226,10 @@ func wrapConnErr(err error) error {
 	if errors.As(err, &de) {
 		return err
 	}
-	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err) {
+	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err) || errors.Is(err, puddle.ErrClosedPool) {
 		return domain.NewError(domain.ErrDBUnavailable, "database unavailable")
 	}
-	if pgcommon.IsPgError(err) {
-		return err // server responded with a SQL error — not a connectivity failure
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-	return domain.NewError(domain.ErrDependencyUnavailable, "database unavailable")
+	return err
 }
 
 // isOperatorOrSystemErrorSQLState reports whether err is a Postgres error
