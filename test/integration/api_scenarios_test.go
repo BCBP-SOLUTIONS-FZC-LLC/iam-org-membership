@@ -1190,8 +1190,9 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 			body, isOwner(tt.OwnerID, tt.TenantID))
 		defer resp.Body.Close()
 		b := assertStatus(t, resp, http.StatusOK)
-		granted, _ := b["granted"].([]any)
-		assert.Contains(t, granted, "tenant_admin")
+		// P-28 returns the full post-reconcile elevated role set in "roles" (not a delta).
+		roles, _ := b["roles"].([]any)
+		assert.Contains(t, roles, "tenant_admin")
 		memberRV = e.getMemberRV(t, tt.TenantID, tt.OwnerID, tt.MemberID)
 	})
 
@@ -1202,8 +1203,9 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 			body, isOwner(tt.OwnerID, tt.TenantID))
 		defer resp.Body.Close()
 		b := assertStatus(t, resp, http.StatusOK)
-		revoked, _ := b["revoked"].([]any)
-		assert.Contains(t, revoked, "tenant_admin")
+		// After stripping all roles, the "roles" array must be empty.
+		roles, _ := b["roles"].([]any)
+		assert.Empty(t, roles, "all elevated roles stripped — roles must be empty")
 	})
 
 	t.Run("P28-VAL-01 unknown role → 422", func(t *testing.T) {

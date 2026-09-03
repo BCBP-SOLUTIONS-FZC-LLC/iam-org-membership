@@ -188,7 +188,7 @@ func (h *InternalHandler) PatchTenantRealm(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "realm_id": req.RealmID, "realm_type": req.RealmType})
+	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "realm_id": req.RealmID, "realm_type": req.RealmType, "record_version": req.RecordVersion + 1})
 }
 
 // ── I-4 PATCH /tenants/:id/members/:user_id (KC lifecycle) ─────────────

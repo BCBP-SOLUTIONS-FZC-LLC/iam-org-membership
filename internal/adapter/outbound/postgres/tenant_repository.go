@@ -259,8 +259,14 @@ func (r *TenantRepository) ListSubscriptionLapses(ctx context.Context, graceDays
 
 func (r *TenantRepository) LockByID(ctx context.Context, id uuid.UUID) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id)
-		return err
+		tag, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.NewError(domain.ErrTenantNotFound, "tenant not found")
+		}
+		return nil
 	})
 }
 

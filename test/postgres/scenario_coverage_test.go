@@ -80,12 +80,12 @@ func TestSetRealmFields_ConcurrentBothSucceed_BUG_I2_2(t *testing.T) {
 	tctx := withSystemAndTenant(ctx, tenantID)
 
 	// First call with record_version=1 — must succeed.
-	_, err1 := fx.Provisioning.SetRealmFields(tctx, tenantID,
+	err1 := fx.Provisioning.SetRealmFields(tctx, tenantID,
 		"realm-A", domain.RealmDedicated, "shard-1", 1)
 	assert.NoError(t, err1, "first call with correct version must succeed")
 
 	// Second call with stale version=1 — must fail with optimistic_lock_conflict (CONC-4).
-	_, err2 := fx.Provisioning.SetRealmFields(tctx, tenantID,
+	err2 := fx.Provisioning.SetRealmFields(tctx, tenantID,
 		"realm-B", domain.RealmDedicated, "shard-2", 1)
 	assert.ErrorIs(t, err2, domain.ErrOptimisticLockConflict,
 		"BUG-I2-2 FIXED: stale record_version now returns 409 optimistic_lock_conflict")

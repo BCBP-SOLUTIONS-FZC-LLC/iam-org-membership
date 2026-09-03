@@ -357,7 +357,7 @@ func TestSetRealmFields_ReturnsNewRecordVersion(t *testing.T) {
 	// Stub via the provisioning service cache eviction path
 	called := false
 	cache := &spyCacheForI4{onDelete: func() { called = true }}
-	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil,
+	svc := service.NewProvisioningService(&port.TenantRepositoryNoop{}, nil, nil, nil, nil, nil, nil, nil,
 		buildSetRealmTxRunner(2), cache, nil)
 	h2 := &InternalHandler{provisioning: svc}
 
@@ -395,7 +395,7 @@ func TestSetRealmFields_CacheEvicted_200(t *testing.T) {
 	tenantID := uuid.New()
 	deleted := false
 	cache := &spyCacheForI4{onDelete: func() { deleted = true }}
-	svc := service.NewProvisioningService(nil, nil, nil, nil, nil, nil, nil, nil,
+	svc := service.NewProvisioningService(&port.TenantRepositoryNoop{}, nil, nil, nil, nil, nil, nil, nil,
 		buildSetRealmTxRunner(2), cache, nil)
 	h := &InternalHandler{provisioning: svc}
 

@@ -53,12 +53,12 @@ type scenarioCatalogClient struct{}
 
 func (c *scenarioCatalogClient) Departments(_ context.Context) ([]port.CatalogDepartment, error) {
 	return []port.CatalogDepartment{
-		{ID: DeptEngID, Code: "engineering", Name: "Engineering", IsSystem: true, IsActive: true, RecordVersion: 1},
-		{ID: DeptDesID, Code: "design", Name: "Design", IsSystem: true, IsActive: true, RecordVersion: 1},
-		{ID: DeptProID, Code: "procurement", Name: "Procurement", IsSystem: true, IsActive: true, RecordVersion: 1},
-		{ID: DeptFinID, Code: "finance", Name: "Finance", IsSystem: true, IsActive: true, RecordVersion: 1},
-		{ID: DeptLegID, Code: "legal", Name: "Legal", IsSystem: true, IsActive: true, RecordVersion: 1},
-		{ID: DeptOpsID, Code: "operations", Name: "Operations", IsSystem: false, IsActive: true, RecordVersion: 1},
+		{ID: DeptEngID, Code: "ENGINEERING", Name: "Engineering", IsSystem: true, IsActive: true, RecordVersion: 1},
+		{ID: DeptDesID, Code: "DESIGN", Name: "Design", IsSystem: true, IsActive: true, RecordVersion: 1},
+		{ID: DeptProID, Code: "PROCUREMENT", Name: "Procurement", IsSystem: true, IsActive: true, RecordVersion: 1},
+		{ID: DeptFinID, Code: "FINANCE", Name: "Finance", IsSystem: true, IsActive: true, RecordVersion: 1},
+		{ID: DeptLegID, Code: "LEGAL", Name: "Legal", IsSystem: true, IsActive: true, RecordVersion: 1},
+		{ID: DeptOpsID, Code: "OPERATIONS", Name: "Operations", IsSystem: false, IsActive: true, RecordVersion: 1},
 	}, nil
 }
 
@@ -338,9 +338,9 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		seatOverageDays      = 30
 	)
 
-	authzSvc       := service.NewAuthZService(appPool, catalogSvc, catalogSvc, nil)
+	authzSvc       := service.NewAuthZService(pgadapter.NewAuthZRepository(appPool), catalogSvc, catalogSvc, nil)
 	provisioningSvc := service.NewProvisioningService(
-		appPool, tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo,
+		tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo,
 		deptRoleLabelRepo, tenantDeptRepo, catalogSvc, catalogSvc,
 		txRunner, nil, rpClient,
 	)
@@ -360,7 +360,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		tenantRepo, rpClient, nil, txRunner, nil, invitationExpiryDays,
 	)
 	operatorSvc := service.NewOperatorService(
-		appPool, tenantRepo, tenantRoleRepo, membershipRepo, nil, txRunner,
+		tenantRepo, tenantRoleRepo, membershipRepo, nil, txRunner,
 	)
 
 	// ── HTTP handlers + router ─────────────────────────────────────────
@@ -371,8 +371,9 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	roleLabelH := httpadapter.NewRoleLabelHandler(roleLabelSvc)
 	inviteH    := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH  := httpadapter.NewOperatorHandler(operatorSvc)
+	subscriptionLapseSvc := service.NewSubscriptionLapseService(pgadapter.NewTenantRepository(sysPool), 30)
 	internalH  := httpadapter.NewInternalHandler(
-		provisioningSvc, authzSvc, membershipSvc, invitationSvc, gmSvc, tenantSvc,
+		provisioningSvc, authzSvc, membershipSvc, invitationSvc, gmSvc, tenantSvc, subscriptionLapseSvc,
 	)
 
 	_ = sysPool // available for future system-level ops in tests

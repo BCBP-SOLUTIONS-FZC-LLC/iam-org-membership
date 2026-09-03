@@ -44,6 +44,17 @@ import (
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+// lockConflictTenantRepo simulates TenantRepository.LockByID returning
+// ErrConflict when no pgx.Tx is present in context — the behaviour a real
+// postgres repo produces when called inside a passthroughTxRunner.
+type lockConflictTenantRepo struct{ port.TenantRepositoryNoop }
+
+func (lockConflictTenantRepo) LockByID(_ context.Context, _ uuid.UUID) error {
+	return domain.NewError(domain.ErrConflict, "pgx.Tx unavailable in context")
+}
+
+var _ port.TenantRepository = lockConflictTenantRepo{}
+
 // noErrRoleRepo is a minimal TenantRoleRepository whose ListByUser always
 // returns the provided slice. Used where we want to bypass the suspend/owner
 // check without triggering a nil deref.
@@ -150,9 +161,10 @@ func TestMembership_SetStatus_Suspend_OwnerTxUnavailable_ReturnsConflict(t *test
 			return &domain.TenantMembership{Status: domain.MembershipSuspended}, nil
 		},
 	}
-	// passthroughTxRunner does NOT inject a pgx.Tx → pgadapterTxFromContext !ok.
+	// passthroughTxRunner does NOT inject a pgx.Tx; lockConflictTenantRepo
+	// simulates the real postgres LockByID returning ErrConflict in that case.
 	svc := service.NewMembershipService(
-		m, roles, nil, nil, nil,
+		m, roles, nil, lockConflictTenantRepo{}, nil,
 		nil, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil, 30,
 	)
 	_, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)

@@ -14,7 +14,6 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -145,11 +144,11 @@ func TestListSubscriptionLapses_ResponseHasExactlyFourFields(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", nilUUIDCtx())
 	h.ListSubscriptionLapses(c)
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
-	items := raw["tenants"].([]interface{})
+	items := raw["tenants"].([]any)
 	require.Len(t, items, 1)
-	item := items[0].(map[string]interface{})
+	item := items[0].(map[string]any)
 	keys := make([]string, 0, len(item))
 	for k := range item {
 		keys = append(keys, k)
@@ -335,6 +334,3 @@ func TestListSubscriptionLapses_RepeatedCalls_Identical(t *testing.T) {
 // ── compile-time check ────────────────────────────────────────────────────────
 
 var _ port.TenantRepository = (*i16LapseRepo)(nil)
-
-// ── unused import guard ───────────────────────────────────────────────────────
-var _ = errors.New

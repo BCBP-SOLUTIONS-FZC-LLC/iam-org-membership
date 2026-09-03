@@ -524,8 +524,13 @@ func TestOperatorService_SetFeatureFlags_NilFlags_NormalisedToEmpty(t *testing.T
 	svc := service.NewOperatorService(nil, nil, nil, nil, nil)
 
 	// nil flags → normalised to {} → allow-list check passes (no keys) →
-	// reaches txRunner which is nil → panics or errors. Use a passthroughTxRunner.
-	svc2 := service.NewOperatorService(nil, nil, nil, nil, &passthroughTxRunner{})
+	// SetFeatureFlags (noop) succeeds; FindByID returns an error so the
+	// overall call returns an error without panicking on nil tenants.
+	svc2 := service.NewOperatorService(
+		&ssTenantRepoOp{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+			return nil, errors.New("not found")
+		}},
+		nil, nil, nil, &passthroughTxRunner{})
 
 	_, err := svc2.SetFeatureFlags(context.Background(), uuid.New(), nil, 1)
 	// Error expected (pgadapterTxFromContext !ok → ErrConflict), but must not panic.
