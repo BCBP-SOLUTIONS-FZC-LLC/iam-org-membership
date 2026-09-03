@@ -23,6 +23,9 @@ spec:
     metadata:
       labels:
         {{- include "iam-org-membership.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       annotations:
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -37,6 +40,10 @@ spec:
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ if .Values.serviceAccount.create }}{{ .Values.serviceAccount.name | default (include "iam-org-membership.fullname" .) }}{{ else }}default{{ end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
@@ -77,6 +84,20 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       affinity:
         # Hard anti-affinity: require pods to land on different nodes.
         # preferred (soft) anti-affinity allows all replicas on one node —

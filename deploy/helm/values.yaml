@@ -181,6 +181,7 @@ podDisruptionBudget:
   minAvailable: 1
 
 podAnnotations: {}
+podLabels: {}
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532      # distroless nonroot UID
@@ -195,6 +196,9 @@ securityContext:
   capabilities:
     drop:
       - ALL
+
+nodeSelector: {}
+tolerations: []
 
 # startupProbe covers the migration window on cold start / schema upgrades.
 # Once it passes, liveness and readiness take over. failureThreshold * periodSeconds

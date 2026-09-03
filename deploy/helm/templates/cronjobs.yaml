@@ -20,6 +20,10 @@ spec:
       template:
         spec:
           restartPolicy: Never
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           serviceAccountName: {{ $.Values.serviceAccount.name }}
           securityContext:
             {{- toYaml $.Values.podSecurityContext | nindent 12 }}
@@ -48,4 +52,18 @@ spec:
                 limits:
                   cpu: 500m
                   memory: 256Mi
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 {{- end }}
