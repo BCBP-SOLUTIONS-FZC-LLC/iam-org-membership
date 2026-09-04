@@ -1,4 +1,4 @@
-	//go:build integration
+//go:build integration
 
 // Phase 6-extension — I-2 (PATCH /internal/tenants/:id) coverage backfill.
 // Adds real postgres integration tests for scenarios that were previously

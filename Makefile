@@ -143,7 +143,7 @@ tidy:
 
 .PHONY: fmt
 fmt:
-	$(GO) fmt ./...
+	@gofmt -l -w .
 
 .PHONY: vet
 vet:
@@ -151,7 +151,7 @@ vet:
 
 .PHONY: fmt-check
 fmt-check:
-	@unformatted=$$(gofmt -l cmd/ internal/ pkg/ 2>/dev/null); \
+	@unformatted=$$(gofmt -l . 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
 		echo "FAIL: unformatted files:"; \
 		echo "$$unformatted"; \

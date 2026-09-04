@@ -9,7 +9,7 @@
 //   - P13-FLOW-004: seat-usage endpoint returns valid shape (P-27).
 //   - P13-FLOW-005: internal GetMemberships hot path returns full projection.
 //   - P13-FLOW-006: internal ProvisionTenant (I-1) creates tenant + 5 depts
-//     + 3 role labels + owner + role grants — full trial-signup flow.
+//   - 3 role labels + owner + role grants — full trial-signup flow.
 //   - P13-FLOW-007: PUT roles reconcile (P-28) applies exactly the target
 //     set (add + remove semantics).
 //
