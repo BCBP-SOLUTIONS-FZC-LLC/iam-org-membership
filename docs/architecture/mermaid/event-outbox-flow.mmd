@@ -5,7 +5,7 @@ sequenceDiagram
     participant OB as outbox_events
     participant Codec as ValidatingCodec wrapping GlueCodec (prod) · NoopCodec (dev)
     participant Runner as Outbox Runner (goroutine, poll 500 ms)
-    participant Router as RoutingPublisher (events.NewRoutingPublisher)
+    participant Router as RoutingPublisher (own local type)
     participant SNS_M as SNS iam.membership.events
     participant SNS_T as SNS iam.tenant.events
     participant SQS as SQS subscribers (§7.3.2 fan-out)
@@ -27,7 +27,7 @@ sequenceDiagram
     else validation passes
         Note over Codec: GlueCodec prepends 18-byte header {0x03, 0x00, schema_version_UUID}<br/>Version IDs prefetched from two Glue registries at startup:<br/>  GLUE_REGISTRY_MEMBERSHIP_NAME (iam-membership-events)<br/>  GLUE_REGISTRY_TENANT_NAME     (iam-tenant-events)<br/>NoopCodec pass-through in dev (registry env vars unset).
         Codec -->> SVC: (encoded bytes, schemaVersionID)
-        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  source (iam.membership.events | iam.tenant.events),<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)
+        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)<br/>No source/topic column — platform-events' outbox_events schema has none;<br/>event_type alone is what RoutingPublisher routes on at publish time.
         OB -->>- SVC: inserted
 
         TX ->>+ DB: COMMIT
@@ -43,13 +43,13 @@ sequenceDiagram
 
         loop for each envelope
             Runner ->>+ Router: Route(envelope)
-            Note over Router: Routing key = Envelope.Source<br/>Selects TopicARNs[Source] from RoutingPublisher config
+            Note over Router: Routing key = domain.TopicForEvent(env.Type) — event **type**, not Envelope.Source.<br/>EventTenantCreated/EventTrialStarted → tenant publisher field; every other type defaults to membership.
 
-            alt envelope.Source == iam.membership.events
+            alt domain.TopicForEvent(env.Type) == TopicMembership
                 Router ->>+ SNS_M: Publish(TopicArn=SNS_TOPIC_ARN_MEMBERSHIP,<br/>MessageAttributes{EventType, TenantID, Source, EventID, Subject})
-                Note over SNS_M: 11 event types produced (§7.3):<br/>DepartmentMembershipGranted/Revoked/LevelChanged<br/>TenantRoleGranted · TenantRoleRevoked (§16 A14)<br/>MembershipRevoked (shared cascade signal — Delegation + Tender ACL)<br/>TenderAssigneeOverridden (I-13 validate-and-emit)<br/>TenantSeatOverageStarted/Resolved (SEAT-5)<br/>TenantStateChanged (§16 A61, EVT-16 relay)<br/>TenantMembershipsPurged (tenant-offboard cascade — Delegation/Tender ACL/Group Mapping)<br/>(DelegationStarted/DelegationEnded moved to the Delegation Service's own topic, ADR-0008)
+                Note over SNS_M: 12 event types produced (§7.3):<br/>DepartmentMembershipGranted/Revoked/LevelChanged<br/>TenantRoleGranted · TenantRoleRevoked (§16 A14)<br/>MembershipRevoked (shared cascade signal — Delegation + Tender ACL)<br/>TenderAssigneeOverridden (I-13 validate-and-emit)<br/>MFAReset (P-34, sole audit signal for the reset)<br/>TenantSeatOverageStarted/Resolved (SEAT-5)<br/>TenantStateChanged (§16 A61, EVT-16 relay)<br/>TenantMembershipsPurged (tenant-offboard cascade — Delegation/Tender ACL/Group Mapping)<br/>(DelegationStarted/DelegationEnded moved to the Delegation Service's own topic, ADR-0008)
                 SNS_M -->>- Router: MessageID
-            else envelope.Source == iam.tenant.events
+            else domain.TopicForEvent(env.Type) == TopicTenant
                 Router ->>+ SNS_T: Publish(TopicArn=SNS_TOPIC_ARN_TENANT, ...)
                 Note over SNS_T: O&M produces ONLY:<br/>  TenantCreated · TrialStarted (§7.3)<br/>All other iam.tenant.events messages are Realm-Provisioner-produced<br/>(consumed by O&M via tenant-orgm-q — produce/consume disjoint, HLD §9.1.1)
                 SNS_T -->>- Router: MessageID

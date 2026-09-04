@@ -2,6 +2,8 @@
 
 Refines HLD §7.3. Database `org_membership` on shared RDS PostgreSQL 17 (Multi-AZ), fronted by PgBouncer transaction pooling. Pool: `pgcommon.NewPool(... MinConns: 0, MaxConns: 10–20, GUCProvider: pgcommon.GUCSetFromContext)`. Local dev uses `postgres:17-alpine` in docker-compose (matches sibling `iam-user-profile2`).
 
+**Connection-error classification (`wrapConnErr`, `internal/adapter/outbound/postgres/db.go`).** Every repository call (`withPool`/`RunInTx`) passes its returned error through `wrapConnErr`, which remaps connectivity/resource-class failures to `domain.ErrDBUnavailable` (503 `db_unavailable`, distinct from the cross-service `domain.ErrDependencyUnavailable`/`dependency_unavailable`): SQLSTATE class 08 (connection exception) and 53 (insufficient resources) via `platform-pgcommon` v1.3.0's `IsConnectionException`/`IsInsufficientResources` helpers, classes 57/58 (operator intervention / system error, not yet covered by a pgcommon helper) via a small hand-rolled `IsPgError` + SQLSTATE-text check, and `puddle.ErrClosedPool` (a closed pool surfacing on `Acquire`/`BeginTx`). Any other error — including a `*domain.DomainError` a caller's own transaction callback deliberately returns for its own business reasons — passes through completely unchanged. This is a deliberate fix: an earlier version defaulted every *unrecognized* error to a dependency-unavailable 503, silently masking real business errors (the same bug was independently found and fixed in sibling `iam-realm-provisioner`'s identical helper).
+
 ## Extensions and Enums (§4.1)
 
 ```sql
@@ -16,6 +18,7 @@ CREATE TYPE membership_status     AS ENUM ('active','suspended','left');
 CREATE TYPE dept_role             AS ENUM ('preparator','reviewer','approver');
 CREATE TYPE realm_type            AS ENUM ('shared','dedicated');      -- §16 A22: explicit strategy flag, never derived from realm_id string match
 CREATE TYPE invitation_status     AS ENUM ('pending','accepted','expired','revoked');  -- §16 A11
+CREATE TYPE suspension_source     AS ENUM ('billing_lapse','operator');  -- T-16, new — resolves RP-11
 ```
 
 **`branding_level`, `delegation_scope`, `delegation_status`, and `tender_acl_level` no longer exist.** `branding_level`'s only column (`plans.custom_branding`) moved to the Catalog Service with the `plans` table; `delegation_scope`/`delegation_status` moved with `delegations` to the Delegation Service; `tender_acl_level` moved with `tender_acl_entries` to the Tender ACL Service. All four were dropped in the ADR-0007/ADR-0008 decomposition and are not recreated by the current single consolidated migration (`000000_initial_schema`) — this service was never deployed, so the incremental migration history (including the migration that first added `branding_level`'s `'full'` value, and the ones that later dropped these four types) was squashed rather than carried forward as dead schema history.
@@ -24,7 +27,7 @@ CREATE TYPE invitation_status     AS ENUM ('pending','accepted','expired','revok
 
 ## Tables (§4.2)
 
-8 tables total. Every soft-deletable table's uniqueness constraint is a **partial unique index** (`WHERE deleted_at IS NULL`, or `WHERE status='pending'` for `pending_invitations`) so a user can rejoin a tenant/department they previously left (the TM-11 / DM-3 / PI-1 rejoin bug fixed rev 0.17/0.18). Config tables without `deleted_at` use ordinary full `UNIQUE`.
+**9 tables total — 8 domain tables (per LLD §4) + `rls_violation_log`, a sampled audit-trail table.** The migration's own header comment states this framing explicitly ("End-state: 9 tables (8 domain tables per LLD §4 + the rls_violation_log audit table)"); the 8 domain tables are the ones in the catalogue below, all participating in the business/RLS/optimistic-locking invariants elsewhere in this doc. `rls_violation_log` is written by `log_rls_violation()` from inside `rls_check_tenant()` (a 1%-sampled `INSERT`, self-swallowing its own errors so a logging failure can never abort the caller's transaction) and deliberately has RLS **disabled** — see Row-Level Security below — so the logger cannot recurse into its own policy check. It carries no `record_version`/`deleted_at`/tenant FK and is excluded from every invariant set below (RLS-*, CONC-*) the same way `processed_events` is. Every soft-deletable domain table's uniqueness constraint is a **partial unique index** (`WHERE deleted_at IS NULL`, or `WHERE status='pending'` for `pending_invitations`) so a user can rejoin a tenant/department they previously left (the TM-11 / DM-3 / PI-1 rejoin bug fixed rev 0.17/0.18). Config tables without `deleted_at` use ordinary full `UNIQUE`.
 
 **`plans` and `departments` no longer live in this schema** (migration-runbook Phase 4, ADR-0007 Wave 1). Both moved to the standalone Catalog / Admin Config Service (`iam-catalog-admin`); O&M reads them read-only through `port.DepartmentCatalogReader/port.PlanCatalogReader` (cached, `om:departments`/`om:plans`, 600s TTL — see `api-caching-events.md`). The 4 FKs that used to reference these tables (`fk_tenants_plan`, `fk_td_department`, `fk_dm_department`, `fk_gdm_department`) were dropped in the same migration and replaced by app-level existence checks against the catalog at the point of write (see `department_service.go`, `dept_membership_service.go`, `provisioning_service.go`). Operator write endpoints O-1/O-2/O-3/O-5/O-6 (create/patch department, patch plan) moved with the tables; only O-4 (feature-flags) and O-7 (reassign-owner) remain in O&M's `/operator` group.
 
@@ -52,12 +55,13 @@ Every tenant-scoped table (all except `processed_events` — the 7 tenant-scoped
 ENABLE ROW LEVEL SECURITY;
 FORCE ROW LEVEL SECURITY;
 REVOKE ALL FROM PUBLIC;
-CREATE POLICY tenant_isolation FOR ALL
+CREATE POLICY tenant_isolation ON table_name
   USING      (rls_check_tenant(tenant_id, 'table_name'))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+  WITH CHECK (rls_check_tenant(tenant_id, 'table_name'));
 ```
+Both `USING` and `WITH CHECK` route through the same `rls_check_tenant()` — a cross-tenant `INSERT`/`UPDATE` is sampled-logged (`log_rls_violation`) exactly like a cross-tenant read, not just rejected via a raw `current_setting(...)::uuid` comparison; a prior version of this doc showed `WITH CHECK` as a bare comparison, which understated that write-side violations are logged too. `rls_check_tenant(p_tenant_id, p_table_name)` is `STABLE STRICT SECURITY DEFINER`: it resolves `app_tenant_id()` (itself fail-closed — returns `NULL` on any parse error), logs `missing_or_invalid_guc` (RLS-2) or `cross_tenant_access` (RLS-3) via `log_rls_violation` on failure, and returns `false` in either case.
 (Re-verified directly against `internal/adapter/outbound/postgres/migrations/000000_initial_schema.up.sql` and `test/postgres/rls_test.go`'s `TestRLS_Case1_EveryTenantScopedTableEnabled`, which asserts `relforcerowsecurity = true` for exactly these 7 tables — both `ENABLE` and `FORCE` are separate `ALTER TABLE` statements in the migration, double-spaced for column alignment, which is why a naive single-space grep for the literal string can miss the `FORCE` lines.)
-**Special case — `tenants` table.** Policy matches `id = current_setting('app.tenant_id')::uuid` (a tenant can only read/write its own row).
+**Special case — `tenants` table.** Same mechanism, just keyed on `id` instead of a separate `tenant_id` column: `USING (rls_check_tenant(id, 'tenants')) WITH CHECK (rls_check_tenant(id, 'tenants'))` — a tenant can only read/write its own row, and a cross-tenant attempt on the root table is sampled-logged the same as any child table, not merely a raw `::uuid` cast failure.
 
 **Cross-tenant admin access** requires the `BYPASSRLS` role **`org_membership_migrator`** (never the app role `org_membership_app` — CI-verified). I-16's `ListSubscriptionLapses` (§16 OQ-9/RP-C3) is the one HTTP-served read that needs this — its `TenantRepository` instance is constructed against `sysPool`, not the RLS-scoped app pool, the same BYPASSRLS binding the reconciler jobs and business-metric exporters already use.
 
@@ -70,6 +74,8 @@ CREATE POLICY tenant_isolation FOR ALL
 - **RLS-4** — Only `org_membership_migrator` holds `BYPASSRLS`. Operator *domain* actions go through service-layer `platform_operator` check, not a DB bypass.
 - **RLS-5** — Internal provisioning under system principal + target `x-tenant-id` only on `/api/v1/internal/*`.
 - **RLS-6** — GUC is **transaction-local** on every checkout (writes AND reads). `SET LOCAL` semantics via `set_config(..., is_local => true)`. Auto-resets at `COMMIT`/`ROLLBACK` — can never leak across a pooled backend. **Verified** by RLS test Case 5 (§14.5): tenant A tx → connection returns to pool → tenant B tx on same backend → B sees 0 of A's rows. CI additionally greps for session-scoped `SET app.tenant_id` as a forbidden pattern.
+
+**`rls_violation_log` is the one table with RLS deliberately DISABLED** (`ALTER TABLE ... DISABLE ROW LEVEL SECURITY; ... NO FORCE ROW LEVEL SECURITY;`) — a recursion guard, since `log_rls_violation()` (called from inside `rls_check_tenant()`, which every other table's policy invokes) writes to it and an RLS policy on the log table itself would re-enter `rls_check_tenant()` on its own insert. 1%-sampled (`random() > 0.01` early-return), and the insert's own errors are swallowed (`EXCEPTION WHEN OTHERS THEN NULL`) so a logging failure can never abort the caller's transaction. Backs `iam_rls_violations_total` (§11.2, operations.md).
 
 ## Triggers — `touch_row()` (§4.5)
 

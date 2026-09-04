@@ -55,7 +55,7 @@ sequenceDiagram
     OB -->>- Runner: unpublished events batch
 
     Runner ->>+ Router: Route(envelope)
-    Note over Router: events.NewRoutingPublisher inspects Envelope.Source →<br/>selects TopicARNs["iam.membership.events"] or ["iam.tenant.events"]
+    Note over Router: domain.TopicForEvent(env.Type) selects the tenant or<br/>membership publisher field (RoutingPublisher, own local type)
     Router ->>+ SNS: Publish(TopicArn=iam.membership.events, MessageAttributes{EventType, TenantID, Source, EventID})
     SNS -->>- Router: MessageID
     Router -->>- Runner: published

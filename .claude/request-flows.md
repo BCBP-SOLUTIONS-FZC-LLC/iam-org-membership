@@ -40,12 +40,14 @@ Envoy → AuthZ.CheckRequest
     miss → O&M I-8
       → O&M.Valkey GET om:memberships:{tenant}:{user}
         hit → return
-        miss → Postgres single joined query → SET om:memberships:{tenant}:{user} TTL=300s±jitter
+        miss → AuthZService.readFromDB (port.AuthZRepository) → SET om:memberships:{tenant}:{user} TTL=300s±jitter
       → AuthZ.SET ae:ctx:{tenant}:{user} TTL=60s
   → OKResponse {x-tenant-id, x-user-id, x-tenant-roles, x-plan, ...}
 ```
 
 SLO: 15 ms p99 cache hit, 30 ms p99 cache miss. Derived `member` role always injected at projection layer.
+
+**Layering (Clean-Architecture split, landed alongside I-16):** `AuthZService` (`internal/core/service/authz_service.go`) depends only on `port.AuthZRepository` — never `*pgcommon.Pool` directly. The query itself lives in `internal/adapter/outbound/postgres/authz_repository.go`'s `FindMembershipProjection`, one transaction running three scoped queries against `(tenant_id, user_id)` — `tenant_memberships JOIN tenants`, then `tenant_roles`, then `dept_memberships` — not a single `array_agg`-based four-table join statement. `AuthZService.readFromDB` composes the response on top: TR-7's derived `member` role prepended to the raw role set, department codes filled in from the `om:departments` catalog cache, PLAN-6's feature-flag merge. This split makes I-8's business logic unit-testable against a hand-written fake repository, with the real join verified separately against Postgres in `test/postgres`.
 
 ## 8.4 User Added to Department (P-10 upsert)
 
@@ -118,7 +120,7 @@ type WorkflowClient interface {
 
 `delegation_id`: nil = tenant-wide (§8.8 full removal); non-nil = scoped to that specific delegation (§8.8.4 dept-level). Workflow Service already tags task assignments `reason="delegation:<id>"`.
 
-HTTP adapter: `adapter/outbound/workflow/http_client.go`, `gincommon.PropagateHeaders`, `WORKFLOW_SERVICE_TIMEOUT_MS` (default 3000).
+HTTP adapter: `adapter/outbound/workflow/http_client.go`, its own local `propagateTraceparent(ctx, req)` helper (built directly on `otel`/`propagation.NewCompositeTextMapPropagator`, not `gincommon.PropagateHeaders` — every outbound client in this repo follows the same pattern), `WORKFLOW_SERVICE_TIMEOUT_MS` (default 3000).
 
 ### 8.8.2 DELETE Pre-check
 
@@ -344,7 +346,7 @@ Billing owns status transitions; O&M and RP react. Sequence `cancelled → suspe
 - **`suspended`** (grace elapsed): RP disables dedicated realm, no login, data retained.
 - **`offboarded`** (retention elapsed, default 90 d from `cancelled_at`): RP exports realm to encrypted S3 then hard-deletes; O&M soft-deletes tenants row + scrubs PII + retains `id`. **Terminal (PAID-1).** Reactivation possible **only before offboarding**.
 
-**Operator-sourced suspension is a separate, parallel path (new, T-16 — resolves RP-11).** RP-14 (§8.12 of the Realm Provisioner LLD) can emit `TenantSuspended{source=operator}` directly against an `active` or `trial` tenant, bypassing `cancelled` entirely. O&M records `suspension_source='operator'` and — unlike the billing-lapse branch — never stamps `cancelled_at`, so this tenant is **not** subject to the 90-day retention/auto-offboard clock above; it stays suspended until an explicit `TenantReactivated` (which clears `suspension_source` and `cancelled_at` together, whichever path led there).
+**Operator-sourced suspension is a separate, parallel path (new, T-16 — resolves RP-11).** RP-14 (§8.12 of the Realm Provisioner LLD) can emit `TenantSuspended{source=operator}` directly against an `active` or `trial` tenant, bypassing `cancelled` entirely. O&M records `suspension_source='operator'` and — unlike the billing-lapse branch — never stamps `cancelled_at`, so this tenant is **not** subject to the 90-day retention/auto-offboard clock above; it stays suspended until an explicit `TenantReactivated`, handled identically by the consumer whether it arrives via Billing (`billing-orgm-q`) or Realm Provisioner (`tenant-orgm-q`, reversing RP-14) — same switch case either way. `TenantReactivated` always clears `suspension_source` and `cancelled_at` together, but the **target status is derived, not hardcoded to `active`**: the consumer first tries an `UPDATE ... WHERE subscription_started_at IS NOT NULL` targeting `status='active'`; if that affects no row (the tenant never converted — an operator can suspend a trial tenant directly), it falls back to `UPDATE ... WHERE subscription_started_at IS NULL` targeting `status='trial'` instead, since resolving to `active` would violate `chk_subscription_started_required`. A `TenantReactivated` received while already `offboarded` is rejected as a no-op (PAID-1).
 
 **§16 A54 / OFF1 fan-out contract:** RP publishes `TenantOffboarded` once (only after export+delete verified). Consumers: O&M (wipes tenant-scoped rows), User Profile (scrubs per-user PII UP LLD §8.7a), Audit Log (retains per §15.6).
 
