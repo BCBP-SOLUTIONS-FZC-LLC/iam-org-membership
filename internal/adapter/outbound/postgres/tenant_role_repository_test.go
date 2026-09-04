@@ -109,3 +109,170 @@ func TestTenantRoleRepo_ListByRole_RowsIteratorErrorPassesThroughUnchanged(t *te
 	_, err := repo.ListByRole(injectTx(context.Background(), tx), uuid.New(), domain.RoleTenantAdmin)
 	assert.ErrorIs(t, err, iterErr)
 }
+
+// tenantRoleRow builds a scripted row matching scanTenantRole's Scan order
+// (10 fields).
+func tenantRoleRow(tenantID, userID uuid.UUID, role string, rv int64) []any {
+	now := time.Now()
+	return []any{
+		uuid.New(), tenantID, userID, uuid.New(), role,
+		uuid.New(), rv, now, now, (*time.Time)(nil),
+	}
+}
+
+// ── Grant (idempotent, ON CONFLICT DO NOTHING) ──────────────────────────
+
+func TestTenantRoleRepo_Grant_ReturnsCreatedRowOnFreshInsert(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			return &fakeRow{values: tenantRoleRow(tenantID, userID, "tenant_admin", 1)}
+		},
+	}
+	got, err := NewTenantRoleRepository(nil).Grant(injectTx(context.Background(), tx), &domain.TenantRole{
+		TenantID: tenantID, UserID: userID, RoleCode: domain.RoleTenantAdmin,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, domain.RoleTenantAdmin, got.RoleCode)
+}
+
+func TestTenantRoleRepo_Grant_UnrecognizedScanErrorPassesThrough(t *testing.T) {
+	insertErr := errors.New("insert failed")
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			return &fakeRow{err: insertErr}
+		},
+	}
+	_, err := NewTenantRoleRepository(nil).Grant(injectTx(context.Background(), tx), &domain.TenantRole{
+		TenantID: uuid.New(), UserID: uuid.New(), RoleCode: domain.RoleTenantAdmin,
+	})
+	assert.ErrorIs(t, err, insertErr)
+}
+
+func TestTenantRoleRepo_Grant_ConflictAbsorbedFetchesExistingRow(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	callCount := 0
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			callCount++
+			if callCount == 1 {
+				return &fakeRow{err: pgx.ErrNoRows}
+			}
+			return &fakeRow{values: tenantRoleRow(tenantID, userID, "tenant_admin", 2)}
+		},
+	}
+	got, err := NewTenantRoleRepository(nil).Grant(injectTx(context.Background(), tx), &domain.TenantRole{
+		TenantID: tenantID, UserID: userID, RoleCode: domain.RoleTenantAdmin,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+}
+
+func TestTenantRoleRepo_Grant_ConflictAbsorbedWinnerFetchErrorPassesThrough(t *testing.T) {
+	winnerErr := errors.New("winner fetch failed")
+	callCount := 0
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			callCount++
+			if callCount == 1 {
+				return &fakeRow{err: pgx.ErrNoRows}
+			}
+			return &fakeRow{err: winnerErr}
+		},
+	}
+	_, err := NewTenantRoleRepository(nil).Grant(injectTx(context.Background(), tx), &domain.TenantRole{
+		TenantID: uuid.New(), UserID: uuid.New(), RoleCode: domain.RoleTenantAdmin,
+	})
+	assert.ErrorIs(t, err, winnerErr)
+}
+
+// ── Revoke ────────────────────────────────────────────────────────────
+
+func TestTenantRoleRepo_Revoke_SoftDeletesAndReturnsRow(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			return &fakeRow{values: tenantRoleRow(tenantID, userID, "tender_admin", 1)}
+		},
+	}
+	got, err := NewTenantRoleRepository(nil).
+		Revoke(injectTx(context.Background(), tx), tenantID, userID, domain.RoleTenderAdmin)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+}
+
+func TestTenantRoleRepo_Revoke_NoRowsMapsToMemberNotFound(t *testing.T) {
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			return &fakeRow{err: pgx.ErrNoRows}
+		},
+	}
+	_, err := NewTenantRoleRepository(nil).
+		Revoke(injectTx(context.Background(), tx), uuid.New(), uuid.New(), domain.RoleTenderAdmin)
+	assert.ErrorIs(t, err, domain.ErrMemberNotFound)
+}
+
+func TestTenantRoleRepo_Revoke_UnrecognizedErrorPassesThrough(t *testing.T) {
+	revokeErr := errors.New("revoke failed")
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			return &fakeRow{err: revokeErr}
+		},
+	}
+	_, err := NewTenantRoleRepository(nil).
+		Revoke(injectTx(context.Background(), tx), uuid.New(), uuid.New(), domain.RoleTenderAdmin)
+	assert.ErrorIs(t, err, revokeErr)
+}
+
+// ── SoftDeleteAllForUser (I-5/P-7 cascade-only) ─────────────────────────
+
+func TestTenantRoleRepo_SoftDeleteAllForUser_ReturnsSoftDeletedRows(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	tx := &fakeTx{
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return &fakeRows{scripted: [][]any{
+				tenantRoleRow(tenantID, userID, "tenant_admin", 1),
+			}}, nil
+		},
+	}
+	got, err := NewTenantRoleRepository(nil).
+		SoftDeleteAllForUser(injectTx(context.Background(), tx), tenantID, userID)
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+}
+
+func TestTenantRoleRepo_SoftDeleteAllForUser_QueryErrorPassesThrough(t *testing.T) {
+	queryErr := errors.New("query failed")
+	tx := &fakeTx{
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return nil, queryErr
+		},
+	}
+	_, err := NewTenantRoleRepository(nil).
+		SoftDeleteAllForUser(injectTx(context.Background(), tx), uuid.New(), uuid.New())
+	assert.ErrorIs(t, err, queryErr)
+}
+
+func TestTenantRoleRepo_SoftDeleteAllForUser_ScanErrorPassesThrough(t *testing.T) {
+	tx := &fakeTx{
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return &fakeRows{scripted: [][]any{{uuid.New()}}}, nil
+		},
+	}
+	_, err := NewTenantRoleRepository(nil).
+		SoftDeleteAllForUser(injectTx(context.Background(), tx), uuid.New(), uuid.New())
+	assert.Error(t, err)
+}
+
+func TestTenantRoleRepo_SoftDeleteAllForUser_IterationErrorPassesThrough(t *testing.T) {
+	iterErr := errors.New("iteration failed")
+	tx := &fakeTx{
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return &fakeRows{iterErr: iterErr}, nil
+		},
+	}
+	_, err := NewTenantRoleRepository(nil).
+		SoftDeleteAllForUser(injectTx(context.Background(), tx), uuid.New(), uuid.New())
+	assert.ErrorIs(t, err, iterErr)
+}

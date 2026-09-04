@@ -42,18 +42,30 @@ func runBusinessExporters(ctx context.Context, sysPool *pgcommon.Pool, log Logge
 }
 
 func runGaugeExporter(ctx context.Context, pool *pgcommon.Pool, log Logger, name, sql string, set func(int)) {
-	emit := func() {
+	tick(ctx, name, log, func() error {
 		var n int
 		err := pool.WithConn(ctx, func(ctx context.Context, conn *pgxpool.Conn) error {
 			return conn.QueryRow(ctx, sql).Scan(&n)
 		})
 		if err != nil {
-			log.Warn("gauge exporter query failed", map[string]interface{}{"gauge": name, "error": err.Error()})
-			return
+			return err
 		}
 		set(n)
+		return nil
+	})
+}
+
+// tick runs emit immediately (populating the gauge before the first
+// Prometheus scrape), then again on every exporterInterval tick, until ctx
+// is canceled. emit errors are logged at Warn — a scrape returning stale
+// data is preferable to a panic — and never stop the loop.
+func tick(ctx context.Context, name string, log Logger, emit func() error) {
+	run := func() {
+		if err := emit(); err != nil {
+			log.Warn("gauge exporter query failed", map[string]interface{}{"gauge": name, "error": err.Error()})
+		}
 	}
-	emit() // populate before first scrape
+	run()
 	ticker := time.NewTicker(exporterInterval)
 	defer ticker.Stop()
 	for {
@@ -61,7 +73,7 @@ func runGaugeExporter(ctx context.Context, pool *pgcommon.Pool, log Logger, name
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			emit()
+			run()
 		}
 	}
 }

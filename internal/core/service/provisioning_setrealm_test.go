@@ -66,6 +66,26 @@ func TestProvisioning_SetRealmFields_NoRowsAffected_TenantNotFound(t *testing.T)
 	assert.Equal(t, "tenant_not_found", de.Code)
 }
 
+func TestProvisioning_SetRealmFields_Success_InvalidatesTenantAndLocaleCache(t *testing.T) {
+	tenantID := uuid.New()
+	tenants := &srTenantRepo{}
+	cache := &ffCache{}
+	svc := &ProvisioningService{tenants: tenants, txRunner: callThruTxRunner{}, cache: cache}
+
+	err := svc.SetRealmFields(context.Background(), tenantID, "acme", domain.RealmType("dedicated"), "shard-1", 1)
+	require.NoError(t, err)
+	assert.Contains(t, cache.deleteCalls, "om:tenant:"+tenantID.String())
+	assert.Contains(t, cache.deleteCalls, "om:locale:"+tenantID.String())
+}
+
+func TestProvisioning_SetRealmFields_NilCache_IsSafe(t *testing.T) {
+	svc := buildProvisioningWithTenants(&srTenantRepo{})
+	assert.NotPanics(t, func() {
+		err := svc.SetRealmFields(context.Background(), uuid.New(), "acme", domain.RealmType("shared"), "s", 1)
+		require.NoError(t, err)
+	})
+}
+
 func TestProvisioning_SetRealmFields_ExecErrorPropagates(t *testing.T) {
 	execErr := errors.New("update failed")
 	tenants := &srTenantRepo{

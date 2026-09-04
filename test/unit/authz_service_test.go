@@ -131,6 +131,26 @@ func TestAuthZ_GetMembership_EffectiveFeatureFlagsMergePlanAndTenantOverride(t *
 		"PLAN-6: plan baseline ⊕ tenant override, false-valued flags excluded")
 }
 
+func TestAuthZ_GetMembership_NonBoolTruthyFeatureFlagValueCountsAsEnabled(t *testing.T) {
+	// feature_flags is map[string]any — a non-bool, non-nil value (e.g. a
+	// string) must still count as "set" per readFromDB's doc comment,
+	// exercising the `case !ok && v != nil` arm distinct from the
+	// bool-true arm the other merge test already covers.
+	repo := &fakeAuthZRepo{findFn: func(context.Context, uuid.UUID, uuid.UUID) (*port.MembershipProjectionRow, error) {
+		return &port.MembershipProjectionRow{
+			MembershipStatus:   domain.MembershipActive,
+			TenantPlan:         domain.PlanStarter,
+			SubscriptionStatus: domain.StatusActive,
+			TenantFeatureFlags: map[string]any{"support_tier": "gold"},
+		}, nil
+	}}
+	svc := service.NewAuthZService(repo, &fakePlanReader{}, &fakeDeptReader{}, nil)
+
+	proj, err := svc.GetMembership(context.Background(), uuid.New(), uuid.New())
+	require.NoError(t, err)
+	assert.Contains(t, proj.FeatureFlags, "support_tier")
+}
+
 func TestAuthZ_GetMembership_PlanLookupFailureDegradesGracefully(t *testing.T) {
 	repo := &fakeAuthZRepo{findFn: func(context.Context, uuid.UUID, uuid.UUID) (*port.MembershipProjectionRow, error) {
 		return &port.MembershipProjectionRow{

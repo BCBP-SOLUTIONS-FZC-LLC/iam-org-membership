@@ -112,6 +112,13 @@ func (g *GlueCodec) Encode(ctx context.Context, schemaName string, payload json.
 // version UUID is self-contained in the encoded bytes at offset 2:18 — so it
 // isn't cross-checked against anything here.
 func (g *GlueCodec) Decode(_ context.Context, _ string, encoded []byte) (json.RawMessage, error) {
+	return stripGlueHeader(encoded)
+}
+
+// stripGlueHeader removes the 18-byte Glue wire-format header, returning the
+// remaining plain-JSON payload. Factored out of Decode so it can be tested
+// without constructing a *GlueCodec.
+func stripGlueHeader(encoded []byte) (json.RawMessage, error) {
 	if len(encoded) < glueHeaderSize {
 		return nil, fmt.Errorf("glue codec: encoded payload is %d bytes — shorter than the %d-byte Glue header", len(encoded), glueHeaderSize)
 	}

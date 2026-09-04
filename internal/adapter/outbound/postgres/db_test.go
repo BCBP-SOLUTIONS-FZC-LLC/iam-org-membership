@@ -178,6 +178,12 @@ func TestSystemPoolConfig_ForcesPGBouncerMode(t *testing.T) {
 	assert.Equal(t, int32(20), cfg.MaxConns, "sysPool inherits pool sizing from ConfigFromEnv")
 }
 
+func TestSystemPoolConfig_NonNilLoggerWiresAdapter(t *testing.T) {
+	_ = os.Unsetenv("PG_STATEMENT_TIMEOUT")
+	cfg := SystemPoolConfig("postgres://sys@host/db", &fakePortLogger{})
+	assert.NotNil(t, cfg.Logger, "non-nil port.Logger must be wrapped via NewLoggerAdapter")
+}
+
 func TestSystemPoolConfig_AppliesStatementTimeout(t *testing.T) {
 	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
 	cfg := SystemPoolConfig("postgres://sys@host/db?sslmode=disable", nil)
@@ -264,4 +270,22 @@ func TestWrapConnErr_DeadlineExceededPassesThroughUnchanged(t *testing.T) {
 
 func TestWrapConnErr_NilPassesThrough(t *testing.T) {
 	assert.NoError(t, wrapConnErr(nil))
+}
+
+// ── itoa ─────────────────────────────────────────────────────────────────
+
+func TestItoa_PositiveMultiDigit(t *testing.T) {
+	assert.Equal(t, "42", itoa(42))
+}
+
+func TestItoa_ZeroDefaultsTo100(t *testing.T) {
+	assert.Equal(t, "100", itoa(0))
+}
+
+func TestItoa_NegativeDefaultsTo100(t *testing.T) {
+	assert.Equal(t, "100", itoa(-5))
+}
+
+func TestItoa_SingleDigit(t *testing.T) {
+	assert.Equal(t, "7", itoa(7))
 }

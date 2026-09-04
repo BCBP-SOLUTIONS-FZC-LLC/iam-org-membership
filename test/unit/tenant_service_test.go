@@ -135,6 +135,16 @@ func TestTenantService_Get_NilCache_FallsThroughToRepo(t *testing.T) {
 	assert.Equal(t, "acme", got.Slug)
 }
 
+func TestTenantService_Get_RepoErrorPropagates(t *testing.T) {
+	findErr := errors.New("db down")
+	repo := &fakeTenantRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+		return nil, findErr
+	}}
+	svc := service.NewTenantService(repo, newTSCache(), &tsRP{})
+	_, err := svc.Get(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, findErr)
+}
+
 // ── Patch validation branches (T-10, locale) ─────────────────────────
 
 func TestTenantService_Patch_NilPatch_ValidationError(t *testing.T) {
@@ -241,6 +251,90 @@ func TestTenantService_Patch_LocalAccountsUnchanged_NoRPCall(t *testing.T) {
 	assert.False(t, deferred)
 	assert.False(t, rpCalled, "unchanged local_accounts_enabled should not trigger RP")
 }
+
+func TestTenantService_Patch_LocalAccountsChange_BeforeFindByIDErrorPropagates(t *testing.T) {
+	findErr := errors.New("db down")
+	repo := &tsRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+		return nil, findErr
+	}}
+	svc := service.NewTenantService(repo, nil, &tsRP{})
+
+	on := true
+	_, _, err := svc.Patch(context.Background(), uuid.New(), &domain.TenantPatch{LocalAccountsEnabled: &on})
+	assert.ErrorIs(t, err, findErr)
+}
+
+func TestTenantService_Patch_UpdateErrorPropagates(t *testing.T) {
+	updateErr := errors.New("optimistic_lock_conflict")
+	repo := &tsRepo{
+		updateFn: func(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
+			return nil, updateErr
+		},
+	}
+	svc := service.NewTenantService(repo, nil, &tsRP{})
+
+	name := "New Name"
+	_, _, err := svc.Patch(context.Background(), uuid.New(), &domain.TenantPatch{Name: &name})
+	assert.ErrorIs(t, err, updateErr)
+}
+
+func TestTenantService_Patch_Success_InvalidatesTenantAndLocaleCache(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &tsRepo{
+		updateFn: func(_ context.Context, id uuid.UUID, patch *domain.TenantPatch) (*domain.Tenant, error) {
+			return &domain.Tenant{ID: id, RecordVersion: 2}, nil
+		},
+	}
+	cache := newTSCache()
+	svc := service.NewTenantService(repo, cache, &tsRP{})
+
+	name := "New Name"
+	_, _, err := svc.Patch(context.Background(), tenantID, &domain.TenantPatch{Name: &name})
+	require.NoError(t, err)
+	assert.Contains(t, cache.del, "om:tenant:"+tenantID.String())
+	assert.Contains(t, cache.del, "om:locale:"+tenantID.String())
+}
+
+func TestTenantService_Patch_LocalAccountsChange_RPFailsAndSetRealmSyncPendingAlsoFails(t *testing.T) {
+	tenantID := uuid.New()
+	before := &domain.Tenant{ID: tenantID, LocalAccountsEnabled: false}
+	syncPendingCalled := false
+	repo := &tsSetRealmSyncPendingErrRepo{
+		tsRepo: tsRepo{
+			findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) { return before, nil },
+			updateFn: func(_ context.Context, id uuid.UUID, patch *domain.TenantPatch) (*domain.Tenant, error) {
+				return &domain.Tenant{ID: id, LocalAccountsEnabled: true, RecordVersion: 2}, nil
+			},
+		},
+		setRealmSyncPendingErr: errors.New("db down"),
+		called:                 &syncPendingCalled,
+	}
+	rp := &tsRP{patchRealmConfigFn: func(context.Context, uuid.UUID, port.RealmConfigPatch) error {
+		return errors.New("RP down")
+	}}
+	svc := service.NewTenantService(repo, nil, rp)
+
+	on := true
+	_, deferred, err := svc.Patch(context.Background(), tenantID, &domain.TenantPatch{LocalAccountsEnabled: &on})
+	require.NoError(t, err, "SetRealmSyncPending's own failure is best-effort-swallowed — the 202/deferred response still stands")
+	assert.True(t, deferred)
+	assert.True(t, syncPendingCalled)
+}
+
+// tsSetRealmSyncPendingErrRepo extends tsRepo with a configurable
+// SetRealmSyncPending failure, for the best-effort-swallow branch above.
+type tsSetRealmSyncPendingErrRepo struct {
+	tsRepo
+	setRealmSyncPendingErr error
+	called                 *bool
+}
+
+func (r *tsSetRealmSyncPendingErrRepo) SetRealmSyncPending(context.Context, uuid.UUID) error {
+	*r.called = true
+	return r.setRealmSyncPendingErr
+}
+
+var _ port.TenantRepository = (*tsSetRealmSyncPendingErrRepo)(nil)
 
 // ── setCached with nil / marshal-error / nil-cache branches ────────────
 

@@ -9,6 +9,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+func TestPropagateTraceparent_NilRequestNoop(t *testing.T) {
+	assert.NotPanics(t, func() {
+		propagateTraceparent(context.Background(), nil)
+	})
+}
+
 func TestPropagateTraceparent_NoSpanInContextSkipsHeader(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	propagateTraceparent(context.Background(), req)

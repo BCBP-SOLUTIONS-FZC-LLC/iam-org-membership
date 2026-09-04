@@ -8,7 +8,6 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
@@ -85,7 +84,7 @@ func (p *Publisher) Enqueue(ctx context.Context, event *domain.DomainEvent) erro
 	env := events.NewEnvelope(event.Type, p.source, json.RawMessage(raw), opts...)
 	envBytes, _ := json.Marshal(env)
 	p.log.Debug("outbox.Enqueue", "type", event.Type, "envelope", string(envBytes))
-	tx, ok := pgadapter.TxFromContext(ctx)
+	tx, ok := port.TxFromContext(ctx)
 	if !ok {
 		return errors.New("event enqueue requires an open RunInTx transaction")
 	}
