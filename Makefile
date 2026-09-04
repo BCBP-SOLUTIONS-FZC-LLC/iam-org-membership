@@ -80,13 +80,13 @@ godoc:
 .PHONY: pin-base-images
 pin-base-images:
 	@echo "Fetching SHA digests for Dockerfile base images..."
-	@GOLANG_DIGEST=$$(docker buildx imagetools inspect golang:1.26.5-alpine --format '{{.Manifest.Digest}}') && \
+	@GOLANG_DIGEST=$$(docker buildx imagetools inspect golang:1.26.6-alpine --format '{{.Manifest.Digest}}') && \
 	 DISTROLESS_DIGEST=$$(docker buildx imagetools inspect gcr.io/distroless/static-debian12:nonroot --format '{{.Manifest.Digest}}') && \
 	 sed -i.bak \
-	   -e "s|FROM golang:1.26.5-alpine|FROM golang:1.26.5-alpine@$$GOLANG_DIGEST|" \
+	   -e "s|FROM golang:1.26.6-alpine|FROM golang:1.26.6-alpine@$$GOLANG_DIGEST|" \
 	   -e "s|FROM gcr.io/distroless/static-debian12:nonroot|FROM gcr.io/distroless/static-debian12:nonroot@$$DISTROLESS_DIGEST|" \
 	   Dockerfile && rm -f Dockerfile.bak && \
-	 echo "golang:1.26.5-alpine $$GOLANG_DIGEST" > .docker-digests && \
+	 echo "golang:1.26.6-alpine $$GOLANG_DIGEST" > .docker-digests && \
 	 echo "gcr.io/distroless/static-debian12:nonroot $$DISTROLESS_DIGEST" >> .docker-digests && \
 	 echo "Digests written to .docker-digests — commit both Dockerfile and .docker-digests"
 
