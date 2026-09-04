@@ -134,19 +134,43 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
 	// GUCProvider wires the same transaction-local `SET LOCAL app.tenant_id`
 	// binding used in production (RLS-6).
 	appDSN := strings.Replace(superDSN, "postgres:testpassword@", "org_membership_app:"+appRolePassword+"@", 1)
-	appPool, err := pgcommon.NewPool(ctx, pgcommon.Config{
+	appPool, err := newPoolWithRetry(ctx, pgcommon.Config{
 		DSN:           appDSN,
 		PGBouncerMode: false, // testcontainer talks to Postgres directly
 		GUCProvider:   pgcommon.GUCSetFromContext,
 	})
-	require.NoError(t, err)
+	require.NoError(t, err, "app pool connection failed after retries")
 	t.Cleanup(appPool.Close)
 
-	sysPool, err := pgcommon.NewPool(ctx, pgcommon.Config{DSN: superDSN})
-	require.NoError(t, err)
+	sysPool, err := newPoolWithRetry(ctx, pgcommon.Config{DSN: superDSN})
+	require.NoError(t, err, "sys pool connection failed after retries")
 	t.Cleanup(sysPool.Close)
 
 	return appPool, rawPool, sysPool
+}
+
+// newPoolWithRetry wraps pgcommon.NewPool with a bounded per-attempt timeout
+// and retry, mirroring the container-creation retry above: under concurrent
+// container/pool churn (many test/postgres funcs run via t.Parallel()), a
+// resource-constrained CI runner can make one connection attempt stall.
+// Without a timeout here, a stalled attempt hangs until the whole test
+// binary's own -timeout kills every in-flight test, not just this one —
+// this is exactly the failure mode a CI run surfaced (a goroutine stuck in
+// pgxpool's createIdleResources for the full 300s package timeout).
+func newPoolWithRetry(ctx context.Context, cfg pgcommon.Config) (*pgcommon.Pool, error) {
+	const maxAttempts = 3
+	var pool *pgcommon.Pool
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		pool, err = pgcommon.NewPool(attemptCtx, cfg)
+		cancel()
+		if err == nil {
+			return pool, nil
+		}
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	return nil, err
 }
 
 // withTenant returns a context carrying a pgcommon GUCSet so the pool's
