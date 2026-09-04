@@ -40,17 +40,6 @@
         },
         "/internal/subscription-lapses": {
             "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
                 "description": "Returns tenants with status='cancelled' whose cancelled_at is older than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes it from the next poll.",
                 "produces": [
                     "application/json"
@@ -66,11 +55,7 @@
                             "$ref": "#/definitions/http.SubscriptionLapseListResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants": {
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -81,7 +66,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants": {
+            "post": {
                 "description": "Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called directly by the Signup BFF / Realm Provisioner over the internal mesh — every tenant is created trial-shaped regardless of plan; a consumed TrialTenantProvisioned event, if received, is an idempotent no-op reconcile, not a trigger for this handler.",
                 "consumes": [
                     "application/json"
@@ -147,11 +136,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}": {
-            "patch": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -162,7 +147,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}": {
+            "patch": {
                 "description": "Called by Realm Provisioner after Keycloak realm creation. Sets the tenant's realm identity in a single UPDATE. All three fields (realm_id, realm_type, keycloak_shard) are required per LLD §5.4 I-2.",
                 "consumes": [
                     "application/json"
@@ -230,11 +219,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/dept-memberships": {
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -245,7 +230,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/dept-memberships": {
+            "post": {
                 "description": "§8.5 JIT dept + tenant-role assignment. Called by the Event Consumer on Keycloak login for federated (SAML) users. Additive only — never revokes a role a group set no longer implies. Emits DepartmentMembershipGranted / DepartmentMembershipLevelChanged per resolved (dept, role_level) touch per TRG-3.",
                 "consumes": [
                     "application/json"
@@ -295,11 +284,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/locale": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -310,7 +295,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/locale": {
+            "get": {
                 "description": "Returns the tenant's default_locale for LLM-facing consumers.",
                 "produces": [
                     "application/json"
@@ -348,11 +337,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/members": {
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -363,7 +348,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/members": {
+            "post": {
                 "description": "§8.10 acceptance leg. If a matching pending_invitations row exists (by keycloak_user_id or email), flip to accepted and materialise tenant_membership + queued initial_tenant_roles/initial_dept_mappings in one tx (PI-4). Otherwise plain add. PI-10 idempotent via uq_tm_active_user.",
                 "consumes": [
                     "application/json"
@@ -413,11 +402,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/members/{user_id}": {
-            "delete": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -428,7 +413,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/members/{user_id}": {
+            "delete": {
                 "description": "Removes the user from the tenant, cascading dept memberships and role grants. Sets tenants.ownerless_since when the last owner is deleted (TM-12).",
                 "produces": [
                     "application/json"
@@ -474,9 +463,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            },
-            "patch": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -487,7 +474,9 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            },
+            "patch": {
                 "description": "Called by Realm Provisioner to relay KC user state (enabled/disabled) into tenant_memberships.",
                 "consumes": [
                     "application/json"
@@ -557,11 +546,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/members/{user_id}/exists": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -572,7 +557,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/members/{user_id}/exists": {
+            "get": {
                 "description": "Returns `{active, tenant_membership_id}` — tenant_membership_id is populated only when active is true. Never 404.",
                 "produces": [
                     "application/json"
@@ -612,11 +601,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/mfa-freshness": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -627,7 +612,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/mfa-freshness": {
+            "get": {
                 "description": "Returns mfa_freshness_seconds from the om:tenant cache (same key P-2 evicts). Authoritative read path for the Approver step-up gate — preferred over the I-8 per-user snapshot (CACHE-9, §16 A72).",
                 "produces": [
                     "application/json"
@@ -665,11 +654,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/seat-usage": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -680,7 +665,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/seat-usage": {
+            "get": {
                 "description": "Same projection as P-27 but service-to-service (Billing pre-checks before charging for a new seat).",
                 "produces": [
                     "application/json"
@@ -718,11 +707,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/tenants/{id}/tenders/{tender_id}/assignee-override": {
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -733,7 +718,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/tenants/{id}/tenders/{tender_id}/assignee-override": {
+            "post": {
                 "description": "422 assignee_ineligible per §16 A62 (NOT 409). Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).",
                 "consumes": [
                     "application/json"
@@ -797,11 +786,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/internal/users/{id}/memberships": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -812,7 +797,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/internal/users/{id}/memberships": {
+            "get": {
                 "description": "SLO 15 ms cache-hit / 30 ms miss (§21). Derived `member` role injected (TR-7). feature_flags is the sorted list of enabled flag names from planDefaults(plan) ⊕ tenants.feature_flags. Cache TTL 300s ± 30s jitter.",
                 "produces": [
                     "application/json"
@@ -865,11 +854,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/operator/tenants/{id}/feature-flags": {
-            "patch": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -880,7 +865,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/operator/tenants/{id}/feature-flags": {
+            "patch": {
                 "description": "PLAN-6(d): non-scalar values → 400 invalid_feature_value. Unknown keys → 400 unknown_feature_flag.",
                 "consumes": [
                     "application/json"
@@ -936,11 +925,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/operator/tenants/{id}/reassign-owner": {
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -951,7 +936,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/operator/tenants/{id}/reassign-owner": {
+            "post": {
                 "description": "Only path to resolve TM-12 escalation. 422 invalid_owner_candidate if the new owner is not an active member. 409 tenant_offboarded if the tenant is no longer eligible.",
                 "consumes": [
                     "application/json"
@@ -1013,7 +1002,18 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
             }
         },
         "/readyz": {
@@ -1046,17 +1046,6 @@
         },
         "/tenants/{id}": {
             "get": {
-                "security": [
-                    {
-                        "UserID": []
-                    },
-                    {
-                        "TenantID": []
-                    },
-                    {
-                        "TenantRoles": []
-                    }
-                ],
                 "description": "AUTH-1: any active member of the target tenant.",
                 "produces": [
                     "application/json"
@@ -1094,9 +1083,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            },
-            "patch": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1107,7 +1094,9 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            },
+            "patch": {
                 "description": "AUTH-1: tenant_owner only. Applies optimistic-locking (CONC-1..4). T-10 range: mfa_freshness_seconds in [60, 900]. T-15: on local_accounts_enabled change, calls RP synchronously — if RP errors, sets realm_sync_pending=true and returns 202.",
                 "consumes": [
                     "application/json"
@@ -1169,11 +1158,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/departments": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1184,7 +1169,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/departments": {
+            "get": {
                 "description": "Returns the tenant_departments rows joined with the global departments catalog. Any active tenant member may read.",
                 "produces": [
                     "application/json"
@@ -1222,9 +1211,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            },
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1235,7 +1222,9 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            },
+            "post": {
                 "description": "AUTH-2 tenant_admin/owner. Returns 409 department_already_activated if already present (TD-7). Returns 422 department_retired if catalog entry is globally inactive (D-5/TD-1).",
                 "consumes": [
                     "application/json"
@@ -1296,11 +1285,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/departments/{dept_id}": {
-            "patch": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1311,7 +1296,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/departments/{dept_id}": {
+            "patch": {
                 "description": "AUTH-2. System-department deactivation is blocked by chk_system_department_active (422 system_department_cannot_be_retired). Applies optimistic locking (CONC-4).",
                 "consumes": [
                     "application/json"
@@ -1381,11 +1370,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/departments/{dept_id}/members": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1396,7 +1381,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/departments/{dept_id}/members": {
+            "get": {
                 "description": "Returns preparator/reviewer/approver assignments for the given department.",
                 "produces": [
                     "application/json"
@@ -1442,11 +1431,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/departments/{dept_id}/members/{user_id}": {
-            "put": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1457,7 +1442,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/departments/{dept_id}/members/{user_id}": {
+            "put": {
                 "description": "AUTH-2. Fresh grant → DepartmentMembershipGranted; level change → DepartmentMembershipLevelChanged with previous_level.",
                 "consumes": [
                     "application/json"
@@ -1529,9 +1518,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            },
-            "delete": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1542,7 +1529,9 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            },
+            "delete": {
                 "description": "AUTH-2. §8.8.4 delegate-impact gated (WFI-11) — returns 409 workflow_resolution_required when the user is an active delegate for open workflows scoped to this department.",
                 "produces": [
                     "application/json"
@@ -1602,11 +1591,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/invitations": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1617,7 +1602,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/invitations": {
+            "get": {
                 "description": "AUTH-2. Returns pending_invitations rows for the tenant (invite→accept staging).",
                 "produces": [
                     "application/json"
@@ -1649,11 +1638,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/invitations/{invitation_id}": {
-            "delete": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1664,7 +1649,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/invitations/{invitation_id}": {
+            "delete": {
                 "description": "AUTH-2. Marks the invitation as revoked and sets kc_cleanup_pending for durable RP compensation.",
                 "produces": [
                     "application/json"
@@ -1728,11 +1717,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/members": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1743,7 +1728,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/members": {
+            "get": {
                 "description": "Keyset paginate on idx_tm_tenant_created. Response includes `next_cursor` when more pages exist.",
                 "produces": [
                     "application/json"
@@ -1793,9 +1782,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            },
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1806,7 +1793,9 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            },
+            "post": {
                 "description": "AUTH-2 tenant_admin/owner. SEAT-1 transactional cap: `active + pending <= licensed_seats`. Two-step invite→accept. Returns 409 seat_limit_reached at/above cap; 409 invitation_already_exists on duplicate; 429 reinvite_too_soon (PI-11) or invite_rate_limited (PI-12).",
                 "consumes": [
                     "application/json"
@@ -1868,11 +1857,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/members/{user_id}": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1883,7 +1868,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/members/{user_id}": {
+            "get": {
                 "description": "Returns the tenant_memberships row joined with tenant_roles and dept_memberships views.",
                 "produces": [
                     "application/json"
@@ -1929,9 +1918,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            },
-            "delete": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1942,7 +1929,9 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            },
+            "delete": {
                 "description": "Gated by delegate-impact pre-check (§8.8, WFI-1). Returns 409 workflow_resolution_required with active_workflows/workflow_ids/allowed_actions if the user is a delegate. TM-8 last-owner refusal returns 422 last_owner_removal. AUTH-8 best-effort session revoke.",
                 "tags": [
                     "members"
@@ -1982,9 +1971,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            },
-            "patch": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -1995,7 +1982,9 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            },
+            "patch": {
                 "description": "AUTH-2. On suspend: AUTH-8 best-effort RP RevokeUserSessions (fail-open). Applies optimistic locking (CONC-4).",
                 "consumes": [
                     "application/json"
@@ -2059,11 +2048,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/members/{user_id}/reset-mfa": {
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -2074,7 +2059,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/members/{user_id}/reset-mfa": {
+            "post": {
                 "description": "Clears the target user's TOTP/WebAuthn credentials via the Realm Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.",
                 "tags": [
                     "members"
@@ -2120,11 +2109,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/members/{user_id}/roles": {
-            "put": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -2135,7 +2120,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/members/{user_id}/roles": {
+            "put": {
                 "description": "AUTH-2. §16 A14: one TenantRoleGranted/TenantRoleRevoked event per role delta. TM-8 last-owner guard → 422 last_owner_removal. `member` is barred (TR-7) — returns 400 invalid_role.",
                 "consumes": [
                     "application/json"
@@ -2199,11 +2188,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/roles": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -2214,7 +2199,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/roles": {
+            "get": {
                 "description": "Returns the tenant's customized display labels for the three department role levels.",
                 "produces": [
                     "application/json"
@@ -2246,11 +2235,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/roles/{role_code}": {
-            "patch": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -2261,7 +2246,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/roles/{role_code}": {
+            "patch": {
                 "description": "AUTH-2. Applies optimistic locking (CONC-4). Only display_name is mutable; role_code is immutable.",
                 "consumes": [
                     "application/json"
@@ -2329,11 +2318,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/seat-usage": {
-            "get": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -2344,7 +2329,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/seat-usage": {
+            "get": {
                 "description": "AUTH-2. Returns `{active_users, pending_invitations, licensed_seats, over_cap, overage_since, grace_ends_at}` (SEAT-1..5).",
                 "produces": [
                     "application/json"
@@ -2382,11 +2371,7 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
-            }
-        },
-        "/tenants/{id}/users/{user_id}/removal-resolution": {
-            "post": {
+                },
                 "security": [
                     {
                         "UserID": []
@@ -2397,7 +2382,11 @@
                     {
                         "TenantRoles": []
                     }
-                ],
+                ]
+            }
+        },
+        "/tenants/{id}/users/{user_id}/removal-resolution": {
+            "post": {
                 "description": "Reassigns or cancels workflows the target user is delegate on so P-8 can proceed (§8.8.3, WFI-6).",
                 "consumes": [
                     "application/json"
@@ -2449,7 +2438,18 @@
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
                     }
-                }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
             }
         }
     },
