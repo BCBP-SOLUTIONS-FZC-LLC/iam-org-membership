@@ -114,7 +114,7 @@ jobs:
       # schema-gov governance tool (schema-gov validate --schema-dir internal/adapter/outbound/eventbus/schemas).
       # --check mode exits 1 if any file would change without writing.
       - name: Log in to GHCR
-        uses: docker/login-action@v4.4.0
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
