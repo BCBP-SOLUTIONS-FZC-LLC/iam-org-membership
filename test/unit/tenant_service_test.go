@@ -135,6 +135,16 @@ func TestTenantService_Get_NilCache_FallsThroughToRepo(t *testing.T) {
 	assert.Equal(t, "acme", got.Slug)
 }
 
+func TestTenantService_Get_RepoErrorPropagates(t *testing.T) {
+	findErr := errors.New("db down")
+	repo := &fakeTenantRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+		return nil, findErr
+	}}
+	svc := service.NewTenantService(repo, newTSCache(), &tsRP{})
+	_, err := svc.Get(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, findErr)
+}
+
 // ── Patch validation branches (T-10, locale) ─────────────────────────
 
 func TestTenantService_Patch_NilPatch_ValidationError(t *testing.T) {

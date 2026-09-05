@@ -179,6 +179,12 @@ func TestSystemPoolConfig_ForcesPGBouncerMode(t *testing.T) {
 	assert.Equal(t, int32(20), cfg.MaxConns, "sysPool inherits pool sizing from ConfigFromEnv")
 }
 
+func TestSystemPoolConfig_NonNilLoggerWiresAdapter(t *testing.T) {
+	_ = os.Unsetenv("PG_STATEMENT_TIMEOUT")
+	cfg := SystemPoolConfig("postgres://sys@host/db", &fakePortLogger{})
+	assert.NotNil(t, cfg.Logger, "non-nil port.Logger must be wrapped via NewLoggerAdapter")
+}
+
 func TestSystemPoolConfig_AppliesStatementTimeout(t *testing.T) {
 	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
 	cfg := SystemPoolConfig("postgres://sys@host/db?sslmode=disable", nil)
@@ -282,6 +288,9 @@ func TestSystemPoolConfig_NonNilLogger_SetsLoggerAdapter(t *testing.T) {
 
 // testLoggerAdapter is a minimal port.Logger for SystemPoolConfig tests.
 type testLoggerAdapter struct{}
+
+// fakePortLogger is an alias for testLoggerAdapter used by SystemPoolConfig logger tests.
+type fakePortLogger = testLoggerAdapter
 
 func (l *testLoggerAdapter) Debug(msg string, fields map[string]any) {}
 func (l *testLoggerAdapter) Info(msg string, fields map[string]any)  {}
