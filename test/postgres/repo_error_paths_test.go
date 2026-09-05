@@ -45,6 +45,7 @@ import (
 // Lines:             invitation_repository.go:62,68
 // Technique:         Cancel ctx before call → DB query fails
 func TestErrPath_Invitation_List_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-list-ctx")
@@ -63,6 +64,7 @@ func TestErrPath_Invitation_List_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:82,83,86
 // Technique:         Non-existent ID → ErrNoRows → nil, nil
 func TestErrPath_Invitation_LockByID_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-lock-notfound")
@@ -79,6 +81,7 @@ func TestErrPath_Invitation_LockByID_NotFound(t *testing.T) {
 // Lines:             invitation_repository.go:82
 // Technique:         Cancel ctx → DB call fails
 func TestErrPath_Invitation_LockByID_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-lock-ctx")
@@ -97,6 +100,7 @@ func TestErrPath_Invitation_LockByID_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:100,101,103
 // Technique:         Non-existent ID → ErrNoRows → domain error
 func TestErrPath_Invitation_FindByID_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-findbyid-notfound")
@@ -116,6 +120,7 @@ func TestErrPath_Invitation_FindByID_NotFound(t *testing.T) {
 // Lines:             invitation_repository.go:98
 // Technique:         Cancel ctx → DB call fails
 func TestErrPath_Invitation_FindByID_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-findbyid-ctx")
@@ -134,6 +139,7 @@ func TestErrPath_Invitation_FindByID_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:117,123
 // Technique:         Cancel ctx → DB call fails
 func TestErrPath_Invitation_FindPendingByEmail_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-email-ctx")
@@ -152,6 +158,7 @@ func TestErrPath_Invitation_FindPendingByEmail_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:136,140,142
 // Technique:         Non-existent KC user ID → nil, nil
 func TestErrPath_Invitation_FindPendingByKeycloakUser_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-kc-notfound")
@@ -168,6 +175,7 @@ func TestErrPath_Invitation_FindPendingByKeycloakUser_NotFound(t *testing.T) {
 // Lines:             invitation_repository.go:134
 // Technique:         Cancel ctx → DB call fails
 func TestErrPath_Invitation_FindPendingByKeycloakUser_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-kc-ctx")
@@ -186,6 +194,7 @@ func TestErrPath_Invitation_FindPendingByKeycloakUser_CtxCancelled(t *testing.T)
 // Lines:             invitation_repository.go:168,186
 // Technique:         Cancel ctx → INSERT fails
 func TestErrPath_Invitation_Insert_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-insert-ctx")
@@ -211,6 +220,7 @@ func TestErrPath_Invitation_Insert_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:199,209
 // Technique:         Non-existent ID → 0 rows affected → probe finds no row → ErrInvitationNotFound
 func TestErrPath_Invitation_SetKeycloakUserID_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-setkc-notfound")
@@ -229,6 +239,7 @@ func TestErrPath_Invitation_SetKeycloakUserID_NotFound(t *testing.T) {
 // Lines:             invitation_repository.go:199,211
 // Technique:         Existing invitation + wrong version → 0 rows → probe finds row → ErrOptimisticLockConflict
 func TestErrPath_Invitation_SetKeycloakUserID_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-setkc-conflict")
@@ -257,6 +268,7 @@ func TestErrPath_Invitation_SetKeycloakUserID_OptimisticConflict(t *testing.T) {
 // Lines:             invitation_repository.go:196
 // Technique:         Cancel ctx → UPDATE fails
 func TestErrPath_Invitation_SetKeycloakUserID_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-setkc-ctx")
@@ -275,6 +287,7 @@ func TestErrPath_Invitation_SetKeycloakUserID_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:232,237,238,240
 // Technique:         Non-existent ID → 0 rows → probe returns ErrNoRows → ErrInvitationNotFound
 func TestErrPath_Invitation_SetStatus_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-setstatus-notfound")
@@ -293,6 +306,7 @@ func TestErrPath_Invitation_SetStatus_NotFound(t *testing.T) {
 // Lines:             invitation_repository.go:240,241,242,243,244,249
 // Technique:         Invitation in terminal state (revoked/expired) → not-found per LLD P-31
 func TestErrPath_Invitation_SetStatus_TerminalState(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-setstatus-terminal")
@@ -327,6 +341,7 @@ func TestErrPath_Invitation_SetStatus_TerminalState(t *testing.T) {
 // Lines:             invitation_repository.go:232,246,247
 // Technique:         Existing pending invitation + wrong version → probe finds row → ErrOptimisticLockConflict
 func TestErrPath_Invitation_SetStatus_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-setstatus-conflict")
@@ -354,6 +369,7 @@ func TestErrPath_Invitation_SetStatus_OptimisticConflict(t *testing.T) {
 // Lines:             invitation_repository.go:225
 // Technique:         Cancel ctx → UPDATE fails
 func TestErrPath_Invitation_SetStatus_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-setstatus-ctx")
@@ -372,6 +388,7 @@ func TestErrPath_Invitation_SetStatus_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:262,269,272
 // Technique:         Non-existent ID → 0 rows → probe finds no row → ErrInvitationNotFound
 func TestErrPath_Invitation_SetKCCleanupPending_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-kcleanup-notfound")
@@ -390,6 +407,7 @@ func TestErrPath_Invitation_SetKCCleanupPending_NotFound(t *testing.T) {
 // Lines:             invitation_repository.go:262,274
 // Technique:         Existing invitation + wrong version → probe finds row → ErrOptimisticLockConflict
 func TestErrPath_Invitation_SetKCCleanupPending_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-kcleanup-conflict")
@@ -417,6 +435,7 @@ func TestErrPath_Invitation_SetKCCleanupPending_OptimisticConflict(t *testing.T)
 // Lines:             invitation_repository.go:259
 // Technique:         Cancel ctx → UPDATE fails
 func TestErrPath_Invitation_SetKCCleanupPending_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-kcleanup-ctx")
@@ -435,6 +454,7 @@ func TestErrPath_Invitation_SetKCCleanupPending_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:293,299
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Invitation_ListExpiring_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-listexpiring-ctx")
@@ -453,6 +473,7 @@ func TestErrPath_Invitation_ListExpiring_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:313,319
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Invitation_ListPendingKCCleanup_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-pendingkc-ctx")
@@ -471,6 +492,7 @@ func TestErrPath_Invitation_ListPendingKCCleanup_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:372
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Invitation_ExpireOverdue_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-expire-ctx")
@@ -489,6 +511,7 @@ func TestErrPath_Invitation_ExpireOverdue_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:333
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Invitation_MostRecentCreatedAt_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-mostrecent-ctx")
@@ -507,6 +530,7 @@ func TestErrPath_Invitation_MostRecentCreatedAt_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:351
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Invitation_CountCreatedInWindow_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-countwindow-ctx")
@@ -525,6 +549,7 @@ func TestErrPath_Invitation_CountCreatedInWindow_CtxCancelled(t *testing.T) {
 // Lines:             invitation_repository.go:283
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Invitation_CountPending_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "inv-countpending-ctx")
@@ -547,6 +572,7 @@ func TestErrPath_Invitation_CountPending_CtxCancelled(t *testing.T) {
 // Lines:             membership_repository.go:64,77
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Membership_List_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-list-ctx")
@@ -565,6 +591,7 @@ func TestErrPath_Membership_List_CtxCancelled(t *testing.T) {
 // Lines:             membership_repository.go:64,77
 // Technique:         Cancel ctx with cursor set → cursor branch fails
 func TestErrPath_Membership_List_WithCursor_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-list-cursor-ctx")
@@ -584,6 +611,7 @@ func TestErrPath_Membership_List_WithCursor_CtxCancelled(t *testing.T) {
 // Lines:             membership_repository.go:99,100,102
 // Technique:         Non-existent user ID → ErrNoRows → domain error
 func TestErrPath_Membership_FindByUserID_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-findbyuser-notfound")
@@ -603,6 +631,7 @@ func TestErrPath_Membership_FindByUserID_NotFound(t *testing.T) {
 // Lines:             membership_repository.go:96
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Membership_FindByUserID_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-findbyuser-ctx")
@@ -621,6 +650,7 @@ func TestErrPath_Membership_FindByUserID_CtxCancelled(t *testing.T) {
 // Lines:             membership_repository.go:124,132
 // Technique:         Cancel ctx → INSERT fails
 func TestErrPath_Membership_Insert_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-insert-ctx")
@@ -644,6 +674,7 @@ func TestErrPath_Membership_Insert_CtxCancelled(t *testing.T) {
 // Lines:             membership_repository.go:167,168,170
 // Technique:         Non-existent user ID → 0 rows → probe finds nothing → ErrMemberNotFound
 func TestErrPath_Membership_SetStatus_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-setstatus-notfound")
@@ -662,6 +693,7 @@ func TestErrPath_Membership_SetStatus_NotFound(t *testing.T) {
 // Lines:             membership_repository.go:167,168,184
 // Technique:         Existing membership + wrong record_version → probe finds row → ErrOptimisticLockConflict
 func TestErrPath_Membership_SetStatus_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-setstatus-conflict")
@@ -686,6 +718,7 @@ func TestErrPath_Membership_SetStatus_OptimisticConflict(t *testing.T) {
 // Lines:             membership_repository.go:160
 // Technique:         Cancel ctx → UPDATE fails
 func TestErrPath_Membership_SetStatus_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-setstatus-ctx")
@@ -704,6 +737,7 @@ func TestErrPath_Membership_SetStatus_CtxCancelled(t *testing.T) {
 // Lines:             membership_repository.go:184,187,188,210,216,233
 // Technique:         Non-existent user ID → 0 rows → probe → ErrMemberNotFound
 func TestErrPath_Membership_SoftDelete_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-softdel-notfound")
@@ -722,6 +756,7 @@ func TestErrPath_Membership_SoftDelete_NotFound(t *testing.T) {
 // Lines:             membership_repository.go:184,187,188,233
 // Technique:         Existing membership + wrong version → probe finds row → ErrOptimisticLockConflict
 func TestErrPath_Membership_SoftDelete_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-softdel-conflict")
@@ -746,6 +781,7 @@ func TestErrPath_Membership_SoftDelete_OptimisticConflict(t *testing.T) {
 // Lines:             membership_repository.go:180
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Membership_SoftDelete_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-softdel-ctx")
@@ -764,6 +800,7 @@ func TestErrPath_Membership_SoftDelete_CtxCancelled(t *testing.T) {
 // Lines:             membership_repository.go:210
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Membership_ListActiveUserIDs_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "mem-listuids-ctx")
@@ -786,6 +823,7 @@ func TestErrPath_Membership_ListActiveUserIDs_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:47,48,51
 // Technique:         Non-existent ID → ErrNoRows → domain error
 func TestErrPath_Tenant_FindByID_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-findbyid-notfound")
@@ -806,6 +844,7 @@ func TestErrPath_Tenant_FindByID_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:47
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Tenant_FindByID_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-findbyid-ctx")
@@ -824,6 +863,7 @@ func TestErrPath_Tenant_FindByID_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:70,71,73
 // Technique:         Non-existent ID → ErrNoRows → domain error
 func TestErrPath_Tenant_FindByIDIncludingDeleted_NotFound(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -842,6 +882,7 @@ func TestErrPath_Tenant_FindByIDIncludingDeleted_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:67
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Tenant_FindByIDIncludingDeleted_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -858,6 +899,7 @@ func TestErrPath_Tenant_FindByIDIncludingDeleted_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:90,91
 // Technique:         Pass nil patch → immediate validation error
 func TestErrPath_Tenant_Update_NilPatch(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-update-nilpatch")
@@ -877,6 +919,7 @@ func TestErrPath_Tenant_Update_NilPatch(t *testing.T) {
 // Lines:             tenant_repository.go:114,115,116
 // Technique:         All optional fields nil → len(sets)==0 → falls through to FindByID
 func TestErrPath_Tenant_Update_EmptyPatch(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-update-emptypatch")
@@ -895,6 +938,7 @@ func TestErrPath_Tenant_Update_EmptyPatch(t *testing.T) {
 // Lines:             tenant_repository.go:127,128,133
 // Technique:         Existing tenant + wrong record_version in patch → optimistic lock conflict
 func TestErrPath_Tenant_Update_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-update-conflict")
@@ -915,6 +959,7 @@ func TestErrPath_Tenant_Update_OptimisticConflict(t *testing.T) {
 // Lines:             tenant_repository.go:127,128,133
 // Technique:         Non-existent tenant ID → 0 rows → probe finds nothing → ErrTenantNotFound
 func TestErrPath_Tenant_Update_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	nonExistentID := uuid.New()
@@ -938,6 +983,7 @@ func TestErrPath_Tenant_Update_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:151,154
 // Technique:         Non-existent tenant ID → Exec runs but 0 rows affected → ErrTenantNotFound
 func TestErrPath_Tenant_SetRealmSyncPending_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	nonExistentID := uuid.New()
@@ -957,6 +1003,7 @@ func TestErrPath_Tenant_SetRealmSyncPending_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:148
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_SetRealmSyncPending_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-realmsyncp-ctx")
@@ -975,6 +1022,7 @@ func TestErrPath_Tenant_SetRealmSyncPending_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:169,173
 // Technique:         Pass nil → immediate validation error
 func TestErrPath_Tenant_Insert_NilTenant(t *testing.T) {
+	t.Parallel()
 	appPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 
@@ -993,6 +1041,7 @@ func TestErrPath_Tenant_Insert_NilTenant(t *testing.T) {
 // Lines:             tenant_repository.go:185
 // Technique:         Cancel ctx → INSERT fails
 func TestErrPath_Tenant_Insert_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1017,6 +1066,7 @@ func TestErrPath_Tenant_Insert_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:233,241,247,254
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_Tenant_ListSubscriptionLapses_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1033,6 +1083,7 @@ func TestErrPath_Tenant_ListSubscriptionLapses_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:263,266,267
 // Technique:         Non-existent ID → 0 rows → ErrTenantNotFound
 func TestErrPath_Tenant_LockByID_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	nonExistentID := uuid.New()
@@ -1052,6 +1103,7 @@ func TestErrPath_Tenant_LockByID_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:262
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_LockByID_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lockbyid-ctx")
@@ -1070,6 +1122,7 @@ func TestErrPath_Tenant_LockByID_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:286,293,295
 // Technique:         Non-existent ID → 0 rows → probe returns no row → ErrTenantNotFound
 func TestErrPath_Tenant_SetFeatureFlags_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	nonExistentID := uuid.New()
@@ -1089,6 +1142,7 @@ func TestErrPath_Tenant_SetFeatureFlags_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:286,297,298
 // Technique:         Existing tenant + wrong record_version → probe finds row → ErrOptimisticLockConflict
 func TestErrPath_Tenant_SetFeatureFlags_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-setflags-conflict")
@@ -1107,6 +1161,7 @@ func TestErrPath_Tenant_SetFeatureFlags_OptimisticConflict(t *testing.T) {
 // Lines:             tenant_repository.go:283
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_SetFeatureFlags_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-setflags-ctx")
@@ -1125,6 +1180,7 @@ func TestErrPath_Tenant_SetFeatureFlags_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:314
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_MarkOwnerlessIfUnset_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-ownerless-ctx")
@@ -1143,6 +1199,7 @@ func TestErrPath_Tenant_MarkOwnerlessIfUnset_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:329,333,336
 // Technique:         Non-existent ID → 0 rows → probe finds nothing → ErrTenantNotFound
 func TestErrPath_Tenant_SetRealmFields_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	nonExistentID := uuid.New()
@@ -1162,6 +1219,7 @@ func TestErrPath_Tenant_SetRealmFields_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:329,338,339
 // Technique:         Existing tenant + wrong version → probe finds row → ErrOptimisticLockConflict
 func TestErrPath_Tenant_SetRealmFields_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-setrealm-conflict")
@@ -1180,6 +1238,7 @@ func TestErrPath_Tenant_SetRealmFields_OptimisticConflict(t *testing.T) {
 // Lines:             tenant_repository.go:326
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_SetRealmFields_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-setrealm-ctx")
@@ -1198,6 +1257,7 @@ func TestErrPath_Tenant_SetRealmFields_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:348,351,356
 // Technique:         Cancel ctx → QueryRow.Scan fails
 func TestErrPath_Tenant_LockSeatOccupancy_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lockseat-ctx")
@@ -1216,6 +1276,7 @@ func TestErrPath_Tenant_LockSeatOccupancy_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:381,385,386
 // Technique:         Cancel ctx → QueryRow.Scan fails
 func TestErrPath_Tenant_LockForProjection_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lockproj-ctx")
@@ -1234,6 +1295,7 @@ func TestErrPath_Tenant_LockForProjection_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:382,383,384
 // Technique:         Non-existent tenant → ErrNoRows → nil lock, nil error
 func TestErrPath_Tenant_LockForProjection_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	nonExistentID := uuid.New()
@@ -1251,6 +1313,7 @@ func TestErrPath_Tenant_LockForProjection_NotFound(t *testing.T) {
 // Lines:             tenant_repository.go:408,409
 // Technique:         Cancel ctx → execLifecyclePatch Exec fails
 func TestErrPath_Tenant_ApplyLifecyclePatch_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lifecycle-ctx")
@@ -1272,6 +1335,7 @@ func TestErrPath_Tenant_ApplyLifecyclePatch_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:424,427,428
 // Technique:         Call with LifecycleSetRealm op → exercises that switch arm
 func TestErrPath_Tenant_ApplyLifecyclePatch_SetRealm(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lifecycle-setrealm")
@@ -1293,6 +1357,7 @@ func TestErrPath_Tenant_ApplyLifecyclePatch_SetRealm(t *testing.T) {
 // Lines:             tenant_repository.go:428,432
 // Technique:         Call with LifecycleActivatePaid op → exercises that switch arm
 func TestErrPath_Tenant_ApplyLifecyclePatch_ActivatePaid(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lifecycle-activatepaid")
@@ -1312,6 +1377,7 @@ func TestErrPath_Tenant_ApplyLifecyclePatch_ActivatePaid(t *testing.T) {
 // Lines:             tenant_repository.go:476,477
 // Technique:         Pass TenantLifecycleOp(9999) → default branch → error
 func TestErrPath_Tenant_ApplyLifecyclePatch_UnknownOp(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lifecycle-unknown")
@@ -1330,6 +1396,7 @@ func TestErrPath_Tenant_ApplyLifecyclePatch_UnknownOp(t *testing.T) {
 // Lines:             tenant_repository.go:498,500
 // Technique:         Cancel ctx → DELETE fails
 func TestErrPath_Tenant_WipeTenantChildren_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-wipe-ctx")
@@ -1348,6 +1415,7 @@ func TestErrPath_Tenant_WipeTenantChildren_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:399
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_SetLastEventAt_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-lastevent-ctx")
@@ -1366,6 +1434,7 @@ func TestErrPath_Tenant_SetLastEventAt_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:276
 // Technique:         Cancel ctx → QueryRow fails
 func TestErrPath_Tenant_LicensedSeatsForUpdate_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-licensedseats-ctx")
@@ -1384,6 +1453,7 @@ func TestErrPath_Tenant_LicensedSeatsForUpdate_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:305
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_ClearOwnerlessSince_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-clearownerless-ctx")
@@ -1402,6 +1472,7 @@ func TestErrPath_Tenant_ClearOwnerlessSince_CtxCancelled(t *testing.T) {
 // Lines:             tenant_repository.go:367
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Tenant_SetOverageSince_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tenant-overage-ctx")
@@ -1425,6 +1496,7 @@ func TestErrPath_Tenant_SetOverageSince_CtxCancelled(t *testing.T) {
 // Lines:             reconciler_store.go:29,34,40
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_ReconcilerStore_ListSeatOverageCandidates_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1441,6 +1513,7 @@ func TestErrPath_ReconcilerStore_ListSeatOverageCandidates_CtxCancelled(t *testi
 // Lines:             reconciler_store.go:52,58,64
 // Technique:         Cancel ctx → Query fails
 func TestErrPath_ReconcilerStore_ListRealmSyncPending_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1457,6 +1530,7 @@ func TestErrPath_ReconcilerStore_ListRealmSyncPending_CtxCancelled(t *testing.T)
 // Lines:             reconciler_store.go:84,89
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_ReconcilerStore_HardDeleteExpiredTrials_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1473,6 +1547,7 @@ func TestErrPath_ReconcilerStore_HardDeleteExpiredTrials_CtxCancelled(t *testing
 // Lines:             reconciler_store.go:101,109
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_ReconcilerStore_PruneOutbox_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1489,6 +1564,7 @@ func TestErrPath_ReconcilerStore_PruneOutbox_CtxCancelled(t *testing.T) {
 // Lines:             reconciler_store.go:120,128
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_ReconcilerStore_PruneProcessedEvents_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1509,6 +1585,7 @@ func TestErrPath_ReconcilerStore_PruneProcessedEvents_CtxCancelled(t *testing.T)
 // Lines:             idempotency_repository.go:31,37
 // Technique:         Cancel ctx → QueryRow fails → return false, err
 func TestErrPath_Idempotency_IsProcessed_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1526,6 +1603,7 @@ func TestErrPath_Idempotency_IsProcessed_CtxCancelled(t *testing.T) {
 // Lines:             idempotency_repository.go:47
 // Technique:         Cancel ctx → Exec fails
 func TestErrPath_Idempotency_MarkProcessed_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 
@@ -1546,6 +1624,7 @@ func TestErrPath_Idempotency_MarkProcessed_CtxCancelled(t *testing.T) {
 // Lines:             authz_repository.go:52,53,54,56
 // Technique:         Non-existent user ID → ErrNoRows → out stays nil, nil error
 func TestErrPath_AuthZ_FindMembershipProjection_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "authz-notfound")
@@ -1562,6 +1641,7 @@ func TestErrPath_AuthZ_FindMembershipProjection_NotFound(t *testing.T) {
 // Lines:             authz_repository.go:44,56
 // Technique:         Cancel ctx → first QueryRow fails
 func TestErrPath_AuthZ_FindMembershipProjection_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "authz-ctx")
@@ -1580,6 +1660,7 @@ func TestErrPath_AuthZ_FindMembershipProjection_CtxCancelled(t *testing.T) {
 // Lines:             authz_repository.go:59,64,70,77,86,92,100,106,124
 // Technique:         Full happy path with data → exercises all scan branches including roles+depts
 func TestErrPath_AuthZ_FindMembershipProjection_WithRolesAndDepts(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "authz-with-roles")
@@ -1626,6 +1707,7 @@ func TestErrPath_AuthZ_FindMembershipProjection_WithRolesAndDepts(t *testing.T) 
 // Lines:             authz_repository.go:67,68,77,86,100,106,124
 // Technique:         Member row exists but tenant_roles empty and dept_memberships empty → empty slices
 func TestErrPath_AuthZ_FindMembershipProjection_NoRolesNoDepts(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "authz-no-roles")

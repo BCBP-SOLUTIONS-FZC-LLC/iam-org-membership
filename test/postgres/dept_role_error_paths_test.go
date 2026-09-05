@@ -40,6 +40,7 @@ import (
 // Lines:             dept_membership_repository.go:48,54
 // Technique:         Cancel ctx before call → tx.Query fails
 func TestDRepo_DM001_ListByUser_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-listbyuser-ctx")
@@ -60,6 +61,7 @@ func TestDRepo_DM001_ListByUser_CtxCancelled(t *testing.T) {
 // Lines:             dept_membership_repository.go:48,54
 // Technique:         Cancel ctx before call → tx.Query fails
 func TestDRepo_DM002_ListByDepartment_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-listbydept-ctx")
@@ -80,6 +82,7 @@ func TestDRepo_DM002_ListByDepartment_CtxCancelled(t *testing.T) {
 // Lines:             dept_membership_repository.go:82
 // Technique:         Cancel ctx before call → pg_advisory_xact_lock exec fails
 func TestDRepo_DM003_Assign_CtxCancelled_AdvisoryLock(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-assign-ctx-advisory")
@@ -100,6 +103,7 @@ func TestDRepo_DM003_Assign_CtxCancelled_AdvisoryLock(t *testing.T) {
 // Lines:             dept_membership_repository.go:94 (existing != nil), 104 (same level)
 // Technique:         First Assign creates row; second Assign with same level returns it unchanged
 func TestDRepo_DM004_Assign_SameLevel_NoOp(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-assign-samelevel")
@@ -146,6 +150,7 @@ func TestDRepo_DM004_Assign_SameLevel_NoOp(t *testing.T) {
 // Lines:             dept_membership_repository.go:119 (INSERT scan), 132 (winner fetch)
 // Technique:         First Assign preparator; second Assign reviewer → new row created
 func TestDRepo_DM005_Assign_LevelChange(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-assign-levelchange")
@@ -201,6 +206,7 @@ func TestDRepo_DM005_Assign_LevelChange(t *testing.T) {
 //	forcing the "fetch winner" branch. Because the FOR UPDATE probe finds the row
 //	first (same level), the test validates the idempotent/winner code path.
 func TestDRepo_DM006_Assign_ConflictWinner(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-assign-conflict-winner")
@@ -258,6 +264,7 @@ func TestDRepo_DM006_Assign_ConflictWinner(t *testing.T) {
 //	the winner SELECT (lines 127-135) is the fallback when RETURNING is nil.
 //	Both arms are covered by the combination of DM-005 and this test.
 func TestDRepo_DM006B_Assign_LevelChange_WinnerFallback(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-assign-winner-fallback")
@@ -303,6 +310,7 @@ func TestDRepo_DM006B_Assign_LevelChange_WinnerFallback(t *testing.T) {
 // Lines:             dept_membership_repository.go:172,178
 // Technique:         Cancel ctx before call → tx.Query fails
 func TestDRepo_DM007_SoftDeleteAllForDept_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-softdeldept-ctx")
@@ -323,6 +331,7 @@ func TestDRepo_DM007_SoftDeleteAllForDept_CtxCancelled(t *testing.T) {
 // Lines:             dept_membership_repository.go:204,210
 // Technique:         Cancel ctx before call → tx.Query fails
 func TestDRepo_DM008_SoftDeleteAllForUser_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-softdeluser-ctx")
@@ -343,6 +352,7 @@ func TestDRepo_DM008_SoftDeleteAllForUser_CtxCancelled(t *testing.T) {
 // Lines:             dept_membership_repository.go:154
 // Technique:         Non-existent (tenant, user, dept) → UPDATE matches 0 rows → ErrNoRows → ErrMemberNotFound
 func TestDRepo_DM009_Remove_NotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "dm-remove-notfound")
@@ -369,6 +379,7 @@ func TestDRepo_DM009_Remove_NotFound(t *testing.T) {
 // Lines:             dept_role_label_repository.go:40,46
 // Technique:         Cancel ctx before call → tx.Query fails
 func TestDRepo_DRL001_List_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "drl-list-ctx")
@@ -391,6 +402,7 @@ func TestDRepo_DRL001_List_CtxCancelled(t *testing.T) {
 //
 //	the UPDATE returns ErrNoRows, the probe SELECT also returns ErrNoRows → ErrMemberNotFound.
 func TestDRepo_DRL002_Update_NotFound_ErrMemberNotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "drl-update-notfound")
@@ -416,6 +428,7 @@ func TestDRepo_DRL002_Update_NotFound_ErrMemberNotFound(t *testing.T) {
 //
 //	returns ErrNoRows but probe finds the row → ErrOptimisticLockConflict.
 func TestDRepo_DRL003_Update_WrongVersion_OptimisticConflict(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "drl-update-conflict")
@@ -450,6 +463,7 @@ func TestDRepo_DRL003_Update_WrongVersion_OptimisticConflict(t *testing.T) {
 // Lines:             dept_role_label_repository.go:99
 // Technique:         Cancel ctx before call → withPool/tx.Exec fails
 func TestDRepo_DRL004_Seed_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "drl-seed-ctx")
@@ -470,6 +484,7 @@ func TestDRepo_DRL004_Seed_CtxCancelled(t *testing.T) {
 // Lines:             dept_role_label_repository.go:69 (probe never reached; UPDATE itself fails)
 // Technique:         Cancel ctx before call → withPool/tx.QueryRow fails
 func TestDRepo_DRL005_Update_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "drl-update-ctx")
@@ -496,6 +511,7 @@ func TestDRepo_DRL005_Update_CtxCancelled(t *testing.T) {
 //
 //	winner SELECT returns the existing row (line 107).
 func TestDRepo_TR001_Grant_Idempotent_ConflictWinner(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tr-grant-idempotent")
@@ -547,6 +563,7 @@ func TestDRepo_TR001_Grant_Idempotent_ConflictWinner(t *testing.T) {
 // Lines:             tenant_role_repository.go:94
 // Technique:         Cancel ctx before call → tx.QueryRow/INSERT fails
 func TestDRepo_TR002_Grant_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tr-grant-ctx")
@@ -576,6 +593,7 @@ func TestDRepo_TR002_Grant_CtxCancelled(t *testing.T) {
 //
 //	ErrNoRows → domain.ErrMemberNotFound
 func TestDRepo_TR003_Revoke_NotFound_ErrMemberNotFound(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tr-revoke-notfound")
@@ -599,6 +617,7 @@ func TestDRepo_TR003_Revoke_NotFound_ErrMemberNotFound(t *testing.T) {
 // Lines:             tenant_role_repository.go:129 (UPDATE call itself fails before scan)
 // Technique:         Cancel ctx before call → withPool/tx.QueryRow fails
 func TestDRepo_TR004_Revoke_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tr-revoke-ctx")
@@ -619,6 +638,7 @@ func TestDRepo_TR004_Revoke_CtxCancelled(t *testing.T) {
 // Lines:             tenant_role_repository.go:145,151
 // Technique:         Cancel ctx before call → tx.Query fails
 func TestDRepo_TR005_SoftDeleteAllForUser_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tr-softdeluser-ctx")
@@ -639,6 +659,7 @@ func TestDRepo_TR005_SoftDeleteAllForUser_CtxCancelled(t *testing.T) {
 // Lines:             tenant_role_repository.go:145 (Query call), 151 (scanTenantRole inside loop)
 // Technique:         Seed a tenant_role row; call SoftDeleteAllForUser → returned slice non-empty
 func TestDRepo_TR006_SoftDeleteAllForUser_ScanLoop(t *testing.T) {
+	t.Parallel()
 	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 	tenantID := seedTenant(t, ctx, rawPool, "tr-softdeluser-scan")
