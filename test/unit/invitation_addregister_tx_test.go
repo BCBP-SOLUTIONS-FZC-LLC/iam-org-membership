@@ -30,13 +30,14 @@ import (
 // configurable fns for the methods the tx body calls.
 type arInviteRepo struct {
 	port.InvitationRepositoryNoop
-	findByKCUserFn  func(ctx context.Context, tenantID, kcUserID uuid.UUID) (*domain.PendingInvitation, error)
-	findByEmailFn   func(ctx context.Context, tenantID uuid.UUID, email string) (*domain.PendingInvitation, error)
-	lockByIDFn      func(ctx context.Context, id uuid.UUID) (*domain.PendingInvitation, error)
-	setStatusFn     func(ctx context.Context, tenantID, id uuid.UUID, status domain.InvitationStatus, ver int64) (*domain.PendingInvitation, error)
-	countPendingFn  func(ctx context.Context, tenantID uuid.UUID) (int, error)
-	mostRecentAtFn  func(ctx context.Context, tenantID uuid.UUID, email string) (time.Time, error)
-	countWindowFn   func(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error)
+	findByKCUserFn        func(ctx context.Context, tenantID, kcUserID uuid.UUID) (*domain.PendingInvitation, error)
+	findByEmailFn         func(ctx context.Context, tenantID uuid.UUID, email string) (*domain.PendingInvitation, error)
+	lockByIDFn            func(ctx context.Context, id uuid.UUID) (*domain.PendingInvitation, error)
+	setStatusFn           func(ctx context.Context, tenantID, id uuid.UUID, status domain.InvitationStatus, ver int64) (*domain.PendingInvitation, error)
+	countPendingFn        func(ctx context.Context, tenantID uuid.UUID) (int, error)
+	mostRecentAtFn        func(ctx context.Context, tenantID uuid.UUID, email string) (time.Time, error)
+	countWindowFn         func(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error)
+	setKCCleanupPendingFn func(ctx context.Context, tenantID, id uuid.UUID, pending bool, ver int64) error
 }
 
 func (r *arInviteRepo) FindPendingByKeycloakUser(ctx context.Context, tenantID, kcUserID uuid.UUID) (*domain.PendingInvitation, error) {
@@ -93,7 +94,10 @@ func (r *arInviteRepo) Insert(context.Context, *domain.PendingInvitation) (*doma
 func (r *arInviteRepo) SetKeycloakUserID(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int64) error {
 	return nil
 }
-func (r *arInviteRepo) SetKCCleanupPending(context.Context, uuid.UUID, uuid.UUID, bool, int64) error {
+func (r *arInviteRepo) SetKCCleanupPending(ctx context.Context, tenantID, id uuid.UUID, pending bool, ver int64) error {
+	if r.setKCCleanupPendingFn != nil {
+		return r.setKCCleanupPendingFn(ctx, tenantID, id, pending, ver)
+	}
 	return nil
 }
 func (r *arInviteRepo) ListExpiring(context.Context, time.Time, int) ([]domain.PendingInvitation, error) {
@@ -107,8 +111,8 @@ var _ port.InvitationRepository = (*arInviteRepo)(nil)
 
 // arMembershipRepo is a MembershipRepository for AddFromRegister tests.
 type arMembershipRepo struct {
-	insertFn       func(ctx context.Context, m *domain.TenantMembership) (*domain.TenantMembership, error)
-	countActiveFn  func(ctx context.Context, tenantID uuid.UUID) (int, error)
+	insertFn      func(ctx context.Context, m *domain.TenantMembership) (*domain.TenantMembership, error)
+	countActiveFn func(ctx context.Context, tenantID uuid.UUID) (int, error)
 }
 
 func (r *arMembershipRepo) List(context.Context, uuid.UUID, *domain.MembershipListCursor, int) (*domain.MembershipListPage, error) {
@@ -195,8 +199,10 @@ type arCache struct {
 	deletedKeys []string
 }
 
-func (c *arCache) Get(_ context.Context, _ string) ([]byte, error)           { return nil, nil }
-func (c *arCache) MGet(_ context.Context, k []string) ([][]byte, error)      { return make([][]byte, len(k)), nil }
+func (c *arCache) Get(_ context.Context, _ string) ([]byte, error) { return nil, nil }
+func (c *arCache) MGet(_ context.Context, k []string) ([][]byte, error) {
+	return make([][]byte, len(k)), nil
+}
 func (c *arCache) Set(_ context.Context, _ string, _ []byte, _ time.Duration) error { return nil }
 func (c *arCache) SetNX(_ context.Context, _ string, _ []byte, _ time.Duration) (bool, error) {
 	return true, nil
@@ -364,23 +370,23 @@ func TestAddFromRegister_PendingFound_SetsStatusAndAppliesRoleGrants(t *testing.
 	inv := &arInviteRepo{
 		findByKCUserFn: func(_ context.Context, _, _ uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{
-				ID:       pendingID,
-				TenantID: tenantID,
-				Email:    "user@example.com",
-				Status:   domain.InvitePending,
-				InvitedBy: inviterID,
+				ID:                 pendingID,
+				TenantID:           tenantID,
+				Email:              "user@example.com",
+				Status:             domain.InvitePending,
+				InvitedBy:          inviterID,
 				InitialTenantRoles: []domain.TenantRoleCode{domain.RoleTenantAdmin},
 			}, nil
 		},
 		lockByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{
-				ID:       pendingID,
-				TenantID: tenantID,
-				Email:    "user@example.com",
-				Status:   domain.InvitePending,
-				InvitedBy: inviterID,
+				ID:                 pendingID,
+				TenantID:           tenantID,
+				Email:              "user@example.com",
+				Status:             domain.InvitePending,
+				InvitedBy:          inviterID,
 				InitialTenantRoles: []domain.TenantRoleCode{domain.RoleTenantAdmin},
-				RecordVersion: 1,
+				RecordVersion:      1,
 			}, nil
 		},
 		setStatusFn: func(_ context.Context, _, _ uuid.UUID, status domain.InvitationStatus, _ int64) (*domain.PendingInvitation, error) {

@@ -4,7 +4,7 @@
 //   - SetFeatureFlags — post-tx FindByID success + cache eviction with
 //     active user IDs (lines 87-104, previously only the error paths were hit)
 //   - ReassignOwner — happy path through RunInTx: Grant + ClearOwnerlessSince
-//     + cache eviction (lines 128-162)
+//   - cache eviction (lines 128-162)
 //   - ActiveRoleCodes — error path from ListByUser (line 170-172)
 //   - ActiveRoleCodes — happy path (roles returned, codes projected)
 package unit_test
@@ -29,8 +29,8 @@ import (
 // Uses TenantRepositoryNoop so new interface methods don't break compilation.
 type ocTenantRepo struct {
 	port.TenantRepositoryNoop
-	findByIDFn          func(context.Context, uuid.UUID) (*domain.Tenant, error)
-	setFeatureFlagsFn   func(context.Context, uuid.UUID, []byte, int64) error
+	findByIDFn            func(context.Context, uuid.UUID) (*domain.Tenant, error)
+	setFeatureFlagsFn     func(context.Context, uuid.UUID, []byte, int64) error
 	clearOwnerlessSinceFn func(context.Context, uuid.UUID) error
 }
 
@@ -126,8 +126,10 @@ type ocCache struct {
 	deletedKeys []string
 }
 
-func (c *ocCache) Get(_ context.Context, _ string) ([]byte, error)           { return nil, nil }
-func (c *ocCache) MGet(_ context.Context, keys []string) ([][]byte, error)   { return make([][]byte, len(keys)), nil }
+func (c *ocCache) Get(_ context.Context, _ string) ([]byte, error) { return nil, nil }
+func (c *ocCache) MGet(_ context.Context, keys []string) ([][]byte, error) {
+	return make([][]byte, len(keys)), nil
+}
 func (c *ocCache) Set(_ context.Context, _ string, _ []byte, _ time.Duration) error { return nil }
 func (c *ocCache) SetNX(_ context.Context, _ string, _ []byte, _ time.Duration) (bool, error) {
 	return true, nil

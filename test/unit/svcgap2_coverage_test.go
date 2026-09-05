@@ -2,29 +2,29 @@
 //
 // Covers remaining uncovered branches after svcgap_coverage_test.go:
 //
-//   tenant_service.go
-//     Get (85.7%): FindByID error after cache miss (line 41-42)
-//     Patch (96.6%): LocalAccountsEnabled pre-check FindByID error (line 93-94)
-//     setCached (83.3%): json.Marshal error cannot be triggered with real types;
-//       the nil-t guard (cache!=nil && t!=nil guards) already covered.
-//       The only remaining uncovered block is when cache is non-nil and t is
-//       non-nil but Marshal fails — impossible for domain.Tenant. Skip.
-//     requireActiveMember (0.0%): nil rc, cross-tenant, missing role, passing
+//	tenant_service.go
+//	  Get (85.7%): FindByID error after cache miss (line 41-42)
+//	  Patch (96.6%): LocalAccountsEnabled pre-check FindByID error (line 93-94)
+//	  setCached (83.3%): json.Marshal error cannot be triggered with real types;
+//	    the nil-t guard (cache!=nil && t!=nil guards) already covered.
+//	    The only remaining uncovered block is when cache is non-nil and t is
+//	    non-nil but Marshal fails — impossible for domain.Tenant. Skip.
+//	  requireActiveMember (0.0%): nil rc, cross-tenant, missing role, passing
 //
-//   invitation_service.go — Invite full TX path (36.8%)
-//     Line 84: req.Email == "" after normalise → ErrValidation
-//     Lines 157-175: TOTP-needed logic (tenant_admin/owner → needsTOTP,
-//       dept approver → needsTOTP, no elevated role → no TOTP)
-//     Lines 177-185: RP.CreateInvitedUser error → ErrRealmProvisionerUnavailable
-//     Lines 195-232: tx seat-limit breach → durable orphan + seatLimitErr path
-//     Lines 234-250: happy INSERT path
-//     Lines 252-261: tx error → compensating RP DeleteUser
-//     Lines 263-278: seatLimitErr != nil → DeleteUser + return seatLimitErr
-//     Line 301: preflightSeatCheck returns nil → continue (covered by happy path)
+//	invitation_service.go — Invite full TX path (36.8%)
+//	  Line 84: req.Email == "" after normalise → ErrValidation
+//	  Lines 157-175: TOTP-needed logic (tenant_admin/owner → needsTOTP,
+//	    dept approver → needsTOTP, no elevated role → no TOTP)
+//	  Lines 177-185: RP.CreateInvitedUser error → ErrRealmProvisionerUnavailable
+//	  Lines 195-232: tx seat-limit breach → durable orphan + seatLimitErr path
+//	  Lines 234-250: happy INSERT path
+//	  Lines 252-261: tx error → compensating RP DeleteUser
+//	  Lines 263-278: seatLimitErr != nil → DeleteUser + return seatLimitErr
+//	  Line 301: preflightSeatCheck returns nil → continue (covered by happy path)
 //
-//   invitation_service.go — AddFromRegister remaining TX paths (67.7%)
-//     Lines 372-454: pending != nil TX body in AddFromRegister
-//       (covered by invitation_addregister_tx_test.go — skip duplicates)
+//	invitation_service.go — AddFromRegister remaining TX paths (67.7%)
+//	  Lines 372-454: pending != nil TX body in AddFromRegister
+//	    (covered by invitation_addregister_tx_test.go — skip duplicates)
 package unit_test
 
 import (
@@ -150,12 +150,12 @@ func TestTenantService_RequireActiveMember_IsReferencedAndCompiles(t *testing.T)
 
 // svcgap2FullInviteRepo is a comprehensive InvitationRepository for Invite tests.
 type svcgap2FullInviteRepo struct {
-	findPendingByEmailFn  func(context.Context, uuid.UUID, string) (*domain.PendingInvitation, error)
-	mostRecentCreatedAtFn func(context.Context, uuid.UUID, string) (time.Time, error)
+	findPendingByEmailFn   func(context.Context, uuid.UUID, string) (*domain.PendingInvitation, error)
+	mostRecentCreatedAtFn  func(context.Context, uuid.UUID, string) (time.Time, error)
 	countCreatedInWindowFn func(context.Context, uuid.UUID, time.Time) (int, error)
-	insertFn              func(context.Context, *domain.PendingInvitation) (*domain.PendingInvitation, error)
-	setKCCleanupPendingFn func(context.Context, uuid.UUID, uuid.UUID, bool, int64) error
-	countPendingFn        func(context.Context, uuid.UUID) (int, error)
+	insertFn               func(context.Context, *domain.PendingInvitation) (*domain.PendingInvitation, error)
+	setKCCleanupPendingFn  func(context.Context, uuid.UUID, uuid.UUID, bool, int64) error
+	countPendingFn         func(context.Context, uuid.UUID) (int, error)
 }
 
 func (r *svcgap2FullInviteRepo) List(context.Context, uuid.UUID) ([]domain.PendingInvitation, error) {
@@ -683,7 +683,9 @@ func (r *sg2ArMembershipRepo) Insert(ctx context.Context, m *domain.TenantMember
 func (r *sg2ArMembershipRepo) SetStatus(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
 	return nil, nil
 }
-func (r *sg2ArMembershipRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil }
+func (r *sg2ArMembershipRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error {
+	return nil
+}
 func (r *sg2ArMembershipRepo) CountActive(ctx context.Context, tid uuid.UUID) (int, error) {
 	if r.countActiveFn != nil {
 		return r.countActiveFn(ctx, tid)

@@ -26,24 +26,24 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 )
 
 // ── Fixed department IDs — match the mockserver so seeded dept IDs are stable ──
 var (
-	DeptEngID  = uuid.MustParse("de010001-0000-0000-0000-000000000001")
-	DeptDesID  = uuid.MustParse("de010002-0000-0000-0000-000000000002")
-	DeptProID  = uuid.MustParse("de010003-0000-0000-0000-000000000003")
-	DeptFinID  = uuid.MustParse("de010004-0000-0000-0000-000000000004")
-	DeptLegID  = uuid.MustParse("de010005-0000-0000-0000-000000000005")
-	DeptOpsID  = uuid.MustParse("de010006-0000-0000-0000-000000000006") // non-system, is_active=true
+	DeptEngID = uuid.MustParse("de010001-0000-0000-0000-000000000001")
+	DeptDesID = uuid.MustParse("de010002-0000-0000-0000-000000000002")
+	DeptProID = uuid.MustParse("de010003-0000-0000-0000-000000000003")
+	DeptFinID = uuid.MustParse("de010004-0000-0000-0000-000000000004")
+	DeptLegID = uuid.MustParse("de010005-0000-0000-0000-000000000005")
+	DeptOpsID = uuid.MustParse("de010006-0000-0000-0000-000000000006") // non-system, is_active=true
 )
 
 // ── Go-level fakes for all external service clients ───────────────────────────
@@ -81,12 +81,12 @@ type scenarioRPClient struct{}
 func (r *scenarioRPClient) CreateInvitedUser(_ context.Context, _ port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {
 	return &port.CreateInvitedUserResponse{KeycloakUserID: uuid.New()}, nil
 }
-func (r *scenarioRPClient) DeleteUser(_ context.Context, _, _ uuid.UUID) error       { return nil }
+func (r *scenarioRPClient) DeleteUser(_ context.Context, _, _ uuid.UUID) error { return nil }
 func (r *scenarioRPClient) PatchRealmConfig(_ context.Context, _ uuid.UUID, _ port.RealmConfigPatch) error {
 	return nil
 }
 func (r *scenarioRPClient) RevokeUserSessions(_ context.Context, _, _ uuid.UUID) error { return nil }
-func (r *scenarioRPClient) ResetMFA(_ context.Context, _, _ uuid.UUID) error            { return nil }
+func (r *scenarioRPClient) ResetMFA(_ context.Context, _, _ uuid.UUID) error           { return nil }
 
 var _ port.RealmProvisionerClient = (*scenarioRPClient)(nil)
 
@@ -155,8 +155,8 @@ func (e *apiTestEnv) do(t *testing.T, method, path, body string, hdrs map[string
 // isSys returns headers for an iam-system caller.
 func isSys(tenantID string) map[string]string {
 	return map[string]string{
-		"x-user-id":    "00000000-0000-0000-0000-000000000001",
-		"x-tenant-id":  tenantID,
+		"x-user-id":      "00000000-0000-0000-0000-000000000001",
+		"x-tenant-id":    tenantID,
 		"x-tenant-roles": "iam-system",
 	}
 }
@@ -164,8 +164,8 @@ func isSys(tenantID string) map[string]string {
 // isOwner returns headers for a tenant_owner caller.
 func isOwner(ownerID, tenantID string) map[string]string {
 	return map[string]string{
-		"x-user-id":    ownerID,
-		"x-tenant-id":  tenantID,
+		"x-user-id":      ownerID,
+		"x-tenant-id":    tenantID,
 		"x-tenant-roles": "tenant_owner",
 	}
 }
@@ -173,8 +173,8 @@ func isOwner(ownerID, tenantID string) map[string]string {
 // isAdmin returns headers for a tenant_admin caller.
 func isAdmin(adminID, tenantID string) map[string]string {
 	return map[string]string{
-		"x-user-id":    adminID,
-		"x-tenant-id":  tenantID,
+		"x-user-id":      adminID,
+		"x-tenant-id":    tenantID,
 		"x-tenant-roles": "tenant_admin",
 	}
 }
@@ -182,8 +182,8 @@ func isAdmin(adminID, tenantID string) map[string]string {
 // isMember returns headers for a plain member caller.
 func isMember(userID, tenantID string) map[string]string {
 	return map[string]string{
-		"x-user-id":    userID,
-		"x-tenant-id":  tenantID,
+		"x-user-id":      userID,
+		"x-tenant-id":    tenantID,
 		"x-tenant-roles": "member",
 	}
 }
@@ -191,8 +191,8 @@ func isMember(userID, tenantID string) map[string]string {
 // isOperator returns headers for a platform_operator caller.
 func isOperator(tenantID string) map[string]string {
 	return map[string]string{
-		"x-user-id":    "00000000-0000-0000-0000-000000000001",
-		"x-tenant-id":  tenantID,
+		"x-user-id":      "00000000-0000-0000-0000-000000000001",
+		"x-tenant-id":    tenantID,
 		"x-tenant-roles": "platform_operator",
 	}
 }
@@ -312,25 +312,25 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 
 	// ── External service fakes (zero external servers) ─────────────────
 	catalogClient := &scenarioCatalogClient{}
-	rpClient      := &scenarioRPClient{}
-	wfClient      := &scenarioWorkflowClient{}
-	delClient     := &scenarioDelegationCheckClient{}
-	gmClient      := &scenarioGroupMappingClient{}
+	rpClient := &scenarioRPClient{}
+	wfClient := &scenarioWorkflowClient{}
+	delClient := &scenarioDelegationCheckClient{}
+	gmClient := &scenarioGroupMappingClient{}
 
 	// ── Repositories ───────────────────────────────────────────────────
-	tenantRepo      := pgadapter.NewTenantRepository(appPool)
-	tenantDeptRepo  := pgadapter.NewTenantDepartmentRepository(appPool)
-	membershipRepo  := pgadapter.NewMembershipRepository(appPool)
-	tenantRoleRepo  := pgadapter.NewTenantRoleRepository(appPool)
-	deptMemRepo     := pgadapter.NewDeptMembershipRepository(appPool)
+	tenantRepo := pgadapter.NewTenantRepository(appPool)
+	tenantDeptRepo := pgadapter.NewTenantDepartmentRepository(appPool)
+	membershipRepo := pgadapter.NewMembershipRepository(appPool)
+	tenantRoleRepo := pgadapter.NewTenantRoleRepository(appPool)
+	deptMemRepo := pgadapter.NewDeptMembershipRepository(appPool)
 	deptRoleLabelRepo := pgadapter.NewDeptRoleLabelRepository(appPool)
-	invitationRepo  := pgadapter.NewInvitationRepository(appPool)
+	invitationRepo := pgadapter.NewInvitationRepository(appPool)
 
 	txRunner := pgadapter.NewTxRunner(appPool, nil) // nil publisher — outbox not needed for HTTP tests
 
 	// ── Catalog + group mapping services (read-through cache) ──────────
 	catalogSvc := service.NewCatalogService(catalogClient, nil) // nil cache → always hits fake client
-	gmSvc      := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, nil, gmClient)
+	gmSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, nil, gmClient)
 
 	// ── Core services ──────────────────────────────────────────────────
 	const (
@@ -338,15 +338,15 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		seatOverageDays      = 30
 	)
 
-	authzSvc       := service.NewAuthZService(pgadapter.NewAuthZRepository(appPool), catalogSvc, catalogSvc, nil)
+	authzSvc := service.NewAuthZService(pgadapter.NewAuthZRepository(appPool), catalogSvc, catalogSvc, nil)
 	provisioningSvc := service.NewProvisioningService(
 		tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo,
 		deptRoleLabelRepo, tenantDeptRepo, catalogSvc, catalogSvc,
 		txRunner, nil, rpClient,
 	)
-	tenantSvc      := service.NewTenantService(tenantRepo, nil, rpClient)
-	deptSvc        := service.NewDepartmentService(catalogSvc, tenantDeptRepo, nil)
-	membershipSvc  := service.NewMembershipService(
+	tenantSvc := service.NewTenantService(tenantRepo, nil, rpClient)
+	deptSvc := service.NewDepartmentService(catalogSvc, tenantDeptRepo, nil)
+	membershipSvc := service.NewMembershipService(
 		membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo,
 		invitationRepo, nil, rpClient, wfClient, txRunner, nil, seatOverageDays,
 	)
@@ -354,8 +354,8 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		deptMemRepo, membershipRepo, tenantDeptRepo, catalogSvc,
 		delClient, wfClient, nil, txRunner,
 	)
-	roleLabelSvc   := service.NewRoleLabelService(deptRoleLabelRepo, nil)
-	invitationSvc  := service.NewInvitationService(
+	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, nil)
+	invitationSvc := service.NewInvitationService(
 		invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo,
 		tenantRepo, rpClient, nil, txRunner, nil, invitationExpiryDays,
 	)
@@ -364,15 +364,15 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	)
 
 	// ── HTTP handlers + router ─────────────────────────────────────────
-	tenantH    := httpadapter.NewTenantHandler(tenantSvc)
-	deptH      := httpadapter.NewDepartmentHandler(deptSvc)
-	memberH    := httpadapter.NewMembershipHandler(membershipSvc)
-	deptMemH   := httpadapter.NewDeptMembershipHandler(deptMemSvc)
+	tenantH := httpadapter.NewTenantHandler(tenantSvc)
+	deptH := httpadapter.NewDepartmentHandler(deptSvc)
+	memberH := httpadapter.NewMembershipHandler(membershipSvc)
+	deptMemH := httpadapter.NewDeptMembershipHandler(deptMemSvc)
 	roleLabelH := httpadapter.NewRoleLabelHandler(roleLabelSvc)
-	inviteH    := httpadapter.NewInvitationHandler(invitationSvc)
-	operatorH  := httpadapter.NewOperatorHandler(operatorSvc)
+	inviteH := httpadapter.NewInvitationHandler(invitationSvc)
+	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(pgadapter.NewTenantRepository(sysPool), 30)
-	internalH  := httpadapter.NewInternalHandler(
+	internalH := httpadapter.NewInternalHandler(
 		provisioningSvc, authzSvc, membershipSvc, invitationSvc, gmSvc, tenantSvc, subscriptionLapseSvc,
 	)
 
@@ -429,9 +429,9 @@ func (e *apiTestEnv) provisionTenant(t *testing.T, tenantID, ownerID, slug, name
 func (e *apiTestEnv) addMember(t *testing.T, tenantID, userID, email, fullName string) int64 {
 	t.Helper()
 	body := toJSON(map[string]any{
-		"user_id":    userID,
-		"email":      email,
-		"full_name":  fullName,
+		"user_id":   userID,
+		"email":     email,
+		"full_name": fullName,
 	})
 	resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tenantID+"/members", body, isSys(tenantID))
 	defer resp.Body.Close()
@@ -569,9 +569,9 @@ func newTestTenant(t *testing.T, e *apiTestEnv) *testTenant {
 	e.provisionTenant(t, tt.TenantID, tt.OwnerID, "test-"+tt.TenantID[:8], "Test Corp")
 
 	// Add admin and plain member
-	adminRV  := e.addMember(t, tt.TenantID, tt.AdminID,  "admin@test.com",  "Test Admin")
+	adminRV := e.addMember(t, tt.TenantID, tt.AdminID, "admin@test.com", "Test Admin")
 	memberRV := e.addMember(t, tt.TenantID, tt.MemberID, "member@test.com", "Test Member")
-	suspRV   := e.addMember(t, tt.TenantID, tt.SuspendedID, "susp@test.com", "Suspended")
+	suspRV := e.addMember(t, tt.TenantID, tt.SuspendedID, "susp@test.com", "Suspended")
 
 	// Grant admin role
 	e.grantRole(t, tt.TenantID, tt.OwnerID, tt.AdminID, []string{"tenant_admin"}, adminRV)

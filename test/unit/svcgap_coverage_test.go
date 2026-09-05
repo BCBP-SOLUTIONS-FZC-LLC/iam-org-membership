@@ -5,58 +5,58 @@
 //
 // Covered gaps (85.2% → higher):
 //
-//   authz_service.go
-//     getCached (77.8%): cache.Get error → return nil
-//     getCached (77.8%): json.Unmarshal error → return nil
-//     setCached (25.0%):  nil proj guard + full Set path
+//	authz_service.go
+//	  getCached (77.8%): cache.Get error → return nil
+//	  getCached (77.8%): json.Unmarshal error → return nil
+//	  setCached (25.0%):  nil proj guard + full Set path
 //
-//   catalog_service.go
-//     setCachedDepartments (85.7%): json.Marshal returns no error → both Set calls
-//     setCachedPlans (85.7%):       json.Marshal returns no error → both Set calls
+//	catalog_service.go
+//	  setCachedDepartments (85.7%): json.Marshal returns no error → both Set calls
+//	  setCachedPlans (85.7%):       json.Marshal returns no error → both Set calls
 //
-//   tenant_service.go
-//     Get (85.7%): cache.Get error → fall through to DB
-//     setCached (83.3%): json.Marshal success → cache.Set called
-//     requireActiveMember (0.0%): nil rc, cross-tenant, missing role
+//	tenant_service.go
+//	  Get (85.7%): cache.Get error → fall through to DB
+//	  setCached (83.3%): json.Marshal success → cache.Set called
+//	  requireActiveMember (0.0%): nil rc, cross-tenant, missing role
 //
-//   department_service.go
-//     ListForTenant (75.0%): tenantDepts.List error propagates
-//     ListForTenant (75.0%): happy path building view slice + return
-//     Activate (90.0%):     tenantDepts.Activate error propagates
+//	department_service.go
+//	  ListForTenant (75.0%): tenantDepts.List error propagates
+//	  ListForTenant (75.0%): happy path building view slice + return
+//	  Activate (90.0%):     tenantDepts.Activate error propagates
 //
-//   dept_membership_service.go
-//     Remove (91.7%): requestctx path inside tx (evt.IPAddress/UserAgent set)
+//	dept_membership_service.go
+//	  Remove (91.7%): requestctx path inside tx (evt.IPAddress/UserAgent set)
 //
-//   group_mapping_service.go
-//     AssignFromGroups (86.4%):
-//       - drMaps group filter (dr.KeycloakGroupName not in groupSet → continue)
-//       - trMaps RoleMember filter → continue
-//       - deptMems.Assign error propagates
-//       - LevelChanged event branch (previous != nil, different level)
-//       - roles.Grant path + event emission
-//       - tx error path
-//     setCachedResolution (92.3%): cache == nil guard
+//	group_mapping_service.go
+//	  AssignFromGroups (86.4%):
+//	    - drMaps group filter (dr.KeycloakGroupName not in groupSet → continue)
+//	    - trMaps RoleMember filter → continue
+//	    - deptMems.Assign error propagates
+//	    - LevelChanged event branch (previous != nil, different level)
+//	    - roles.Grant path + event emission
+//	    - tx error path
+//	  setCachedResolution (92.3%): cache == nil guard
 //
-//   membership_service.go
-//     List (95.0%): deptMemberships.ListByUser error in hydration loop
-//     SetStatus (93.9%): WFI-13 active_workflows > 0 advisory path
-//     RemoveUser (89.5%): roles.CountActiveOwners error inside tx
-//     RemoveUser (89.5%): deptMemberships.SoftDeleteAllForUser error
-//     RemoveUser (89.5%): memberships.SoftDelete error
-//     ValidateAndEmitAssigneeOverride (93.5%): pub == nil inside tx
-//     ResetUserMFA (83.3%): ResetMFA error → ErrRealmProvisionerUnavailable
-//     ResetUserMFA (83.3%): pub == nil inside tx
+//	membership_service.go
+//	  List (95.0%): deptMemberships.ListByUser error in hydration loop
+//	  SetStatus (93.9%): WFI-13 active_workflows > 0 advisory path
+//	  RemoveUser (89.5%): roles.CountActiveOwners error inside tx
+//	  RemoveUser (89.5%): deptMemberships.SoftDeleteAllForUser error
+//	  RemoveUser (89.5%): memberships.SoftDelete error
+//	  ValidateAndEmitAssigneeOverride (93.5%): pub == nil inside tx
+//	  ResetUserMFA (83.3%): ResetMFA error → ErrRealmProvisionerUnavailable
+//	  ResetUserMFA (83.3%): pub == nil inside tx
 //
-//   provisioning_service.go
-//     TrialSignup (86.4%): tenantDepts.Activate error propagates
-//     TrialSignup (86.4%): labels.Seed error propagates
-//     TrialSignup (86.4%): memberships.Insert error propagates
-//     TrialSignup (86.4%): roles.Grant error propagates
-//     TrialSignup (86.4%): idempotent replay (wasCreated=false) path
-//     SetRealmFields (60.0%): tx error + cache nil path + cache delete path
-//     SetMembershipStatus (91.7%): cache != nil delete path
-//     DeleteMember (58.3%): wasOwner=true → CountActiveOwners → ownerRemaining>0
-//     DeleteMember (58.3%): wasOwner=true → ownerRemaining==0 → MarkOwnerlessIfUnset (not flipped)
+//	provisioning_service.go
+//	  TrialSignup (86.4%): tenantDepts.Activate error propagates
+//	  TrialSignup (86.4%): labels.Seed error propagates
+//	  TrialSignup (86.4%): memberships.Insert error propagates
+//	  TrialSignup (86.4%): roles.Grant error propagates
+//	  TrialSignup (86.4%): idempotent replay (wasCreated=false) path
+//	  SetRealmFields (60.0%): tx error + cache nil path + cache delete path
+//	  SetMembershipStatus (91.7%): cache != nil delete path
+//	  DeleteMember (58.3%): wasOwner=true → CountActiveOwners → ownerRemaining>0
+//	  DeleteMember (58.3%): wasOwner=true → ownerRemaining==0 → MarkOwnerlessIfUnset (not flipped)
 package unit_test
 
 import (

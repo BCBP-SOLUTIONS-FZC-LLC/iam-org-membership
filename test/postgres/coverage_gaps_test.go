@@ -4,11 +4,15 @@
 // postgres repository branches (coverage push to 100%).
 //
 // Priority 1: 0% functions (SoftDeleteAllForDept, ListActiveUserIDs,
-//   MostRecentCreatedAt, CountCreatedInWindow).
+//
+//	MostRecentCreatedAt, CountCreatedInWindow).
+//
 // Priority 2: partial-coverage branches (Assign re-activation, Insert
-//   duplicate invitation, SetStatus terminal-state path, SetActive not-found,
-//   FindByIDIncludingDeleted deleted-row, Revoke not-found, SoftDelete
-//   optimistic-lock, membership SoftDelete not-found).
+//
+//	duplicate invitation, SetStatus terminal-state path, SetActive not-found,
+//	FindByIDIncludingDeleted deleted-row, Revoke not-found, SoftDelete
+//	optimistic-lock, membership SoftDelete not-found).
+//
 // Priority 3: AuthZService.GetMembership with real DB (setCached / readFromDB).
 package postgres_test
 
@@ -1092,11 +1096,11 @@ func TestCOVMemSD003_SoftDelete_Happy(t *testing.T) {
 //
 // Expected Result:
 //   - Returns MembershipProjection with:
-//     * Status = active
-//     * Roles contains "member" and "tenant_owner"
-//     * Departments contains the seeded dept
-//     * EffectiveFeatureFlags non-nil
-//     * ReadOnly = false (tenant is in trial)
+//   - Status = active
+//   - Roles contains "member" and "tenant_owner"
+//   - Departments contains the seeded dept
+//   - EffectiveFeatureFlags non-nil
+//   - ReadOnly = false (tenant is in trial)
 //
 // Priority:          P1
 // Severity:          Blocker

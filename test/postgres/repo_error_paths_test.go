@@ -16,11 +16,11 @@
 // seedTenant, withTenant) and call pgadapter.New* constructors.
 //
 // Techniques used:
-//   1. Context cancellation   → triggers query/exec errors on any DB call.
-//   2. Non-existent UUIDs     → ErrNoRows / not-found paths.
-//   3. Nil inputs             → validation-error paths (patch==nil, t==nil).
-//   4. Wrong record_version   → optimistic-lock conflict (RowsAffected==0).
-//   5. Unknown lifecycle op   → default branch in execLifecyclePatch.
+//  1. Context cancellation   → triggers query/exec errors on any DB call.
+//  2. Non-existent UUIDs     → ErrNoRows / not-found paths.
+//  3. Nil inputs             → validation-error paths (patch==nil, t==nil).
+//  4. Wrong record_version   → optimistic-lock conflict (RowsAffected==0).
+//  5. Unknown lifecycle op   → default branch in execLifecyclePatch.
 package postgres_test
 
 import (
@@ -1001,11 +1001,11 @@ func TestErrPath_Tenant_Insert_CtxCancelled(t *testing.T) {
 
 	repo := pgadapter.NewTenantRepository(appPool)
 	t2 := &domain.Tenant{
-		Slug:     "insert-ctx-cancelled",
-		Name:     "Test Tenant",
-		Plan:     domain.PlanStarter,
-		Status:   domain.StatusTrial,
-		RealmID:  "realm-test",
+		Slug:      "insert-ctx-cancelled",
+		Name:      "Test Tenant",
+		Plan:      domain.PlanStarter,
+		Status:    domain.StatusTrial,
+		RealmID:   "realm-test",
 		RealmType: domain.RealmShared,
 	}
 	_, _, err := repo.Insert(cancelCtx, t2)
@@ -1261,7 +1261,7 @@ func TestErrPath_Tenant_ApplyLifecyclePatch_CtxCancelled(t *testing.T) {
 
 	repo := pgadapter.NewTenantRepository(appPool)
 	_, err := repo.ApplyLifecyclePatch(cancelCtx, tenantID, port.TenantLifecyclePatch{
-		Op: port.LifecycleSetPlan,
+		Op:   port.LifecycleSetPlan,
 		Plan: domain.PlanPro,
 	})
 	assert.Error(t, err)

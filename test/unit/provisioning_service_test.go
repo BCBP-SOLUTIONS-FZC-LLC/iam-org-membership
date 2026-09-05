@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,12 @@ import (
 func buildProvisioningSvc(m *fakeMembershipRepo) *service.ProvisioningService {
 	return service.NewProvisioningService(
 		nil, m, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+}
+
+func buildProvisioningSvcWithCache(m *fakeMembershipRepo, cache port.Cache) *service.ProvisioningService {
+	return service.NewProvisioningService(
+		nil, m, nil, nil, nil, nil, nil, nil, nil, cache, nil,
 	)
 }
 
@@ -56,6 +63,22 @@ func TestProvisioning_SetMembershipStatus_PropagatesRepoError(t *testing.T) {
 
 	_, err := svc.SetMembershipStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipActive, 1)
 	assert.ErrorIs(t, err, repoErr)
+}
+
+func TestProvisioning_SetMembershipStatus_Success_InvalidatesMemberCaches(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	m := &fakeMembershipRepo{
+		setStatusFn: func(_ context.Context, tt, uu uuid.UUID, st domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{ID: uuid.New(), TenantID: tt, UserID: uu, Status: st, RecordVersion: ver + 1}, nil
+		},
+	}
+	cache := &spyCache{}
+	svc := buildProvisioningSvcWithCache(m, cache)
+
+	_, err := svc.SetMembershipStatus(context.Background(), tenantID, userID, domain.MembershipActive, 1)
+	require.NoError(t, err)
+	assert.Contains(t, cache.deleteCalls, "om:memberships:"+tenantID.String()+":"+userID.String())
+	assert.Contains(t, cache.deleteCalls, "om:members:"+tenantID.String()+":50")
 }
 
 // ── Constructor smoke — every ctor field set, no panic on nil deps ────

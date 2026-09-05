@@ -144,13 +144,13 @@ var writeRetryOpts = pgcommon.RetryOptions{
 
 // RunInTx runs fn inside a transaction, injects a tx-bound publisher into
 // the ctx, and maps low-level connection errors into
-// domain.ErrDependencyUnavailable (503) so handlers get a consistent 5xx
+// domain.ErrDBUnavailable (503) so handlers get a consistent 5xx
 // shape (§17). SQL-level errors (unique violation, FK, check) bubble up
 // unchanged for service-layer classification. Contended writes retry via
 // pgcommon.RunInTxWithRetryOpts on deadlock / serialization failure.
 func (r *TxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return wrapConnErr(pgcommon.RunInTxWithRetryOpts(ctx, r.pool, pgx.TxOptions{}, writeRetryOpts, func(ctx context.Context, tx pgx.Tx) error {
-		txCtx := WithTx(ctx, tx)
+		txCtx := port.WithTx(ctx, tx)
 		if r.events != nil {
 			txCtx = port.WithEventPublisher(txCtx, r.events)
 		}
@@ -158,26 +158,23 @@ func (r *TxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) err
 	}))
 }
 
-// WithTx stores the active pgx.Tx in ctx so repository withPool joins and
-// EventPublisher.Enqueue writes the outbox on the same transaction.
+// WithTx re-exports port.WithTx for existing call sites in this package's
+// tests. New code should call port.WithTx directly.
 func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
-	return context.WithValue(ctx, txKey{}, tx)
+	return port.WithTx(ctx, tx)
 }
 
-type txKey struct{}
-
-// TxFromContext retrieves the active pgx.Tx set by RunInTx, if any.
-// Repository helpers call withPool which joins the tx when present.
+// TxFromContext re-exports port.TxFromContext for existing call sites in
+// this package's tests. New code should call port.TxFromContext directly.
 func TxFromContext(ctx context.Context) (pgx.Tx, bool) {
-	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
-	return tx, ok
+	return port.TxFromContext(ctx)
 }
 
 // withPool runs fn inside a transaction, joining an existing one if present
 // in ctx. Used by repository helpers so a read outside a service tx still
 // binds RLS via pgcommon.RunInTx's checkout hook.
 func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgx.Tx) error) error {
-	if tx, ok := TxFromContext(ctx); ok {
+	if tx, ok := port.TxFromContext(ctx); ok {
 		return wrapConnErr(fn(tx))
 	}
 	return wrapConnErr(pgcommon.RunInTx(ctx, pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {

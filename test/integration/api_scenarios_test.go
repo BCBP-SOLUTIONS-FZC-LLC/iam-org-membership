@@ -1334,7 +1334,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 
 	t.Run("O4-HP-01 set sso_enabled=true → 200", func(t *testing.T) {
 		body := toJSON(map[string]any{
-			"feature_flags": map[string]any{"sso_enabled": true},
+			"feature_flags":  map[string]any{"sso_enabled": true},
 			"record_version": rvT,
 		})
 		resp := e.do(t, http.MethodPatch,
@@ -1349,7 +1349,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 
 	t.Run("O4-HP-02 set empty flags → 200 clears all", func(t *testing.T) {
 		body := toJSON(map[string]any{
-			"feature_flags": map[string]any{},
+			"feature_flags":  map[string]any{},
 			"record_version": rvT,
 		})
 		resp := e.do(t, http.MethodPatch,
@@ -1364,7 +1364,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 
 	t.Run("O4-VAL-01 unknown flag key → 400", func(t *testing.T) {
 		body := toJSON(map[string]any{
-			"feature_flags": map[string]any{"sso_enable": true}, // typo
+			"feature_flags":  map[string]any{"sso_enable": true}, // typo
 			"record_version": rvT,
 		})
 		resp := e.do(t, http.MethodPatch,
@@ -1376,7 +1376,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 
 	t.Run("O4-VAL-02 nested object value → 400", func(t *testing.T) {
 		body := toJSON(map[string]any{
-			"feature_flags": map[string]any{"sso_enabled": map[string]any{"nested": true}},
+			"feature_flags":  map[string]any{"sso_enabled": map[string]any{"nested": true}},
 			"record_version": rvT,
 		})
 		resp := e.do(t, http.MethodPatch,
@@ -1388,7 +1388,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 
 	t.Run("O4-AUTH-01 non-operator → 403", func(t *testing.T) {
 		body := toJSON(map[string]any{
-			"feature_flags": map[string]any{"sso_enabled": true},
+			"feature_flags":  map[string]any{"sso_enabled": true},
 			"record_version": rvT,
 		})
 		resp := e.do(t, http.MethodPatch,
@@ -1400,7 +1400,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 
 	t.Run("O4-CONC-01 stale record_version → 409", func(t *testing.T) {
 		body := toJSON(map[string]any{
-			"feature_flags": map[string]any{"sso_enabled": true},
+			"feature_flags":  map[string]any{"sso_enabled": true},
 			"record_version": 9999,
 		})
 		resp := e.do(t, http.MethodPatch,
@@ -1413,7 +1413,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 	t.Run("O4-NF-01 unknown tenant → 404", func(t *testing.T) {
 		tid := freshTenantID()
 		body := toJSON(map[string]any{
-			"feature_flags": map[string]any{"sso_enabled": true},
+			"feature_flags":  map[string]any{"sso_enabled": true},
 			"record_version": 1,
 		})
 		resp := e.do(t, http.MethodPatch,

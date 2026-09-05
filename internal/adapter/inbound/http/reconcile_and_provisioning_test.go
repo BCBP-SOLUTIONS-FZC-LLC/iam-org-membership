@@ -307,18 +307,6 @@ func TestProvisionTenant_FullResponseShape_201(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"status"`)
 }
 
-// Test Case ID: I1-EVT-02 / I1-EVT-03
-// Idempotent replay (tenant already exists) → 200, no re-seed.
-func TestProvisionTenant_IdempotentReplay_200(t *testing.T) {
-	tenantID := uuid.New()
-	// freshInsert=false → wasCreated=false → 200
-	h := &InternalHandler{provisioning: buildI1ProvisioningSvc(false)}
-	c, w := buildCtx(http.MethodPost, "/", i1Body(tenantID, uuid.New()), iamSystemCtx(tenantID))
-	h.ProvisionTenant(c)
-	// LLD I-1: 200 on idempotent replay
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-}
-
 // Test Case ID: I1-EVT-04
 // Idempotent replay → 200 (not 201, not 4xx).
 func TestProvisionTenant_IdempotentReplay_Not201(t *testing.T) {

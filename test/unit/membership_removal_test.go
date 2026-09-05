@@ -113,6 +113,20 @@ func TestMembership_RemovalResolution_ReplaceDelegate_RequiresReplacementID(t *t
 	assert.False(t, wf.reassignCalled, "must reject before calling workflow")
 }
 
+func TestMembership_RemovalResolution_ReplaceDelegate_ReplacementIsSameUserRejected(t *testing.T) {
+	wf := &spyWorkflowClient{}
+	svc := buildMembershipSvcForRemoval(nil, nil, nil, wf, nil)
+	userID := uuid.New()
+	err := svc.RemovalResolution(context.Background(), uuid.New(), userID,
+		service.RemovalReplaceDelegate, &userID, uuid.New())
+
+	var de *domain.DomainError
+	require.ErrorAs(t, err, &de)
+	assert.ErrorIs(t, err, domain.ErrInvalidReplacement)
+	assert.Equal(t, "invalid_replacement", de.Details["code"])
+	assert.False(t, wf.reassignCalled, "must reject before calling workflow")
+}
+
 func TestMembership_RemovalResolution_ReplaceDelegate_ReplacementNotFound(t *testing.T) {
 	m := &fakeMembershipRepo{
 		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
