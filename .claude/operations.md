@@ -5,7 +5,7 @@
 ### 10.1 Tenant Isolation — Three Layers
 
 - **Layer 1** — Keycloak realm boundary.
-- **Layer 2** — PostgreSQL RLS with `app.tenant_id` GUC, `ENABLE` + `FORCE ROW LEVEL SECURITY`, `WITH CHECK`. `tenants` policy uses `id = current_setting('app.tenant_id')::uuid` (single-row visibility).
+- **Layer 2** — PostgreSQL RLS with `app.tenant_id` GUC, `ENABLE` + `FORCE ROW LEVEL SECURITY`, `WITH CHECK`. Every policy — `tenants` included — routes both `USING` and `WITH CHECK` through `rls_check_tenant(tenant_id, 'table')` (`rls_check_tenant(id, 'tenants')` on the root table, single-row visibility), not a bare `current_setting(...)::uuid` comparison — see database-schema.md's Row-Level Security section for the full mechanism and why that distinction matters (write-side violations get sampled-logged too, via `rls_violation_log`/Layer 3 below).
 - **Layer 3** — Audit-tagged cross-tenant detection via `rls_violation_log` + CloudWatch alarms.
 
 ### 10.2 Network Isolation
@@ -15,7 +15,7 @@
 
 ### 10.3 Input Validation
 
-`slug` — `^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$`, immutable after set. `default_locale` — BCP-47. `role_level`/`role_code` — ENUM. `scope` — ENUM. `keycloak_group_name` — ≤200 chars, `^[a-zA-Z0-9_./-]+$`. All UUIDs validated at handler layer.
+`slug` — DNS-label rules enforced by `provisioning_service.go`'s `isValidSlug` (a length check `3 ≤ len ≤ 63` combined with `slugRe = ^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$`: lowercase alphanumeric + hyphens, no leading/trailing hyphen), immutable after set (`trg_tenant_slug_immutable`). `default_locale` — a lightweight/structural BCP-47 check (`localeRe = ^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$`), not full BCP-47 tag validation (a Phase 6 TODO per the code's own comment). `role_level`/`role_code` — ENUM. All UUIDs validated at handler layer (`uuid.Parse` on path/body params). **No `scope` field or `keycloak_group_name` length/regex validation exists in this repo any more** — both were leftovers from before ADR-0007/ADR-0008: `scope` belonged to the now-Delegation-Service-owned `delegation_scope` enum, and `keycloak_group_name` is received read-only from Group Mapping Service's JIT resolution response (`group_mapping_service.go` only string-compares it against the SAML assertion's own group names — no length/format check on this service's side, that validation is Group Mapping Service's concern now). `RegisterValidators()` (`middleware.go`) is a documented no-op stub ("Phase 0 leaves the set empty") — the validation above lives in service-layer functions, not Gin binding validators, despite the stub's comment listing "slug regex, keycloak group name, BCP-47 locale, mfa_freshness range" as its eventual scope.
 
 ### 10.4 Authorization Matrix
 
@@ -68,7 +68,7 @@ All `iam_`-prefixed, registered once in `metrics.Register()` (`internal/adapter/
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `iam_rls_violations_total` | Counter | `violation_type` | RLS violations scraped from `rls_violation_log` by a 5-min exporter goroutine |
+| `iam_rls_violations_total` | Counter | `violation_type` | **Registered but never incremented in production code** — grep confirms the only non-test references are its own declaration in `business.go`; `cmd/server/exporters.go`'s 4 goroutines cover `iam_tenant_ownerless`/`iam_realm_sync_pending`/`iam_seat_overage_active`/`iam_pending_invitations_stale` only, none of them scrape `rls_violation_log`. Treat this metric/alert as currently a no-op until a `rls_violation_log`-scraping exporter is actually wired up; Layer 3 detection today means querying `rls_violation_log` directly, not this counter |
 | `iam_unknown_event_acknowledged_total` | Counter | `topic`, `event_type` | Consumed event of a type this service doesn't handle — silently ack'd; sustained nonzero means a producer added a new type |
 | `iam_stale_lifecycle_event_skipped_total` | Counter | `event_type` | EVT-14 recency-guard skip (post-DLQ-redrive spikes are expected) |
 | `iam_future_lifecycle_event_rejected_total` | Counter | `event_type` | EVT-15 future-time clamp — **any nonzero rate pages** (producer clock skew) |
@@ -114,7 +114,7 @@ Not implemented (do not treat as current): `iam_membership_joins_total`/`_leaves
 
 ### 11.3 OTel Tracing
 
-`platform-gincommon.InitTracingFromEnv()` + `platform-pgcommon.NewOTelQueryTracer`. Cross-service client spans (`catalogadmin`/`groupmappingclient`/`delegationcheck`) carry child spans for the outbound HTTP call + DB write where applicable. W3C `traceparent` propagated via `gincommon.PropagateHeaders`.
+`platform-gincommon.InitTracingFromEnv()` for the process-global `TracerProvider`. **There is no exported `platform-pgcommon.NewOTelQueryTracer`** — `pgcommon.Config.Tracer` (type `port.Tracer`, a one-method `StartSpan(ctx, name) (context.Context, func())` interface) is the extension point, and pgcommon wraps whatever's set there internally as its own unexported `otelQueryTracer`/`multiTracer` `pgx.QueryTracer`. This service supplies that interface itself: `internal/adapter/outbound/postgres/otel_tracer.go`'s `NewOTelTracer(serviceName)` returns an `otelTracer` backed by `otel.Tracer(serviceName)`, wired onto `Config.Tracer` for **both** the app pool and the BYPASSRLS `sysPool` in `cmd/server/main.go` and `cmd/reconciler/main.go` — so every `db.query` span exports through the same OTLP pipeline as HTTP spans on either binary. Cross-service client spans (`catalogadmin`/`groupmappingclient`/`delegationcheck`/`workflow`/`realmprovisioner`) carry child spans for the outbound HTTP call + DB write where applicable. W3C `traceparent` propagation is **not** `gincommon.PropagateHeaders` — each of the five outbound-client packages has its own package-local `propagateTraceparent(ctx, req)` helper built directly on `otel/propagation.NewCompositeTextMapPropagator` (mirroring gincommon's inject step, but not calling it), since these are outbound requests gincommon's inbound-focused helper doesn't cover. `internal/adapter/outbound/httpx/transport.go` (`httpx.NewClient`, an otelhttp-instrumented shared `http.Client` factory) was scaffolded to replace all five clients' manual `http.Client` construction + per-package `propagateTraceparent`, but that migration has not happened — it has zero production callers today (only its own test), so don't assume from its presence in the tree that any client has been switched over.
 
 ### 11.4 Structured Logs (Zap)
 
@@ -168,7 +168,9 @@ Table below is verified directly against the current `.env-example` (not just pr
 
 ## 13. Deployment & Scaling
 
-Helm chart mirrors `iam-user-profile`. `terminationGracePeriodSeconds = 75`. HPA: 2–8 replicas on CPU + `iam_memberships_cache_hit_ratio`. PDB `minAvailable: 1`. Resources: CPU 100m/500m, Memory 128Mi/384Mi.
+Helm chart mirrors `iam-user-profile`. `terminationGracePeriodSeconds = 75`. HPA (`deploy/helm/templates/hpa.yaml`, `autoscaling.*` in `values.yaml`): 2–8 replicas, scaling on CPU (`targetCPUUtilizationPercentage: 70`) + optional memory (`targetMemoryUtilizationPercentage: 75`) + an optional custom-metric RPS-per-replica target (`targetRPSPerReplica: 500` against `http_requests_per_second`, silently absent from the HPA — falling back to CPU/memory only — unless `prometheus-adapter` is installed with `deploy/monitoring/prometheus-adapter-rule.yaml`). **Not** `iam_memberships_cache_hit_ratio` — that metric isn't implemented (§11.2) and was never wired into the HPA. PDB `minAvailable: 1`. Resources (`values.yaml`): requests CPU 100m / Memory 256Mi, limits CPU 500m / Memory 512Mi.
+
+**Pod spec additions** (`deploy/helm/templates/deployment.yaml`/`cronjobs.yaml`, purely additive — `helm lint` passes clean, no change to the security posture below): `imagePullSecrets` (private registry pulls), `nodeSelector`/`tolerations` (node placement), `podLabels` (extra labels merged onto pod metadata), and a `tmp` `emptyDir` volume mounted at `/tmp` — required because `securityContext.readOnlyRootFilesystem: true` otherwise leaves no writable `/tmp` for the process. All default to empty/off in `values.yaml` and only take effect when a deploying environment sets them.
 
 ### 13.1 CronJobs
 
@@ -191,6 +193,8 @@ Exactly **7** CronJobs, dispatched via `cmd/reconciler/main.go --job=<name>` (ve
 Rolling deploy, 3 replicas. `migrate.Runner` `lock_timeout=30s`. Additive changes zero-downtime. `UNIQUE` via `CREATE UNIQUE INDEX CONCURRENTLY` + `ADD CONSTRAINT ... USING INDEX` in separate releases (MIG-8).
 
 ## 14. Testing Strategy
+
+**Coverage:** merged statement coverage (`make test-ci` → `coverage.out`, `make cover-func` for a per-function breakdown) currently sits at **98.4%**, comfortably above the CI gate's 95% floor (`.github/scripts/coverage-gate.sh`, `COVERAGE_THRESHOLD` env var, default 95, not overridden in `.github/workflows/validate-test.yml`). The Makefile's `TEST_INTERNAL_PKGS` (white-box tests folded into `test-unit`/`_test-unit`/`race`) must explicitly list every package under `internal/`/`pkg/` that carries its own `_test.go` files — `-coverpkg=$(COVER_PKG_LIST)` instruments a package for coverage *accounting* but does not make `go test` actually *run* a package's tests unless that package also appears in the invoked package list. `./internal/core/port/...` and `./internal/adapter/outbound/httpx/...` were both missing from `TEST_INTERNAL_PKGS` until a recent fix, despite each having its own test file — their tests silently never ran under `make test-ci`/`make test`/CI even though the coverage number looked complete. Both are now included; treat any future new package under `internal/`/`pkg/` with its own `_test.go` as needing the same check.
 
 - **§14.1 Unit** (`testify/mock` for `port.WorkflowClient`/`RealmProvisionerClient`/`CatalogAdminClient`/`GroupMappingClient`/`DelegationCheckClient`): group-mapping resolution (incl. fail-open empty-resolution path), catalog read-through + stale-if-error fallback (incl. fail-closed `catalog_unavailable`), seat-cap arithmetic (SEAT-1), idempotency keys, §8.8 delegate-impact resolution (blocked/proceed/replacement-validate/re-check), §8.8.5 fail-open advisory, §8.8.4 department extension (level increase never calls Workflow — `AssertNotCalled`, `scope='all'` specifically excluded WFI-10; dept-scope delegate pre-filter fail-open to tenant-wide scoping on `DelegationCheckClient` failure), §16 A11 invitation flow (stages-not-adds, lost-race compensation, duplicate detection, acceptance materialization, revoke frees + reconciles, throttling before RP call PI-11/PI-12). No `port.UserProfileClient` — that adapter was deleted as dead code once delegation's OOO coordination moved to the standalone Delegation Service.
 
@@ -257,7 +261,7 @@ Deliberately **event-driven, not synchronous** for write; O&M exposes no synchro
 
 ### 20.1 Outbox Health
 
-`outbox-prune`'s batched raw-SQL delete at 8-day retention, daily (not `outbox.Runner.PrunePublished`). Dead-letters trigger immediate page. Selective replay via `ReprocessDeadLettersWith(ctx, DLQFilter{EventType, TenantID}, limit)` (platform-events v1.3.0 DLQ API).
+`outbox-prune`'s batched raw-SQL delete at 8-day retention, daily (not `outbox.Runner.PrunePublished`). Dead-letters trigger immediate page. Selective replay via `ReprocessDeadLettersWith(ctx, DLQFilter{EventType, TenantID}, limit)` (platform-events v1.4.0 DLQ API — the DLQ API itself was introduced at v1.3.0 and is unchanged at the v1.4.0 this repo now depends on).
 
 **DLQ redrive interacts with EVT-14 recency guard:** redriven lifecycle events carry **original** old CloudEvents `time`. If newer event advanced `last_event_at`, the redrive is correctly **skipped as stale** (`iam_stale_lifecycle_event_skipped_total++`). Post-redrive spike is expected, not an incident. If a redriven event **must** take effect, correct the projection deliberately at the source of truth. EVT-15-parked DLQ events won't redrive without a producer clock fix.
 

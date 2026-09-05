@@ -238,6 +238,9 @@ func TestVC_CACHE_011_KeyBuildersFormatCorrectly(t *testing.T) {
 		{"gdm", c.GroupDeptMappingsKey(tenant), "om:gdm:11111111-1111-1111-1111-111111111111"},
 		{"seat-usage", c.SeatUsageKey(tenant), "om:seat_usage:11111111-1111-1111-1111-111111111111"},
 		{"plans", c.PlansKey(), "om:plans"},
+		{"departments", c.DepartmentsKey(), "om:departments"},
+		{"departments-stale", c.DepartmentsStaleKey(), "om:departments:stale"},
+		{"plans-stale", c.PlansStaleKey(), "om:plans:stale"},
 	}
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, tc.got, "%s key builder must match §6.1 exactly", tc.name)

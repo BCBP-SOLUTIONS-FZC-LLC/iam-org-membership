@@ -15,6 +15,12 @@ import (
 //   - sampled span   → flags = "01"
 //   - unsampled span → flags = "00"
 
+func TestPropagateTraceparent_NilRequestNoop(t *testing.T) {
+	assert.NotPanics(t, func() {
+		propagateTraceparent(context.Background(), nil)
+	})
+}
+
 func TestPropagateTraceparent_NoSpanInContextSkipsHeader(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	propagateTraceparent(context.Background(), req)

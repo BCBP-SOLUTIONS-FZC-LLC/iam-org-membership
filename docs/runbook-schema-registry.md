@@ -78,7 +78,8 @@ The eight validation passes are:
 5. Registry-name resolution — `domain.GlueSchemaName` returns the same
    PascalCase identifier as the file stem.
 6. Topic-partition — every event maps to exactly one of the two topics; no
-   event straddles topics (routing keyed on `Envelope.Source`).
+   event straddles topics (routing keyed on event type via
+   `domain.TopicForEvent`, not `Envelope.Source`).
 7. Lifecycle enforcement (`enforce-lifecycle` sub-command) — no backward-
    incompatible changes without an accompanying `additive-then-destructive`
    migration entry.
@@ -229,7 +230,7 @@ Set in `deploy/helm/values.yaml` (per environment) or `.env-example` (dev):
 | `MIGRATION_DATABASE_URL` | Direct-Postgres DSN | Migrations require `pg_advisory_lock` (session-scoped) — must bypass PgBouncer |
 | `GLUE_REGISTRY_NAME_MEMBERSHIP` | Membership-events registry | Set to `iam-membership-events` in production. Leave empty in dev (NoopCodec). |
 | `GLUE_REGISTRY_NAME_TENANT` | Tenant-events registry | Set to `iam-tenant-events` in production. Leave empty in dev. |
-| `SNS_TOPIC_ARN_MEMBERSHIP` | `iam.membership.events` topic ARN | Required. `RoutingPublisher` routing key `Envelope.Source == 'iam.membership.events'` |
+| `SNS_TOPIC_ARN_MEMBERSHIP` | `iam.membership.events` topic ARN | Required. `RoutingPublisher` sends here for every event type except `TenantCreated`/`TrialStarted` (`domain.TopicForEvent`, keyed on event type — not `Envelope.Source`) |
 | `SNS_TOPIC_ARN_TENANT` | `iam.tenant.events` topic ARN | Required. Only `TenantCreated` / `TrialStarted` published by O&M |
 | `SQS_QUEUE_URL_TENANT_EVENTS` | `tenant-orgm-q` URL | RP tenant-lifecycle events (`TrialTenantProvisioned`, `TenantRealmReady`, ...) |
 | `SQS_QUEUE_URL_BILLING_EVENTS` | `billing-orgm-q` URL | Billing events (`TenantPlanChanged`, `TenantSeatsChanged`, ...) |

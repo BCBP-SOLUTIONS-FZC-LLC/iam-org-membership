@@ -4,7 +4,7 @@ The Org & Membership (Core) Service — the **organizational/business system of 
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`
 **Module:** Go 1.26.6 · private module · deployed as two binaries from one image (`cmd/server`, `cmd/reconciler`)
-**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.1** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
+**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.3** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
 
 ---
 
@@ -164,12 +164,13 @@ iam-org-membership/
 │           ├── catalogadmin/           # Catalog Service HTTP client — departments/plans (NOT fail-open)
 │           ├── groupmappingclient/     # Group Mapping Service HTTP client — I-10 JIT resolution (fails open)
 │           ├── delegationcheck/        # Delegation Service HTTP client — §8.8.4 dept-scope precision lookup (fails open)
+│           ├── httpx/                  # Shared otelhttp-instrumented http.Client factory — scaffolded, NOT yet wired into any of the 5 outbound clients above (each still builds its own http.Client + local propagateTraceparent)
 │           └── metrics/                # iam_*-prefixed Prometheus counters/gauges/histograms
 ├── pkg/requestctx/                    # Typed RequestContext{UserID, TenantID, Roles, ClientIP, UserAgent}
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.1 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.3 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   └── runbook-schema-registry.md     # Schema-governance operator runbook
 ├── deploy/                            # Helm chart, monitoring alerts, IAM policy
@@ -185,7 +186,9 @@ iam-org-membership/
 | `port` | `domain` only |
 | `service` | `domain`, `port`, `requestctx`, `observability` (a documented cross-cutting leaf) |
 | `adapters_inbound` (http/consumer) | `service`, `port`, `domain`, `requestctx`, `observability`, `apispec` |
-| `adapters_outbound` (postgres/valkey/eventbus/workflow/realmprovisioner/catalogadmin/groupmappingclient/delegationcheck) | `port`, `domain`, `eventschema`, `observability` |
+| `adapters_outbound` (postgres/valkey/eventbus/workflow/realmprovisioner/catalogadmin/groupmappingclient/delegationcheck) | `port`, `domain`, `eventschema`, `observability`, `httptransport` |
+| `httptransport` (`internal/adapter/outbound/httpx` — scaffolded, not yet imported by any outbound client) | Nothing internal |
+| `reconciler_jobs` (`cmd/reconciler/jobs`) | `domain`, `port`, `observability`, `requestctx` |
 | `cmd` (server/reconciler) | Everything above |
 
 Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET LOCAL` (transaction-scoped), never a session-scoped `SET`, so a value can never leak across a pooled PgBouncer connection.
@@ -204,7 +207,7 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 
 | Library | Version | Purpose |
 |---|---|---|
-| `platform-gincommon` | v1.2.0 | HTTP middleware, Zap logging, OTel tracing, Prometheus metrics |
+| `platform-gincommon` | v1.3.0 | HTTP middleware, Zap logging, OTel tracing, Prometheus metrics |
 | `platform-events` | v1.4.0 | Transactional outbox, SNS `RoutingPublisher`, SQS consumer |
 | `platform-pgcommon` | v1.3.0 | pgx/v5 pool, RLS GUC injection, migrations, error helpers (`IsConnectionException`/`IsInsufficientResources`/`IsPgError`) |
 
@@ -442,7 +445,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 
 ### Coverage
 
-`.github/scripts/coverage-gate.sh` reads `go tool cover -func=coverage.out`'s total and fails below `COVERAGE_THRESHOLD` (default **95%**, not overridden in this repo's `validate-test.yml`). Coverage is measured over `./internal/...` (`COVER_PKG_LIST` in the Makefile), merged across the unit/postgres/integration suites via `scripts/merge_coverage.py` (max-count strategy). `core/domain` sits at 100%; `core/service` and the Postgres/Valkey adapters are all comfortably above 80%; the eventbus adapter and the Go composition roots (`cmd/server`, `cmd/reconciler`, deliberately thin wiring) drag the current merged total to roughly **79%** — below the enforced floor, a real gap worth closing before the next CI run rather than something this README should paper over.
+`.github/scripts/coverage-gate.sh` reads `go tool cover -func=coverage.out`'s total and fails below `COVERAGE_THRESHOLD` (default **95%**, not overridden in this repo's `validate-test.yml`). Coverage is measured over `./internal/...` and `./pkg/...` (`COVER_PKG_LIST` in the Makefile), merged across the unit/postgres/integration suites via `scripts/merge_coverage.py` (max-count strategy). The current merged total is **98.4%**, comfortably above the enforced floor. `internal/adapter/inbound/http` sits at 100%; `internal/core/domain`, `internal/core/port`, `pkg/requestctx`, and `internal/adapter/outbound/httpx` are all at 100% as well; `internal/core/service` and `internal/adapter/outbound/postgres` are both above 99%. The handful of packages below 95% (`catalogadmin`, `realmprovisioner`, `consumer`) have only a few residual statements each — mostly defensive branches (e.g. a `json.Marshal` error path on an always-marshalable struct) that are impractical to exercise without contriving unrealistic inputs, not real gaps.
 
 ---
 
@@ -517,7 +520,7 @@ All `iam_`-prefixed (`internal/adapter/outbound/metrics/business.go`): `rls_viol
 | `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + SQS consumer + 4 metric-exporter goroutines |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs |
 
-Two-stage `Dockerfile`: `golang:1.26.5-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the two compiled binaries are copied in. `EXPOSE 8080 9090`.
+Two-stage `Dockerfile`: `golang:1.26.6-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the two compiled binaries are copied in. `EXPOSE 8080 9090`.
 
 ### Helm chart
 
@@ -648,7 +651,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.1 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.3 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 
 ---

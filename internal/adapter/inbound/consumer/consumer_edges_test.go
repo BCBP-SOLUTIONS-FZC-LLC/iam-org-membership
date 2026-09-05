@@ -18,6 +18,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// gdprWipeCacheKeys returns the exactly-known, bounded tenant-scoped keys
+// (CACHE-8) — a pure function, directly testable.
+func TestGdprWipeCacheKeys_ReturnsBoundedTenantScopedKeys(t *testing.T) {
+	tenantID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	keys := gdprWipeCacheKeys(tenantID)
+
+	want := []string{
+		"om:tenant:11111111-1111-1111-1111-111111111111",
+		"om:locale:11111111-1111-1111-1111-111111111111",
+		"om:roles:11111111-1111-1111-1111-111111111111",
+		"om:seat_usage:11111111-1111-1111-1111-111111111111",
+		"om:members:11111111-1111-1111-1111-111111111111:50",
+		"om:grm:11111111-1111-1111-1111-111111111111",
+		"om:grm:stale:11111111-1111-1111-1111-111111111111",
+		"om:gdm:11111111-1111-1111-1111-111111111111",
+		"om:gdm:stale:11111111-1111-1111-1111-111111111111",
+		"om:gtrm:11111111-1111-1111-1111-111111111111",
+		"om:gtrm:stale:11111111-1111-1111-1111-111111111111",
+	}
+	assert.Equal(t, want, keys)
+}
+
 // EVT-15: env.Timestamp > now() + skew → ErrPoisonPill (returns BEFORE
 // touching the pool, so a nil pool is fine).
 func TestP19Consumer_EVT15_FutureTimestamp_ReturnsPoisonPill(t *testing.T) {

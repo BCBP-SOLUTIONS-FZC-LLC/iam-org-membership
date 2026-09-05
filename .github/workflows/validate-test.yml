@@ -70,7 +70,12 @@ jobs:
       - name: Tests — unit · postgres · integration (race + coverage)
         env:
           TESTCONTAINERS_RYUK_DISABLED: 'true'
-        run: make test-ci
+        # TEST_POSTGRES_PARALLEL lowered from the Makefile's dev-machine
+        # default (4) — GitHub-hosted runners have far less CPU/RAM headroom
+        # than a dev box, and 4 concurrent testcontainers Postgres instances
+        # (each with its own pgxpool) was enough resource pressure to stall
+        # a connection attempt and cascade into a whole-suite timeout.
+        run: make test-ci TEST_POSTGRES_PARALLEL=2
 
       # make test-ci already merges all three coverage profiles into coverage.out
       # via _merge-coverage. Assert the combined statement coverage meets 95%.

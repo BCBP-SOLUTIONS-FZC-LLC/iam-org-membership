@@ -2,7 +2,7 @@
 
 This document describes the internal structure, dependency rules, and runtime data flows of `iam-org-membership`.
 
-`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.6) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.1, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **two binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus two inbound SQS consumers and the transactional outbox runner) and `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 7 CronJobs).
+`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.6) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.3, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **two binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus two inbound SQS consumers and the transactional outbox runner) and `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 7 CronJobs).
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service. This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -32,7 +32,7 @@ graph TD
     subgraph adapters_out["Outbound Adapters  —  internal/adapter/outbound/"]
         postgres["postgres/\nTenantRepository · TenantDepartmentRepository\nMembershipRepository · TenantRoleRepository\nDeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · IdempotencyRepository · AuthZRepository · ReconcilerStore\nTxRunner · OTelTracer\nOptimistic locking (record_version) on 7 of 8 domain tables (TRG-1)\nmigrations/ — single consolidated 000000_initial_schema"]
         valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only (CACHE-2/CACHE-9)\n50ms read/write timeout hardcoded, no env var\nWorking caches: om:memberships · om:tenant · om:plans/departments (+:stale)\nom:grm/gdm/gtrm (+:stale)\nDeclared, not populated: om:members · om:roles · om:locale · om:dept_members · om:seat_usage"]
-        eventbus["eventbus/\nRoutingPublisher (events.NewRoutingPublisher)\n  routes by Envelope.Source →\n    iam.membership.events (12 events)\n    iam.tenant.events (2 events: TenantCreated, TrialStarted)\nOutbox runner · ValidatingCodec (enqueue-time) · GlueCodec ×2 (publish-time, v1.4.0 events.WithCodec)\nschemas/*.json embedded via //go:embed"]
+        eventbus["eventbus/\nRoutingPublisher (own local type, not platform-events)\n  routes by domain.TopicForEvent(env.Type) →\n    iam.membership.events (12 events)\n    iam.tenant.events (2 events: TenantCreated, TrialStarted)\nOutbox runner · ValidatingCodec (enqueue-time) · GlueCodec ×2 (publish-time, v1.4.0 events.WithCodec)\nschemas/*.json embedded via //go:embed"]
         workflow["workflow/\nport.WorkflowClient impl (HTTP, §8.8 — talks to Workflow Service,\n  unrelated to the delegation-domain extraction)\nGetDelegateImpact · ReassignDelegate · CancelByDelegate\nWORKFLOW_TIMEOUT_MS=3000"]
         rp["realmprovisioner/\nport.RealmProvisionerClient impl (HTTP)\nCreateInvitedUser (§8.10) · DeleteUser (idempotent, PI-9)\nPatchRealmConfig (T-15) · RevokeUserSessions (AUTH-8 fail-open) · ResetMFA (RP-9 fail-closed)\nREALM_PROVISIONER_TIMEOUT_MS=3000"]
         catalogadmin["catalogadmin/\nport.CatalogAdminClient impl (HTTP)\nGET /internal/plans · GET /internal/departments\nADR-0007 Wave 1, NOT fail-open — catalog_unavailable on cold-cache+failure\nCATALOG_ADMIN_TIMEOUT_MS=3000"]
@@ -105,7 +105,7 @@ graph TD
 
 **Rule:** `domain` ← `port` ← `service` ← `adapter` ← `cmd`. `core/service` may also import `pkg/requestctx` and `internal/adapter/outbound/metrics` (`.go-arch-lint.yml`'s documented cross-cutting `observability` component — `membership_service.go`, `catalog_service.go`, `provisioning_service.go`, `group_mapping_service.go` all import it directly to record business-outcome counters at the point of the outcome, matching the sibling-service convention). Nothing else in `core/` imports `adapter/`. Enforced in CI by `go-arch-lint` (`.go-arch-lint.yml`, `deepScan: false` — import-level checks only, since a composition root wiring an adapter into a service constructor in `main.go` is how Clean Architecture is supposed to work, not a violation) plus a CI grep in `.github/scripts/arch-lint.sh` for **RLS-6** (`SET app\.tenant_id` must only ever appear as `SET LOCAL`).
 
-**A real, currently-open violation.** `internal/adapter/outbound/eventbus/publisher.go` imports `internal/adapter/outbound/postgres` (for `pgadapter.TxFromContext`, so `Enqueue` can find the active `pgx.Tx` and insert into `outbox_events` on the same transaction as the business write). `.go-arch-lint.yml`'s `adapters_outbound` component may depend on `port`/`domain`/`eventschema`/`observability` — not on itself, so this is a cross-adapter dependency the lint config forbids, and `go-arch-lint check --project-path .` fails on it today. It is pre-existing (unrelated to this document's own changes) and not yet fixed; the correct shape is a `port.TxContextReader`-style seam the postgres adapter implements and the eventbus adapter depends on instead of the concrete package, mirroring how `service` already depends on `port.TxRunner` rather than `postgres.TxRunner` directly. `go-arch-lint` also reports 9 "file not attached to component" notices for `cmd/reconciler/jobs/*.go` (×8) and `tools/mockwf/main.go` (×1) — a `.go-arch-lint.yml` component-declaration gap (those directories aren't listed under any component's `in:` list), not a code-level dependency violation.
+**A violation that's been fixed twice now — watch for it recurring.** `internal/adapter/outbound/eventbus/publisher.go` used to import `internal/adapter/outbound/postgres` directly (for `pgadapter.TxFromContext`, so `Enqueue` could find the active `pgx.Tx` and insert into `outbox_events` on the same transaction as the business write) — a cross-adapter dependency `adapters_outbound`'s `mayDependOn` list (`port`/`domain`/`eventschema`/`observability`/`httptransport`) forbids. Fixed by moving `WithTx`/`TxFromContext` (and the underlying context key) into `internal/core/port/tx_runner.go` — `postgres.WithTx`/`postgres.TxFromContext` remain as thin re-export wrappers so existing test call sites keep compiling, and `eventbus/publisher.go` now calls `port.TxFromContext(ctx)` directly, same as `service` already does with `port.TxRunner` rather than `postgres.TxRunner`. This exact fix has had to be reapplied once already: it originally landed only in an uncommitted working tree, and got silently overwritten when unrelated external commits landed mid-session and reintroduced the direct `postgres` import. `go-arch-lint check --project-path .` currently reports **zero violations** — but given the history, re-verify this specific import hasn't drifted back before trusting this paragraph. `.go-arch-lint.yml` also now declares two components that used to be missing (previously surfacing as "file not attached to component" notices): `httptransport` (`internal/adapter/outbound/httpx`) and `reconciler_jobs` (`cmd/reconciler/jobs`, one file per CronJob) — plus `tools` is excluded from linting entirely.
 
 ---
 
@@ -378,7 +378,7 @@ sequenceDiagram
     OB -->>- Runner: unpublished events batch
 
     Runner ->>+ Router: Route(envelope)
-    Note over Router: events.NewRoutingPublisher inspects Envelope.Source →<br/>selects TopicARNs["iam.membership.events"] or ["iam.tenant.events"]
+    Note over Router: domain.TopicForEvent(env.Type) selects the tenant or<br/>membership publisher field (RoutingPublisher, own local type)
     Router ->>+ SNS: Publish(TopicArn=iam.membership.events, MessageAttributes{EventType, TenantID, Source, EventID})
     SNS -->>- Router: MessageID
     Router -->>- Runner: published
@@ -388,7 +388,7 @@ sequenceDiagram
     Note over Runner: retry up to OUTBOX_MAX_ATTEMPTS (5) with backoff — DLQ on exceed (outbox_dead_letters_total pages)
 ```
 
-`Publisher.Enqueue` (`internal/adapter/outbound/eventbus/publisher.go`) marshals the payload, runs it through the `ValidatingCodec` for **schema validation only** (the returned bytes are discarded — the outbox always stores plain JSON), builds an `events.Envelope` carrying `tenant_id`/`trace_id`/`ip_address`/`user_agent`/`actor`/`subject`, and inserts it via `outbox.Enqueue(ctx, tx, env)` against the `pgx.Tx` it retrieves from `pgadapter.TxFromContext(ctx)` — the same transaction `TxRunner.RunInTx` opened for the business write. `TxRunner.RunInTx` (`internal/adapter/outbound/postgres/db.go`) additionally retries the whole callback on deadlock/serialization failure via `pgcommon.RunInTxWithRetryOpts` (3 attempts, 10 ms → 500 ms exponential backoff with 25% jitter) and maps any surviving connection-level error to `domain.ErrDependencyUnavailable` (503) through `wrapConnErr`, so a handler's error branch never has to special-case a transport failure.
+`Publisher.Enqueue` (`internal/adapter/outbound/eventbus/publisher.go`) marshals the payload, runs it through the `ValidatingCodec` for **schema validation only** (the returned bytes are discarded — the outbox always stores plain JSON), builds an `events.Envelope` carrying `tenant_id`/`trace_id`/`ip_address`/`user_agent`/`actor`/`subject`, and inserts it via `outbox.Enqueue(ctx, tx, env)` against the `pgx.Tx` it retrieves from `port.TxFromContext(ctx)` — the same transaction `TxRunner.RunInTx` opened for the business write. `TxRunner.RunInTx` (`internal/adapter/outbound/postgres/db.go`) additionally retries the whole callback on deadlock/serialization failure via `pgcommon.RunInTxWithRetryOpts` (3 attempts, 10 ms → 500 ms exponential backoff with 25% jitter) and maps any surviving connection-level error to `domain.ErrDBUnavailable` (503) through `wrapConnErr`, so a handler's error branch never has to special-case a transport failure.
 
 ---
 
@@ -633,7 +633,7 @@ Full table catalogue, enums, and every RLS/tenant/seat/migration/trigger invaria
 
 ## Event and outbox flow
 
-Two outbound SNS topics via a `RoutingPublisher` that inspects `Envelope.Source` — this is this service's structural departure from a single-topic publisher, and the reason a local wrapper exists rather than reaching for `platform-events`' `NewSNSPublisher` directly.
+Two outbound SNS topics via `RoutingPublisher` — this service's own local type, routing each envelope by `domain.TopicForEvent(env.Type)` (event **type**, not `Envelope.Source`) to one of two pre-built publisher fields. This is this service's structural departure from a single-topic publisher, and the reason a local wrapper exists rather than reaching for `platform-events`' `NewSNSPublisher` directly.
 
 > Source: [`docs/architecture/mermaid/event-outbox-flow.mmd`](docs/architecture/mermaid/event-outbox-flow.mmd)
 
@@ -645,7 +645,7 @@ sequenceDiagram
     participant OB as outbox_events
     participant Codec as ValidatingCodec wrapping GlueCodec (prod) · NoopCodec (dev)
     participant Runner as Outbox Runner (goroutine, poll 500 ms)
-    participant Router as RoutingPublisher (events.NewRoutingPublisher)
+    participant Router as RoutingPublisher (own local type)
     participant SNS_M as SNS iam.membership.events
     participant SNS_T as SNS iam.tenant.events
     participant SQS as SQS subscribers (§7.3.2 fan-out)
@@ -667,7 +667,7 @@ sequenceDiagram
     else validation passes
         Note over Codec: GlueCodec prepends 18-byte header {0x03, 0x00, schema_version_UUID}<br/>Version IDs prefetched from two Glue registries at startup:<br/>  GLUE_REGISTRY_MEMBERSHIP_NAME (iam-membership-events)<br/>  GLUE_REGISTRY_TENANT_NAME     (iam-tenant-events)<br/>NoopCodec pass-through in dev (registry env vars unset).
         Codec -->> SVC: (encoded bytes, schemaVersionID)
-        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  source (iam.membership.events | iam.tenant.events),<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)
+        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)<br/>No source/topic column — platform-events' outbox_events schema has none;<br/>event_type alone is what RoutingPublisher routes on at publish time.
         OB -->>- SVC: inserted
 
         TX ->>+ DB: COMMIT
@@ -683,13 +683,13 @@ sequenceDiagram
 
         loop for each envelope
             Runner ->>+ Router: Route(envelope)
-            Note over Router: Routing key = Envelope.Source<br/>Selects TopicARNs[Source] from RoutingPublisher config
+            Note over Router: Routing key = domain.TopicForEvent(env.Type) — event **type**, not Envelope.Source.<br/>EventTenantCreated/EventTrialStarted → tenant publisher field; every other type defaults to membership.
 
-            alt envelope.Source == iam.membership.events
+            alt domain.TopicForEvent(env.Type) == TopicMembership
                 Router ->>+ SNS_M: Publish(TopicArn=SNS_TOPIC_ARN_MEMBERSHIP,<br/>MessageAttributes{EventType, TenantID, Source, EventID, Subject})
                 Note over SNS_M: 12 event types produced (§7.3):<br/>DepartmentMembershipGranted/Revoked/LevelChanged<br/>TenantRoleGranted · TenantRoleRevoked (§16 A14)<br/>MembershipRevoked (shared cascade signal — Delegation + Tender ACL)<br/>TenderAssigneeOverridden (I-13 validate-and-emit)<br/>MFAReset (P-34, sole audit signal for the reset)<br/>TenantSeatOverageStarted/Resolved (SEAT-5)<br/>TenantStateChanged (§16 A61, EVT-16 relay)<br/>TenantMembershipsPurged (tenant-offboard cascade — Delegation/Tender ACL/Group Mapping)<br/>(DelegationStarted/DelegationEnded moved to the Delegation Service's own topic, ADR-0008)
                 SNS_M -->>- Router: MessageID
-            else envelope.Source == iam.tenant.events
+            else domain.TopicForEvent(env.Type) == TopicTenant
                 Router ->>+ SNS_T: Publish(TopicArn=SNS_TOPIC_ARN_TENANT, ...)
                 Note over SNS_T: O&M produces ONLY:<br/>  TenantCreated · TrialStarted (§7.3)<br/>All other iam.tenant.events messages are Realm-Provisioner-produced<br/>(consumed by O&M via tenant-orgm-q — produce/consume disjoint, HLD §9.1.1)
                 SNS_T -->>- Router: MessageID
@@ -734,7 +734,7 @@ graph LR
     subgraph request["Per-request (gincommon.ObservabilityMiddlewares — every HTTP call)"]
         panic["PanicRecovery\n· defer recover()\n· log panic + stack\n· record OTel error on span\n· emit http_panic_total\n· return 500 JSON"]
         reqid["RequestID\n· read x-request-id or generate UUID\n· echo X-Request-ID header"]
-        trace["Tracing (OTel)\n· extract W3C traceparent\n· start HTTP server span\n· propagated to Workflow/RP/Catalog/GroupMapping/Delegation\n  via gincommon.PropagateHeaders"]
+        trace["Tracing (OTel)\n· extract W3C traceparent\n· start HTTP server span\n· propagated to Workflow/RP/Catalog/GroupMapping/Delegation\n  via each client's own propagateTraceparent"]
         metricsmw["Metrics\n· increment http_active_requests\n· defer: duration, sizes, status class"]
         logging["Logging (Zap)\n· defer: structured http_request log\n· sanitize header values"]
         guc["GUCBridgeMiddleware\n· pgcommon.GUCSetFromContext binds\n  SET LOCAL app.tenant_id per tx (RLS-6)\n· never session-scoped SET (would leak\n  across pooled PgBouncer backends)"]
@@ -893,7 +893,7 @@ if tag.RowsAffected() == 0 {
 
 **Consistency invariants (CONS-1..4):**
 - **CONS-1** — Business write + outbox event(s) commit together in one `RunInTx`; no event without state, no committed state without an event.
-- **CONS-2** — `wrapConnErr` classifies every connection-level failure into `domain.ErrDependencyUnavailable` (503) before it reaches a handler, so a transport blip is never mistaken for a business-rule rejection.
+- **CONS-2** — `wrapConnErr` classifies every connection-level failure into `domain.ErrDBUnavailable` (503) before it reaches a handler, so a transport blip is never mistaken for a business-rule rejection.
 - **CONS-3** — Cross-service reads (Catalog, Group Mapping, Delegation) never hold a Postgres transaction open across the HTTP call — every one of those calls happens **before** `RunInTx` opens (see the Provisioning flow's Catalog calls above), so a slow upstream never becomes a long-held row lock.
 - **CONS-4** — `MembershipRevoked`/`TenantMembershipsPurged` are the two shared cascade signals this service emits for sibling services to run their own async cleanup in their own databases — Core never reaches into another service's tables, and never blocks its own commit on a sibling service's cascade completing.
 
@@ -952,7 +952,7 @@ if tag.RowsAffected() == 0 {
 | `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 2 SQS consumers + 4 metric-exporter goroutines |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs |
 
-Two-stage `Dockerfile`: `golang:1.26.5-alpine` builder (pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root UID 65532) — only the two compiled binaries are copied in, which is why `api/asyncapi.yaml` is compiled in via `//go:embed` rather than read from disk at runtime.
+Two-stage `Dockerfile`: `golang:1.26.6-alpine` builder (pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root UID 65532) — only the two compiled binaries are copied in, which is why `api/asyncapi.yaml` is compiled in via `//go:embed` rather than read from disk at runtime.
 
 ### Helm chart
 
@@ -1085,7 +1085,7 @@ graph LR
         claude[".claude/CLAUDE.md + siblings\narchitecture.md · database-schema.md\napi-caching-events.md · request-flows.md · operations.md"]
         readme["README.md\nmental model · API/event overview · onboarding"]
         asyncapi_yaml["api/asyncapi.yaml\nAsyncAPI — iam.membership.events + iam.tenant.events"]
-        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.1"]
+        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.3"]
     end
 
     subgraph rendered["Rendered by"]
@@ -1114,6 +1114,6 @@ graph LR
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`docs/architecture/README.md`](docs/architecture/README.md) | Standalone Mermaid diagram set index (the 10 `.mmd` files embedded above) |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD (v2.1) — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD (v2.3) — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 
 Render a diagram locally: open any `.mmd` file in a Mermaid-aware IDE (VS Code + Mermaid Preview, IntelliJ + Mermaid plugin) or paste into [mermaid.live](https://mermaid.live).

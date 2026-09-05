@@ -15,6 +15,7 @@ exclude:
   - test
   - scripts
   - deploy
+  - tools
 
 excludeFiles:
   - '.*_test\.go$'
@@ -46,6 +47,19 @@ components:
   # handlers and outbound adapters (SQS consumer, reconciler binary).
   observability:
     in: internal/adapter/outbound/metrics
+
+  # Shared HTTP transport (otelhttp-instrumented http.Client) used by every
+  # outbound HTTP client — factored out to replace each client's own
+  # per-package manual traceparent-propagation transport.
+  httptransport:
+    in: internal/adapter/outbound/httpx
+
+  # Write-side reconciler jobs dispatched by cmd/reconciler --job=<name>
+  # (single binary, one file per CronJob). Not part of the adapters_outbound
+  # component set — jobs call outbound adapters via cmd's own wiring, not
+  # the other way around.
+  reconciler_jobs:
+    in: cmd/reconciler/jobs
 
   adapters_inbound:
     in:
@@ -121,13 +135,28 @@ deps:
       - observability
       - apispec
 
-  # outbound adapters: port + domain + eventschema + observability.
+  # outbound adapters: port + domain + eventschema + observability +
+  # httptransport (shared otelhttp client used by all outbound HTTP clients).
   adapters_outbound:
     mayDependOn:
       - port
       - domain
       - eventschema
       - observability
+      - httptransport
+
+  # httptransport: pure http.Client construction, no internal deps.
+  httptransport:
+    anyVendorDeps: true
+
+  # reconciler_jobs: domain + port + observability + requestctx (GUC
+  # rebinding for cross-tenant reads, mirrors internal/core/service).
+  reconciler_jobs:
+    mayDependOn:
+      - domain
+      - port
+      - observability
+      - requestctx
 
   # docs_swagger: pure generated assets, no internal deps.
   docs_swagger:
@@ -145,3 +174,5 @@ deps:
       - adapters_inbound
       - adapters_outbound
       - docs_swagger
+      - httptransport
+      - reconciler_jobs

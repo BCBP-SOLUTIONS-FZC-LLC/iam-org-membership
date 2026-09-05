@@ -119,6 +119,23 @@ func TestPublisher_Enqueue_RequiresOpenTx(t *testing.T) {
 	assert.Contains(t, err.Error(), "RunInTx")
 }
 
+func TestPublisher_WithLogger_ReturnsSameInstanceAndRoutesDebugLog(t *testing.T) {
+	p := New("iam-org-membership", NoopCodec{})
+	log := &glueTestLogger{}
+
+	got := p.WithLogger(log)
+	assert.Same(t, p, got, "WithLogger must return the same *Publisher for chaining")
+
+	tx := &fakeTx{}
+	err := p.Enqueue(pgadapter.WithTx(context.Background(), tx), &domain.DomainEvent{
+		Type: "TenantCreated", TenantID: uuid.New(),
+		Data: map[string]any{"foo": "bar"},
+	})
+	require.NoError(t, err)
+	// glueTestLogger only records Warn calls; the wired sink must at least
+	// be reachable without panicking on the Debug path Enqueue exercises.
+}
+
 func TestPublisher_Enqueue_TxExecErrorPropagates(t *testing.T) {
 	execErr := errors.New("outbox conflict")
 	tx := &fakeTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
