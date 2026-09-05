@@ -352,8 +352,6 @@ var _ port.InvitationRepository = (*miscInviteRepo)(nil)
 func TestSetRealmFields_ReturnsNewRecordVersion(t *testing.T) {
 	tenantID := uuid.New()
 	// Use existing whitebox test helper for I2 — call handler directly
-	h := &InternalHandler{provisioning: buildProvisioningForI4(&mhMemRepo{})}
-
 	// Stub via the provisioning service cache eviction path
 	called := false
 	cache := &spyCacheForI4{onDelete: func() { called = true }}
@@ -367,7 +365,6 @@ func TestSetRealmFields_ReturnsNewRecordVersion(t *testing.T) {
 
 	assert.Less(t, w.Code, 300, w.Body.String())
 	_ = called
-	_ = h
 }
 
 // buildSetRealmTxRunner returns a TxRunner that injects a fake tx returning the given new_version.

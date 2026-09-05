@@ -44,6 +44,7 @@ TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/outbound/groupmappingclient/... \
                       ./internal/adapter/outbound/metrics/... \
                       ./internal/adapter/outbound/valkey/... \
+                      ./internal/core/port/... \
                       ./internal/core/service/... \
                       ./pkg/...
 

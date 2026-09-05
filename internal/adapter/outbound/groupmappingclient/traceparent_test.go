@@ -35,3 +35,10 @@ func TestPropagateTraceparent_WithValidSpan_SetsHeader(t *testing.T) {
 	assert.Contains(t, tp, "4bf92f3577b34da6a3ce929d0e0e4736")
 	assert.Contains(t, tp, "00f067aa0ba902b7")
 }
+
+func TestPropagateTraceparent_NilRequest_IsNoop(t *testing.T) {
+	// req == nil triggers the early-return guard, verifying it never panics.
+	assert.NotPanics(t, func() {
+		propagateTraceparent(context.Background(), nil)
+	})
+}

@@ -173,3 +173,64 @@ func TestNewValidatingCodecFromFS_ReadFileError_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "read schema BadReadable.json",
 		"error must identify the file that failed to read")
 }
+
+// TestNewValidatingCodecFromFS_AddResourceError_ReturnsError covers the
+// compiler.AddResource error branch (line 71): when the schema name contains
+// a control character, the URL parser rejects it and AddResource returns an
+// error. A file named "\x00bad.json" produces name="\x00bad" after TrimSuffix;
+// AddResource("\x00bad", doc) returns a URL-parse error because null bytes are
+// invalid in URLs (net/url: invalid control character in URL).
+func TestNewValidatingCodecFromFS_AddResourceError_ReturnsError(t *testing.T) {
+	// Use a readErrorFS variant that lists a file whose name contains a null
+	// byte. fstest.MapFS normalises paths and rejects null bytes, so we need
+	// the custom readErrorFS/fakeDir infrastructure to return such an entry.
+	rErrFS := &nullByteNameFS{}
+
+	_, err := newValidatingCodecFromFS(NoopCodec{}, rErrFS)
+
+	require.Error(t, err, "invalid schema URL must cause AddResource to fail")
+	assert.True(t,
+		containsStr(err.Error(), "register schema") || containsStr(err.Error(), "parse"),
+		"error must reference the schema registration failure, got: %s", err.Error())
+}
+
+// nullByteNameFS is an fs.FS whose "schemas" directory lists one .json file
+// whose name contains a null byte. A null byte in a URL is rejected by
+// net/url, causing jsonschema.Compiler.AddResource to return an error.
+type nullByteNameFS struct{}
+
+func (f *nullByteNameFS) Open(name string) (fs.File, error) {
+	if name == "." || name == "schemas" {
+		return &nullByteDir{}, nil
+	}
+	// ReadFile for the null-byte file — return valid JSON so we reach AddResource.
+	return &nullByteFile{}, nil
+}
+
+type nullByteDir struct{ read bool }
+
+func (d *nullByteDir) Read(_ []byte) (int, error) { return 0, io.EOF }
+func (d *nullByteDir) Close() error               { return nil }
+func (d *nullByteDir) Stat() (fs.FileInfo, error) { return &fakeDirInfo{}, nil }
+func (d *nullByteDir) ReadDir(n int) ([]fs.DirEntry, error) {
+	if d.read {
+		return nil, io.EOF
+	}
+	d.read = true
+	// File name with null byte — valid Go string, invalid URL.
+	return []fs.DirEntry{fakeFileEntry{name: "\x00invalid.json"}}, nil
+}
+
+type nullByteFile struct{ read bool }
+
+func (f *nullByteFile) Read(buf []byte) (int, error) {
+	if f.read {
+		return 0, io.EOF
+	}
+	f.read = true
+	data := []byte(`{"type":"object"}`)
+	n := copy(buf, data)
+	return n, nil
+}
+func (f *nullByteFile) Close() error               { return nil }
+func (f *nullByteFile) Stat() (fs.FileInfo, error) { return &fakeDirInfo{}, nil }

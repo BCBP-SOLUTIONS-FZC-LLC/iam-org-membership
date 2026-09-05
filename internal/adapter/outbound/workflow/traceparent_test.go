@@ -57,3 +57,9 @@ func TestPropagateTraceparent_UnsampledFlags00(t *testing.T) {
 		req.Header.Get("traceparent"),
 		"unsampled span must emit flags=00")
 }
+
+func TestPropagateTraceparent_NilRequest_IsNoop(t *testing.T) {
+	assert.NotPanics(t, func() {
+		propagateTraceparent(context.Background(), nil)
+	})
+}

@@ -49,3 +49,10 @@ func TestPropagateTraceparent_WithValidSpan_SetsHeader(t *testing.T) {
 	assert.Contains(t, tp, "00f067aa0ba902b7", "header must contain the span ID")
 	assert.True(t, len(tp) > 0 && tp[len(tp)-3:] == "-01", "sampled flag must be 01")
 }
+
+func TestPropagateTraceparent_NilRequest_IsNoop(t *testing.T) {
+	// req == nil triggers the early-return guard, verifying it never panics.
+	assert.NotPanics(t, func() {
+		propagateTraceparent(context.Background(), nil)
+	})
+}
