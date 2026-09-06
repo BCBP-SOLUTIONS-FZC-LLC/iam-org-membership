@@ -157,12 +157,17 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
 // binary's own -timeout kills every in-flight test, not just this one —
 // this is exactly the failure mode a CI run surfaced (a goroutine stuck in
 // pgxpool's createIdleResources for the full 300s package timeout).
+// maxAttempts/attempt timeout widened from 3/30s: this branch's test/postgres
+// suite runs ~3x main's container count (~227 vs ~80), so resource pressure
+// on a hosted CI runner is proportionally higher and a stalled connection
+// attempt needs more headroom to recover on retry rather than exhausting its
+// budget and surfacing as a test failure.
 func newPoolWithRetry(ctx context.Context, cfg pgcommon.Config) (*pgcommon.Pool, error) {
-	const maxAttempts = 3
+	const maxAttempts = 5
 	var pool *pgcommon.Pool
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		attemptCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		pool, err = pgcommon.NewPool(attemptCtx, cfg)
 		cancel()
 		if err == nil {
