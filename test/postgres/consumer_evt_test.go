@@ -181,7 +181,16 @@ func TestConsumerEVT14_StaleEventSkipped(t *testing.T) {
 	// Prime last_event_at only — keep status='trial'. The stale event we
 	// send below would flip status to 'trial_expired' if the guard misfires,
 	// so trial→trial_expired divergence is the observable proof.
-	high := time.Now().UTC().Add(-30 * time.Second)
+	//
+	// Rounded to microsecond precision — timestamptz storage truncates any
+	// finer resolution (pgx's encoder does int64(ns)/1000, floor division),
+	// so comparing the later re-read value against an un-rounded `high`
+	// would spuriously fail whenever the OS clock's nanosecond component
+	// isn't already microsecond-aligned. This bit intermittently on Linux
+	// CI runners (higher-resolution clock than local dev) while never
+	// reproducing locally — TestConsumerEVT14_EqualTimeSkipped below
+	// already rounds for the identical reason.
+	high := time.Now().UTC().Add(-30 * time.Second).Round(time.Microsecond)
 	_, err := rawPool.Exec(ctx,
 		`UPDATE tenants SET last_event_at = $2 WHERE id = $1`, tenantA, high)
 	require.NoError(t, err)
