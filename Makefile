@@ -193,11 +193,18 @@ _test-unit: | .coverage
 
 .PHONY: _test-postgres
 _test-postgres: | .coverage
-	$(GO) test $(TEST_POSTGRES_PKGS) \
+	{ $(GO) test $(TEST_POSTGRES_PKGS) \
 	  -tags=integration -race -count=1 -timeout 600s -parallel $(TEST_POSTGRES_PARALLEL) \
-	  -v \
 	  -coverpkg=$(COVER_PKG_LIST) \
-	  -coverprofile=.coverage/postgres.out
+	  -coverprofile=.coverage/postgres.out \
+	  2>&1; echo $$? >.coverage/postgres.exitcode; } | tee .coverage/postgres.raw; \
+	_exit=$$(cat .coverage/postgres.exitcode 2>/dev/null || echo 1); \
+	[ "$$_exit" = "0" ] || { \
+	  printf '\n\n=== FAILING POSTGRES TESTS (see full log above for details) ===\n'; \
+	  grep '^--- FAIL:' .coverage/postgres.raw || printf '(no --- FAIL lines — check for DATA RACE or panic above)\n'; \
+	  printf '=============================================================\n\n'; \
+	}; \
+	exit "$$_exit"
 
 .PHONY: _test-integration
 _test-integration: | .coverage
