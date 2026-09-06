@@ -54,7 +54,7 @@ import (
 // Severity:          Blocker
 // Automation Status: Automated
 func TestCOVDMSoft001_SoftDeleteAllForDept_Happy(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "dmsoft-001")
@@ -122,7 +122,7 @@ func TestCOVDMSoft001_SoftDeleteAllForDept_Happy(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestCOVDMSoft002_SoftDeleteAllForDept_EmptyResult(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "dmsoft-002")
@@ -159,7 +159,7 @@ func TestCOVDMSoft002_SoftDeleteAllForDept_EmptyResult(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVMemList001_ListActiveUserIDs_Happy(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "mem-list-001")
@@ -205,7 +205,7 @@ func TestCOVMemList001_ListActiveUserIDs_Happy(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestCOVMemList002_ListActiveUserIDs_EmptyTenant(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "mem-list-002")
@@ -236,7 +236,7 @@ func TestCOVMemList002_ListActiveUserIDs_EmptyTenant(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvMRCR001_MostRecentCreatedAt_Happy(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-mrcr-001")
@@ -279,7 +279,7 @@ func TestCOVInvMRCR001_MostRecentCreatedAt_Happy(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvMRCR002_MostRecentCreatedAt_NoInvitation(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-mrcr-002")
@@ -310,7 +310,7 @@ func TestCOVInvMRCR002_MostRecentCreatedAt_NoInvitation(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvCCIW001_CountCreatedInWindow_AllInWindow(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-cciw-001")
@@ -352,7 +352,7 @@ func TestCOVInvCCIW001_CountCreatedInWindow_AllInWindow(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestCOVInvCCIW002_CountCreatedInWindow_NoneInWindow(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-cciw-002")
@@ -399,7 +399,7 @@ func TestCOVInvCCIW002_CountCreatedInWindow_NoneInWindow(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVAssign001_Assign_LevelChange_ReturnsOldLevel(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "assign-lc-001")
@@ -445,7 +445,7 @@ func TestCOVAssign001_Assign_LevelChange_ReturnsOldLevel(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestCOVAssign002_Assign_SameLevel_Idempotent(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID, userID, membershipID, deptID := seedForDeptAssign(t, ctx, rawPool, "assign-idem-002")
@@ -487,7 +487,7 @@ func TestCOVAssign002_Assign_SameLevel_Idempotent(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvIns001_Insert_DuplicateEmail_ErrInvitationAlreadyExists(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-ins-001")
@@ -545,7 +545,7 @@ func TestCOVInvIns001_Insert_DuplicateEmail_ErrInvitationAlreadyExists(t *testin
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvSS001_SetStatus_TerminalState_ErrNotFound(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-ss-001")
@@ -597,7 +597,7 @@ func TestCOVInvSS001_SetStatus_TerminalState_ErrNotFound(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvSS002_SetStatus_StaleVersion_OptimisticLock(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-ss-002")
@@ -640,7 +640,7 @@ func TestCOVInvSS002_SetStatus_StaleVersion_OptimisticLock(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestCOVInvSS003_SetStatus_NonExistent_ErrNotFound(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-ss-003")
@@ -671,7 +671,7 @@ func TestCOVInvSS003_SetStatus_NonExistent_ErrNotFound(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvSS004_SetStatus_Accepted_StampsAcceptedAt(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-ss-004")
@@ -716,7 +716,7 @@ func TestCOVInvSS004_SetStatus_Accepted_StampsAcceptedAt(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVTDeptSA001_SetActive_NotFound_ErrDepartmentNotFound(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-sa-001")
@@ -748,7 +748,7 @@ func TestCOVTDeptSA001_SetActive_NotFound_ErrDepartmentNotFound(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVTDeptSA002_SetActive_FlipInactiveAndBack(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "tdept-sa-002")
@@ -796,7 +796,7 @@ func TestCOVTDeptSA002_SetActive_FlipInactiveAndBack(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVTenantIncl001_FindByIDIncludingDeleted_SoftDeletedTenant(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "incl-del-001")
@@ -838,7 +838,7 @@ func TestCOVTenantIncl001_FindByIDIncludingDeleted_SoftDeletedTenant(t *testing.
 // Severity:          Minor
 // Automation Status: Automated
 func TestCOVTenantIncl002_FindByIDIncludingDeleted_NotFound(t *testing.T) {
-	appPool, _, _ := setupTestDB(t)
+	t.Parallel()	appPool, _, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	unknown := uuid.New()
@@ -874,7 +874,7 @@ func TestCOVTenantIncl002_FindByIDIncludingDeleted_NotFound(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVTenantOpt001_Update_VersionMismatch_NotNotFound(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "opt-001")
@@ -909,7 +909,7 @@ func TestCOVTenantOpt001_Update_VersionMismatch_NotNotFound(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVRoleRev001_Revoke_NotFound_ErrMemberNotFound(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "role-rev-001")
@@ -941,7 +941,7 @@ func TestCOVRoleRev001_Revoke_NotFound_ErrMemberNotFound(t *testing.T) {
 // Severity:          Minor
 // Automation Status: Automated
 func TestCOVRoleRev002_Revoke_AlreadySoftDeleted_ErrMemberNotFound(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "role-rev-002")
@@ -987,7 +987,7 @@ func TestCOVRoleRev002_Revoke_AlreadySoftDeleted_ErrMemberNotFound(t *testing.T)
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVMemSD001_SoftDelete_StaleVersion_OptimisticLock(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "mem-sd-001")
@@ -1023,7 +1023,7 @@ func TestCOVMemSD001_SoftDelete_StaleVersion_OptimisticLock(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVMemSD002_SoftDelete_NotFound_ErrMemberNotFound(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "mem-sd-002")
@@ -1054,7 +1054,7 @@ func TestCOVMemSD002_SoftDelete_NotFound_ErrMemberNotFound(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestCOVMemSD003_SoftDelete_Happy(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "mem-sd-003")
@@ -1106,7 +1106,7 @@ func TestCOVMemSD003_SoftDelete_Happy(t *testing.T) {
 // Severity:          Blocker
 // Automation Status: Automated
 func TestCOVAuthZ001_GetMembership_HappyPath(t *testing.T) {
-	fx := buildTestFixtures(t)
+	t.Parallel()	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
 	tenantID := uuid.New()
@@ -1180,7 +1180,7 @@ func TestCOVAuthZ001_GetMembership_HappyPath(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVAuthZ002_GetMembership_NotMember_ErrMemberNotFound(t *testing.T) {
-	fx := buildTestFixtures(t)
+	t.Parallel()	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
 	tenantID := uuid.New()
@@ -1212,7 +1212,7 @@ func TestCOVAuthZ002_GetMembership_NotMember_ErrMemberNotFound(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVAuthZ003_GetMembership_CancelledTenant_ReadOnly(t *testing.T) {
-	fx := buildTestFixtures(t)
+	t.Parallel()	fx := buildTestFixtures(t)
 	ctx := context.Background()
 
 	tenantID := uuid.New()
@@ -1251,7 +1251,7 @@ func TestCOVAuthZ003_GetMembership_CancelledTenant_ReadOnly(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVInvIns002_Insert_WithRolesAndDeptMappings(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "inv-ins-002")
@@ -1303,7 +1303,7 @@ func TestCOVInvIns002_Insert_WithRolesAndDeptMappings(t *testing.T) {
 // Severity:          Major
 // Automation Status: Automated
 func TestCOVMemIns001_Insert_Idempotent_ReturnsExistingRow(t *testing.T) {
-	appPool, rawPool, _ := setupTestDB(t)
+	t.Parallel()	appPool, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
 	tenantID := seedTenant(t, ctx, rawPool, "mem-ins-001")
