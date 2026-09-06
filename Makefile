@@ -195,6 +195,7 @@ _test-unit: | .coverage
 _test-postgres: | .coverage
 	$(GO) test $(TEST_POSTGRES_PKGS) \
 	  -tags=integration -race -count=1 -timeout 600s -parallel $(TEST_POSTGRES_PARALLEL) \
+	  -v \
 	  -coverpkg=$(COVER_PKG_LIST) \
 	  -coverprofile=.coverage/postgres.out
 
