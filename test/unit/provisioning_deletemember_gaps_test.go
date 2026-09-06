@@ -28,7 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func buildDeleteMemberSvc(mem port.MembershipRepository, roles port.TenantRoleRepository,
+func buildDeleteMemberSvcFull(mem port.MembershipRepository, roles port.TenantRoleRepository,
 	deptMems port.DeptMembershipRepository, tenants port.TenantRepository, txRunner port.TxRunner,
 ) *service.ProvisioningService {
 	return service.NewProvisioningService(
@@ -42,7 +42,7 @@ func TestDeleteMember_MemberNotFound_IdempotentNoOp(t *testing.T) {
 	mem := &ruMembershipRepo{findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
 	}}
-	svc := buildDeleteMemberSvc(mem, &ruRoleRepo{}, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
+	svc := buildDeleteMemberSvcFull(mem, &ruRoleRepo{}, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err, "TM-12: a KC USER_DELETE webhook retry against an already-deleted member is a safe no-op")
@@ -53,7 +53,7 @@ func TestDeleteMember_FindByUserIDOtherErrorPropagates(t *testing.T) {
 	mem := &ruMembershipRepo{findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 		return nil, findErr
 	}}
-	svc := buildDeleteMemberSvc(mem, &ruRoleRepo{}, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
+	svc := buildDeleteMemberSvcFull(mem, &ruRoleRepo{}, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, findErr)
@@ -69,7 +69,7 @@ func TestDeleteMember_RolesListByUserErrorPropagates(t *testing.T) {
 	roles := &ruRoleRepo{listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
 		return nil, listErr
 	}}
-	svc := buildDeleteMemberSvc(mem, roles, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, listErr)
@@ -86,7 +86,7 @@ func TestDeleteMember_RolesSoftDeleteAllForUserErrorPropagates(t *testing.T) {
 		listByUserFn:           func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) { return nil, nil },
 		softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) { return nil, cascadeErr },
 	}
-	svc := buildDeleteMemberSvc(mem, roles, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{}, &invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, cascadeErr)
@@ -104,7 +104,7 @@ func TestDeleteMember_DeptMemsSoftDeleteAllForUserErrorPropagates(t *testing.T) 
 	deptMems := &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 		return nil, deptErr
 	}}
-	svc := buildDeleteMemberSvc(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{})
+	svc := buildDeleteMemberSvcFull(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, deptErr)
@@ -123,7 +123,7 @@ func TestDeleteMember_MembershipSoftDeleteErrorPropagates(t *testing.T) {
 		softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) { return nil, nil },
 	}
 	deptMems := &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }}
-	svc := buildDeleteMemberSvc(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{})
+	svc := buildDeleteMemberSvcFull(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, softDeleteErr)
@@ -149,7 +149,7 @@ func TestDeleteMember_NonOwner_HappyPath_EmitsAllThreeEventKinds(t *testing.T) {
 		return []domain.DeptMembership{{DepartmentID: deptID}}, nil
 	}}
 	pub := &arPub{}
-	svc := buildDeleteMemberSvc(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{pub: pub})
+	svc := buildDeleteMemberSvcFull(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{pub: pub})
 
 	err := svc.DeleteMember(context.Background(), tenantID, userID)
 	require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestDeleteMember_NoEventPublisherInContext_SkipsAllEmissionsButStillSucceed
 		return []domain.DeptMembership{{DepartmentID: uuid.New()}}, nil
 	}}
 	// arTxRunner{} with no pub set never injects an EventPublisher.
-	svc := buildDeleteMemberSvc(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{})
+	svc := buildDeleteMemberSvcFull(mem, roles, deptMems, &invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err, "a missing EventPublisher must not fail I-5, only skip emission")
@@ -208,7 +208,7 @@ func TestDeleteMember_WasOwner_CountActiveOwnersErrorPropagates(t *testing.T) {
 		func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) { return nil, nil },
 		func(context.Context, uuid.UUID) (int, error) { return 0, countErr },
 	)
-	svc := buildDeleteMemberSvc(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
 		&invTenantRepo{}, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
@@ -231,7 +231,7 @@ func TestDeleteMember_WasOwner_OtherOwnersRemain_NoEscalation(t *testing.T) {
 		markCalled = true
 		return true, nil
 	}}
-	svc := buildDeleteMemberSvc(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
 		tenants, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
@@ -254,7 +254,7 @@ func TestDeleteMember_WasOwner_MarkOwnerlessIfUnsetErrorPropagates(t *testing.T)
 	tenants := &invTenantRepo{markOwnerlessIfUnsetFn: func(context.Context, uuid.UUID) (bool, error) {
 		return false, markErr
 	}}
-	svc := buildDeleteMemberSvc(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
 		tenants, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())
@@ -276,7 +276,7 @@ func TestDeleteMember_WasOwner_Flipped_LogsAndIncrementsEscalationMetric(t *test
 	tenants := &invTenantRepo{markOwnerlessIfUnsetFn: func(context.Context, uuid.UUID) (bool, error) {
 		return true, nil // this call is the one that flips it
 	}}
-	svc := buildDeleteMemberSvc(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
 		tenants, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), tenantID, userID)
@@ -297,7 +297,7 @@ func TestDeleteMember_WasOwner_NotFlipped_IdempotentNoDoubleAlert(t *testing.T) 
 	tenants := &invTenantRepo{markOwnerlessIfUnsetFn: func(context.Context, uuid.UUID) (bool, error) {
 		return false, nil // already flagged by an earlier retry — idempotent no-op
 	}}
-	svc := buildDeleteMemberSvc(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil }},
 		tenants, &arTxRunner{})
 
 	err := svc.DeleteMember(context.Background(), uuid.New(), uuid.New())

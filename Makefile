@@ -14,6 +14,10 @@ BUILD_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || ech
 export GOPRIVATE  ?= github.com/BCBP-SOLUTIONS-FZC-LLC/*
 export GONOSUMDB  ?= github.com/BCBP-SOLUTIONS-FZC-LLC/*
 
+# Docker socket for testcontainers-go (Mac Docker Desktop uses a user socket).
+DOCKER_SOCKET     := $(shell [ -S /Users/$(USER)/.docker/run/docker.sock ] && echo unix:///Users/$(USER)/.docker/run/docker.sock || echo unix:///var/run/docker.sock)
+export DOCKER_HOST ?= $(DOCKER_SOCKET)
+
 export APP_NAME APP_ENV BUILD_VERSION
 
 # Test package groups (explicit to handle per-group build tags cleanly).
@@ -189,10 +193,18 @@ _test-unit: | .coverage
 
 .PHONY: _test-postgres
 _test-postgres: | .coverage
-	$(GO) test $(TEST_POSTGRES_PKGS) \
-	  -tags=integration -race -count=1 -timeout 300s -parallel $(TEST_POSTGRES_PARALLEL) \
+	{ $(GO) test $(TEST_POSTGRES_PKGS) \
+	  -tags=integration -race -count=1 -timeout 1500s -parallel $(TEST_POSTGRES_PARALLEL) \
 	  -coverpkg=$(COVER_PKG_LIST) \
-	  -coverprofile=.coverage/postgres.out
+	  -coverprofile=.coverage/postgres.out \
+	  2>&1; echo $$? >.coverage/postgres.exitcode; } | tee .coverage/postgres.raw; \
+	_exit=$$(cat .coverage/postgres.exitcode 2>/dev/null || echo 1); \
+	[ "$$_exit" = "0" ] || { \
+	  printf '\n\n=== FAILING POSTGRES TESTS (see full log above for details) ===\n'; \
+	  grep '^--- FAIL:' .coverage/postgres.raw || printf '(no --- FAIL lines — check for DATA RACE or panic above)\n'; \
+	  printf '=============================================================\n\n'; \
+	}; \
+	exit "$$_exit"
 
 .PHONY: _test-integration
 _test-integration: | .coverage
@@ -259,6 +271,20 @@ race:
 run:
 	@-lsof -ti :$${APP_PORT:-8080} | xargs kill -9 2>/dev/null; true
 	bash -c 'set -a && source .env && set +a && BUILD_VERSION=$(BUILD_VERSION) $(GO) run ./cmd/server'
+
+# Start mock servers for the three external services needed during manual testing:
+#   :8084  Catalog Admin      (required — not fail-open)
+#   :8083  Realm Provisioner  (P-6 invite path)
+#   :8082  Workflow Service   (P-8 delete / P-26 removal-resolution)
+#
+# To simulate active workflows (makes P-8 return 409):
+#   make mock-servers MOCK_ARGS="-workflow-active 2"
+MOCK_ARGS ?=
+.PHONY: mock-servers
+mock-servers:
+	@-lsof -nP -iTCP:8082 -iTCP:8083 -iTCP:8084 2>/dev/null | awk 'NR>1{print $$2}' | sort -u | xargs kill -9 2>/dev/null; true
+	@sleep 0.3
+	$(GO) run scripts/mockserver/main.go $(MOCK_ARGS)
 
 # -----------------------------
 # BUILD

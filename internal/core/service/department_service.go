@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -61,8 +60,8 @@ func (s *DepartmentService) ListForTenant(ctx context.Context, tenantID uuid.UUI
 	return out, nil
 }
 
-// Activate implements P-24. Idempotent: if already active, returns the
-// existing row with wasCreated=false (→ 200). Fresh insert: wasCreated=true (→ 201).
+// Activate implements P-24. Returns 201 on fresh create, 409 on conflict.
+// Returns 422 if the global catalog entry is retired (is_active=false).
 func (s *DepartmentService) Activate(ctx context.Context, tenantID, departmentID uuid.UUID) (*domain.TenantDepartment, bool, error) {
 	// D-5 / TD-1: catalog entry must exist AND be globally active.
 	dept, err := s.catalog.DepartmentByID(ctx, departmentID)
@@ -75,12 +74,7 @@ func (s *DepartmentService) Activate(ctx context.Context, tenantID, departmentID
 	}
 	td, err := s.tenantDepts.Activate(ctx, tenantID, departmentID)
 	if err != nil {
-		if errors.Is(err, domain.ErrDepartmentAlreadyActivated) {
-			// P-24 is idempotent (LLD §5.4): return existing row with wasCreated=false → 200.
-			existing, findErr := s.tenantDepts.Find(ctx, tenantID, departmentID)
-			return existing, false, findErr
-		}
-		return nil, false, err
+		return nil, false, err // ErrDepartmentAlreadyActivated propagates → 409
 	}
 	s.invalidateCache(ctx, tenantID)
 	return td, true, nil

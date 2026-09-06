@@ -49,113 +49,9 @@ func TestNewInvitationService_PositiveExpiryDaysUsedAsGiven(t *testing.T) {
 }
 
 // ── fakes for AddFromRegister ───────────────────────────────────────────
-
-// arInviteRepo extends fakeInviteRepo with the lookup/lock methods
-// AddFromRegister needs beyond what fakeInviteRepo's zero value provides.
-type arInviteRepo struct {
-	fakeInviteRepo
-	findByKCFn    func(ctx context.Context, tenantID, kcUserID uuid.UUID) (*domain.PendingInvitation, error)
-	findByEmailFn func(ctx context.Context, tenantID uuid.UUID, email string) (*domain.PendingInvitation, error)
-	lockByIDFn    func(ctx context.Context, id uuid.UUID) (*domain.PendingInvitation, error)
-}
-
-func (r *arInviteRepo) FindPendingByKeycloakUser(ctx context.Context, tenantID, kcUserID uuid.UUID) (*domain.PendingInvitation, error) {
-	if r.findByKCFn != nil {
-		return r.findByKCFn(ctx, tenantID, kcUserID)
-	}
-	return nil, nil
-}
-func (r *arInviteRepo) FindPendingByEmail(ctx context.Context, tenantID uuid.UUID, email string) (*domain.PendingInvitation, error) {
-	if r.findByEmailFn != nil {
-		return r.findByEmailFn(ctx, tenantID, email)
-	}
-	return nil, nil
-}
-func (r *arInviteRepo) LockByID(ctx context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
-	if r.lockByIDFn != nil {
-		return r.lockByIDFn(ctx, id)
-	}
-	return nil, nil
-}
-
-var _ port.InvitationRepository = (*arInviteRepo)(nil)
-
-// arTenantRepo is a configurable TenantRepository for AddFromRegister's
-// TM-13 lock + expired-invitation seat recheck.
-type arTenantRepo struct {
-	port.TenantRepositoryNoop
-	lockErr         error
-	licensedSeatsFn func(ctx context.Context, id uuid.UUID) (int, error)
-}
-
-func (r *arTenantRepo) LockByID(context.Context, uuid.UUID) error { return r.lockErr }
-func (r *arTenantRepo) LicensedSeatsForUpdate(ctx context.Context, id uuid.UUID) (int, error) {
-	if r.licensedSeatsFn != nil {
-		return r.licensedSeatsFn(ctx, id)
-	}
-	return 100, nil
-}
-
-var _ port.TenantRepository = (*arTenantRepo)(nil)
-
-// arMembershipRepo is a configurable MembershipRepository for the
-// Insert/CountActive calls AddFromRegister makes.
-type arMembershipRepo struct {
-	insertFn      func(ctx context.Context, m *domain.TenantMembership) (*domain.TenantMembership, error)
-	countActiveFn func(ctx context.Context, tenantID uuid.UUID) (int, error)
-}
-
-func (r *arMembershipRepo) List(context.Context, uuid.UUID, *domain.MembershipListCursor, int) (*domain.MembershipListPage, error) {
-	return nil, nil
-}
-func (r *arMembershipRepo) FindByUserID(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
-	return nil, nil
-}
-func (r *arMembershipRepo) Insert(ctx context.Context, m *domain.TenantMembership) (*domain.TenantMembership, error) {
-	if r.insertFn != nil {
-		return r.insertFn(ctx, m)
-	}
-	return &domain.TenantMembership{ID: uuid.New(), TenantID: m.TenantID, UserID: m.UserID, Status: m.Status}, nil
-}
-func (r *arMembershipRepo) SetStatus(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
-	return nil, nil
-}
-func (r *arMembershipRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil }
-func (r *arMembershipRepo) CountActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
-	if r.countActiveFn != nil {
-		return r.countActiveFn(ctx, tenantID)
-	}
-	return 1, nil
-}
-
-var _ port.MembershipRepository = (*arMembershipRepo)(nil)
-
-// arRoleRepo is a configurable TenantRoleRepository for the Grant loop.
-type arRoleRepo struct {
-	grantFn func(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error)
-}
-
-func (r *arRoleRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
-	return nil, nil
-}
-func (r *arRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
-	return nil, nil
-}
-func (r *arRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 0, nil }
-func (r *arRoleRepo) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
-	if r.grantFn != nil {
-		return r.grantFn(ctx, tr)
-	}
-	return tr, nil
-}
-func (r *arRoleRepo) Revoke(context.Context, uuid.UUID, uuid.UUID, domain.TenantRoleCode) (*domain.TenantRole, error) {
-	return nil, nil
-}
-func (r *arRoleRepo) SoftDeleteAllForUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
-	return nil, nil
-}
-
-var _ port.TenantRoleRepository = (*arRoleRepo)(nil)
+// Note: arInviteRepo, arMembershipRepo, arTenantRepo, and arRoleRepo are
+// defined in invitation_addregister_tx_test.go (same package). Only the
+// types that are unique to this file are defined below.
 
 // arDeptMemRepo is a configurable DeptMembershipRepository for the Assign loop.
 type arDeptMemRepo struct {
@@ -229,7 +125,7 @@ func TestAddFromRegister_NoMatchingInvitation_PlainAdd(t *testing.T) {
 
 func TestAddFromRegister_FindByKeycloakUserErrorPropagates(t *testing.T) {
 	findErr := errors.New("db down")
-	inv := &arInviteRepo{findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+	inv := &arInviteRepo{findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 		return nil, findErr
 	}}
 	svc := buildAddFromRegisterSvc(inv, &arTenantRepo{}, &arMembershipRepo{}, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
@@ -246,7 +142,7 @@ func TestAddFromRegister_FallsBackToEmailLookup(t *testing.T) {
 	invitedBy := uuid.New()
 	emailLookupCalled := false
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return nil, nil // no match by keycloak_user_id
 		},
 		findByEmailFn: func(_ context.Context, _ uuid.UUID, email string) (*domain.PendingInvitation, error) {
@@ -289,7 +185,7 @@ func TestAddFromRegister_FindByEmailErrorPropagates(t *testing.T) {
 
 func TestAddFromRegister_TenantLockErrorPropagates(t *testing.T) {
 	lockErr := errors.New("lock timeout")
-	svc := buildAddFromRegisterSvc(&arInviteRepo{}, &arTenantRepo{lockErr: lockErr}, &arMembershipRepo{}, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
+	svc := buildAddFromRegisterSvc(&arInviteRepo{}, &arTenantRepo{lockByIDFn: func(context.Context, uuid.UUID) error { return lockErr }}, &arMembershipRepo{}, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
 
 	_, err := svc.AddFromRegister(context.Background(), uuid.New(), uuid.New(), uuid.New(), "")
 	assert.ErrorIs(t, err, lockErr)
@@ -301,7 +197,7 @@ func TestAddFromRegister_InviteLockByIDErrorPropagates(t *testing.T) {
 	pendingID := uuid.New()
 	lockErr := errors.New("row lock failed")
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
@@ -314,33 +210,10 @@ func TestAddFromRegister_InviteLockByIDErrorPropagates(t *testing.T) {
 	assert.ErrorIs(t, err, lockErr)
 }
 
-func TestAddFromRegister_InviteLockByIDReturnsNil_ProceedsAsPlainAdd(t *testing.T) {
-	pendingID := uuid.New()
-	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
-			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, RecordVersion: 1}, nil
-		},
-		lockByIDFn: func(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
-			return nil, nil // row vanished between outer lookup and the tx lock
-		},
-	}
-	roleGrantCalled := false
-	roles := &arRoleRepo{grantFn: func(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
-		roleGrantCalled = true
-		return nil, nil
-	}}
-	svc := buildAddFromRegisterSvc(inv, &arTenantRepo{}, &arMembershipRepo{}, roles, &arDeptMemRepo{}, nil, &arTxRunner{})
-
-	got, err := svc.AddFromRegister(context.Background(), uuid.New(), uuid.New(), uuid.New(), "")
-	require.NoError(t, err)
-	assert.NotNil(t, got)
-	assert.False(t, roleGrantCalled, "a vanished pending row must fall through to plain-add — no roles applied")
-}
-
 func TestAddFromRegister_InviteLockByIDNotPending_ProceedsAsPlainAdd(t *testing.T) {
 	pendingID := uuid.New()
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(_ context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
@@ -360,14 +233,14 @@ func TestAddFromRegister_ExpiredInvitation_SeatOverCap_Returns409(t *testing.T) 
 	pendingID := uuid.New()
 	past := time.Now().UTC().Add(-time.Hour)
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(_ context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: id, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 	}
-	tenants := &arTenantRepo{licensedSeatsFn: func(context.Context, uuid.UUID) (int, error) { return 5, nil }}
+	tenants := &arTenantRepo{licensedSeatsForUpdate: func(context.Context, uuid.UUID) (int, error) { return 5, nil }}
 	mem := &arMembershipRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 5, nil }}
 	inv.countPendingFn = func(context.Context, uuid.UUID) (int, error) { return 0, nil }
 	svc := buildAddFromRegisterSvc(inv, tenants, mem, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
@@ -381,14 +254,14 @@ func TestAddFromRegister_ExpiredInvitation_LicensedSeatsForUpdateErrorPropagates
 	past := time.Now().UTC().Add(-time.Hour)
 	seatErr := errors.New("db down")
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(_ context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: id, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 	}
-	tenants := &arTenantRepo{licensedSeatsFn: func(context.Context, uuid.UUID) (int, error) { return 0, seatErr }}
+	tenants := &arTenantRepo{licensedSeatsForUpdate: func(context.Context, uuid.UUID) (int, error) { return 0, seatErr }}
 	svc := buildAddFromRegisterSvc(inv, tenants, &arMembershipRepo{}, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
 
 	_, err := svc.AddFromRegister(context.Background(), uuid.New(), uuid.New(), uuid.New(), "")
@@ -400,14 +273,14 @@ func TestAddFromRegister_ExpiredInvitation_CountActiveErrorPropagates(t *testing
 	past := time.Now().UTC().Add(-time.Hour)
 	countErr := errors.New("db down")
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(_ context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: id, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 	}
-	tenants := &arTenantRepo{licensedSeatsFn: func(context.Context, uuid.UUID) (int, error) { return 10, nil }}
+	tenants := &arTenantRepo{licensedSeatsForUpdate: func(context.Context, uuid.UUID) (int, error) { return 10, nil }}
 	mem := &arMembershipRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 0, countErr }}
 	svc := buildAddFromRegisterSvc(inv, tenants, mem, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
 
@@ -420,14 +293,14 @@ func TestAddFromRegister_ExpiredInvitation_CountPendingErrorPropagates(t *testin
 	past := time.Now().UTC().Add(-time.Hour)
 	pendingErr := errors.New("db down")
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(_ context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: id, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 	}
-	tenants := &arTenantRepo{licensedSeatsFn: func(context.Context, uuid.UUID) (int, error) { return 10, nil }}
+	tenants := &arTenantRepo{licensedSeatsForUpdate: func(context.Context, uuid.UUID) (int, error) { return 10, nil }}
 	mem := &arMembershipRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 1, nil }}
 	inv.countPendingFn = func(context.Context, uuid.UUID) (int, error) { return 0, pendingErr }
 	svc := buildAddFromRegisterSvc(inv, tenants, mem, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
@@ -440,7 +313,7 @@ func TestAddFromRegister_ExpiredInvitation_UnderCap_ProceedsToAccept(t *testing.
 	pendingID := uuid.New()
 	past := time.Now().UTC().Add(-time.Hour)
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, ExpiresAt: past, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(_ context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
@@ -452,7 +325,7 @@ func TestAddFromRegister_ExpiredInvitation_UnderCap_ProceedsToAccept(t *testing.
 		return &domain.PendingInvitation{ID: id, RecordVersion: ver + 1}, nil
 	}
 	inv.countPendingFn = func(context.Context, uuid.UUID) (int, error) { return 0, nil }
-	tenants := &arTenantRepo{licensedSeatsFn: func(context.Context, uuid.UUID) (int, error) { return 10, nil }}
+	tenants := &arTenantRepo{licensedSeatsForUpdate: func(context.Context, uuid.UUID) (int, error) { return 10, nil }}
 	mem := &arMembershipRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 1, nil }}
 	svc := buildAddFromRegisterSvc(inv, tenants, mem, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{})
 
@@ -482,7 +355,7 @@ func TestAddFromRegister_AppliesInitialRolesAndDeptsWithEvents(t *testing.T) {
 	future := time.Now().UTC().Add(24 * time.Hour)
 
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{
 				ID: pendingID, Status: domain.InvitePending, ExpiresAt: future, RecordVersion: 1,
 				InvitedBy:           invitedBy,
@@ -529,7 +402,7 @@ func TestAddFromRegister_SetStatusErrorPropagates(t *testing.T) {
 	future := time.Now().UTC().Add(24 * time.Hour)
 	setStatusErr := errors.New("optimistic_lock_conflict")
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{ID: pendingID, Status: domain.InvitePending, ExpiresAt: future, RecordVersion: 1}, nil
 		},
 		lockByIDFn: func(_ context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
@@ -550,7 +423,7 @@ func TestAddFromRegister_RoleGrantErrorPropagates(t *testing.T) {
 	future := time.Now().UTC().Add(24 * time.Hour)
 	grantErr := errors.New("grant failed")
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{
 				ID: pendingID, Status: domain.InvitePending, ExpiresAt: future, RecordVersion: 1,
 				InitialTenantRoles: []domain.TenantRoleCode{domain.RoleTenantAdmin},
@@ -577,7 +450,7 @@ func TestAddFromRegister_DeptAssignErrorPropagates(t *testing.T) {
 	future := time.Now().UTC().Add(24 * time.Hour)
 	assignErr := errors.New("fk_dm_tenant_dept violation")
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{
 				ID: pendingID, Status: domain.InvitePending, ExpiresAt: future, RecordVersion: 1,
 				InitialDeptMappings: []domain.InvitationDeptMapping{{DepartmentID: deptID, Level: domain.DeptPreparator}},
@@ -605,7 +478,7 @@ func TestAddFromRegister_NoEventPublisher_SkipsEnqueueButStillApplies(t *testing
 	pendingID, deptID := uuid.New(), uuid.New()
 	future := time.Now().UTC().Add(24 * time.Hour)
 	inv := &arInviteRepo{
-		findByKCFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+		findByKCUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
 			return &domain.PendingInvitation{
 				ID: pendingID, Status: domain.InvitePending, ExpiresAt: future, RecordVersion: 1,
 				InitialTenantRoles:  []domain.TenantRoleCode{domain.RoleTenantAdmin},

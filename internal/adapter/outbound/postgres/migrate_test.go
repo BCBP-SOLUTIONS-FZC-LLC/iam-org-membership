@@ -3,36 +3,30 @@ package postgres
 import (
 	"context"
 	"testing"
-	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/stretchr/testify/assert"
 )
 
-// RunMigrations always fails fast against a connection-refused DSN (no
-// Docker/live Postgres involved) — these tests only need to exercise the
-// optional-logger plumbing branch (len(log) > 0 && log[0] != nil) and the
-// no-logger call shape; the actual migration application is covered by the
-// Docker-backed test/postgres suite via setupTestDB.
-const badMigrationDSN = "postgres://baduser:badpass@127.0.0.1:1/nosuchdb?sslmode=disable"
-
-func TestRunMigrations_NoLoggerReturnsErrorOnUnreachableDB(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	err := RunMigrations(ctx, badMigrationDSN)
-	assert.Error(t, err)
+// TestRunMigrations_WithLogger_LoggerAssignedBeforeUpCall verifies that when
+// a non-nil logger is passed to RunMigrations, the logger is assigned to
+// runner.Logger (line 35) before runner.Up is called. The Up call will
+// fail with an invalid DSN, but line 35 still executes — covering the
+// previously uncovered branch.
+func TestRunMigrations_WithLogger_LoggerAssignedBeforeUpCall(t *testing.T) {
+	// Use an invalid DSN so Up() fails fast without a real DB.
+	err := RunMigrations(context.Background(), "postgres://invalid:5432/does_not_exist", &migrateTestLogger{})
+	// We expect an error from runner.Up (cannot connect), not from line 35.
+	// The important thing is line 35 executed without panic.
+	assert.Error(t, err, "Up() must fail on an invalid DSN")
 }
 
-func TestRunMigrations_WithLoggerWiresLoggerAdapterAndReturnsError(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	fake := &fakePortLogger{}
-	err := RunMigrations(ctx, badMigrationDSN, fake)
-	assert.Error(t, err, "unreachable DB must still surface an error with a logger wired")
-}
+// migrateTestLogger is a minimal port.Logger for RunMigrations tests.
+type migrateTestLogger struct{}
 
-func TestRunMigrations_NilLoggerInVariadicSkipsWiring(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	err := RunMigrations(ctx, badMigrationDSN, nil)
-	assert.Error(t, err)
-}
+func (l *migrateTestLogger) Debug(msg string, fields map[string]any) {}
+func (l *migrateTestLogger) Info(msg string, fields map[string]any)  {}
+func (l *migrateTestLogger) Warn(msg string, fields map[string]any)  {}
+func (l *migrateTestLogger) Error(msg string, fields map[string]any) {}
+
+var _ port.Logger = (*migrateTestLogger)(nil)

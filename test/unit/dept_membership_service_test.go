@@ -394,6 +394,9 @@ func (r *activeMemberRepo) SetStatus(context.Context, uuid.UUID, uuid.UUID, doma
 }
 func (r *activeMemberRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil }
 func (r *activeMemberRepo) CountActive(context.Context, uuid.UUID) (int, error)           { return 1, nil }
+func (r *activeMemberRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 
 var _ port.MembershipRepository = (*activeMemberRepo)(nil)
 

@@ -267,9 +267,14 @@ func RequireActiveMembership(memberships port.MembershipRepository) gin.HandlerF
 			c.Next()
 			return
 		}
-		if m.Status == domain.MembershipSuspended {
-			er := newErrorResponse(c, "insufficient_role",
-				"suspended members cannot access tenant APIs", nil)
+		if m.Status != domain.MembershipActive {
+			// AUTH-1: only active members access tenant APIs.
+			// Left members retain a non-deleted row but are no longer active.
+			msg := "member is not an active member of this tenant"
+			if m.Status == domain.MembershipSuspended {
+				msg = "suspended members cannot access tenant APIs"
+			}
+			er := newErrorResponse(c, "insufficient_role", msg, nil)
 			er.Status = http.StatusForbidden
 			c.AbortWithStatusJSON(http.StatusForbidden, er)
 			return

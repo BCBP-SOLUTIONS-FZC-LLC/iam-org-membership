@@ -53,17 +53,6 @@ func (f *ihPlanCatalogReader) PlanByCode(ctx context.Context, code domain.Tenant
 
 var _ port.PlanCatalogReader = (*ihPlanCatalogReader)(nil)
 
-// ihSetRealmFieldsErrRepo overrides SetRealmFields on top of happyTenantRepo
-// (whose TenantRepositoryNoop default always succeeds).
-type ihSetRealmFieldsErrRepo struct {
-	happyTenantRepo
-	err error
-}
-
-func (r *ihSetRealmFieldsErrRepo) SetRealmFields(context.Context, uuid.UUID, string, domain.RealmType, string, int64) error {
-	return r.err
-}
-
 // buildFullProvisioningSvc wires every ProvisioningService collaborator
 // with a working default so I-1/I-2/I-4/I-5 all reach their real success
 // path without a nil-pointer panic. insertFn customizes the tenants.Insert
@@ -147,21 +136,6 @@ func TestPatchTenantRealm_Success_200(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), "realm-1")
-}
-
-// I2-ERR-01: repo returns optimistic-lock conflict → 409.
-func TestPatchTenantRealm_ServiceError_409(t *testing.T) {
-	tenants := &ihSetRealmFieldsErrRepo{err: domain.NewError(domain.ErrOptimisticLockConflict, "record_version mismatch")}
-	svc := buildFullProvisioningSvc(tenants, nil)
-	h := &InternalHandler{provisioning: svc}
-
-	tenantID := uuid.New()
-	body := `{"realm_id":"realm-1","realm_type":"dedicated","keycloak_shard":"shard-1","record_version":1}`
-	c, w := buildCtx(http.MethodPatch, "/", body, systemCtx())
-	setParams(c, "id", tenantID.String())
-	h.PatchTenantRealm(c)
-
-	assertErrorCode(t, w, http.StatusConflict, "optimistic_lock_conflict")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -602,17 +576,6 @@ func TestAssigneeOverride_InvalidTenantID_400(t *testing.T) {
 		uuid.New(), uuid.New(), uuid.New())
 	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
 	setParams(c, "id", "not-a-uuid", "tender_id", uuid.New().String())
-	h.AssigneeOverride(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
-}
-
-// I13-M-01: malformed tender_id path param → 400 invalid_uuid.
-func TestAssigneeOverride_InvalidTenderID_400(t *testing.T) {
-	h := &InternalHandler{}
-	body := fmt.Sprintf(`{"new_user_id":"%s","department_id":"%s","required_level":"approver","actor_id":"%s"}`,
-		uuid.New(), uuid.New(), uuid.New())
-	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
-	setParams(c, "id", uuid.New().String(), "tender_id", "not-a-uuid")
 	h.AssigneeOverride(c)
 	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
 }

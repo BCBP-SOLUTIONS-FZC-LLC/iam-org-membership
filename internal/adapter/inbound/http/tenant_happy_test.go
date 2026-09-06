@@ -153,6 +153,9 @@ func (f *happyMembershipRepo) SetStatus(context.Context, uuid.UUID, uuid.UUID, d
 func (f *happyMembershipRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, int64) error {
 	return nil
 }
+func (f *happyMembershipRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 func (f *happyMembershipRepo) CountActive(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }

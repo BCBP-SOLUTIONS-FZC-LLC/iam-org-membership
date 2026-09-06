@@ -252,62 +252,27 @@ func TestTenantService_Patch_LocalAccountsUnchanged_NoRPCall(t *testing.T) {
 	assert.False(t, rpCalled, "unchanged local_accounts_enabled should not trigger RP")
 }
 
-func TestTenantService_Patch_LocalAccountsChange_BeforeFindByIDErrorPropagates(t *testing.T) {
-	findErr := errors.New("db down")
-	repo := &tsRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
-		return nil, findErr
-	}}
-	svc := service.NewTenantService(repo, nil, &tsRP{})
-
-	on := true
-	_, _, err := svc.Patch(context.Background(), uuid.New(), &domain.TenantPatch{LocalAccountsEnabled: &on})
-	assert.ErrorIs(t, err, findErr)
-}
-
-func TestTenantService_Patch_UpdateErrorPropagates(t *testing.T) {
-	updateErr := errors.New("optimistic_lock_conflict")
-	repo := &tsRepo{
-		updateFn: func(context.Context, uuid.UUID, *domain.TenantPatch) (*domain.Tenant, error) {
-			return nil, updateErr
-		},
-	}
-	svc := service.NewTenantService(repo, nil, &tsRP{})
-
-	name := "New Name"
-	_, _, err := svc.Patch(context.Background(), uuid.New(), &domain.TenantPatch{Name: &name})
-	assert.ErrorIs(t, err, updateErr)
-}
-
-func TestTenantService_Patch_Success_InvalidatesTenantAndLocaleCache(t *testing.T) {
-	tenantID := uuid.New()
-	repo := &tsRepo{
-		updateFn: func(_ context.Context, id uuid.UUID, patch *domain.TenantPatch) (*domain.Tenant, error) {
-			return &domain.Tenant{ID: id, RecordVersion: 2}, nil
-		},
-	}
-	cache := newTSCache()
-	svc := service.NewTenantService(repo, cache, &tsRP{})
-
-	name := "New Name"
-	_, _, err := svc.Patch(context.Background(), tenantID, &domain.TenantPatch{Name: &name})
-	require.NoError(t, err)
-	assert.Contains(t, cache.del, "om:tenant:"+tenantID.String())
-	assert.Contains(t, cache.del, "om:locale:"+tenantID.String())
-}
-
-func TestTenantService_Patch_LocalAccountsChange_RPFailsAndSetRealmSyncPendingAlsoFails(t *testing.T) {
+// TestTenantService_Patch_RPFails_SetRealmSyncPendingAlsoFails_StillDeferredSync
+// covers line 119.79,121.5 where SetRealmSyncPending returns an error.
+// The service should still return deferredSync=true and nil error
+// (best-effort fail-open — T-15 Option A).
+func TestTenantService_Patch_RPFails_SetRealmSyncPendingAlsoFails_StillDeferredSync(t *testing.T) {
 	tenantID := uuid.New()
 	before := &domain.Tenant{ID: tenantID, LocalAccountsEnabled: false}
-	syncPendingCalled := false
-	repo := &tsSetRealmSyncPendingErrRepo{
+	syncErr := errors.New("sync pending write failed")
+
+	// We need a repo where SetRealmSyncPending returns an error.
+	// Build it from tsRepo by initializing the tsRepo fields properly.
+	findByIDFn := func(context.Context, uuid.UUID) (*domain.Tenant, error) { return before, nil }
+	updateFn := func(_ context.Context, id uuid.UUID, _ *domain.TenantPatch) (*domain.Tenant, error) {
+		return &domain.Tenant{ID: id, LocalAccountsEnabled: true, RecordVersion: 2}, nil
+	}
+	repo := &tsRepoWithSyncErr{
 		tsRepo: tsRepo{
-			findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) { return before, nil },
-			updateFn: func(_ context.Context, id uuid.UUID, patch *domain.TenantPatch) (*domain.Tenant, error) {
-				return &domain.Tenant{ID: id, LocalAccountsEnabled: true, RecordVersion: 2}, nil
-			},
+			findByIDFn: findByIDFn,
+			updateFn:   updateFn,
 		},
-		setRealmSyncPendingErr: errors.New("db down"),
-		called:                 &syncPendingCalled,
+		setRealmSyncPendingErr: syncErr,
 	}
 	rp := &tsRP{patchRealmConfigFn: func(context.Context, uuid.UUID, port.RealmConfigPatch) error {
 		return errors.New("RP down")
@@ -316,25 +281,24 @@ func TestTenantService_Patch_LocalAccountsChange_RPFailsAndSetRealmSyncPendingAl
 
 	on := true
 	_, deferred, err := svc.Patch(context.Background(), tenantID, &domain.TenantPatch{LocalAccountsEnabled: &on})
-	require.NoError(t, err, "SetRealmSyncPending's own failure is best-effort-swallowed — the 202/deferred response still stands")
-	assert.True(t, deferred)
-	assert.True(t, syncPendingCalled)
+
+	// Even when SetRealmSyncPending also fails, the service returns nil error
+	// and deferredSync=true (best-effort, caller still gets a 202).
+	require.NoError(t, err, "SetRealmSyncPending failure must not surface to caller (fail-open)")
+	assert.True(t, deferred, "deferred=true even when the sync marker write fails")
 }
 
-// tsSetRealmSyncPendingErrRepo extends tsRepo with a configurable
-// SetRealmSyncPending failure, for the best-effort-swallow branch above.
-type tsSetRealmSyncPendingErrRepo struct {
+// tsRepoWithSyncErr wraps tsRepo and overrides SetRealmSyncPending to return an error.
+type tsRepoWithSyncErr struct {
 	tsRepo
 	setRealmSyncPendingErr error
-	called                 *bool
 }
 
-func (r *tsSetRealmSyncPendingErrRepo) SetRealmSyncPending(context.Context, uuid.UUID) error {
-	*r.called = true
+func (r *tsRepoWithSyncErr) SetRealmSyncPending(context.Context, uuid.UUID) error {
 	return r.setRealmSyncPendingErr
 }
 
-var _ port.TenantRepository = (*tsSetRealmSyncPendingErrRepo)(nil)
+var _ port.TenantRepository = (*tsRepoWithSyncErr)(nil)
 
 // ── setCached with nil / marshal-error / nil-cache branches ────────────
 

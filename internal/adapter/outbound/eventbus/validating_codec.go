@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"path"
 	"strings"
 	"sync"
@@ -37,8 +38,15 @@ type ValidatingCodec struct {
 // desired) — the wrapped codec still encodes so unknown-type propagation
 // is a soft error, not a hard failure.
 func NewValidatingCodec(inner Codec) (*ValidatingCodec, error) {
+	return newValidatingCodecFromFS(inner, schemasFS)
+}
+
+// newValidatingCodecFromFS is the testable implementation of NewValidatingCodec.
+// It accepts an fs.FS so tests can inject a fstest.MapFS to trigger each error
+// branch (ReadDir error, non-.json continue, json.Unmarshal error, compile error).
+func newValidatingCodecFromFS(inner Codec, schemas fs.FS) (*ValidatingCodec, error) {
 	c := &ValidatingCodec{inner: inner, schemas: make(map[string]*jsonschema.Schema)}
-	entries, err := schemasFS.ReadDir("schemas")
+	entries, err := fs.ReadDir(schemas, "schemas")
 	if err != nil {
 		// Zero embedded files → nothing to load. Composition still works;
 		// validation is a no-op until Phase 3 lands the real event schemas.
@@ -52,7 +60,7 @@ func NewValidatingCodec(inner Codec) (*ValidatingCodec, error) {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".json")
-		data, rerr := schemasFS.ReadFile(path.Join("schemas", e.Name()))
+		data, rerr := fs.ReadFile(schemas, path.Join("schemas", e.Name()))
 		if rerr != nil {
 			return nil, fmt.Errorf("read schema %s: %w", e.Name(), rerr)
 		}

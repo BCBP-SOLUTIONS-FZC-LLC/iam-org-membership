@@ -7,6 +7,7 @@ import (
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -160,4 +161,36 @@ func TestPublisher_Enqueue_CodecReturnIgnoredPayloadIsPlainJSON(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, tx.execCalled, "outbox INSERT must be reached")
+}
+
+// TestPublisher_WithLogger_ReturnsSelf verifies that WithLogger injects the
+// logger and returns the same *Publisher pointer (fluent builder pattern).
+func TestPublisher_WithLogger_ReturnsSelf(t *testing.T) {
+	p := New("iam-org-membership", NoopCodec{})
+	// nopLogger satisfies port.Logger with no-op implementations.
+	got := p.WithLogger(nopEventbusLogger{})
+	require.NotNil(t, got, "WithLogger must return non-nil *Publisher")
+	assert.Same(t, p, got, "WithLogger must return the same receiver pointer")
+}
+
+// nopEventbusLogger is a minimal port.Logger that satisfies the interface.
+type nopEventbusLogger struct{}
+
+func (nopEventbusLogger) Debug(_ string, _ map[string]any) {}
+func (nopEventbusLogger) Info(_ string, _ map[string]any)  {}
+func (nopEventbusLogger) Warn(_ string, _ map[string]any)  {}
+func (nopEventbusLogger) Error(_ string, _ map[string]any) {}
+
+var _ port.Logger = nopEventbusLogger{}
+
+// TestAllSchemaNames_ReturnsNonEmpty verifies that AllSchemaNames reads the
+// embedded FS and returns at least one schema name (without the .json suffix).
+func TestAllSchemaNames_ReturnsNonEmpty(t *testing.T) {
+	names, err := AllSchemaNames()
+	require.NoError(t, err)
+	assert.NotEmpty(t, names, "AllSchemaNames must return at least one schema from the embedded FS")
+	for _, n := range names {
+		assert.NotContains(t, n, ".json",
+			"AllSchemaNames must strip the .json suffix from each name")
+	}
 }

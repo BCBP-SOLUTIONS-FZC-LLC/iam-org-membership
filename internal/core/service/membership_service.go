@@ -250,14 +250,15 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 // Enforces TM-8 last-owner guard: if the actor is stripping the tenant_owner
 // role from the last active owner, return 422 last_owner_removal.
 func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID uuid.UUID, desired []domain.TenantRoleCode, actorID uuid.UUID) ([]domain.TenantRole, []domain.TenantRole, error) {
-	// Validate: no 'member' in desired set (TR-7).
+	// Validate: no 'member' in desired set (TR-7). Use ErrInvalidRole (→ 422)
+	// not ErrValidation (→ 400) per LLD §17 invalid_role taxonomy.
 	for _, code := range desired {
 		if code == domain.RoleMember {
-			return nil, nil, domain.NewError(domain.ErrValidation, "member cannot be granted; it is derived").
+			return nil, nil, domain.NewError(domain.ErrInvalidRole, "member cannot be granted; it is derived").
 				WithDetails(map[string]any{"code": "invalid_role"})
 		}
 		if !code.IsElevated() {
-			return nil, nil, domain.NewError(domain.ErrValidation, "unknown role_code").
+			return nil, nil, domain.NewError(domain.ErrInvalidRole, "unknown role_code").
 				WithDetails(map[string]any{"code": "invalid_role"})
 		}
 	}
@@ -718,7 +719,7 @@ func (s *MembershipService) ResetUserMFA(ctx context.Context, tenantID, userID, 
 // SeatUsage is P-27/I-11. Reads active_users + pending_invitations vs
 // licensed_seats. over_cap = active + pending >= licensed_seats (SEAT-3: at-cap is overage).
 func (s *MembershipService) SeatUsage(ctx context.Context, tenantID uuid.UUID) (*domain.SeatUsage, error) {
-	t, err := s.tenants.FindByID(ctx, tenantID)
+	t, err := s.tenants.FindByIDIncludingDeleted(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}

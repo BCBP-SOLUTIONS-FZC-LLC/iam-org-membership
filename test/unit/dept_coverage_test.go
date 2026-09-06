@@ -138,14 +138,14 @@ func TestDeptMembershipAssign_InvalidLevel_Rejected(t *testing.T) {
 
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.Equal(t, "validation_error", de.Code)
+	assert.Equal(t, "invalid_role", de.Code)
 	assert.Equal(t, "invalid_role_level", de.Details["code"])
 }
 
 // ── P10-TARGET-NOT-FOUND-01 ────────────────────────────────────────────
 
 // Test Case ID:      P10-TARGET-NOT-FOUND-01
-// Feature:           P-10 · target user not in tenant → 404 member_not_found
+// Feature:           P-10 · target user not in tenant → 422 member_not_active (DM-2)
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestDeptMembershipAssign_TargetNotFound(t *testing.T) {
 	mem := &fakeMembershipRepo{
@@ -159,7 +159,8 @@ func TestDeptMembershipAssign_TargetNotFound(t *testing.T) {
 		&fakeDeptMemRepo{}, mem, td, catalog, nil, nil, nil, nil)
 	_, err := svc.Assign(context.Background(), uuid.New(), uuid.New(), uuid.New(),
 		domain.DeptPreparator, uuid.New())
-	assert.ErrorIs(t, err, domain.ErrMemberNotFound)
+	// DM-2: non-member is rejected with member_not_active (same as suspended member)
+	assert.ErrorIs(t, err, domain.ErrMemberNotActive)
 }
 
 // ── P10-SUSPENDED-ASSIGN-01 (BUG-P10-1 regression guard) ──────────────

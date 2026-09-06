@@ -131,31 +131,23 @@ func TestDeptService_Activate_AlreadyActivated_ReturnsExistingRowNotCreated(t *t
 		activateFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantDepartment, error) {
 			return nil, domain.ErrDepartmentAlreadyActivated
 		},
-		findFn: func(_ context.Context, tid, did uuid.UUID) (*domain.TenantDepartment, error) {
-			return &domain.TenantDepartment{TenantID: tid, DepartmentID: did, IsActive: true, RecordVersion: 7}, nil
-		},
 	}
 	svc := buildDeptSvcFull(&fakeDeptCatalogRepo{}, td)
-	got, wasCreated, err := svc.Activate(context.Background(), tenantID, deptID)
-	require.NoError(t, err)
-	assert.False(t, wasCreated, "P-24 idempotent replay must report wasCreated=false")
-	require.NotNil(t, got)
-	assert.EqualValues(t, 7, got.RecordVersion)
+	_, _, err := svc.Activate(context.Background(), tenantID, deptID)
+	// ErrDepartmentAlreadyActivated propagates → 409 conflict (handler maps this to 409).
+	assert.ErrorIs(t, err, domain.ErrDepartmentAlreadyActivated)
 }
 
 func TestDeptService_Activate_AlreadyActivated_FindErrorPropagates(t *testing.T) {
-	findErr := errors.New("db down")
 	td := &fakeTenantDeptRepoFull{
 		activateFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantDepartment, error) {
 			return nil, domain.ErrDepartmentAlreadyActivated
 		},
-		findFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantDepartment, error) {
-			return nil, findErr
-		},
 	}
 	svc := buildDeptSvcFull(&fakeDeptCatalogRepo{}, td)
 	_, wasCreated, err := svc.Activate(context.Background(), uuid.New(), uuid.New())
-	assert.ErrorIs(t, err, findErr)
+	// ErrDepartmentAlreadyActivated propagates as-is — no Find fallback.
+	assert.ErrorIs(t, err, domain.ErrDepartmentAlreadyActivated)
 	assert.False(t, wasCreated)
 }
 

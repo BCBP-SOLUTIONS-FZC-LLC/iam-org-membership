@@ -6,12 +6,11 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
-### Outstanding — must land before this can safely deploy
+### Fixed
 
-These are live cross-repo event-contract changes on this branch that require the *consuming* service to update in lockstep, not just a same-repo rename:
-
-- **`TenantMembershipsPurged` rename.** Core's tenant-offboarding cascade signal was renamed from `TenantOffboarded` to `TenantMembershipsPurged` and moved from `iam.tenant.events` to `iam.membership.events` — the old name collided with Realm Provisioner's own `TenantOffboarded` event, which Core only *consumes*. **`iam-delegation`'s `delegation-cascade-q` consumer still subscribes to the old name/topic and must be updated before this is safe to deploy.**
-- **`MembershipRevoked` consolidation.** The per-user removal cascade (`MembershipService.RemoveUser`, `ProvisioningService.DeleteMember`) now emits a single shared `MembershipRevoked` event per LLD §15.2.2, instead of the previous pair (`MembershipRevoked` for Delegation Service, `TenantMembershipRemoved` for Tender-ACL Service). **`iam-tender-acl`'s consumer still subscribes to `TenantMembershipRemoved` and must be updated to subscribe to `MembershipRevoked` instead.**
+- **`InvitationService.Invite`'s seat-cap-lost-race path** (`internal/core/service/invitation_service.go`) intermittently reported the wrong outcome to one racer under concurrent invites: `TxRunner.RunInTx` retries its callback on a deadlock/serialization failure, but the closure set one of two mutually-exclusive outer-scope result variables (`created`/`seatLimitErr`) without resetting either between invocations, so a stale value from an earlier, rolled-back attempt could leak into the attempt that actually committed. Fixed by resetting both at the top of the closure on every invocation.
+- **CI `test/postgres` reliability**: bounded `pgcommon.NewPool` connections with a per-attempt timeout + retry (a stalled connection attempt previously had no deadline anywhere above it, so it could leak a goroutine indefinitely and starve a *later*, unrelated test's own connection attempt into the same hang); lowered `TEST_POSTGRES_PARALLEL` for CI to reduce concurrent-container resource pressure; raised the CI job and internal test timeouts to match.
+- **`TestConsumerEVT14_StaleEventSkipped`** (`test/postgres/consumer_evt_test.go`) intermittently failed on Linux CI runners only: it wrote a full-nanosecond-precision `time.Time` into a `timestamptz` column, which `pgx` truncates to microsecond precision on encode, then compared the re-read (truncated) value against the original (untruncated) one — a mismatch that depends on the OS clock's actual sub-microsecond jitter. Fixed by rounding to microsecond precision before the comparison, matching the sibling test that already did this. The production EVT-14 guard itself was confirmed correct — this was a test-only bug.
 
 ### Known gaps
 

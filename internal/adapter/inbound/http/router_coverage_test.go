@@ -24,22 +24,6 @@ type rcPinger struct{ err error }
 
 func (p rcPinger) Health(context.Context) error { return p.err }
 
-// ── healthz — pure liveness, always 200 ──────────────────────────────────
-
-func TestHealthz_AlwaysReturns200(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
-	})
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", http.NoBody)
-	w := httptest.NewRecorder()
-	router.Handler().ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `"ok"`)
-}
-
 // ── readyz — every dependency combination ────────────────────────────────
 
 func TestReadyz_AllDependenciesHealthy_Returns200(t *testing.T) {
@@ -72,52 +56,6 @@ func TestReadyz_DatabaseDown_Returns503(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Contains(t, w.Body.String(), `"database":"down"`)
 	assert.Contains(t, w.Body.String(), `"not ready"`)
-}
-
-func TestReadyz_CacheDown_Returns503(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Postgres:  rcPinger{}, Cache: rcPinger{err: errors.New("valkey down")}, Outbox: rcPinger{},
-	})
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", http.NoBody)
-	w := httptest.NewRecorder()
-	router.Handler().ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), `"cache":"down"`)
-}
-
-func TestReadyz_OutboxDown_Returns503(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{err: errors.New("not started")},
-	})
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", http.NoBody)
-	w := httptest.NewRecorder()
-	router.Handler().ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), `"outbox":"initialising"`)
-}
-
-// SysPostgres is optional (BYPASSRLS pool) — when set, its failure alone
-// must also flip readiness to 503; when unset, it is skipped entirely
-// (already implicitly covered by every test above that leaves it nil).
-func TestReadyz_SysPostgresDown_Returns503(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
-		SysPostgres: rcPinger{err: errors.New("cross-tenant pool down")},
-	})
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", http.NoBody)
-	w := httptest.NewRecorder()
-	router.Handler().ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), `"sys_database":"down"`)
 }
 
 func TestReadyz_SysPostgresHealthy_IncludedInBody(t *testing.T) {

@@ -325,6 +325,10 @@ func (s *InvitationService) preflightSeatCheck(ctx context.Context, tenantID uui
 func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userID uuid.UUID, keycloakUserID uuid.UUID, email string) (*domain.TenantMembership, error) {
 	// Look for a matching pending invitation.
 	email = normalizeEmail(email)
+	// GAP-I3-1: reject structurally invalid email before any DB call.
+	if email != "" && !strings.Contains(email, "@") {
+		return nil, domain.NewError(domain.ErrValidation, "invalid email address")
+	}
 	var pending *domain.PendingInvitation
 	var err error
 	pending, err = s.invites.FindPendingByKeycloakUser(ctx, tenantID, keycloakUserID)

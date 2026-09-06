@@ -41,6 +41,9 @@ func (f *gmaMembershipRepo) SoftDelete(context.Context, uuid.UUID, uuid.UUID, in
 	return nil
 }
 func (f *gmaMembershipRepo) CountActive(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (f *gmaMembershipRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 
 var _ port.MembershipRepository = (*gmaMembershipRepo)(nil)
 

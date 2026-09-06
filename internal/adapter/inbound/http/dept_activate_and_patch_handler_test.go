@@ -70,10 +70,8 @@ func TestDeptActivate_AlreadyActivated_409(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
 
-	// P-24 is idempotent: already-active → 200 with existing row, not 409.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 idempotent, got %d: %s", w.Code, w.Body.String())
-	}
+	// P-24 conflict: already-active → 409 department_already_activated (TD-7).
+	assertErrorCode(t, w, http.StatusConflict, "department_already_activated")
 }
 
 // P24-422-01: catalog dept is globally retired → 422 department_retired (Bug B-12 fix).

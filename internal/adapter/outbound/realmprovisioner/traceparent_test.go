@@ -47,3 +47,10 @@ func TestPropagateTraceparent_UnsampledFlags00(t *testing.T) {
 		"00-aabbccddeeff00112233445566778899-aa11bb22cc33dd44-00",
 		req.Header.Get("traceparent"))
 }
+
+func TestPropagateTraceparent_NilRequest_IsNoop(t *testing.T) {
+	// req == nil triggers the early-return guard, verifying it never panics.
+	assert.NotPanics(t, func() {
+		propagateTraceparent(context.Background(), nil)
+	})
+}

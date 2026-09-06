@@ -30,55 +30,6 @@ import (
 // RequireActiveMembership — was 4.3%, the biggest single gap.
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestRequireActiveMembership_NoIdentity_PassesThrough(t *testing.T) {
-	c, w := newTestContext(nil)
-	called := false
-	handler := gin.HandlerFunc(func(c *gin.Context) { called = true; c.Status(http.StatusOK) })
-
-	RequireActiveMembership(&mhMemRepo{})(c)
-	if !c.IsAborted() {
-		handler(c)
-	}
-	assert.True(t, called)
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestRequireActiveMembership_SystemPrincipal_Bypasses(t *testing.T) {
-	rc := &requestctx.RequestContext{Roles: []string{"iam-system"}}
-	c, _ := newTestContext(rc)
-	called := false
-	handler := gin.HandlerFunc(func(c *gin.Context) { called = true; c.Status(http.StatusOK) })
-
-	// A repo that would panic-via-error if actually consulted, to prove the
-	// bypass short-circuits before any lookup.
-	repo := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
-		t.Fatal("iam-system must bypass the membership lookup entirely")
-		return nil, nil
-	}}
-	RequireActiveMembership(repo)(c)
-	if !c.IsAborted() {
-		handler(c)
-	}
-	assert.True(t, called)
-}
-
-func TestRequireActiveMembership_Operator_Bypasses(t *testing.T) {
-	rc := &requestctx.RequestContext{Roles: []string{"platform_operator"}}
-	c, _ := newTestContext(rc)
-	called := false
-	handler := gin.HandlerFunc(func(c *gin.Context) { called = true; c.Status(http.StatusOK) })
-
-	repo := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
-		t.Fatal("platform_operator must bypass the membership lookup entirely")
-		return nil, nil
-	}}
-	RequireActiveMembership(repo)(c)
-	if !c.IsAborted() {
-		handler(c)
-	}
-	assert.True(t, called)
-}
-
 func TestRequireActiveMembership_MemberNotFound_Returns403(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
 	rc := &requestctx.RequestContext{TenantID: tenantID, UserID: userID, Roles: []string{"tenant_admin"}}

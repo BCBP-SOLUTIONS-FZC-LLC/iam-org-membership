@@ -170,10 +170,10 @@ func TestP7Dept011_ActivateIdempotent(t *testing.T) {
 
 	_, _, err := fx.Department.Activate(tctx, tenantID, deptID)
 	require.NoError(t, err)
-	td, wasCreated, err := fx.Department.Activate(tctx, tenantID, deptID)
-	require.NoError(t, err, "P-24 is idempotent — second activate must not error")
-	assert.False(t, wasCreated, "idempotent re-activation must report wasCreated=false (→ 200)")
-	assert.True(t, td.IsActive)
+	// TD-7: second activate returns ErrDepartmentAlreadyActivated → HTTP 409.
+	_, _, err2 := fx.Department.Activate(tctx, tenantID, deptID)
+	require.Error(t, err2, "P-24 second activate must return ErrDepartmentAlreadyActivated (TD-7)")
+	require.ErrorIs(t, err2, domain.ErrDepartmentAlreadyActivated)
 }
 
 // Test Case ID:      P7-DEPT-012

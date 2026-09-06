@@ -82,6 +82,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      
 
   pgbouncer:
     image: edoburu/pgbouncer:latest

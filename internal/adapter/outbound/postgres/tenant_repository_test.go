@@ -15,6 +15,54 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// tenantRow builds a 26-element []any in tenantSelectColumns order for use
+// with fakeRow/fakeRows in tests that need a scanTenant-compatible row.
+// Pass nil for featureFlagsJSON to get a NULL feature_flags column;
+// pass nil for deletedAt for a soft-delete = NULL row (non-deleted tenant).
+func tenantRow(featureFlagsJSON []byte, deletedAt *time.Time) []any { //nolint:unparam
+	now := time.Now().UTC().Truncate(time.Second)
+	return []any{
+		// id, slug, name
+		uuid.New(), "acme", "Acme Corp",
+		// plan
+		string(domain.PlanStarter),
+		// feature_flags (jsonb → []byte)
+		featureFlagsJSON,
+		// status
+		string(domain.StatusTrial),
+		// trial_ends_at (*time.Time)
+		(*time.Time)(nil),
+		// trial_reactivation_count
+		int(0),
+		// subscription_started_at (*time.Time)
+		(*time.Time)(nil),
+		// cancelled_at (*time.Time)
+		(*time.Time)(nil),
+		// suspension_source (*string)
+		(*string)(nil),
+		// last_event_at (*time.Time)
+		(*time.Time)(nil),
+		// realm_id, realm_type, keycloak_shard
+		"realm-1", string(domain.RealmShared), "shard-a",
+		// mfa_freshness_seconds
+		int(300),
+		// local_accounts_enabled, realm_sync_pending
+		false, false,
+		// default_locale
+		"en",
+		// licensed_seats
+		int(10),
+		// ownerless_since, overage_since (*time.Time)
+		(*time.Time)(nil), (*time.Time)(nil),
+		// record_version
+		int64(1),
+		// created_at, updated_at
+		now, now,
+		// deleted_at (*time.Time)
+		deletedAt,
+	}
+}
+
 // ── FindByIDIncludingDeleted (I-2 RP cleanup / reconcilers) ────────────
 
 func TestTenantRepo_FindByIDIncludingDeleted_ReturnsRow(t *testing.T) {

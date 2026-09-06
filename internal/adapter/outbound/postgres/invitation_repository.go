@@ -11,6 +11,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type InvitationRepository struct {
@@ -176,6 +177,12 @@ func (r *InvitationRepository) Insert(ctx context.Context, inv *domain.PendingIn
 			inv.InvitedBy, inv.KeycloakUserID, string(inv.Status), inv.ExpiresAt)
 		created, err := scanInvitation(row)
 		if err != nil {
+			// 23505 = unique_violation: concurrent invite for same email → invitation_already_exists (409)
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return domain.NewError(domain.ErrInvitationAlreadyExists,
+					"invitation already exists for this email")
+			}
 			return err
 		}
 		out = created

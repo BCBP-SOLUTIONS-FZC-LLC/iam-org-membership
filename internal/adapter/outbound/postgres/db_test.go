@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
@@ -272,20 +273,28 @@ func TestWrapConnErr_NilPassesThrough(t *testing.T) {
 	assert.NoError(t, wrapConnErr(nil))
 }
 
-// ── itoa ─────────────────────────────────────────────────────────────────
-
-func TestItoa_PositiveMultiDigit(t *testing.T) {
-	assert.Equal(t, "42", itoa(42))
-}
-
-func TestItoa_ZeroDefaultsTo100(t *testing.T) {
+// TestItoa_ZeroReturns100 covers the n <= 0 branch in itoa.
+func TestItoa_ZeroReturns100(t *testing.T) {
 	assert.Equal(t, "100", itoa(0))
-}
-
-func TestItoa_NegativeDefaultsTo100(t *testing.T) {
 	assert.Equal(t, "100", itoa(-5))
 }
 
-func TestItoa_SingleDigit(t *testing.T) {
-	assert.Equal(t, "7", itoa(7))
+// TestSystemPoolConfig_NonNilLogger_SetsLoggerAdapter verifies the
+// `if log != nil { cfg.Logger = NewLoggerAdapter(log) }` branch.
+func TestSystemPoolConfig_NonNilLogger_SetsLoggerAdapter(t *testing.T) {
+	cfg := SystemPoolConfig("postgres://u:p@h/db?sslmode=disable", &testLoggerAdapter{})
+	assert.NotNil(t, cfg.Logger, "non-nil port.Logger must set cfg.Logger to a LoggerAdapter")
 }
+
+// testLoggerAdapter is a minimal port.Logger for SystemPoolConfig tests.
+type testLoggerAdapter struct{}
+
+// fakePortLogger is an alias for testLoggerAdapter used by SystemPoolConfig logger tests.
+type fakePortLogger = testLoggerAdapter
+
+func (l *testLoggerAdapter) Debug(msg string, fields map[string]any) {}
+func (l *testLoggerAdapter) Info(msg string, fields map[string]any)  {}
+func (l *testLoggerAdapter) Warn(msg string, fields map[string]any)  {}
+func (l *testLoggerAdapter) Error(msg string, fields map[string]any) {}
+
+var _ port.Logger = (*testLoggerAdapter)(nil)

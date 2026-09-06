@@ -284,10 +284,11 @@ func TestReconcileRoles_MemberRoleRejected(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["member"]}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", userID.String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_role")
+	// ErrInvalidRole → 422 (LLD §17 invalid_role taxonomy, TR-7).
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_role")
 }
 
-// P28-V-02: unknown role code → 400 invalid_role.
+// P28-V-02: unknown role code → 422 invalid_role (ErrInvalidRole, LLD §17).
 func TestReconcileRoles_UnknownRoleCode(t *testing.T) {
 	tenant := uuid.New()
 	svc := buildMinimalMembershipSvc()
@@ -295,7 +296,7 @@ func TestReconcileRoles_UnknownRoleCode(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["superadmin"]}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_role")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_role")
 }
 
 // P28-GUARD-01: last tenant_owner removal → 422 last_owner_removal (TM-8).

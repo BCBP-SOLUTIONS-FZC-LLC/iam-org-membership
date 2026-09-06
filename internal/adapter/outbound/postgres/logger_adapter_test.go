@@ -1,103 +1,129 @@
+// Package postgres — unit tests for LoggerAdapter (logger_adapter.go).
+// LoggerAdapter wraps port.Logger and satisfies domain.Logger (pgcommon
+// v1.2.0's public sink). Tests verify each log-level method routes through
+// the underlying port.Logger with the correct message and field conversion.
+// No Docker / testcontainers required.
 package postgres
 
 import (
 	"testing"
 
-	pgdomain "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// fakePortLogger is a scripted port.Logger — records the last call made to
-// each level method so tests can assert msg/fields were forwarded
-// unchanged (modulo fieldMap's []Field -> map[string]any conversion).
-type fakePortLogger struct {
-	lastMsg    string
-	lastFields map[string]any
-	lastLevel  string
+// captureLogger is a test double for port.Logger that records calls.
+type captureLogger struct {
+	debugCalls []callRecord
+	infoCalls  []callRecord
+	warnCalls  []callRecord
+	errorCalls []callRecord
 }
 
-func (f *fakePortLogger) Debug(msg string, fields map[string]any) {
-	f.lastLevel, f.lastMsg, f.lastFields = "debug", msg, fields
-}
-func (f *fakePortLogger) Info(msg string, fields map[string]any) {
-	f.lastLevel, f.lastMsg, f.lastFields = "info", msg, fields
-}
-func (f *fakePortLogger) Warn(msg string, fields map[string]any) {
-	f.lastLevel, f.lastMsg, f.lastFields = "warn", msg, fields
-}
-func (f *fakePortLogger) Error(msg string, fields map[string]any) {
-	f.lastLevel, f.lastMsg, f.lastFields = "error", msg, fields
+type callRecord struct {
+	msg    string
+	fields map[string]any
 }
 
-func TestNewLoggerAdapter_ImplementsPgcommonDomainLogger(t *testing.T) {
-	var _ pgdomain.Logger = NewLoggerAdapter(&fakePortLogger{})
+func (l *captureLogger) Debug(msg string, fields map[string]any) {
+	l.debugCalls = append(l.debugCalls, callRecord{msg, fields})
+}
+func (l *captureLogger) Info(msg string, fields map[string]any) {
+	l.infoCalls = append(l.infoCalls, callRecord{msg, fields})
+}
+func (l *captureLogger) Warn(msg string, fields map[string]any) {
+	l.warnCalls = append(l.warnCalls, callRecord{msg, fields})
+}
+func (l *captureLogger) Error(msg string, fields map[string]any) {
+	l.errorCalls = append(l.errorCalls, callRecord{msg, fields})
 }
 
-func TestLoggerAdapter_Debug_ForwardsMsgAndFieldMap(t *testing.T) {
-	fake := &fakePortLogger{}
-	adapter := NewLoggerAdapter(fake)
+// TestLoggerAdapter_Debug routes to Debug on the underlying Logger.
+func TestLoggerAdapter_Debug(t *testing.T) {
+	log := &captureLogger{}
+	a := NewLoggerAdapter(log)
 
-	adapter.Debug("slow query", pgdomain.Field{Key: "duration_ms", Value: 42})
+	a.Debug("debug msg", domain.Field{Key: "k", Value: "v"})
 
-	assert.Equal(t, "debug", fake.lastLevel)
-	assert.Equal(t, "slow query", fake.lastMsg)
-	require.Contains(t, fake.lastFields, "duration_ms")
-	assert.Equal(t, 42, fake.lastFields["duration_ms"])
+	require.Len(t, log.debugCalls, 1, "Debug must forward exactly one call")
+	assert.Equal(t, "debug msg", log.debugCalls[0].msg)
+	assert.Equal(t, "v", log.debugCalls[0].fields["k"])
 }
 
-func TestLoggerAdapter_Info_ForwardsMsgAndFieldMap(t *testing.T) {
-	fake := &fakePortLogger{}
-	adapter := NewLoggerAdapter(fake)
+// TestLoggerAdapter_Info routes to Info on the underlying Logger.
+func TestLoggerAdapter_Info(t *testing.T) {
+	log := &captureLogger{}
+	a := NewLoggerAdapter(log)
 
-	adapter.Info("migration applied", pgdomain.Field{Key: "step", Value: "000000_initial_schema"})
+	a.Info("info msg", domain.Field{Key: "x", Value: 42})
 
-	assert.Equal(t, "info", fake.lastLevel)
-	assert.Equal(t, "migration applied", fake.lastMsg)
-	assert.Equal(t, "000000_initial_schema", fake.lastFields["step"])
+	require.Len(t, log.infoCalls, 1)
+	assert.Equal(t, "info msg", log.infoCalls[0].msg)
+	assert.Equal(t, 42, log.infoCalls[0].fields["x"])
 }
 
-func TestLoggerAdapter_Warn_ForwardsMsgAndFieldMap(t *testing.T) {
-	fake := &fakePortLogger{}
-	adapter := NewLoggerAdapter(fake)
+// TestLoggerAdapter_Warn routes to Warn on the underlying Logger.
+func TestLoggerAdapter_Warn(t *testing.T) {
+	log := &captureLogger{}
+	a := NewLoggerAdapter(log)
 
-	adapter.Warn("retrying", pgdomain.Field{Key: "attempt", Value: 2})
+	a.Warn("warn msg", domain.Field{Key: "a", Value: true})
 
-	assert.Equal(t, "warn", fake.lastLevel)
-	assert.Equal(t, "retrying", fake.lastMsg)
-	assert.Equal(t, 2, fake.lastFields["attempt"])
+	require.Len(t, log.warnCalls, 1)
+	assert.Equal(t, "warn msg", log.warnCalls[0].msg)
+	assert.Equal(t, true, log.warnCalls[0].fields["a"])
 }
 
-func TestLoggerAdapter_Error_ForwardsMsgAndFieldMap(t *testing.T) {
-	fake := &fakePortLogger{}
-	adapter := NewLoggerAdapter(fake)
+// TestLoggerAdapter_Error routes to Error on the underlying Logger.
+func TestLoggerAdapter_Error(t *testing.T) {
+	log := &captureLogger{}
+	a := NewLoggerAdapter(log)
 
-	adapter.Error("migration failed", pgdomain.Field{Key: "err", Value: "boom"})
+	a.Error("error msg", domain.Field{Key: "err", Value: "something broke"})
 
-	assert.Equal(t, "error", fake.lastLevel)
-	assert.Equal(t, "migration failed", fake.lastMsg)
-	assert.Equal(t, "boom", fake.lastFields["err"])
+	require.Len(t, log.errorCalls, 1)
+	assert.Equal(t, "error msg", log.errorCalls[0].msg)
+	assert.Equal(t, "something broke", log.errorCalls[0].fields["err"])
 }
 
-func TestLoggerAdapter_NoFieldsProducesEmptyMap(t *testing.T) {
-	fake := &fakePortLogger{}
-	adapter := NewLoggerAdapter(fake)
+// TestLoggerAdapter_NoFields verifies that zero fields produces an empty (but
+// non-nil) map rather than panicking.
+func TestLoggerAdapter_NoFields(t *testing.T) {
+	log := &captureLogger{}
+	a := NewLoggerAdapter(log)
 
-	adapter.Info("no fields here")
+	assert.NotPanics(t, func() {
+		a.Info("no fields")
+	})
 
-	require.NotNil(t, fake.lastFields)
-	assert.Empty(t, fake.lastFields)
+	require.Len(t, log.infoCalls, 1)
+	assert.NotNil(t, log.infoCalls[0].fields)
+	assert.Empty(t, log.infoCalls[0].fields)
 }
 
-func TestLoggerAdapter_MultipleFieldsAllMapped(t *testing.T) {
-	fake := &fakePortLogger{}
-	adapter := NewLoggerAdapter(fake)
+// TestLoggerAdapter_MultipleFields verifies that all fields in a varargs call
+// are converted to the fields map correctly.
+func TestLoggerAdapter_MultipleFields(t *testing.T) {
+	log := &captureLogger{}
+	a := NewLoggerAdapter(log)
 
-	adapter.Warn("multi",
-		pgdomain.Field{Key: "a", Value: 1},
-		pgdomain.Field{Key: "b", Value: "two"},
-		pgdomain.Field{Key: "c", Value: true},
+	a.Debug("multi",
+		domain.Field{Key: "one", Value: 1},
+		domain.Field{Key: "two", Value: "dos"},
+		domain.Field{Key: "three", Value: true},
 	)
 
-	assert.Equal(t, map[string]any{"a": 1, "b": "two", "c": true}, fake.lastFields)
+	require.Len(t, log.debugCalls, 1)
+	fields := log.debugCalls[0].fields
+	assert.Equal(t, 1, fields["one"])
+	assert.Equal(t, "dos", fields["two"])
+	assert.Equal(t, true, fields["three"])
+}
+
+// TestLoggerAdapter_ImplementsDomainLogger verifies the adapter satisfies the
+// domain.Logger interface at compile time.
+func TestLoggerAdapter_ImplementsDomainLogger(t *testing.T) {
+	log := &captureLogger{}
+	var _ domain.Logger = NewLoggerAdapter(log)
 }

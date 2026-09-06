@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -77,7 +78,7 @@ func (s *DeptMembershipService) ListByDepartment(ctx context.Context, tenantID, 
 // enforces this at DB level).
 func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, deptID uuid.UUID, level domain.DeptRole, actorID uuid.UUID) (*domain.DeptMembership, error) {
 	if level != domain.DeptPreparator && level != domain.DeptReviewer && level != domain.DeptApprover {
-		return nil, domain.NewError(domain.ErrValidation, "invalid role_level").
+		return nil, domain.NewError(domain.ErrInvalidRole, "invalid role_level").
 			WithDetails(map[string]any{"code": "invalid_role_level"})
 	}
 	// D-5/TD-6 step 1: global catalog must be active (department_retired).
@@ -92,8 +93,13 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 		}
 	}
 	// D-5/TD-6 step 2: tenant must have activated the department (department_deactivated).
+	// ErrDepartmentNotFound (no row in tenant_departments) = never activated → 422.
 	td, err := s.tenantDepts.Find(ctx, tenantID, deptID)
 	if err != nil {
+		if errors.Is(err, domain.ErrDepartmentNotFound) {
+			return nil, domain.NewError(domain.ErrDepartmentDeactivated,
+				"department is not activated for this tenant")
+		}
 		return nil, err
 	}
 	if !td.IsActive {
@@ -102,6 +108,10 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	}
 	m, err := s.memberships.FindByUserID(ctx, tenantID, userID)
 	if err != nil {
+		if errors.Is(err, domain.ErrMemberNotFound) {
+			// DM-2: user is not a tenant member at all → same 422 as inactive members
+			return nil, domain.NewError(domain.ErrMemberNotActive, "grantee must be an active tenant member")
+		}
 		return nil, err
 	}
 	// DM-2 / BUG-P10-1: only an active tenant membership may receive new
@@ -243,6 +253,9 @@ func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, de
 		return nil, err
 	}
 	s.invalidate(ctx, tenantID)
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, cacheKeyDeptMembers(tenantID, deptID))
+	}
 	return dm, nil
 }
 

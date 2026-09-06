@@ -116,3 +116,31 @@ func TestResolveGroups_TransportError(t *testing.T) {
 	_, err := c.ResolveGroups(context.Background(), uuid.New(), []string{"eng-team"})
 	require.Error(t, err)
 }
+
+func TestNewHTTPClientGM_NilLogger_FallsBackToSlogDefault(t *testing.T) {
+	// nil logger → defaults to slog.Default() — must not panic.
+	c := NewHTTPClient("http://localhost", 5*time.Second, nil)
+	require.NotNil(t, c)
+}
+
+func TestNewHTTPClientGM_ZeroTimeout_DefaultsTo300ms(t *testing.T) {
+	// timeout <= 0 → defaults to 300ms.
+	c := NewHTTPClient("http://localhost", 0, slog.Default())
+	require.NotNil(t, c)
+	assert.Equal(t, 300*time.Millisecond, c.client.Timeout)
+}
+
+func TestResolveGroups_400Status_4xxErrorNotIncremented(t *testing.T) {
+	// A 4xx status (not >= 500) must return an error but NOT call IncXsvcError
+	// with "5xx" (only >= 500 triggers that label).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"bad_request"}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	_, err := c.ResolveGroups(context.Background(), uuid.New(), []string{"eng-team"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+}

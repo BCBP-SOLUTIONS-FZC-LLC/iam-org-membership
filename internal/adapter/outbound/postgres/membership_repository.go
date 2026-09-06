@@ -201,6 +201,28 @@ func (r *MembershipRepository) CountActive(ctx context.Context, tenantID uuid.UU
 	return n, err
 }
 
+func (r *MembershipRepository) ListActiveUserIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT user_id FROM tenant_memberships WHERE tenant_id = $1 AND deleted_at IS NULL`,
+			tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			ids = append(ids, id)
+		}
+		return rows.Err()
+	})
+	return ids, err
+}
+
 func (r *MembershipRepository) probeMembership(ctx context.Context, tx pgx.Tx, tenantID, userID uuid.UUID) error {
 	var currentVersion int64
 	err := tx.QueryRow(ctx, `SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`, tenantID, userID).Scan(&currentVersion)
