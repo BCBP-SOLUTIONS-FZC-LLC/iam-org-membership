@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TenantSeatOverageStartedPayload",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "licensed_seats",
+    "active_users",
+    "pending_invitations",
+    "overage_since"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "licensed_seats": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "active_users": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pending_invitations": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "overage_since": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
@@ -44,12 +45,13 @@ const (
 // domain.TopicForEvent in cmd/server/main.go for how the 14 embedded
 // schemas are split 12/2 between the two).
 //
-// Unlike the sibling iam-user-profile service, this service's event Type
-// strings (e.g. "DepartmentMembershipGranted") ARE already the PascalCase
-// Glue schema name — the on-disk schemas/*.json filename stem, the
-// envelope.type value, and the Glue registry schema name are all the exact
-// same string, so no dot-notation-to-PascalCase translation is needed here
-// (contrast iam-user-profile's domain.GlueSchemaName helper).
+// Event Type strings (e.g. "DepartmentMembershipGranted") are the
+// PascalCase Glue schema name and envelope.type. schema-gov extract 0.4
+// writes snake_case filenames (tenant_created.json, mfareset.json);
+// AllSchemaNames / ValidatingCodec recover the Glue name from the
+// schema's title (TenantCreatedPayload → TenantCreated), not the file
+// stem — MFAReset is irregular and must not be invented from the
+// filename.
 type GlueCodec struct {
 	client       *glue.Client
 	registryName string
@@ -212,18 +214,29 @@ func prependGlueHeader(schemaVersionID string, payload []byte) ([]byte, error) {
 	return out, nil
 }
 
-// AllSchemaNames returns every embedded schemas/*.json file's name (without
-// the .json extension) — the single source of truth cmd/server/main.go uses
-// to build the per-registry schema-name lists NewGlueCodec needs, so the
-// membership/tenant split can never drift from what ValidatingCodec actually
-// loads.
+// AllSchemaNames returns the PascalCase Glue / envelope.type name for every
+// produced event schema embedded under schemas/. Consumed (producer-owned)
+// extracts stay on disk for schema-gov coverage but are omitted so Glue
+// prefetch cannot request schemas this service does not register.
 func AllSchemaNames() ([]string, error) {
-	return allSchemaNamesFromFS(schemasFS)
+	names, err := allSchemaNamesFromFS(schemasFS)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if domain.IsProducedEvent(name) {
+			out = append(out, name)
+		}
+	}
+	return out, nil
 }
 
-// allSchemaNamesFromFS is the testable implementation of AllSchemaNames.
-// It accepts an fs.FS so tests can inject a fstest.MapFS to trigger error
-// branches (ReadDir error, non-.json continue).
+// allSchemaNamesFromFS is the testable implementation of AllSchemaNames'
+// filesystem walk. It accepts an fs.FS so tests can inject a fstest.MapFS
+// to trigger error branches (ReadDir error, non-.json continue). Names
+// come from each file's title/$id (Payload suffix stripped), falling
+// back to the filename stem when neither is set.
 func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
 	entries, err := fs.ReadDir(schemas, "schemas")
 	if err != nil {
@@ -234,7 +247,33 @@ func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		names = append(names, strings.TrimSuffix(e.Name(), ".json"))
+		data, rerr := fs.ReadFile(schemas, "schemas/"+e.Name())
+		if rerr != nil {
+			return nil, fmt.Errorf("read schema %s: %w", e.Name(), rerr)
+		}
+		names = append(names, eventTypeFromSchemaFile(e.Name(), data))
 	}
 	return names, nil
+}
+
+type schemaFileMeta struct {
+	Title string `json:"title"`
+	ID    string `json:"$id"`
+}
+
+// eventTypeFromSchemaFile returns the PascalCase event / Glue schema name
+// for an extracted draft-07 file. Prefer title, then $id, then the
+// filename stem — never invent PascalCase from a snake_case stem
+// (mfareset.json is MFAReset, not Mfareset).
+func eventTypeFromSchemaFile(filename string, data []byte) string {
+	var meta schemaFileMeta
+	if err := json.Unmarshal(data, &meta); err == nil {
+		if t := strings.TrimSpace(meta.Title); t != "" {
+			return strings.TrimSuffix(t, "Payload")
+		}
+		if id := strings.TrimSpace(meta.ID); id != "" {
+			return strings.TrimSuffix(id, "Payload")
+		}
+	}
+	return strings.TrimSuffix(filename, ".json")
 }

@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TenantStateChangedPayload",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "status",
+    "previous_status",
+    "plan",
+    "previous_plan",
+    "changed_at",
+    "cause"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "trial",
+        "active",
+        "past_due",
+        "cancelled",
+        "suspended",
+        "trial_expired",
+        "offboarded"
+      ]
+    },
+    "previous_status": {
+      "type": "string",
+      "enum": [
+        "trial",
+        "active",
+        "past_due",
+        "cancelled",
+        "suspended",
+        "trial_expired",
+        "offboarded"
+      ]
+    },
+    "plan": {
+      "type": "string",
+      "enum": [
+        "starter",
+        "pro",
+        "enterprise"
+      ]
+    },
+    "previous_plan": {
+      "type": "string",
+      "enum": [
+        "starter",
+        "pro",
+        "enterprise"
+      ]
+    },
+    "changed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cause": {
+      "type": "string"
+    }
+  }
+}

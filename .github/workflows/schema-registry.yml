@@ -202,6 +202,15 @@ jobs:
             --usage-file /tmp/schema-usage-metrics.json \
             --asyncapi   api/asyncapi.yaml
 
+      - name: Stage produced Glue schemas
+        run: |
+          LANE=membership
+          case "${{ matrix.registry }}" in
+            *tenant*) LANE=tenant ;;
+          esac
+          rm -rf .tmp/glue-schemas
+          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
+
       # Fetches current Glue definition per-schema (aws CLI) then diffs via the
       # container. Runs MAX_PARALLEL diffs concurrently; output is buffered and
       # printed in deterministic order. Fails on any breaking change.
@@ -245,7 +254,7 @@ jobs:
                 -e GITHUB_ACTIONS \
                 "${{ env.SCHEMA_GOV_IMAGE }}" diff \
                 --current    "/diff/${SCHEMA_NAME}.current.json" \
-                --proposed   "internal/adapter/outbound/eventbus/schemas/${SCHEMA_NAME}.json" \
+                --proposed   ".tmp/glue-schemas/${SCHEMA_NAME}.json" \
                 --schema-name "${SCHEMA_NAME}" \
               && echo "ok" > "$STATUS" || echo "breaking" > "$STATUS"
             ) > "$OUT" 2>&1
@@ -253,7 +262,7 @@ jobs:
 
           MAX_PARALLEL="${MAX_PARALLEL:-5}"
           PIDS=(); NAMES=(); _active=0
-          for FILE in internal/adapter/outbound/eventbus/schemas/*.json; do
+          for FILE in .tmp/glue-schemas/*.json; do
             [ -f "$FILE" ] || continue
             SCHEMA_NAME=$(basename "$FILE" .json)
             NAMES+=("$SCHEMA_NAME")
@@ -300,7 +309,7 @@ jobs:
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" register \
             --registry    "${{ matrix.registry }}" \
-            --schema-dir  internal/adapter/outbound/eventbus/schemas \
+            --schema-dir  .tmp/glue-schemas \
             --output      /tmp/schema-versions.json \
             $FORCE_FLAG
 
@@ -468,6 +477,15 @@ jobs:
             --usage-file /tmp/schema-usage-metrics.json \
             --asyncapi   api/asyncapi.yaml
 
+      - name: Stage produced Glue schemas
+        run: |
+          LANE=membership
+          case "${{ matrix.registry }}" in
+            *tenant*) LANE=tenant ;;
+          esac
+          rm -rf .tmp/glue-schemas
+          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
+
       - name: Diff schemas against registry
         env:
           REGISTRY_NAME: ${{ matrix.registry }}
@@ -508,7 +526,7 @@ jobs:
                 -e GITHUB_ACTIONS \
                 "${{ env.SCHEMA_GOV_IMAGE }}" diff \
                 --current    "/diff/${SCHEMA_NAME}.current.json" \
-                --proposed   "internal/adapter/outbound/eventbus/schemas/${SCHEMA_NAME}.json" \
+                --proposed   ".tmp/glue-schemas/${SCHEMA_NAME}.json" \
                 --schema-name "${SCHEMA_NAME}" \
               && echo "ok" > "$STATUS" || echo "breaking" > "$STATUS"
             ) > "$OUT" 2>&1
@@ -516,7 +534,7 @@ jobs:
 
           MAX_PARALLEL="${MAX_PARALLEL:-5}"
           PIDS=(); NAMES=(); _active=0
-          for FILE in internal/adapter/outbound/eventbus/schemas/*.json; do
+          for FILE in .tmp/glue-schemas/*.json; do
             [ -f "$FILE" ] || continue
             SCHEMA_NAME=$(basename "$FILE" .json)
             NAMES+=("$SCHEMA_NAME")
@@ -562,7 +580,7 @@ jobs:
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" register \
             --registry    "${{ matrix.registry }}" \
-            --schema-dir  internal/adapter/outbound/eventbus/schemas \
+            --schema-dir  .tmp/glue-schemas \
             --output      /tmp/schema-versions.json \
             $FORCE_FLAG
 
@@ -688,6 +706,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Stage produced Glue schemas
+        run: |
+          LANE=membership
+          case "${{ matrix.registry }}" in
+            *tenant*) LANE=tenant ;;
+          esac
+          rm -rf .tmp/glue-schemas
+          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
+
       - name: Diff schemas against staging registry
         if: steps.aws_check.outputs.configured == 'true'
         env:
@@ -729,7 +756,7 @@ jobs:
                 -e GITHUB_ACTIONS \
                 "${{ env.SCHEMA_GOV_IMAGE }}" diff \
                 --current    "/diff/${SCHEMA_NAME}.current.json" \
-                --proposed   "internal/adapter/outbound/eventbus/schemas/${SCHEMA_NAME}.json" \
+                --proposed   ".tmp/glue-schemas/${SCHEMA_NAME}.json" \
                 --schema-name "${SCHEMA_NAME}" \
               && echo "ok" > "$STATUS" || echo "breaking" > "$STATUS"
             ) > "$OUT" 2>&1
@@ -737,7 +764,7 @@ jobs:
 
           MAX_PARALLEL="${MAX_PARALLEL:-5}"
           PIDS=(); NAMES=(); _active=0
-          for FILE in internal/adapter/outbound/eventbus/schemas/*.json; do
+          for FILE in .tmp/glue-schemas/*.json; do
             [ -f "$FILE" ] || continue
             SCHEMA_NAME=$(basename "$FILE" .json)
             NAMES+=("$SCHEMA_NAME")

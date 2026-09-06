@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -416,7 +417,14 @@ func TestAllSchemaNames_AllEntriesAreValidSchemaNames(t *testing.T) {
 		assert.NotContains(t, n, ".json",
 			"AllSchemaNames must strip the .json extension")
 		assert.NotEmpty(t, n)
+		assert.True(t, domain.IsProducedEvent(n),
+			"AllSchemaNames must return PascalCase produced Glue names, got %q", n)
 	}
+	assert.Contains(t, names, "TenantCreated")
+	assert.Contains(t, names, "MFAReset")
+	assert.NotContains(t, names, "tenant_created")
+	assert.NotContains(t, names, "mfareset")
+	assert.NotContains(t, names, "TenantOffboarded")
 }
 
 // ── Encode — ValidUUID round-trip assertion ───────────────────────────────

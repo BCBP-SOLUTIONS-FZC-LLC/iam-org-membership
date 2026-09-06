@@ -391,17 +391,27 @@ schema-register:
 	  echo "GLUE_REGISTRY_TENANT_NAME is not set — add it to .env"; \
 	  exit 1; \
 	}
-	@for registry in $(GLUE_REGISTRY_MEMBERSHIP_NAME) $(GLUE_REGISTRY_TENANT_NAME); do \
-	  echo "Registering schemas -> $$registry"; \
-	  docker run --rm \
-	    -v "$(CURDIR)":/workspace \
-	    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
-	    -e AWS_REGION="$(AWS_REGION)" \
-	    -e AWS_ENDPOINT_URL="$(AWS_ENDPOINT_URL)" \
-	    "$(SCHEMA_GOV_IMAGE)" register \
-	    --registry   "$$registry" \
-	    --schema-dir internal/adapter/outbound/eventbus/schemas || exit 1; \
-	done
+	@rm -rf .tmp/glue-membership .tmp/glue-tenant; \
+	bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-membership membership; \
+	bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-tenant tenant; \
+	echo "Registering schemas -> $(GLUE_REGISTRY_MEMBERSHIP_NAME)"; \
+	docker run --rm \
+	  -v "$(CURDIR)":/workspace \
+	  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+	  -e AWS_REGION="$(AWS_REGION)" \
+	  -e AWS_ENDPOINT_URL="$(AWS_ENDPOINT_URL)" \
+	  "$(SCHEMA_GOV_IMAGE)" register \
+	  --registry   "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" \
+	  --schema-dir .tmp/glue-membership || exit 1; \
+	echo "Registering schemas -> $(GLUE_REGISTRY_TENANT_NAME)"; \
+	docker run --rm \
+	  -v "$(CURDIR)":/workspace \
+	  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+	  -e AWS_REGION="$(AWS_REGION)" \
+	  -e AWS_ENDPOINT_URL="$(AWS_ENDPOINT_URL)" \
+	  "$(SCHEMA_GOV_IMAGE)" register \
+	  --registry   "$(GLUE_REGISTRY_TENANT_NAME)" \
+	  --schema-dir .tmp/glue-tenant
 
 # schema-verify: fail if any of the 13 expected PascalCase schema names is
 # missing from its Glue registry (11 in GLUE_REGISTRY_MEMBERSHIP_NAME, 2 —

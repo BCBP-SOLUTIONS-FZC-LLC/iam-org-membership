@@ -45,6 +45,18 @@ func TestAllSchemaNamesFromFS_NonJSONFile_Skipped(t *testing.T) {
 	assert.Equal(t, "MyEvent", names[0], "name must have .json extension stripped")
 }
 
+func TestAllSchemaNamesFromFS_UsesTitleNotFilename(t *testing.T) {
+	mapFS := fstest.MapFS{
+		"schemas/mfareset.json": {Data: []byte(`{"title":"MFAResetPayload","type":"object"}`)},
+	}
+
+	names, err := allSchemaNamesFromFS(mapFS)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"MFAReset"}, names,
+		"Glue name must come from title, not the snake_case extract stem")
+}
+
 // TestAllSchemaNamesFromFS_EmptyDir_ReturnsEmpty verifies that a schemas/
 // directory with no .json files returns an empty (not nil) slice without error.
 func TestAllSchemaNamesFromFS_EmptyDir_ReturnsEmpty(t *testing.T) {

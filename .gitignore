@@ -47,6 +47,9 @@ server
 # Temporary LLD extract (used by some scripts to feed the model)
 .tmp-lld.md
 
+# Staged PascalCase Glue schema copies (from make schema-register / CI)
+.tmp/
+
 # Local LLD reference — authoritative copy lives outside the repo at
 # /Users/sharmila/bcbp-solutions/Documents/LLD/Org-Membership/Documents/
 # The .claude/CLAUDE.md pointer references that external path.

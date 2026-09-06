@@ -107,3 +107,30 @@ func TopicForEvent(eventType string) string {
 		return TopicMembership
 	}
 }
+
+// IsProducedEvent reports whether eventType is one of the 14 events this
+// service publishes (and therefore registers in Glue). schema-gov extract
+// also writes the 13 consumed, producer-owned payloads into the same
+// schema directory for coverage; those must not be prefetched or
+// registered here.
+func IsProducedEvent(eventType string) bool {
+	switch eventType {
+	case EventDepartmentMembershipGranted,
+		EventDepartmentMembershipRevoked,
+		EventDepartmentMembershipLevelChanged,
+		EventTenantRoleGranted,
+		EventTenantRoleRevoked,
+		EventTenderAssigneeOverridden,
+		EventMFAReset,
+		EventTenantSeatOverageStarted,
+		EventTenantSeatOverageResolved,
+		EventTenantStateChanged,
+		EventMembershipRevoked,
+		EventTenantMembershipsPurged,
+		EventTenantCreated,
+		EventTrialStarted:
+		return true
+	default:
+		return false
+	}
+}

@@ -46,3 +46,30 @@ func TestTopicForEvent_UnknownDefaultsToMembership(t *testing.T) {
 	// need only opt in via SNS filter policy.
 	assert.Equal(t, domain.TopicMembership, domain.TopicForEvent("SomeFuturePayload"))
 }
+
+func TestIsProducedEvent_OutboundCatalogue(t *testing.T) {
+	produced := []string{
+		domain.EventDepartmentMembershipGranted,
+		domain.EventDepartmentMembershipRevoked,
+		domain.EventDepartmentMembershipLevelChanged,
+		domain.EventTenantRoleGranted,
+		domain.EventTenantRoleRevoked,
+		domain.EventTenderAssigneeOverridden,
+		domain.EventMFAReset,
+		domain.EventTenantSeatOverageStarted,
+		domain.EventTenantSeatOverageResolved,
+		domain.EventTenantStateChanged,
+		domain.EventMembershipRevoked,
+		domain.EventTenantMembershipsPurged,
+		domain.EventTenantCreated,
+		domain.EventTrialStarted,
+	}
+	assert.Len(t, produced, 14)
+	for _, ev := range produced {
+		assert.True(t, domain.IsProducedEvent(ev), "produced event %s must be recognized", ev)
+	}
+	assert.False(t, domain.IsProducedEvent("TenantOffboarded"),
+		"consumed producer-owned events must not be treated as produced")
+	assert.False(t, domain.IsProducedEvent("mfareset"),
+		"snake_case extract stems are not Glue names")
+}
