@@ -195,6 +195,13 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 	var created *domain.PendingInvitation
 	var seatLimitErr *domain.DomainError
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		// RunInTx retries this closure on a deadlock/serialization failure
+		// (pgcommon.RunInTxWithRetryOpts) — reset both outcome variables on
+		// every invocation so a stale value from an earlier, rolled-back
+		// attempt can never leak into the result of the attempt that
+		// actually commits.
+		created = nil
+		seatLimitErr = nil
 		licensedSeats, err := s.tenants.LicensedSeatsForUpdate(txCtx, tenantID)
 		if err != nil {
 			return err
