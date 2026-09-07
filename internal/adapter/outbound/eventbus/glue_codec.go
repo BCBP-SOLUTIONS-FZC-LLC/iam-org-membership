@@ -48,10 +48,11 @@ const (
 // Event Type strings (e.g. "DepartmentMembershipGranted") are the
 // PascalCase Glue schema name and envelope.type. schema-gov extract 0.4
 // writes snake_case filenames (tenant_created.json, mfareset.json);
-// AllSchemaNames / ValidatingCodec recover the Glue name from the
-// schema's title (TenantCreatedPayload → TenantCreated), not the file
-// stem — MFAReset is irregular and must not be invented from the
-// filename.
+// AllSchemaNames / ValidatingCodec recover the Glue name via the
+// schemaFileNames map below, the same hand-maintained
+// filename→PascalCase-name convention as the sibling services'
+// eventschema.ByEventType (iam-realm-provisioner, iam-delegation,
+// iam-user-profile) — a new schema needs one line added there.
 type GlueCodec struct {
 	client       *glue.Client
 	registryName string
@@ -235,8 +236,8 @@ func AllSchemaNames() ([]string, error) {
 // allSchemaNamesFromFS is the testable implementation of AllSchemaNames'
 // filesystem walk. It accepts an fs.FS so tests can inject a fstest.MapFS
 // to trigger error branches (ReadDir error, non-.json continue). Names
-// come from each file's title/$id (Payload suffix stripped), falling
-// back to the filename stem when neither is set.
+// come from the schemaFileNames map, falling back to the filename stem
+// for any file not listed there.
 func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
 	entries, err := fs.ReadDir(schemas, "schemas")
 	if err != nil {
@@ -247,33 +248,56 @@ func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		data, rerr := fs.ReadFile(schemas, "schemas/"+e.Name())
-		if rerr != nil {
-			return nil, fmt.Errorf("read schema %s: %w", e.Name(), rerr)
-		}
-		names = append(names, eventTypeFromSchemaFile(e.Name(), data))
+		names = append(names, eventTypeFromSchemaFile(e.Name()))
 	}
 	return names, nil
 }
 
-type schemaFileMeta struct {
-	Title string `json:"title"`
-	ID    string `json:"$id"`
+// schemaFileNames maps every embedded schemas/*.json filename (schema-gov
+// extract 0.4's snake_case output) to its PascalCase Glue schema name /
+// envelope.type — the same hand-maintained, one-line-per-event convention
+// as the sibling services' eventschema.ByEventType maps, rather than
+// deriving it at runtime from each file's JSON content. Covers all 27
+// embedded files: the 14 this service produces (domain.IsProducedEvent)
+// plus the 13 consumed, other-service-owned extracts kept here only for
+// schema-gov coverage (LLD §16). A new schema file needs one entry added
+// here.
+var schemaFileNames = map[string]string{
+	"department_membership_granted.json":       domain.EventDepartmentMembershipGranted,
+	"department_membership_level_changed.json": domain.EventDepartmentMembershipLevelChanged,
+	"department_membership_revoked.json":       domain.EventDepartmentMembershipRevoked,
+	"direct_paid_signup.json":                  "DirectPaidSignup",
+	"membership_revoked.json":                  domain.EventMembershipRevoked,
+	"mfareset.json":                            domain.EventMFAReset,
+	"tenant_converted.json":                    "TenantConverted",
+	"tenant_created.json":                      domain.EventTenantCreated,
+	"tenant_memberships_purged.json":           domain.EventTenantMembershipsPurged,
+	"tenant_offboarded.json":                   "TenantOffboarded",
+	"tenant_payment_past_due.json":             "TenantPaymentPastDue",
+	"tenant_plan_changed.json":                 "TenantPlanChanged",
+	"tenant_reactivated.json":                  "TenantReactivated",
+	"tenant_realm_ready.json":                  "TenantRealmReady",
+	"tenant_role_granted.json":                 domain.EventTenantRoleGranted,
+	"tenant_role_revoked.json":                 domain.EventTenantRoleRevoked,
+	"tenant_seat_overage_resolved.json":        domain.EventTenantSeatOverageResolved,
+	"tenant_seat_overage_started.json":         domain.EventTenantSeatOverageStarted,
+	"tenant_seats_changed.json":                "TenantSeatsChanged",
+	"tenant_state_changed.json":                domain.EventTenantStateChanged,
+	"tenant_subscription_cancelled.json":       "TenantSubscriptionCancelled",
+	"tenant_suspended.json":                    "TenantSuspended",
+	"tender_assignee_overridden.json":          domain.EventTenderAssigneeOverridden,
+	"trial_expired.json":                       "TrialExpired",
+	"trial_reactivated.json":                   "TrialReactivated",
+	"trial_started.json":                       domain.EventTrialStarted,
+	"trial_tenant_provisioned.json":            "TrialTenantProvisioned",
 }
 
 // eventTypeFromSchemaFile returns the PascalCase event / Glue schema name
-// for an extracted draft-07 file. Prefer title, then $id, then the
-// filename stem — never invent PascalCase from a snake_case stem
-// (mfareset.json is MFAReset, not Mfareset).
-func eventTypeFromSchemaFile(filename string, data []byte) string {
-	var meta schemaFileMeta
-	if err := json.Unmarshal(data, &meta); err == nil {
-		if t := strings.TrimSpace(meta.Title); t != "" {
-			return strings.TrimSuffix(t, "Payload")
-		}
-		if id := strings.TrimSpace(meta.ID); id != "" {
-			return strings.TrimSuffix(id, "Payload")
-		}
+// for an embedded schema filename via the schemaFileNames map, falling
+// back to the filename stem for any file not listed there.
+func eventTypeFromSchemaFile(filename string) string {
+	if name, ok := schemaFileNames[filename]; ok {
+		return name
 	}
 	return strings.TrimSuffix(filename, ".json")
 }

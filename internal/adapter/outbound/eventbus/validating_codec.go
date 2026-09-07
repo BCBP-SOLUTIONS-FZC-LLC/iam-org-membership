@@ -16,8 +16,8 @@ import (
 // schemasFS embeds the JSON Schema Draft-07 files under this package's
 // sibling `schemas/` directory. schema-gov extract 0.4 writes one snake_case
 // file per AsyncAPI *Payload (produced and consumed). ValidatingCodec keys
-// the compiled schema by title (TenantCreatedPayload → TenantCreated) so
-// Encode still looks up the PascalCase envelope.type / Glue name.
+// the compiled schema by the schemaFileNames map (glue_codec.go) so Encode
+// still looks up the PascalCase envelope.type / Glue name.
 //
 //go:embed schemas/*.json
 var schemasFS embed.FS
@@ -63,7 +63,7 @@ func newValidatingCodecFromFS(inner Codec, schemas fs.FS) (*ValidatingCodec, err
 		if rerr != nil {
 			return nil, fmt.Errorf("read schema %s: %w", e.Name(), rerr)
 		}
-		name := eventTypeFromSchemaFile(e.Name(), data)
+		name := eventTypeFromSchemaFile(e.Name())
 		var doc any
 		if err := json.Unmarshal(data, &doc); err != nil {
 			return nil, fmt.Errorf("parse schema %s: %w", e.Name(), err)

@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
-# Copy schema-gov extract output into DEST using PascalCase Glue names.
+# Copy this service's OWN produced-event schema files into DEST, renamed to
+# their PascalCase Glue name.
 #
-# extract 0.4 writes snake_case stems (mfareset.json, tenant_created.json).
-# Glue and make schema-verify still use the payload title minus "Payload"
-# (MFAReset, TenantCreated). Do not invent PascalCase from the filename.
+# schema-gov extract 0.4 writes snake_case filenames under
+# internal/adapter/outbound/eventbus/schemas/, and that one directory holds
+# BOTH this service's produced schemas and consumed (other-service-owned)
+# schemas kept only for schema-gov coverage (see glue_codec.go's
+# domain.IsProducedEvent). schema-gov diff/register need the PascalCase Glue
+# name and only the produced subset, so this hand-lists the
+# filename→name mapping — the same convention as iam-delegation's inline
+# SCHEMA_NAME_MAP in its schema-registry.yml. A `case` statement is used
+# instead of a bash 4+ associative array so this also runs under macOS's
+# default /bin/bash 3.2 (no Homebrew bash required) via `make
+# schema-register`, not just under CI's ubuntu-latest. A new schema needs
+# one line added to the matching case below.
 #
 # Usage: stage-produced-event-schemas.sh DEST [membership|tenant|all]
 set -euo pipefail
@@ -12,35 +22,43 @@ DEST="${1:?destination directory required}"
 LANE="${2:-all}"
 SRC="${SCHEMA_SRC:-internal/adapter/outbound/eventbus/schemas}"
 
-membership_names() {
-  cat <<'EOF'
-DepartmentMembershipGranted
-DepartmentMembershipRevoked
-DepartmentMembershipLevelChanged
-TenantRoleGranted
-TenantRoleRevoked
-TenderAssigneeOverridden
-MFAReset
-TenantSeatOverageStarted
-TenantSeatOverageResolved
-TenantStateChanged
-MembershipRevoked
-TenantMembershipsPurged
-EOF
+membership_name_for() {
+  case "$1" in
+    department_membership_granted)       echo DepartmentMembershipGranted ;;
+    department_membership_revoked)       echo DepartmentMembershipRevoked ;;
+    department_membership_level_changed) echo DepartmentMembershipLevelChanged ;;
+    tenant_role_granted)                 echo TenantRoleGranted ;;
+    tenant_role_revoked)                 echo TenantRoleRevoked ;;
+    tender_assignee_overridden)          echo TenderAssigneeOverridden ;;
+    mfareset)                            echo MFAReset ;;
+    tenant_seat_overage_started)         echo TenantSeatOverageStarted ;;
+    tenant_seat_overage_resolved)        echo TenantSeatOverageResolved ;;
+    tenant_state_changed)                echo TenantStateChanged ;;
+    membership_revoked)                  echo MembershipRevoked ;;
+    tenant_memberships_purged)           echo TenantMembershipsPurged ;;
+    *)                                   echo "" ;;
+  esac
 }
 
-tenant_names() {
-  cat <<'EOF'
-TenantCreated
-TrialStarted
-EOF
+tenant_name_for() {
+  case "$1" in
+    tenant_created) echo TenantCreated ;;
+    trial_started)  echo TrialStarted ;;
+    *)              echo "" ;;
+  esac
 }
 
-allowed_names() {
+resolve_name() {
+  local stem="$1"
   case "$LANE" in
-    membership) membership_names ;;
-    tenant) tenant_names ;;
-    all) membership_names; tenant_names ;;
+    membership) membership_name_for "$stem" ;;
+    tenant)     tenant_name_for "$stem" ;;
+    all)
+      local name
+      name=$(membership_name_for "$stem")
+      [ -n "$name" ] || name=$(tenant_name_for "$stem")
+      echo "$name"
+      ;;
     *)
       echo "unknown lane: $LANE (expected membership|tenant|all)" >&2
       exit 2
@@ -49,15 +67,13 @@ allowed_names() {
 }
 
 mkdir -p "$DEST"
-allow=$(allowed_names)
 
 shopt -s nullglob
 copied=0
 for file in "$SRC"/*.json; do
-  title=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("title",""))' "$file")
-  name="${title%Payload}"
+  stem=$(basename "$file" .json)
+  name=$(resolve_name "$stem")
   [ -n "$name" ] || continue
-  echo "$allow" | grep -qx "$name" || continue
   cp "$file" "$DEST/${name}.json"
   copied=$((copied + 1))
 done

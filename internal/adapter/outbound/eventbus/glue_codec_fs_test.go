@@ -45,16 +45,28 @@ func TestAllSchemaNamesFromFS_NonJSONFile_Skipped(t *testing.T) {
 	assert.Equal(t, "MyEvent", names[0], "name must have .json extension stripped")
 }
 
-func TestAllSchemaNamesFromFS_UsesTitleNotFilename(t *testing.T) {
+func TestAllSchemaNamesFromFS_UsesStaticMapNotFilename(t *testing.T) {
 	mapFS := fstest.MapFS{
-		"schemas/mfareset.json": {Data: []byte(`{"title":"MFAResetPayload","type":"object"}`)},
+		"schemas/mfareset.json": {Data: []byte(`{"type":"object"}`)},
 	}
 
 	names, err := allSchemaNamesFromFS(mapFS)
 
 	require.NoError(t, err)
 	require.Equal(t, []string{"MFAReset"}, names,
-		"Glue name must come from title, not the snake_case extract stem")
+		"Glue name must come from the schemaFileNames map, not the snake_case filename stem")
+}
+
+func TestAllSchemaNamesFromFS_UnmappedFile_FallsBackToStem(t *testing.T) {
+	mapFS := fstest.MapFS{
+		"schemas/some_new_event.json": {Data: []byte(`{"type":"object"}`)},
+	}
+
+	names, err := allSchemaNamesFromFS(mapFS)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"some_new_event"}, names,
+		"a filename with no schemaFileNames entry must fall back to its stem")
 }
 
 // TestAllSchemaNamesFromFS_EmptyDir_ReturnsEmpty verifies that a schemas/
