@@ -667,7 +667,7 @@ sequenceDiagram
     else validation passes
         Note over Codec: GlueCodec prepends 18-byte header {0x03, 0x00, schema_version_UUID}<br/>Version IDs prefetched from two Glue registries at startup:<br/>  GLUE_REGISTRY_MEMBERSHIP_NAME (iam-membership-events)<br/>  GLUE_REGISTRY_TENANT_NAME     (iam-tenant-events)<br/>NoopCodec pass-through in dev (registry env vars unset).
         Codec -->> SVC: (encoded bytes, schemaVersionID)
-        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)<br/>No source/topic column — platform-events' outbox_events schema has none;<br/>event_type alone is what RoutingPublisher routes on at publish time.
+        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)<br/>No source/topic column — platform-events' outbox_events schema has none —<br/>event_type alone is what RoutingPublisher routes on at publish time.
         OB -->>- SVC: inserted
 
         TX ->>+ DB: COMMIT
@@ -683,7 +683,7 @@ sequenceDiagram
 
         loop for each envelope
             Runner ->>+ Router: Route(envelope)
-            Note over Router: Routing key = domain.TopicForEvent(env.Type) — event **type**, not Envelope.Source.<br/>EventTenantCreated/EventTrialStarted → tenant publisher field; every other type defaults to membership.
+            Note over Router: Routing key = domain.TopicForEvent(env.Type) — event **type**, not Envelope.Source.<br/>EventTenantCreated/EventTrialStarted → tenant publisher field, every other type defaults to membership.
 
             alt domain.TopicForEvent(env.Type) == TopicMembership
                 Router ->>+ SNS_M: Publish(TopicArn=SNS_TOPIC_ARN_MEMBERSHIP,<br/>MessageAttributes{EventType, TenantID, Source, EventID, Subject})
