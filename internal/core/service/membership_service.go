@@ -215,7 +215,9 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 
 	if status == domain.MembershipSuspended {
 		// AUTH-8: privilege reduction → best-effort RP session revoke.
-		_ = s.rp.RevokeUserSessions(ctx, tenantID, userID)
+		if s.rp != nil {
+			_ = s.rp.RevokeUserSessions(ctx, tenantID, userID)
+		}
 
 		// WFI-13 (§8.8.5): advisory-only delegate-impact check.
 		if s.workflow != nil {
@@ -387,7 +389,7 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 	}
 
 	// AUTH-8: if we revoked any role, best-effort session revoke.
-	if len(revoked) > 0 {
+	if len(revoked) > 0 && s.rp != nil {
 		_ = s.rp.RevokeUserSessions(ctx, tenantID, userID)
 	}
 	return granted, revoked, nil

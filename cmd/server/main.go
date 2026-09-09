@@ -516,13 +516,19 @@ func main() {
 	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
 		log.Error("metrics server shutdown error", map[string]interface{}{"error": err.Error()})
 	}
-	if err := outboxRunner.Stop(); err != nil {
-		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
-	}
+	// Consumers stop BEFORE the outbox drains: a consumer still mid-flight
+	// when the outbox drain window closes could commit a new outbox_events
+	// row after that window, stranding it until the next runner start picks
+	// it up. Stopping new work first, then draining what's already queued,
+	// is the safer order (not a data-loss fix — the outbox is durable and
+	// self-healing either way, just tidier under a rolling deploy).
 	for _, cons := range sqsConsumers {
 		if err := cons.Stop(); err != nil {
 			log.Error("SQS consumer stop error", map[string]interface{}{"error": err.Error()})
 		}
+	}
+	if err := outboxRunner.Stop(); err != nil {
+		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
 	}
 	cancelBackground()
 	// DrainAndClose waits for in-flight WithConn/RunInTx callbacks then
@@ -627,6 +633,22 @@ func validateRequiredEnv(appEnv string) {
 		{"SNS_TOPIC_TENANT_ARN", true, "iam.tenant.events topic ARN; TenantCreated/TrialStarted queue but never publish without it"},
 		{"GLUE_REGISTRY_MEMBERSHIP_NAME", true, "iam-membership-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
 		{"GLUE_REGISTRY_TENANT_NAME", true, "iam-tenant-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
+		// Unset baseURL makes these two clients fail OPEN, not closed: RP
+		// fabricates a random Keycloak user ID on CreateInvitedUser and
+		// silently no-ops PatchRealmConfig/DeleteUser/RevokeUserSessions/
+		// ResetMFA; Workflow silently no-ops ReassignDelegate/CancelByDelegate
+		// and reports zero active workflows on GetDelegateImpact — the exact
+		// opposite of §20.7's documented fail-CLOSED contract for P-6/P-8.
+		// devOK because both clients' own "dev fallback" comments describe
+		// this as an intentional local-dev convenience.
+		{"REALM_PROVISIONER_BASE_URL", true, "Realm Provisioner base URL; unset makes RP calls fail OPEN (fabricated success) instead of the documented fail-closed 503"},
+		{"WORKFLOW_SERVICE_BASE_URL", true, "Workflow Service base URL; unset makes delegate-impact/removal calls fail OPEN instead of the documented fail-closed 503"},
+		// Unset falls back to the RLS-scoped app DSN (see sysDSN below) —
+		// every cross-tenant query (I-16, gauge exporters, reconciler
+		// sweeps) then RLS-filters to zero rows instead of erroring, so no
+		// alert fires. devOK because local/dev commonly runs single-role
+		// Postgres with no separate migrator role.
+		{"SYSTEM_DATABASE_URL", true, "BYPASSRLS org_membership_migrator DSN; without it cross-tenant queries silently RLS-filter to zero rows with no alert"},
 	}
 	var missing []string
 	for _, r := range reqs {

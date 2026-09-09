@@ -42,9 +42,14 @@ spec:
                 - name: {{ $k }}
                   value: {{ $v | quote }}
                 {{- end }}
-              envFrom:
-                - secretRef:
-                    name: {{ include "iam-org-membership.fullname" $ }}
+                {{- $secretName := default (printf "%s-secrets" (include "iam-org-membership.fullname" $)) $.Values.existingSecret }}
+                {{- range $.Values.envFromSecret }}
+                - name: {{ . }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secretName }}
+                      key: {{ . }}
+                {{- end }}
               resources:
                 requests:
                   cpu: 100m

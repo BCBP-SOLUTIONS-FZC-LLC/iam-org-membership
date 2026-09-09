@@ -111,10 +111,14 @@ func (r *InvitationRepository) FindByID(ctx context.Context, tenantID, id uuid.U
 func (r *InvitationRepository) FindPendingByEmail(ctx context.Context, tenantID uuid.UUID, email string) (*domain.PendingInvitation, error) {
 	var out *domain.PendingInvitation
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		// LOWER on both sides makes lookup case-insensitive, so a REGISTER
-		// webhook whose email casing differs from the invite still resolves
-		// the pending row (PI-4 acceptance vs plain-add branch discriminator).
-		row := tx.QueryRow(ctx, `SELECT `+inviteCols+` FROM pending_invitations WHERE tenant_id = $1 AND LOWER(email) = LOWER($2) AND status = 'pending'`, tenantID, email)
+		// email is citext (case-insensitive collation) — plain `=` already
+		// resolves a REGISTER webhook whose email casing differs from the
+		// invite (PI-4 acceptance vs plain-add branch discriminator), and
+		// matches uq_pi_pending's index on the raw column. A LOWER()-wrapped
+		// comparison here would still be correct but would not use that
+		// partial unique index, forcing a full scan instead of a point
+		// lookup.
+		row := tx.QueryRow(ctx, `SELECT `+inviteCols+` FROM pending_invitations WHERE tenant_id = $1 AND email = $2 AND status = 'pending'`, tenantID, email)
 		inv, err := scanInvitation(row)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

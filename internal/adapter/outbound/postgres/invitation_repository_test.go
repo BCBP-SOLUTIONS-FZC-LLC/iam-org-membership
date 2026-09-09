@@ -351,7 +351,8 @@ func TestInvitationRepo_FindPendingByEmail_ReturnsRowWhenFound(t *testing.T) {
 		FindPendingByEmail(injectTx(context.Background(), tx), tenantID, "email@x.com")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Contains(t, gotSQL, "LOWER(email) = LOWER($2)")
+	assert.Contains(t, gotSQL, "email = $2")
+	assert.NotContains(t, gotSQL, "LOWER(", "email is citext — LOWER() would defeat uq_pi_pending's index on the raw column")
 }
 
 func TestInvitationRepo_FindPendingByEmail_NoActiveInvitationReturnsNilNil(t *testing.T) {
