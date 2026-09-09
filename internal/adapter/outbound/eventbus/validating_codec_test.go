@@ -84,18 +84,20 @@ func TestEncodeRejectsInvalidJSON(t *testing.T) {
 		"error must indicate the payload is malformed JSON, not a schema mismatch")
 }
 
-// TestUnknownEventTypeFallsThroughToInnerCodec — an event
-// type with no registered schema is a soft-error path: the wrapped codec
-// still encodes. This preserves forward-compat for new event types added
-// by producers before this service's schemas catch up.
-func TestUnknownEventTypeFallsThroughToInnerCodec(t *testing.T) {
+// TestUnknownEventTypeFailsClosed — an event type with no
+// registered schema must be rejected (EVT-10 fail-closed), never passed
+// through to the inner codec. A new event type shipped without a matching
+// schema-gov extract must never reach the outbox unvalidated.
+func TestUnknownEventTypeFailsClosed(t *testing.T) {
 	c, err := NewValidatingCodec(NoopCodec{})
 	require.NoError(t, err)
 
 	payload := []byte(`{"anything":"goes"}`)
 	out, _, err := c.Encode(context.Background(), "FutureEventTypeNotYetRegistered", payload)
-	require.NoError(t, err, "unknown event type must be soft-pass, not hard-fail")
-	assert.Equal(t, payload, out, "payload flows to inner codec unchanged")
+	require.Error(t, err, "unknown event type must fail closed, not soft-pass")
+	assert.Contains(t, err.Error(), "FutureEventTypeNotYetRegistered",
+		"error must name the event type so producers can trace it")
+	assert.Nil(t, out, "no bytes must be produced for a rejected event type")
 }
 
 // TestConcurrentEncodeSafe — the RWMutex-guarded map must

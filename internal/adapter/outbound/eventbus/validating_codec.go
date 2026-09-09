@@ -33,10 +33,10 @@ type ValidatingCodec struct {
 }
 
 // NewValidatingCodec loads every schemas/*.json file at construction and
-// caches the compiled schemas. A missing schema for a given event type
-// causes validation to be skipped (a warning is emitted by the caller if
-// desired) — the wrapped codec still encodes so unknown-type propagation
-// is a soft error, not a hard failure.
+// caches the compiled schemas. Encode fails closed (EVT-10): a payload for
+// an event type with no compiled schema is rejected rather than passed
+// through unvalidated, so an event type added without a matching
+// schema-gov extract can never reach the outbox.
 func NewValidatingCodec(inner Codec) (*ValidatingCodec, error) {
 	return newValidatingCodecFromFS(inner, schemasFS)
 }
@@ -81,19 +81,23 @@ func newValidatingCodecFromFS(inner Codec, schemas fs.FS) (*ValidatingCodec, err
 }
 
 // Encode validates payload against the schema registered for eventType, then
-// delegates encoding to the inner codec.
+// delegates encoding to the inner codec. Fails closed: an eventType with no
+// compiled schema is an error, not a skipped/soft-passed validation, so a
+// new event type shipped without a matching embedded schema can never reach
+// the outbox unvalidated.
 func (c *ValidatingCodec) Encode(ctx context.Context, eventType string, payload []byte) ([]byte, string, error) {
 	c.mu.RLock()
 	sch, ok := c.schemas[eventType]
 	c.mu.RUnlock()
-	if ok {
-		var doc any
-		if err := json.Unmarshal(payload, &doc); err != nil {
-			return nil, "", fmt.Errorf("validate %s: payload is not JSON: %w", eventType, err)
-		}
-		if err := sch.Validate(doc); err != nil {
-			return nil, "", fmt.Errorf("validate %s: %w", eventType, err)
-		}
+	if !ok {
+		return nil, "", fmt.Errorf("validate %s: no compiled schema registered for this event type", eventType)
+	}
+	var doc any
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		return nil, "", fmt.Errorf("validate %s: payload is not JSON: %w", eventType, err)
+	}
+	if err := sch.Validate(doc); err != nil {
+		return nil, "", fmt.Errorf("validate %s: %w", eventType, err)
 	}
 	return c.inner.Encode(ctx, eventType, payload)
 }
