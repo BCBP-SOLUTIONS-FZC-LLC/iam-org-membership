@@ -33,11 +33,17 @@ func RealmConfigSync(ctx context.Context, jctx *Context) (Result, error) {
 			jctx.Logger.Warn("realm-config-sync: RP call failed — leaving marker",
 				"tenant_id", t.TenantID, "error", err.Error())
 			res.Failed++
+			if jctx.Metrics != nil {
+				jctx.Metrics.IncRealmSyncFailed("patch_realm_config")
+			}
 			continue
 		}
 		if err := jctx.Reconciler.ClearRealmSyncPending(ctx, t.TenantID); err != nil {
 			jctx.Logger.Warn("realm-config-sync: clear marker failed", "tenant_id", t.TenantID, "error", err.Error())
 			res.Failed++
+			if jctx.Metrics != nil {
+				jctx.Metrics.IncRealmSyncFailed("clear_marker")
+			}
 			continue
 		}
 		res.Succeeded++

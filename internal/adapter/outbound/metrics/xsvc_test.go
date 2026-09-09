@@ -38,6 +38,25 @@ func TestIncMembershipExistsCheck_RecordsAfterRegister(t *testing.T) {
 	assert.Equal(t, before+1, after)
 }
 
+func TestIncRealmSyncFailed_RecordsAfterRegister(t *testing.T) {
+	ensureRegistered(t)
+	before := testutil.ToFloat64(RealmSyncFailed.WithLabelValues("patch_realm_config"))
+	IncRealmSyncFailed("patch_realm_config")
+	after := testutil.ToFloat64(RealmSyncFailed.WithLabelValues("patch_realm_config"))
+	assert.Equal(t, before+1, after)
+}
+
+// Recorder is the jobs.Metrics seam cmd/reconciler/main.go wires into
+// jobs.Context — verify it actually delegates to the package-level counter
+// rather than silently no-oping.
+func TestRecorder_IncRealmSyncFailed_RecordsAfterRegister(t *testing.T) {
+	ensureRegistered(t)
+	before := testutil.ToFloat64(RealmSyncFailed.WithLabelValues("clear_marker"))
+	Recorder{}.IncRealmSyncFailed("clear_marker")
+	after := testutil.ToFloat64(RealmSyncFailed.WithLabelValues("clear_marker"))
+	assert.Equal(t, before+1, after)
+}
+
 type timeoutNetError struct{}
 
 func (timeoutNetError) Error() string   { return "i/o timeout" }

@@ -16,6 +16,15 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 )
 
+// Metrics is the minimal recorder seam reconciler jobs need for counters
+// that must be incremented on failure, not just registered — same shape as
+// iam-delegation's jobs.Context.Metrics. Satisfied by metrics.Recorder.
+// Optional: nil means metrics are skipped, so existing callers/tests that
+// don't wire it keep working.
+type Metrics interface {
+	IncRealmSyncFailed(stage string)
+}
+
 // Context is the dependency bag every reconciler function accepts.
 // Populated by cmd/reconciler/main.go from env + Postgres/AWS clients.
 // Pools stay in main.go — jobs talk to repositories, TxRunner, and
@@ -30,6 +39,8 @@ type Context struct {
 	// call sites (Warn/Info(msg, "key", val, ...)) — every job file calls it
 	// exactly as it called *slog.Logger before this switch.
 	Logger port.SlogStyleLogger
+	// Metrics is nil-checked at every call site — see Metrics doc comment.
+	Metrics Metrics
 
 	BatchLimit             int
 	SeatOverageGraceDays   int // SEAT-5 grace_ends_at = overage_since + N days

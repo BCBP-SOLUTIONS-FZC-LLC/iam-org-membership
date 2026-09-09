@@ -117,7 +117,7 @@ env:
 
   # OpenTelemetry.
   OTEL_SERVICE_NAME: "iam-org-membership"
-  OTEL_EXPORTER_OTLP_ENDPOINT: ""    # gRPC OTel collector (e.g. otelcollector:4317)
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
   OTEL_EXPORTER_OTLP_INSECURE: "false"
 
   # Docs surface (optional).

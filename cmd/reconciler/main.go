@@ -16,12 +16,14 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"go.opentelemetry.io/otel"
 )
 
 var registry = map[string]jobs.Func{
@@ -35,30 +37,86 @@ var registry = map[string]jobs.Func{
 }
 
 func main() {
+	os.Exit(run())
+}
+
+// run holds every deferred cleanup (pool drain, tracer/logger flush, span
+// end) so every exit path — success or failure — runs it via a normal
+// return, rather than an os.Exit call that would skip it. main() only ever
+// calls os.Exit once, on run()'s own return value, after every defer here
+// has already fired.
+func run() int {
 	var jobName string
 	flag.StringVar(&jobName, "job", os.Getenv("RECONCILER_JOB"), "reconciler job code")
 	flag.Parse()
 
 	if jobName == "" {
-		die("no job specified — pass --job=<name> or set RECONCILER_JOB")
+		fmt.Fprintln(os.Stderr, "no job specified — pass --job=<name> or set RECONCILER_JOB")
+		return 1
 	}
 	fn, ok := registry[jobName]
 	if !ok {
-		die("unknown job %q — valid: %v", jobName, registryNames())
+		fmt.Fprintf(os.Stderr, "unknown job %q — valid: %v\n", jobName, registryNames())
+		return 1
 	}
+
+	appEnv := envOr("APP_ENV", "dev")
 
 	// Same Zap-backed Logger as cmd/server/main.go — every reconciler job's
 	// logs flow through the identical gincommon sink instead of slog.Default().
-	rawLog, err := logger.NewLogger(envOr("APP_ENV", "dev"))
+	rawLog, err := logger.NewLogger(appEnv)
 	if err != nil {
-		panic("init logger: " + err.Error())
+		fmt.Fprintln(os.Stderr, "init logger: "+err.Error())
+		return 1
 	}
 	log := port.NewSlogStyleLogger(rawLog)
+
+	// SYSTEM_DATABASE_URL unset means the sysPool built below silently
+	// reuses the RLS-scoped app DSN, so every cross-tenant sweep this
+	// binary runs (ListRealmSyncPending, seat-overage/trial-cleanup scans,
+	// I-16-adjacent reads) RLS-filters to zero rows instead of erroring —
+	// no alert fires. Fail fast outside dev rather than degrade silently;
+	// mirrors cmd/server/main.go's validateRequiredEnv SYSTEM_DATABASE_URL
+	// entry so both binaries enforce the same invariant.
+	if os.Getenv("SYSTEM_DATABASE_URL") == "" && !isDevLikeEnv(appEnv) {
+		log.Error("SYSTEM_DATABASE_URL is required outside dev — must be the BYPASSRLS org_membership_migrator role, or cross-tenant reconciler sweeps silently RLS-filter to zero rows with no alert",
+			"app_env", appEnv, "job", jobName)
+		return 1
+	}
+
+	// Distinct from cmd/server's "iam-org-membership" default so reconciler
+	// spans/metrics/logs are attributable to this binary, not the HTTP
+	// server, on a shared {service} dashboard.
+	serviceName := envOr("APP_NAME", "iam-org-membership-reconciler")
 
 	// Same TracerProvider as cmd/server so db.query spans from this job
 	// export through gincommon's OTLP pipeline when the collector is set.
 	shutdownTracing := gincommon.InitTracingFromEnv()
+	// Registered in reverse of execution order (defers run LIFO): this
+	// gincommon.Shutdown defer, registered FIRST, fires LAST — so the
+	// TracerProvider shuts down (below) before the Zap flush, matching
+	// cmd/server/main.go's explicit shutdownTracing() → gincommon.Shutdown()
+	// sequence (same order iam-delegation/iam-realm-provisioner use).
+	defer func() {
+		if err := gincommon.Shutdown(rawLog); err != nil {
+			log.Error("logger/tracer flush error", "error", err.Error())
+		}
+	}()
 	defer shutdownTracing()
+
+	// ObservabilityMiddlewares is gincommon's public metrics-init API —
+	// call it here (mirrors cmd/server/main.go) so business metrics land on
+	// gincommon.MetricsRegisterer with the same {service, version} const
+	// labels cmd/server uses, even though this CronJob binary never serves
+	// /metrics itself: RealmConfigSync and future jobs increment those
+	// same collectors, and a scrape-on-exit / pushgateway path can rely on
+	// them existing regardless of which binary registered them first.
+	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
+		Logger:       rawLog,
+		ServiceName:  serviceName,
+		BuildVersion: envOr("BUILD_VERSION", "dev"),
+	})
+	metrics.Register()
 
 	log.Info("reconciler starting", "job", jobName)
 
@@ -71,6 +129,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	ctx, jobSpan := otel.Tracer(serviceName).Start(ctx, "reconciler."+jobName)
+	defer jobSpan.End()
+
 	// pgcommon.ConfigFromEnv reads DATABASE_URL/PG_* directly — same source
 	// of truth cmd/server/main.go uses, so pool sizing/DSN assembly never
 	// drifts between the two binaries.
@@ -81,17 +142,19 @@ func main() {
 	pgCfg.DSN = pgadapter.DSNFromEnv()
 	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
 	pgCfg.Logger = pgadapter.NewLoggerAdapter(rawLog)
-	pgCfg.Tracer = pgadapter.NewOTelTracer(envOr("APP_NAME", "iam-org-membership"))
+	pgCfg.Tracer = pgadapter.NewOTelTracer(serviceName)
 	pool, err := pgcommon.NewPool(ctx, pgCfg)
 	if err != nil {
-		die("connect to postgres: %v", err)
+		log.Error("connect to postgres", "error", err.Error())
+		return 1
 	}
 
 	// DrainAndClose is pgcommon's graceful path (wait for in-flight
-	// WithConn/RunInTx, then close). A CronJob is short-lived and
-	// os.Exit(1) on job failure skips defers, so drain is also invoked
-	// explicitly on those paths. sync.Once keeps DrainAndClose and a
-	// later defer from running concurrently (pgcommon forbids that).
+	// WithConn/RunInTx, then close). sync.Once keeps DrainAndClose and a
+	// later defer from running concurrently (pgcommon forbids that). This
+	// defer is the ONLY place drainPools runs — every exit path below
+	// (success or job failure) is a plain `return`, not os.Exit, so the
+	// defer chain always fires.
 	var sysPool *pgcommon.Pool
 	var drainOnce sync.Once
 	drainPools := func() {
@@ -115,18 +178,18 @@ func main() {
 	// sizing). Tracer is wired separately so db.query spans export
 	// through gincommon's TracerProvider.
 	sysCfg := pgadapter.SystemPoolConfig(pgadapter.SystemDSNFromEnv(), rawLog)
-	sysCfg.Tracer = pgadapter.NewOTelTracer(envOr("APP_NAME", "iam-org-membership"))
+	sysCfg.Tracer = pgadapter.NewOTelTracer(serviceName)
 	sysPool, err = pgcommon.NewPool(ctx, sysCfg)
 	if err != nil {
-		drainPools()
-		die("connect sysPool: %v", err)
+		log.Error("connect sysPool", "error", err.Error())
+		return 1
 	}
 
 	rawCodec := eventbusadapter.Codec(eventbusadapter.NoopCodec{})
 	codec, err := eventbusadapter.NewValidatingCodec(rawCodec)
 	if err != nil {
-		drainPools()
-		die("init validating codec: %v", err)
+		log.Error("init validating codec", "error", err.Error())
+		return 1
 	}
 	outboxPublisher := eventbusadapter.New("iam-org-membership-reconciler", codec).WithLogger(rawLog)
 
@@ -137,6 +200,7 @@ func main() {
 		Reconciler:             pgadapter.NewReconcilerStore(sysPool),
 		RealmProvisioner:       realmprovisionerclient.New(rawLog),
 		Logger:                 log,
+		Metrics:                metrics.Recorder{},
 		BatchLimit:             envInt("RECONCILER_BATCH_LIMIT", 500),
 		SeatOverageGraceDays:   envInt("SEAT_OVERAGE_GRACE_DAYS", 30),
 		TrialGraceDays:         envInt("TRIAL_GRACE_DAYS", 15),
@@ -147,15 +211,11 @@ func main() {
 	res, err := fn(ctx, jctx)
 	if err != nil {
 		log.Error("reconciler job failed", "job", jobName, "error", err.Error())
-		drainPools()
-		shutdownTracing()
-		_ = gincommon.Shutdown(rawLog)
-		os.Exit(1)
+		return 1
 	}
 	log.Info("reconciler complete", "job", jobName,
 		"attempted", res.Attempted, "succeeded", res.Succeeded, "failed", res.Failed, "skipped", res.Skipped)
-	drainPools()
-	_ = gincommon.Shutdown(rawLog)
+	return 0
 }
 
 func registryNames() []string {
@@ -182,7 +242,15 @@ func envInt(key string, def int) int {
 	return def
 }
 
-func die(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", a...)
-	os.Exit(1)
+// isDevLikeEnv reports whether appEnv is one of this service's recognized
+// local/dev aliases — matches cmd/server/main.go's validateRequiredEnv
+// devOK bypass exactly, so the SYSTEM_DATABASE_URL fail-fast above behaves
+// identically in both binaries.
+func isDevLikeEnv(appEnv string) bool {
+	switch appEnv {
+	case "dev", "development", "local", "test":
+		return true
+	default:
+		return false
+	}
 }

@@ -11,6 +11,7 @@ package http
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 	"time"
@@ -241,9 +242,14 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 	var authMiddleware gin.HandlerFunc = func(c *gin.Context) { c.Next() }
 	if cfg.Docs.Environment == "production" {
 		if cfg.Docs.AuthToken != "" {
-			token := cfg.Docs.AuthToken
+			// Constant-time compare (crypto/subtle) rather than != — a plain
+			// string compare short-circuits on the first differing byte, a
+			// timing side-channel an attacker could use to recover the
+			// token one byte at a time.
+			want := []byte("Bearer " + cfg.Docs.AuthToken)
 			authMiddleware = func(c *gin.Context) {
-				if c.GetHeader("Authorization") != "Bearer "+token {
+				got := []byte(c.GetHeader("Authorization"))
+				if len(got) != len(want) || subtle.ConstantTimeCompare(got, want) != 1 {
 					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 						"code":    "unauthorized",
 						"message": "docs require Authorization: Bearer <DOCS_AUTH_TOKEN>",

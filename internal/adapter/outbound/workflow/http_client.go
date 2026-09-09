@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/httpx"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
 )
@@ -54,15 +55,8 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 	}
 	return &HTTPClient{
 		baseURL: baseURL,
-		client: &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				IdleConnTimeout:       30 * time.Second,
-				MaxIdleConnsPerHost:   8,
-				ResponseHeaderTimeout: timeout,
-			},
-		},
-		logger: logger,
+		client:  httpx.NewClient(timeout),
+		logger:  logger,
 	}
 }
 
@@ -190,7 +184,6 @@ func (c *HTTPClient) setInternalHeaders(req *http.Request, tenantID uuid.UUID) {
 	req.Header.Set("x-tenant-id", tenantID.String())
 	req.Header.Set("x-user-id", "iam-system")
 	req.Header.Set("x-tenant-roles", "iam-system")
-	propagateTraceparent(req.Context(), req)
 }
 
 func envOr(key, def string) string {

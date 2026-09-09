@@ -140,6 +140,26 @@ func IncMembershipExistsCheck(caller, result string) {
 	}
 }
 
+// IncRealmSyncFailed increments iam_realm_sync_failed_total{stage=...}.
+// Nil-safe, see ObserveXsvcLatency — safe to call before Register() runs.
+func IncRealmSyncFailed(stage string) {
+	if RealmSyncFailed != nil {
+		RealmSyncFailed.WithLabelValues(stage).Inc()
+	}
+}
+
+// Recorder is a zero-size handle satisfying cmd/reconciler/jobs.Metrics —
+// its methods delegate to this package's existing nil-safe package-level
+// counters (same convention as ObserveXsvcLatency/IncXsvcError), so wiring
+// a Recorder into jobs.Context costs nothing beyond the interface
+// satisfaction Context needs. Mirrors iam-delegation's jobs.Context.Metrics
+// seam, adapted to this package's free-function-over-package-vars style
+// rather than delegation's stateful *metrics.Metrics struct.
+type Recorder struct{}
+
+// IncRealmSyncFailed satisfies jobs.Metrics.
+func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
+
 // XsvcOutcome classifies a cross-service client transport error into one of
 // iam_xsvc_call_errors_total's two client-observable outcomes ("timeout" |
 // "5xx"). The third outcome, "fallback_served", is recorded by the calling
@@ -348,4 +368,6 @@ func registerMetrics() {
 	RLSViolations.WithLabelValues("missing_or_invalid_guc")
 	RLSViolations.WithLabelValues("cross_tenant_access")
 	SessionRevokeFailed.WithLabelValues("transport")
+	RealmSyncFailed.WithLabelValues("patch_realm_config")
+	RealmSyncFailed.WithLabelValues("clear_marker")
 }
