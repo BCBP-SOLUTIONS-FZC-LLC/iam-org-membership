@@ -12,7 +12,7 @@ import (
 
 // skipDuplicate is the cheap processed_events probe every known-type
 // handler runs before opening a write transaction. A hit increments
-// processed_events_duplicates_total (IDEMP-4) and short-circuits.
+// platform_duplicate_messages_total (IDEMP-4) and short-circuits.
 // platform-events has no processed-events API — Envelope.ID + INSERT
 // ON CONFLICT DO NOTHING is the library's documented consumer pattern
 // (same as iam-realm-provisioner).
@@ -22,8 +22,8 @@ func skipDuplicate(ctx context.Context, dedup port.IdempotencyStore, consumer, e
 		return false, err
 	}
 	if processed {
-		if metrics.ProcessedEventsDuplicates != nil {
-			metrics.ProcessedEventsDuplicates.WithLabelValues(consumer).Inc()
+		if metrics.DuplicateMessages != nil {
+			metrics.DuplicateMessages.WithLabelValues(consumer).Inc()
 		}
 		return true, nil
 	}

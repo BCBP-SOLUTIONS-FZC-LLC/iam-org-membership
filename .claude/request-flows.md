@@ -130,7 +130,7 @@ DELETE /tenants/:id/members/:user_id (P-8) OR /internal/tenants/:id/members/:use
       5xx/timeout → 503 workflow_service_unavailable (no DB write, WFI-8)
       active_workflows > 0 → 409 workflow_resolution_required
         body: {active_workflows, delegate_user_id, workflow_ids[], allowed_actions: [replace_delegate, stop_workflows]}
-        iam_delegate_removal_blocked_total{trigger=full_removal}++
+        iam_org_membership_delegate_removal_blocked_total{trigger=full_removal}++
         NO membership/delegation change, NO event (WFI-3)
       active_workflows == 0 → proceed to existing §15.2.2 cascade
 ```
@@ -141,7 +141,7 @@ DELETE /tenants/:id/members/:user_id (P-8) OR /internal/tenants/:id/members/:use
 
 **action=`replace_delegate`:**
 1. Pre-validate `replacement_user_id` is active member same-tenant → else `422 invalid_replacement` (WFI-5) **before** any Workflow call.
-2. `WorkflowClient.ReassignDelegate(tenant, oldDelegateID=userID, newDelegateID=replacementID)` → `iam_delegate_reassignment_total++`.
+2. `WorkflowClient.ReassignDelegate(tenant, oldDelegateID=userID, newDelegateID=replacementID)` → `iam_org_membership_delegate_reassignment_total++`.
 3. Re-invoke `GetDelegateImpact` for race-safety re-check (WFI-6). If still `> 0` (a new workflow attached concurrently) → `409 workflow_resolution_required` again — admin resubmits.
 4. Apply the §15.2.2 removal cascade.
 
@@ -168,7 +168,7 @@ P-7 suspend calls `GetDelegateImpact` **best-effort**:
 - Response includes `delegate_impact.active_workflows` (or `checked:false` if RP 5xx).
 - No `409` ever returned.
 - Delegation row **untouched** (frozen, not ended — M-1 suspension freezes state).
-- `iam_delegate_suspend_impact_total` metric + `delegate_suspend_impact` INFO log if `active_workflows > 0`.
+- `iam_org_membership_delegate_suspend_impact_total` metric + `delegate_suspend_impact` INFO log if `active_workflows > 0`.
 - P-7 **reactivate** (`suspended → active`) never calls `GetDelegateImpact`.
 
 ## 8.10 Two-Step Invite → Accept (§16 A11)
@@ -178,7 +178,7 @@ Admin → POST /tenants/:id/members {email, full_name, initial_tenant_roles, ini
   Pre-flight:
     active member for this email? → 409 member_already_exists
     pending invite for this email? → 409 invitation_already_exists (PI-1)
-    per-email cooldown active? → 429 reinvite_too_soon (PI-11, iam_invite_throttled_total{cooldown})
+    per-email cooldown active? → 429 reinvite_too_soon (PI-11, iam_org_membership_invite_throttled_total{cooldown})
     per-tenant hourly ceiling? → 429 invite_rate_limited (PI-12)
 
   RealmProvisioner.CreateInvitedUser(tenantID, {email, full_name, required_actions:[VERIFY_EMAIL, UPDATE_PASSWORD, CONFIGURE_TOTP?]})

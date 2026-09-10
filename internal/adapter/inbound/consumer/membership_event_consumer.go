@@ -35,8 +35,9 @@
 // (SQS max 14d + DLQ dwell) are backstopped by EVT-14 recency.
 //
 // Unknown event types are silently acknowledged, logged at INFO, and
-// counted by iam_unknown_event_acknowledged_total (§6 event consumer
-// scope — forward-compat, avoids DLQ storm on producer schema additions).
+// counted by iam_org_membership_unknown_event_acknowledged_total (§6 event
+// consumer scope — forward-compat, avoids DLQ storm on producer schema
+// additions).
 package consumer
 
 import (
@@ -95,8 +96,8 @@ func NewMembershipEventConsumer(txRunner port.TxRunner, tenants port.TenantRepos
 func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	// ── EVT-15 future-time clamp ─────────────────────────────────────────
 	if !env.Timestamp.IsZero() && env.Timestamp.After(time.Now().UTC().Add(c.skew)) {
-		if metrics.FutureLifecycleEventRejected != nil {
-			metrics.FutureLifecycleEventRejected.WithLabelValues(env.Type).Inc()
+		if metrics.DLQMessages != nil {
+			metrics.DLQMessages.WithLabelValues(env.Type, "future_time_clamp").Inc()
 		}
 		c.logger.Warn("EVT-15 future-time clamp — DLQ",
 			"event_id", env.ID, "event_type", env.Type, "event_time", env.Timestamp)
@@ -179,8 +180,8 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 
 		// ── EVT-14 recency guard ─────────────────────────────────────────
 		if locked.LastEventAt != nil && !env.Timestamp.After(*locked.LastEventAt) {
-			if metrics.StaleLifecycleEventSkipped != nil {
-				metrics.StaleLifecycleEventSkipped.WithLabelValues(env.Type).Inc()
+			if metrics.LifecycleEventSkipped != nil {
+				metrics.LifecycleEventSkipped.WithLabelValues(env.Type).Inc()
 			}
 			c.logger.Info("EVT-14 stale — projection unchanged", "event_id", env.ID, "event_type", env.Type)
 			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)

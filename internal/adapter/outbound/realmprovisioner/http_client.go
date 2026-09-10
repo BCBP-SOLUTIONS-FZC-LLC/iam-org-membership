@@ -22,8 +22,8 @@
 // PatchRealmConfig failure → caller sets tenants.realm_sync_pending=true
 // (T-15 Option A local-first + reconcile) and returns 202 to the client.
 // RevokeUserSessions is best-effort: any non-2xx increments
-// iam_session_revoke_failed_total but does not fail the caller (AUTH-8
-// TTL-backstop design).
+// iam_auth_session_revoke_failed_total but does not fail the
+// caller (AUTH-8 TTL-backstop design).
 package realmprovisioner
 
 import (
@@ -213,8 +213,9 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 }
 
 // RevokeUserSessions is AUTH-8 fail-open. Any non-2xx increments
-// iam_session_revoke_failed_total; the caller relies on the access-token
-// TTL (5 min default) + 300 s membership cache eviction as backstop.
+// iam_auth_session_revoke_failed_total; the caller relies on the
+// access-token TTL (5 min default) + 300 s membership cache eviction as
+// backstop.
 func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error {
 	if c.baseURL == "" {
 		c.logger.Warn("rp: baseURL not configured — RevokeUserSessions no-op (dev, TTL backstop)")
@@ -229,8 +230,8 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		if metrics.SessionRevokeFailed != nil {
-			metrics.SessionRevokeFailed.WithLabelValues("transport").Inc()
+		if metrics.AuthSessionRevokeFailed != nil {
+			metrics.AuthSessionRevokeFailed.WithLabelValues("transport").Inc()
 		}
 		c.logger.Warn("rp: RevokeUserSessions transport error — fail-open",
 			"keycloak_user_id", keycloakUserID, "error", err.Error())
@@ -240,8 +241,8 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	if metrics.SessionRevokeFailed != nil {
-		metrics.SessionRevokeFailed.WithLabelValues(fmt.Sprintf("%d", resp.StatusCode)).Inc()
+	if metrics.AuthSessionRevokeFailed != nil {
+		metrics.AuthSessionRevokeFailed.WithLabelValues(fmt.Sprintf("%d", resp.StatusCode)).Inc()
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	c.logger.Warn("rp: RevokeUserSessions non-2xx — fail-open",

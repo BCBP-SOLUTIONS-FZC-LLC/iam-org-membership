@@ -10,23 +10,24 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// ObserveXsvcLatency / IncXsvcError / IncMembershipExistsCheck are nil-safe
-// no-ops before Register() runs (see business_test.go's TestMetricNamesStable
-// family for the nil-branch coverage); this file exercises the recording
-// branch once Register() has populated the package vars.
+// ObserveDependencyLatency / IncDependencyError / IncMembershipExistsCheck
+// are nil-safe no-ops before Register() runs (see business_test.go's
+// TestMetricNamesStable family for the nil-branch coverage); this file
+// exercises the recording branch once Register() has populated the
+// package vars.
 
-func TestObserveXsvcLatency_RecordsAfterRegister(t *testing.T) {
+func TestObserveDependencyLatency_RecordsAfterRegister(t *testing.T) {
 	ensureRegistered(t)
-	ObserveXsvcLatency("catalog", "departments", 0.042)
-	count := testutil.CollectAndCount(XsvcCallLatencySeconds)
+	ObserveDependencyLatency("catalog", "departments", 0.042)
+	count := testutil.CollectAndCount(DependencyRequestSeconds)
 	assert.Positive(t, count)
 }
 
-func TestIncXsvcError_RecordsAfterRegister(t *testing.T) {
+func TestIncDependencyError_RecordsAfterRegister(t *testing.T) {
 	ensureRegistered(t)
-	before := testutil.ToFloat64(XsvcCallErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
-	IncXsvcError("delegation", "dept-delegate", "timeout")
-	after := testutil.ToFloat64(XsvcCallErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
+	before := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
+	IncDependencyError("delegation", "dept-delegate", "timeout")
+	after := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
 	assert.Equal(t, before+1, after)
 }
 
@@ -57,6 +58,24 @@ func TestRecorder_IncRealmSyncFailed_RecordsAfterRegister(t *testing.T) {
 	assert.Equal(t, before+1, after)
 }
 
+// IncMessagesReceived/Processed/Failed back platform_messages_*_total —
+// verify each records against the right collector and label.
+func TestIncMessages_RecordAfterRegister(t *testing.T) {
+	ensureRegistered(t)
+
+	before := testutil.ToFloat64(MessagesReceived.WithLabelValues("tenant-orgm-q"))
+	IncMessagesReceived("tenant-orgm-q")
+	assert.Equal(t, before+1, testutil.ToFloat64(MessagesReceived.WithLabelValues("tenant-orgm-q")))
+
+	before = testutil.ToFloat64(MessagesProcessed.WithLabelValues("tenant-orgm-q"))
+	IncMessagesProcessed("tenant-orgm-q")
+	assert.Equal(t, before+1, testutil.ToFloat64(MessagesProcessed.WithLabelValues("tenant-orgm-q")))
+
+	before = testutil.ToFloat64(MessagesFailed.WithLabelValues("billing-orgm-q"))
+	IncMessagesFailed("billing-orgm-q")
+	assert.Equal(t, before+1, testutil.ToFloat64(MessagesFailed.WithLabelValues("billing-orgm-q")))
+}
+
 type timeoutNetError struct{}
 
 func (timeoutNetError) Error() string   { return "i/o timeout" }
@@ -65,19 +84,19 @@ func (timeoutNetError) Temporary() bool { return true }
 
 var _ net.Error = timeoutNetError{}
 
-func TestXsvcOutcome_NetTimeoutError(t *testing.T) {
-	assert.Equal(t, "timeout", XsvcOutcome(timeoutNetError{}))
+func TestDependencyOutcome_NetTimeoutError(t *testing.T) {
+	assert.Equal(t, "timeout", DependencyOutcome(timeoutNetError{}))
 }
 
-func TestXsvcOutcome_ContextDeadlineExceeded(t *testing.T) {
-	assert.Equal(t, "timeout", XsvcOutcome(context.DeadlineExceeded))
+func TestDependencyOutcome_ContextDeadlineExceeded(t *testing.T) {
+	assert.Equal(t, "timeout", DependencyOutcome(context.DeadlineExceeded))
 }
 
-func TestXsvcOutcome_WrappedContextDeadlineExceeded(t *testing.T) {
+func TestDependencyOutcome_WrappedContextDeadlineExceeded(t *testing.T) {
 	wrapped := errors.Join(errors.New("call failed"), context.DeadlineExceeded)
-	assert.Equal(t, "timeout", XsvcOutcome(wrapped))
+	assert.Equal(t, "timeout", DependencyOutcome(wrapped))
 }
 
-func TestXsvcOutcome_GenericErrorFallsBackTo5xx(t *testing.T) {
-	assert.Equal(t, "5xx", XsvcOutcome(errors.New("connection refused")))
+func TestDependencyOutcome_GenericErrorFallsBackTo5xx(t *testing.T) {
+	assert.Equal(t, "5xx", DependencyOutcome(errors.New("connection refused")))
 }

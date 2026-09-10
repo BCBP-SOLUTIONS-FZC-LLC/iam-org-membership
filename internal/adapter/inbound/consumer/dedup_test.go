@@ -51,14 +51,14 @@ func TestSkipDuplicate_IncrementsMetricOnHit(t *testing.T) {
 	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
 		ServiceName: "iam-org-membership", BuildVersion: "test",
 	})
-	metrics.Register()
-	metrics.ProcessedEventsDuplicates.Reset()
+	metrics.Register("test")
+	metrics.DuplicateMessages.Reset()
 	dedup := &stubDedup{seen: map[string]bool{"evt-1": true}}
 
 	hit, err := skipDuplicate(context.Background(), dedup, consumerName, "evt-1")
 	require.NoError(t, err)
 	assert.True(t, hit)
-	assert.InDelta(t, 1, testutil.ToFloat64(metrics.ProcessedEventsDuplicates.WithLabelValues(consumerName)), 0.01)
+	assert.InDelta(t, 1, testutil.ToFloat64(metrics.DuplicateMessages.WithLabelValues(consumerName)), 0.01)
 
 	hit, err = skipDuplicate(context.Background(), dedup, consumerName, "evt-new")
 	require.NoError(t, err)

@@ -2,8 +2,9 @@
 
 // GaugeRepository (internal/adapter/outbound/postgres/gauge_repository.go)
 // backs the four cmd/server metric-exporter goroutines (§11.2:
-// iam_tenant_ownerless, iam_realm_sync_pending, iam_seat_overage_active,
-// iam_pending_invitations_stale). It is cross-tenant and must run against
+// iam_org_membership_tenant_ownerless, iam_org_membership_realm_sync_pending,
+// iam_org_membership_seat_overage_active,
+// iam_org_membership_pending_invitations_stale). It is cross-tenant and must run against
 // the BYPASSRLS sysPool — these tests assert the real row-count SQL against
 // the live schema, which a mocked-transaction unit test can't meaningfully
 // verify (the whole point of each query is "does it match the actual

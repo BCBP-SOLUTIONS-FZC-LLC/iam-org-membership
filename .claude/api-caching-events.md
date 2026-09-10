@@ -31,7 +31,7 @@
 - **AUTH-5** — System principal (`iam-system`, `…00a1`) accepted only on `/api/v1/internal/*`.
 - **AUTH-6** — Every operator route re-checks `platform_operator` from `rc.Roles` **before any DB access**. DB role stays `org_membership_app`.
 - **AUTH-7** — `platform_operator` defended in depth: (1) network isolation (operator ingress only, §10.2); (2) handler re-check (AUTH-6); (3) gateway header hygiene (strips client-supplied `x-tenant-roles`, sources `platform_operator` claim only from operator IdP — the gateway/platform-security team's contract, not O&M's enforcement).
-- **AUTH-8** — Privilege reduction (P-7 suspend, P-8 removal, P-28 de-privilege) commits O&M state first (authoritative for O&M's own authz), then makes a **best-effort, fail-open** `RevokeUserSessions` call to Realm Provisioner. Guaranteed cutoff falls back to TTL backstop (≤ access-token lifetime + 300 s `om:memberships` cache). I-5 hard-delete needs no call (Keycloak deletion already kills sessions). Metric: `iam_session_revoke_failed_total` — sustained rate pages.
+- **AUTH-8** — Privilege reduction (P-7 suspend, P-8 removal, P-28 de-privilege) commits O&M state first (authoritative for O&M's own authz), then makes a **best-effort, fail-open** `RevokeUserSessions` call to Realm Provisioner. Guaranteed cutoff falls back to TTL backstop (≤ access-token lifetime + 300 s `om:memberships` cache). I-5 hard-delete needs no call (Keycloak deletion already kills sessions). Metric: `iam_auth_session_revoke_failed_total` — sustained rate pages.
 
 ## 5.3 Endpoint Catalogue
 
@@ -175,9 +175,9 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 
 Both queues: DLQ with `maxReceiveCount=5`, `processed_events` dedup, PgBouncer-safe RLS binding.
 
-**EVT-14 recency guard (§16 A33, tenants projection last-writer-wins):** Every handler compares `event.time` vs `tenants.last_event_at` **under the tenant row lock**. If `event.time <= last_event_at`, skip state change but still record `processed_events` (event stale/reordered — `iam_stale_lifecycle_event_skipped_total`++). Otherwise apply + set `last_event_at = event.time` in the same `UPDATE`. Makes projection commutative under reordering. `last_event_at` **never advanced by API writes** — only consumed events. Tie (`==`) treated as stale.
+**EVT-14 recency guard (§16 A33, tenants projection last-writer-wins):** Every handler compares `event.time` vs `tenants.last_event_at` **under the tenant row lock**. If `event.time <= last_event_at`, skip state change but still record `processed_events` (event stale/reordered — `iam_lifecycle_event_skipped_total`++). Otherwise apply + set `last_event_at = event.time` in the same `UPDATE`. Makes projection commutative under reordering. `last_event_at` **never advanced by API writes** — only consumed events. Tie (`==`) treated as stale.
 
-**EVT-15 future-time clamp (§16 A40, poison-pill guard):** If `event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS` (default 300 s), event is **rejected to DLQ** (not applied, `last_event_at` not advanced, **not** recorded in `processed_events`). `iam_future_lifecycle_event_rejected_total`++ — any nonzero pages (a producer's clock is skewed).
+**EVT-15 future-time clamp (§16 A40, poison-pill guard):** If `event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS` (default 300 s), event is **rejected to DLQ** (not applied, `last_event_at` not advanced, **not** recorded in `processed_events`). `platform_dlq_messages_total`++ — any nonzero pages (a producer's clock is skewed).
 
 **EVT-16 tenant-state relay (§16 A61):** Whenever a consumed handler **actually changes `tenants.status` or `tenants.plan`** (post-EVT-14 check), enqueue a **`TenantStateChanged`** event on `iam.membership.events` **in the same `RunInTx`** as the projection UPDATE. Carries `{status, previous_status, plan, previous_plan, changed_at, cause}`. Lets Workflow Service pause/resume/terminate/route without a direct `iam.tenant.events`/`billing.events` subscription. Never fires on stale-skip or no-op.
 

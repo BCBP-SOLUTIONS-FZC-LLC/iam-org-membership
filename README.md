@@ -285,7 +285,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 | `outbox-prune` | `0 3 * * *` | Prunes published `outbox_events` past `OUTBOX_RETENTION_DAYS` |
 | `processed-events-prune` | `0 4 * * *` | Prunes `processed_events` rows past `PROCESSED_EVENTS_TTL_DAYS` |
 
-The 4 business-metric gauges (`iam_tenant_ownerless`, `iam_realm_sync_pending`, `iam_seat_overage_active`, `iam_pending_invitations_stale`) run as **ticker goroutines inside `cmd/server`**, not CronJobs.
+The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`) run as **ticker goroutines inside `cmd/server`**, not CronJobs.
 
 ---
 
@@ -503,7 +503,13 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 
 ### Metrics
 
-All `iam_`-prefixed (`internal/adapter/outbound/metrics/business.go`): `rls_violations_total{violation_type}`, `unknown_event_acknowledged_total`, `stale_lifecycle_event_skipped_total`, `future_lifecycle_event_rejected_total`, `session_revoke_failed_total{trigger}`, `delegate_suspend_impact_total`, `tenant_ownerless_escalated_total`, `seat_overage_started_total`, `seat_limit_reached_total`, `invite_throttled_total{reason}`, `realm_sync_failed_total`, `delegate_removal_blocked_total`, `delegate_reassignment_total`, `processed_events_duplicates_total`, `lifecycle_consumer_lag_seconds`, `xsvc_call_latency_seconds{service}` / `xsvc_call_errors_total{service}` (catalog\|group_mapping\|delegation), `membership_exists_check_total` (I-15), plus 4 gauges refreshed by ticker goroutines every 5 minutes against the BYPASSRLS sys pool: `tenant_ownerless`, `realm_sync_pending`, `seat_overage_active`, `pending_invitations_stale`. Passthrough `http_*`/`events_*`/`outbox_*`/`sqs_*` (`platform-gincommon`/`platform-events`) and `pgcommon_*` pool/query instruments round out the surface.
+Per the IAM Platform Observability Standard's three-tier hierarchy (`internal/adapter/outbound/metrics/business.go`), with `domain`/`service`/`environment` injected centrally in `metrics.Register(environment)` — never left to a call site:
+
+- **Tier 1 — `platform_*`** (concept common across domains; carries `domain="iam"` + `service` + `environment`): `platform_messages_received_total{queue}` / `platform_messages_processed_total{queue}` / `platform_messages_failed_total{queue}` (SQS consumer lifecycle, both queues), `platform_duplicate_messages_total{consumer}` (IDEMP-4), `platform_dlq_messages_total{event_type,reason}` (EVT-15 clamp), `platform_dependency_request_seconds{target_service,endpoint}` / `platform_dependency_errors_total{target_service,endpoint,outcome}` (`target_service` = catalog\|group_mapping\|delegation, the downstream peer — distinct from the `service` const label).
+- **Tier 2 — `iam_*`** (concept shared across IAM-domain services; carries `service` + `environment`, no `domain`): `iam_rls_violations_total{violation_type}`, `iam_auth_session_revoke_failed_total{reason}`, `iam_lifecycle_event_skipped_total{event_type}` (EVT-14), `iam_lifecycle_event_lag_seconds{event_type}`.
+- **Tier 3 — `iam_org_membership_*`** (unique to this service): `unknown_event_acknowledged_total`, `delegate_suspend_impact_total`, `tenant_ownerless_escalated_total`, `seat_overage_started_total`, `seat_limit_reached_total`, `invite_throttled_total{reason}`, `realm_sync_failed_total`, `delegate_removal_blocked_total`, `delegate_reassignment_total`, `membership_exists_check_total` (I-15), plus 4 gauges refreshed by ticker goroutines every 5 minutes against the BYPASSRLS sys pool: `tenant_ownerless`, `realm_sync_pending`, `seat_overage_active`, `pending_invitations_stale`.
+
+A CI script (`.github/scripts/check-metric-naming.sh`) enforces naming/suffix/label-set rules on every PR. Passthrough `http_*`/`events_*`/`outbox_*`/`sqs_*` (`platform-gincommon`/`platform-events`) and `pgcommon_*` pool/query instruments round out the surface.
 
 ### Tracing and logs
 

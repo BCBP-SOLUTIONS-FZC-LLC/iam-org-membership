@@ -7,14 +7,14 @@
 //	Line 174-177  DeleteUser:        c.client.Do returns error
 //	Line 209-212  PatchRealmConfig:  c.client.Do returns error
 //	Lines 237-243 RevokeUserSessions: transport error branch
-//	               — metrics.SessionRevokeFailed.WithLabelValues("transport").Inc()
+//	               — metrics.AuthSessionRevokeFailed.WithLabelValues("transport").Inc()
 //	               — logger.Warn + return err
-//	Lines 249-251 RevokeUserSessions: non-2xx, metrics.SessionRevokeFailed IS nil
-//	               (the `if metrics.SessionRevokeFailed != nil` false arm)
+//	Lines 249-251 RevokeUserSessions: non-2xx, metrics.AuthSessionRevokeFailed IS nil
+//	               (the `if metrics.AuthSessionRevokeFailed != nil` false arm)
 //	Line 271-273  ResetMFA: bad-URL request build error
 //
 // Strategy: all transport errors use a server that is closed before the call
-// is made. The metrics.SessionRevokeFailed nil branch is tested without
+// is made. The metrics.AuthSessionRevokeFailed nil branch is tested without
 // registering the metric — the package-level var defaults to nil.
 package realmprovisioner
 
@@ -95,7 +95,7 @@ func TestP20RPT03_PatchRealmConfig_TransportError_LogsAndReturnsError(t *testing
 
 // Test Case ID: P20-RP-T04
 // Feature:      RevokeUserSessions transport error branch (lines 237-243)
-//   - metrics.SessionRevokeFailed must be incremented when non-nil
+//   - metrics.AuthSessionRevokeFailed must be incremented when non-nil
 //   - logger.Warn emitted
 //   - error returned
 //
@@ -109,9 +109,9 @@ func TestP20RPT04_RevokeUserSessions_TransportError_IncrementsMetricAndReturnsEr
 	}, []string{"reason"})
 	require.NoError(t, reg.Register(counter))
 
-	original := metrics.SessionRevokeFailed
-	metrics.SessionRevokeFailed = counter
-	defer func() { metrics.SessionRevokeFailed = original }()
+	original := metrics.AuthSessionRevokeFailed
+	metrics.AuthSessionRevokeFailed = counter
+	defer func() { metrics.AuthSessionRevokeFailed = original }()
 
 	srv := closedServer()
 	c := NewHTTPClient(srv.URL, 0, slog.Default())
@@ -130,9 +130,9 @@ func TestP20RPT04_RevokeUserSessions_TransportError_IncrementsMetricAndReturnsEr
 // ─── RevokeUserSessions — non-2xx, nil SessionRevokeFailed metric ────────────
 
 // Test Case ID: P20-RP-T05
-// Feature:      RevokeUserSessions non-2xx response when metrics.SessionRevokeFailed
+// Feature:      RevokeUserSessions non-2xx response when metrics.AuthSessionRevokeFailed
 //
-//	is nil (lines 249-251: the `if metrics.SessionRevokeFailed != nil`
+//	is nil (lines 249-251: the `if metrics.AuthSessionRevokeFailed != nil`
 //	false arm).
 //
 // When the metric counter is nil (no Prometheus registry bootstrapped),
@@ -144,9 +144,9 @@ func TestP20RPT04_RevokeUserSessions_TransportError_IncrementsMetricAndReturnsEr
 func TestP20RPT05_RevokeUserSessions_Non2xx_NilMetric_ReturnsError(t *testing.T) {
 	// Ensure the package-level var is nil for this test — no Prometheus
 	// registration needed. We save/restore to avoid contaminating parallel tests.
-	original := metrics.SessionRevokeFailed
-	metrics.SessionRevokeFailed = nil
-	defer func() { metrics.SessionRevokeFailed = original }()
+	original := metrics.AuthSessionRevokeFailed
+	metrics.AuthSessionRevokeFailed = nil
+	defer func() { metrics.AuthSessionRevokeFailed = original }()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "realm not ready", http.StatusServiceUnavailable)
@@ -164,9 +164,9 @@ func TestP20RPT05_RevokeUserSessions_Non2xx_NilMetric_ReturnsError(t *testing.T)
 // ─── RevokeUserSessions — non-2xx WITH non-nil metric ─────────────────────────
 
 // Test Case ID: P20-RP-T05b
-// Feature:      RevokeUserSessions non-2xx response when metrics.SessionRevokeFailed
+// Feature:      RevokeUserSessions non-2xx response when metrics.AuthSessionRevokeFailed
 //
-//	IS non-nil (lines 249-251: the `if metrics.SessionRevokeFailed != nil`
+//	IS non-nil (lines 249-251: the `if metrics.AuthSessionRevokeFailed != nil`
 //	TRUE arm — increments with the HTTP status code as label).
 //
 // Priority: P1 · Severity: Major · Automation Status: Automated
@@ -178,9 +178,9 @@ func TestP20RPT05b_RevokeUserSessions_Non2xx_NonNilMetric_IncrementsStatusLabel(
 	}, []string{"reason"})
 	require.NoError(t, reg.Register(counter))
 
-	original := metrics.SessionRevokeFailed
-	metrics.SessionRevokeFailed = counter
-	defer func() { metrics.SessionRevokeFailed = original }()
+	original := metrics.AuthSessionRevokeFailed
+	metrics.AuthSessionRevokeFailed = counter
+	defer func() { metrics.AuthSessionRevokeFailed = original }()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "bad gateway", http.StatusBadGateway)

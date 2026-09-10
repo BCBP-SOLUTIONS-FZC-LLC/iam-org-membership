@@ -1577,7 +1577,7 @@ operations:
       An event type not in the nine above (and not one of the five
       billing-orgm-q types) is classified kindUnknown and silently
       acknowledged (processed_events recorded, no projection applied),
-      counted by iam_unknown_event_acknowledged_total — this is deliberate
+      counted by iam_org_membership_unknown_event_acknowledged_total — this is deliberate
       forward-compatibility so a Realm Provisioner schema addition never
       triggers a DLQ storm here.
 

@@ -116,7 +116,7 @@ func run() int {
 		ServiceName:  serviceName,
 		BuildVersion: envOr("BUILD_VERSION", "dev"),
 	})
-	metrics.Register()
+	metrics.Register(appEnv)
 
 	log.Info("reconciler starting", "job", jobName)
 

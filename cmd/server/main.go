@@ -88,7 +88,7 @@ func main() {
 	// same middleware slice to the Gin engine; metrics.Init is sync.Once.
 	_ = gincommon.ObservabilityMiddlewares(cfg)
 
-	metrics.Register()
+	metrics.Register(appEnv)
 
 	// platform-events outbox/publish/consume metrics and platform-pgcommon
 	// query/pool metrics share gincommon's registerer so a single /metrics
@@ -299,7 +299,7 @@ func main() {
 		cons, err := events.NewSQSConsumerWithClient(
 			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
 			sqsClient,
-			membershipConsumer.Handle,
+			instrumentedHandler("tenant-orgm-q", membershipConsumer.Handle),
 			events.WithConcurrency(envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
 		)
 		if err != nil {
@@ -314,7 +314,7 @@ func main() {
 		cons, err := events.NewSQSConsumerWithClient(
 			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
 			sqsClient,
-			membershipConsumer.Handle,
+			instrumentedHandler("billing-orgm-q", membershipConsumer.Handle),
 			events.WithConcurrency(envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
 		)
 		if err != nil {
@@ -336,8 +336,10 @@ func main() {
 	}
 
 	// ── 7c. Business-observability exporter goroutines (§11.2) ──────────
-	// Populate iam_tenant_ownerless / iam_realm_sync_pending /
-	// iam_seat_overage_active / iam_pending_invitations_stale gauges every
+	// Populate iam_org_membership_tenant_ownerless /
+	// iam_org_membership_realm_sync_pending /
+	// iam_org_membership_seat_overage_active /
+	// iam_org_membership_pending_invitations_stale gauges every
 	// 5 minutes from the sysPool (BYPASSRLS). Follows the sibling
 	// iam-user-profile2 pattern — exporters live as goroutines, not
 	// CronJobs, so the running server pod is the source of truth.
@@ -591,6 +593,23 @@ func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName 
 	gc.WithLogger(log)
 	gc.StartRefresher(ctx, 5*time.Minute)
 	return gc, nil
+}
+
+// instrumentedHandler wraps an SQS handler with the Tier-1
+// platform_messages_{received,processed,failed}_total counters, labelled by
+// queue. Wired here rather than inside MembershipEventConsumer.Handle
+// because the queue identity is only known at the subscription call site —
+// both tenant-orgm-q and billing-orgm-q share the same Handle method.
+func instrumentedHandler(queue string, h events.Handler) events.Handler {
+	return func(ctx context.Context, env events.Envelope[json.RawMessage]) error {
+		metrics.IncMessagesReceived(queue)
+		if err := h(ctx, env); err != nil {
+			metrics.IncMessagesFailed(queue)
+			return err
+		}
+		metrics.IncMessagesProcessed(queue)
+		return nil
+	}
 }
 
 func envOr(key, def string) string {

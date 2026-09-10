@@ -72,9 +72,9 @@ groups:
       # (10 min for our shortest schedule), the SLO is at risk.
       - record: iam:reconciler_markers:sum
         expr: |
-          iam_realm_sync_pending
-          + iam_pending_invitations_stale
-          + (iam_tenant_ownerless * 5)  # weighted: ownerless is more serious
+          iam_org_membership_realm_sync_pending
+          + iam_org_membership_pending_invitations_stale
+          + (iam_org_membership_tenant_ownerless * 5)  # weighted: ownerless is more serious
 
   # ── SLO burn-rate alerts (multi-window) ─────────────────────────────────
   - name: iam-org-membership.slo.burn
@@ -125,8 +125,8 @@ groups:
           description: |
             {{ $value | humanizePercentage }} of mutating requests are
             returning 5xx. Likely Postgres or an outbound service (RP/UP)
-            failure — cross-reference iam_session_revoke_failed_total and
-            /readyz.
+            failure — cross-reference
+            iam_auth_session_revoke_failed_total and /readyz.
 
       # SLO-3: reconciler markers accumulating.
       - alert: IAMSLO3_ReconcilerMarkersElevated

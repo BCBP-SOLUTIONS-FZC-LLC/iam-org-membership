@@ -1,7 +1,7 @@
 // consumer_coverage_gaps_test.go — covers branches in Handle() that are
 // reachable without a real pgx pool or idempotency store:
 //
-//   - Lines 103-105: metrics.FutureLifecycleEventRejected != nil branch
+//   - Lines 103-105: metrics.DLQMessages != nil branch
 //     (EVT-15 future-time clamp with metrics registered)
 //   - Lines 161-164: TrialReactivated peekErr != nil (non-ErrNoRows Peek error)
 //   - Lines 163-164: TrialReactivated c.catalog == nil path
@@ -27,13 +27,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ensureMetricsRegistered calls metrics.Register() at most once per process.
+// ensureMetricsRegistered calls metrics.Register("test") at most once per process.
 // Using sync.Once would require exporting it from the metrics package; instead
 // we rely on the fact that Prometheus panics on double-registration, so we
 // call it only if UnknownEventAcknowledged is still nil.
 func ensureConsumerMetrics() {
 	if metrics.UnknownEventAcknowledged == nil {
-		metrics.Register()
+		metrics.Register("test")
 	}
 }
 
@@ -49,7 +49,7 @@ func futureEnv(eventType string) events.Envelope[json.RawMessage] {
 }
 
 // TestHandle_EVT15_WithMetrics_IncrementsCounter verifies that when
-// metrics.FutureLifecycleEventRejected is non-nil (i.e., Register() has been
+// metrics.DLQMessages is non-nil (i.e., Register() has been
 // called), Handle returns ErrPoisonPill and the metrics counter is incremented
 // without requiring any pool access.
 func TestHandle_EVT15_WithMetrics_IncrementsCounter(t *testing.T) {
@@ -66,7 +66,7 @@ func TestHandle_EVT15_WithMetrics_IncrementsCounter(t *testing.T) {
 }
 
 // TestHandle_EVT15_NilMetrics_StillReturnsPoisonPill verifies that the nil
-// guard on metrics.FutureLifecycleEventRejected is safe — even when Register()
+// guard on metrics.DLQMessages is safe — even when Register()
 // has not been called (metrics == nil), Handle returns ErrPoisonPill.
 // This exercises the nil-check branch (line 103) when metrics IS nil (else branch).
 // Since Register() may have already been called (ordering with the test above

@@ -60,55 +60,81 @@ moved to the Catalog / Admin Config Service's own LLD (those operator routes are
 
 - **SLO-1** — Latency measured at API boundary, includes all synchronous work (cache/DB + any downstream call blocked on).
 - **SLO-2** — Event end-to-end is joint budget with clear split. O&M owns publish half only; delivery+consume half owned by Workflow Service. O&M correctness never depends on 5 s — at-least-once outbox means slow consume delays timeliness, never loses events.
-- **SLO-3** — Inbound projection freshness explicitly alerted. Measured via `iam_lifecycle_consumer_lag_seconds`. **Primary drift signal** because EVT-14 skips stale events **silently** — lag alert is the drift signal, not DLQ.
+- **SLO-3** — Inbound projection freshness explicitly alerted. Measured via `iam_lifecycle_event_lag_seconds`. **Primary drift signal** because EVT-14 skips stale events **silently** — lag alert is the drift signal, not DLQ.
 
 ### 11.2 Prometheus Metrics
 
-All `iam_`-prefixed, registered once in `metrics.Register()` (`internal/adapter/outbound/metrics/business.go`) onto gincommon's registerer (same `{service, version}` const labels as HTTP metrics). The table below is the actual registered set (verified directly against `business.go`, not the earlier planned/aspirational list this section used to carry) — **16 `CounterVec`s, 2 `HistogramVec`s, 4 `Gauge`s**. Cardinality-bounded: no `tenant_id`/`user_id`/`email` label anywhere (§16 A48) — every label is a small, fixed enum.
+Registered once in `metrics.Register(environment)` (`internal/adapter/outbound/metrics/business.go`) onto gincommon's registerer (same registry as HTTP metrics), per the **IAM Platform Observability Standard**'s three-tier hierarchy. `domain`/`service`/`environment` are injected centrally via `platformLabels`/`serviceLabels` (ConstLabels) — never left to an individual `Inc()`/`Observe()` call site (rule 8):
+
+- **Tier 1 — `platform_*`** (required labels: `domain`, `service`, `environment`): a concept common across domains (IAM, Workflow, Billing, Tender Management, ...) with identical semantics. `domain="iam"` is a fixed const label on every Tier-1 collector this service registers.
+- **Tier 2 — `iam_*`** (required labels: `service`, `environment`): a concept shared across multiple IAM-domain services but not meaningful outside IAM. No `domain` label — the namespace already encodes it.
+- **Tier 3 — `iam_org_membership_*`**: behavior unique to this one service. No other IAM service has an equivalent concept, so the service identity is baked into the name.
+
+Cardinality-bounded: no `tenant_id`/`user_id`/`email` label anywhere (§16 A48) — every label is a small, fixed enum.
+
+**Tier 1 — `platform_*`**
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `iam_rls_violations_total` | Counter | `violation_type` | **Registered but never incremented in production code** — grep confirms the only non-test references are its own declaration in `business.go`; `cmd/server/exporters.go`'s 4 goroutines cover `iam_tenant_ownerless`/`iam_realm_sync_pending`/`iam_seat_overage_active`/`iam_pending_invitations_stale` only, none of them scrape `rls_violation_log`. Treat this metric/alert as currently a no-op until a `rls_violation_log`-scraping exporter is actually wired up; Layer 3 detection today means querying `rls_violation_log` directly, not this counter |
-| `iam_unknown_event_acknowledged_total` | Counter | `topic`, `event_type` | Consumed event of a type this service doesn't handle — silently ack'd; sustained nonzero means a producer added a new type |
-| `iam_stale_lifecycle_event_skipped_total` | Counter | `event_type` | EVT-14 recency-guard skip (post-DLQ-redrive spikes are expected) |
-| `iam_future_lifecycle_event_rejected_total` | Counter | `event_type` | EVT-15 future-time clamp — **any nonzero rate pages** (producer clock skew) |
-| `iam_session_revoke_failed_total` | Counter | `reason` | RP `RevokeUserSessions` non-2xx/error (AUTH-8 fail-open) |
-| `iam_delegate_suspend_impact_total` | Counter | `checked` | P-7 suspend WFI-13 advisory fired (§8.8.5, never a block) |
-| `iam_tenant_ownerless_escalated_total` | Counter | `reason` | Event-time signal: a removal just dropped the last active `tenant_owner` (TM-12) — every increment should page |
-| `iam_seat_overage_started_total` | Counter | `cause` | Under-cap → over-cap transition (SEAT-5) |
-| `iam_seat_limit_reached_total` | Counter | `plan` | P-6 invite blocked by SEAT-1 cap |
-| `iam_invite_throttled_total` | Counter | `reason` (`cooldown`\|`rate_limit`) | Pre-RP-call throttle (PI-11/PI-12) |
-| `iam_realm_sync_failed_total` | Counter | `stage` | `realm-config-sync` reconciler failure (T-15, security-relevant on disable) |
-| `iam_delegate_removal_blocked_total` | Counter | `scope` | `409 workflow_resolution_required` (WFI-3) |
-| `iam_delegate_reassignment_total` | Counter | `action` (`replace_delegate`\|`stop_workflows`) | P-26 removal-resolution completion |
-| `iam_processed_events_duplicates_total` | Counter | `consumer` | SQS redelivery filtered by `processed_events` PK (IDEMP-4) |
-| `iam_xsvc_call_errors_total` | Counter | `service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failure; `fallback_served` is recorded by the calling `CatalogService`/`GroupMappingService`, not the client |
-| `iam_membership_exists_check_total` | Counter | `caller`, `result` | I-15 grant-time existence checks served (Tender ACL Service, Delegation Service) |
-| `iam_lifecycle_consumer_lag_seconds` | Histogram | `event_type` | Seconds between `event.time` and consumer apply — **SLO-3 primary drift signal** (buckets 0.05s–1800s) |
-| `iam_xsvc_call_latency_seconds` | Histogram | `service`, `endpoint` | Latency of the three ADR-0007/ADR-0008 synchronous cross-service calls (buckets 5ms–3s) |
-| `iam_tenant_ownerless` | Gauge | — | `count(*) WHERE ownerless_since IS NOT NULL` (T-13) — 5-min exporter; sustained >0 pages `platform_operator` |
-| `iam_realm_sync_pending` | Gauge | — | `count(*) WHERE realm_sync_pending` (T-15) — 5-min exporter |
-| `iam_seat_overage_active` | Gauge | — | `count(*) WHERE overage_since IS NOT NULL` (SEAT-5) — 5-min exporter |
-| `iam_pending_invitations_stale` | Gauge | — | Pending invitations past `expires_at` that `invitation-expiry` hasn't flipped yet — 5-min exporter |
-| `outbox_dead_letters_total` | Counter | `event_type` | `platform-events` dead letters (not an `iam_`-prefixed metric — library-owned) |
+| `platform_messages_received_total` | Counter | `queue` | Inbound SQS message dequeued, before processing — wired in `cmd/server/main.go`'s `instrumentedHandler`, around both `tenant-orgm-q` and `billing-orgm-q` |
+| `platform_messages_processed_total` | Counter | `queue` | Inbound SQS message whose `Handle` returned nil |
+| `platform_messages_failed_total` | Counter | `queue` | Inbound SQS message whose `Handle` returned an error (includes DLQ rejections) |
+| `platform_duplicate_messages_total` | Counter | `consumer` | SQS redelivery filtered by `processed_events` PK (IDEMP-4) |
+| `platform_dlq_messages_total` | Counter | `event_type`, `reason` | Events actively rejected to DLQ without recording `processed_events`. Currently `reason="future_time_clamp"` only (EVT-15) — **any nonzero rate pages** (producer clock skew) |
+| `platform_dependency_request_seconds` | Histogram | `target_service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint` | Latency of the three ADR-0007/ADR-0008 synchronous cross-service calls (buckets 5ms–3s). `target_service` is the downstream peer, distinct from the `service` const label (this service's own identity) |
+| `platform_dependency_errors_total` | Counter | `target_service`, `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failure; `fallback_served` is recorded by the calling `CatalogService`/`GroupMappingService`, not the client |
 
-Not implemented (do not treat as current): `iam_membership_joins_total`/`_leaves_total`, `iam_memberships_cache_hit_ratio`, `iam_membership_lookup_latency_seconds`, `iam_invitations_created_total`/`_accepted_total`/`_expired_total`/`_revoked_total`, `iam_invite_kc_cleanup_pending`/`_failed_total`, `iam_group_mapping_resolution_errors_total`, `iam_delegate_workflow_cancel_total` (separate from `iam_delegate_reassignment_total{action=stop_workflows}`, which already covers that case) — these were on an earlier planned metric surface that was never built; this whole line is a Phase-6 note, not a current gap list.
+`platform_queue_depth`/`platform_dlq_depth` (SQS `ApproximateNumberOfMessages*`) and `platform_retry_total` (the outbox publisher's own retry-on-publish-failure loop, which lives inside the vendored `platform-events` library, not this repo) are **not implemented** — the former needs a new SQS `GetQueueAttributes` polling goroutine (new AWS call + IAM permission, not added without an explicit decision) and the latter isn't ours to instrument from here.
+
+**Tier 2 — `iam_*`**
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `iam_rls_violations_total` | Counter | `violation_type` | **Registered but never incremented in production code** — grep confirms the only non-test references are its own declaration in `business.go`; `cmd/server/exporters.go`'s 4 goroutines cover the Tier-3 gauges below only, none of them scrape `rls_violation_log`. Treat this metric/alert as currently a no-op until a `rls_violation_log`-scraping exporter is actually wired up; Layer 3 detection today means querying `rls_violation_log` directly, not this counter |
+| `iam_auth_session_revoke_failed_total` | Counter | `reason` | RP `RevokeUserSessions` non-2xx/error (AUTH-8 fail-open). Grouped under `iam_auth_` rather than `iam_org_membership_` since any IAM service reducing a user's privilege via RP session-revoke can emit this identically |
+| `iam_lifecycle_event_skipped_total` | Counter | `event_type` | EVT-14 recency-guard skip (post-DLQ-redrive spikes are expected). Domain-shared: any IAM service consuming RP-produced tenant-lifecycle events with the same last-writer-wins guard (Delegation, Tender-ACL, Group-Mapping) can emit this identically |
+| `iam_lifecycle_event_lag_seconds` | Histogram | `event_type` | Seconds between `event.time` and consumer apply — **SLO-3 primary drift signal** (buckets 0.05s–1800s) |
+
+**Tier 3 — `iam_org_membership_*`**
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `iam_org_membership_unknown_event_acknowledged_total` | Counter | `topic`, `event_type` | Consumed event of a type this service doesn't handle — silently ack'd; sustained nonzero means a producer added a new type |
+| `iam_org_membership_delegate_suspend_impact_total` | Counter | `checked` | P-7 suspend WFI-13 advisory fired (§8.8.5, never a block) |
+| `iam_org_membership_tenant_ownerless_escalated_total` | Counter | `reason` | Event-time signal: a removal just dropped the last active `tenant_owner` (TM-12) — every increment should page |
+| `iam_org_membership_seat_overage_started_total` | Counter | `cause` | Under-cap → over-cap transition (SEAT-5) |
+| `iam_org_membership_seat_limit_reached_total` | Counter | `plan` | P-6 invite blocked by SEAT-1 cap |
+| `iam_org_membership_invite_throttled_total` | Counter | `reason` (`cooldown`\|`rate_limit`) | Pre-RP-call throttle (PI-11/PI-12) |
+| `iam_org_membership_realm_sync_failed_total` | Counter | `stage` | `realm-config-sync` reconciler failure (T-15, security-relevant on disable) |
+| `iam_org_membership_delegate_removal_blocked_total` | Counter | `scope` | `409 workflow_resolution_required` (WFI-3) |
+| `iam_org_membership_delegate_reassignment_total` | Counter | `action` (`replace_delegate`\|`stop_workflows`) | P-26 removal-resolution completion |
+| `iam_org_membership_membership_exists_check_total` | Counter | `caller`, `result` | I-15 grant-time existence checks served (Tender ACL Service, Delegation Service) — only this service owns membership data, so this can't be domain-shared |
+| `iam_org_membership_tenant_ownerless` | Gauge | — | `count(*) WHERE ownerless_since IS NOT NULL` (T-13) — 5-min exporter; sustained >0 pages `platform_operator` |
+| `iam_org_membership_realm_sync_pending` | Gauge | — | `count(*) WHERE realm_sync_pending` (T-15) — 5-min exporter |
+| `iam_org_membership_seat_overage_active` | Gauge | — | `count(*) WHERE overage_since IS NOT NULL` (SEAT-5) — 5-min exporter |
+| `iam_org_membership_pending_invitations_stale` | Gauge | — | Pending invitations past `expires_at` that `invitation-expiry` hasn't flipped yet — 5-min exporter |
+
+**Not `iam_`/`platform_`-namespaced (library-owned, out of this standard's scope):** `outbox_dead_letters_total` (`platform-events`), `http_request_duration_seconds`/`http_requests_total` (`platform-gincommon`), `pgcommon_*` (`platform-pgcommon`).
+
+**CI enforcement:** `.github/scripts/check-metric-naming.sh` (wired into `Validate / Quality`) statically greps `internal/adapter/outbound/metrics/business.go` for every `Name: "..."` string and asserts: the name matches `^(platform|iam)_[a-z0-9_]+$`; every `CounterVec`/`Counter` name ends `_total`; every `HistogramVec` name ends `_seconds`; a `platform_*` name's registration block sets both `"domain"` and `"environment"` keys in its ConstLabels literal; an `iam_*` (non-`iam_org_membership_`) name's block sets `"environment"` but not `"domain"`; an `iam_org_membership_*` name has no additional label requirement. It does not (and cannot, staically) verify the *classification judgment* (shared vs. service-specific) — that's a review-time call per the decision tree, not a lint rule.
+
+Not implemented (do not treat as current): `iam_membership_joins_total`/`_leaves_total`, `iam_memberships_cache_hit_ratio`, `iam_membership_lookup_latency_seconds`, `iam_invitations_created_total`/`_accepted_total`/`_expired_total`/`_revoked_total`, `iam_invite_kc_cleanup_pending`/`_failed_total`, `iam_group_mapping_resolution_errors_total`, `iam_delegate_workflow_cancel_total` (separate from `iam_org_membership_delegate_reassignment_total{action=stop_workflows}`, which already covers that case) — these were on an earlier planned metric surface that was never built; this whole line is a Phase-6 note, not a current gap list.
 
 **Alerts:**
 - `outbox_dead_letters_total rate > 0` → page
-- `iam_tenant_ownerless > 0` → page `platform_operator` (O-7 required)
-- `iam_future_lifecycle_event_rejected_total rate > 0` → page (producer clock skew / bad replay)
-- Sustained `iam_session_revoke_failed_total` → page (AUTH-8 fast-kill degraded, only TTL-bounded)
-- `iam_lifecycle_consumer_lag_seconds > 30` for ~2 min → page (SLO-3 breach, primary drift signal)
-- `iam_realm_sync_pending > 0` sustained beyond ~10 min → page (T-15)
-- Sustained `iam_realm_sync_failed_total` → page
-- Sustained `iam_invite_throttled_total` for one tenant → warn (email abuse / bad client)
-- Sustained `iam_delegate_removal_blocked_total` without matching `iam_delegate_reassignment_total` → warn (admins hitting block, not completing resolution)
-- Spike in `iam_seat_limit_reached_total` for a tenant → **informational Slack to CSM/Billing** (not on-call — genuine "buy more seats" signal)
-- `iam_pending_invitations_stale > 0` sustained → warn (`invitation-expiry` cron not keeping up)
-- Sustained `iam_xsvc_call_errors_total{service=catalog}` → warn (the one ADR-0007/ADR-0008 dependency that is NOT fail-open — see §20.7)
+- `iam_org_membership_tenant_ownerless > 0` → page `platform_operator` (O-7 required)
+- `platform_dlq_messages_total{reason="future_time_clamp"} rate > 0` → page (producer clock skew / bad replay)
+- Sustained `iam_auth_session_revoke_failed_total` → page (AUTH-8 fast-kill degraded, only TTL-bounded)
+- `iam_lifecycle_event_lag_seconds > 30` for ~2 min → page (SLO-3 breach, primary drift signal)
+- `iam_org_membership_realm_sync_pending > 0` sustained beyond ~10 min → page (T-15)
+- Sustained `iam_org_membership_realm_sync_failed_total` → page
+- Sustained `iam_org_membership_invite_throttled_total` for one tenant → warn (email abuse / bad client)
+- Sustained `iam_org_membership_delegate_removal_blocked_total` without matching `iam_org_membership_delegate_reassignment_total` → warn (admins hitting block, not completing resolution)
+- Spike in `iam_org_membership_seat_limit_reached_total` for a tenant → **informational Slack to CSM/Billing** (not on-call — genuine "buy more seats" signal)
+- `iam_org_membership_pending_invitations_stale > 0` sustained → warn (`invitation-expiry` cron not keeping up)
+- Sustained `platform_dependency_errors_total{target_service=catalog}` → warn (the one ADR-0007/ADR-0008 dependency that is NOT fail-open — see §20.7)
 
-**Metric naming (§16 A50/J4):** `iam_` subsystem prefix kept; emitting service disambiguated by Prometheus `job` label. Names unique across IAM (no collisions). Dashboards/alerts on shared names aggregate `by (job)`.
+**Metric naming (§16 A50/J4):** IAM Platform Observability Standard three-tier hierarchy — see §11.2 above. Shared (`platform_*`/`iam_*`) names are disambiguated by the `service`/`domain` const labels, never by encoding the service into the name; dashboards/alerts on shared names aggregate `by (service)` (or `by (domain, service)` for Tier 1), not by the Prometheus `job` label, which HTTP-only metrics still use.
 
 **Cardinality guardrails (§16 A48):** no unbounded / user-supplied label (`user_id`, `email` etc.) may be added. If tenant count grows past ~10k, highest-churn counters drop `tenant_id` in favor of structured logs / OTel exemplars; low-cardinality gauges keep it.
 
@@ -263,7 +289,7 @@ Deliberately **event-driven, not synchronous** for write; O&M exposes no synchro
 
 `outbox-prune`'s batched raw-SQL delete at 8-day retention, daily (not `outbox.Runner.PrunePublished`). Dead-letters trigger immediate page. Selective replay via `ReprocessDeadLettersWith(ctx, DLQFilter{EventType, TenantID}, limit)` (platform-events v1.4.0 DLQ API — the DLQ API itself was introduced at v1.3.0 and is unchanged at the v1.4.0 this repo now depends on).
 
-**DLQ redrive interacts with EVT-14 recency guard:** redriven lifecycle events carry **original** old CloudEvents `time`. If newer event advanced `last_event_at`, the redrive is correctly **skipped as stale** (`iam_stale_lifecycle_event_skipped_total++`). Post-redrive spike is expected, not an incident. If a redriven event **must** take effect, correct the projection deliberately at the source of truth. EVT-15-parked DLQ events won't redrive without a producer clock fix.
+**DLQ redrive interacts with EVT-14 recency guard:** redriven lifecycle events carry **original** old CloudEvents `time`. If newer event advanced `last_event_at`, the redrive is correctly **skipped as stale** (`iam_lifecycle_event_skipped_total++`). Post-redrive spike is expected, not an incident. If a redriven event **must** take effect, correct the projection deliberately at the source of truth. EVT-15-parked DLQ events won't redrive without a producer clock fix.
 
 ### 20.5 Workflow Service Dependency Health
 
@@ -271,7 +297,7 @@ Every user-removal, department-demotion/removal, resolution synchronously blocks
 
 ### 20.6 Seat-Limit Signal, Not an Incident
 
-`409 seat_limit_reached` (P-6) and sustained `iam_seat_limit_reached_total` = **expected product behavior**, not health problem. Route to CSM/Billing, not on-call. **Exception:** `seat_limit_reached` for a tenant whose `licensed_seats` should have increased via a recent `TenantSeatsChanged` — check `billing-orgm-q` consumer lag + `processed_events` for expected event ID (an integration incident).
+`409 seat_limit_reached` (P-6) and sustained `iam_org_membership_seat_limit_reached_total` = **expected product behavior**, not health problem. Route to CSM/Billing, not on-call. **Exception:** `seat_limit_reached` for a tenant whose `licensed_seats` should have increased via a recent `TenantSeatsChanged` — check `billing-orgm-q` consumer lag + `processed_events` for expected event ID (an integration incident).
 
 ### 20.7 Synchronous Cross-Service Dependency & Degradation Matrix (§16 A35)
 

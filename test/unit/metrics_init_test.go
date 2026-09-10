@@ -15,5 +15,5 @@ import (
 )
 
 func init() {
-	metrics.Register()
+	metrics.Register("test")
 }

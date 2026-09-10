@@ -42,7 +42,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// xsvcService is this client's iam_xsvc_call_* label value (LLD §11.2).
+// xsvcService is this client's platform_dependency_* target_service
+// label value (LLD §11.2) — the downstream peer being called, distinct
+// from the metric's "service" const label (this service's own identity).
 const xsvcService = "delegation"
 
 // Logger is the structured logging interface this client uses (Warn only).
@@ -114,16 +116,16 @@ func (c *HTTPClient) DeptDelegate(ctx context.Context, tenantID, userID, deptID 
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveXsvcLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
-		metrics.IncXsvcError(xsvcService, endpoint, metrics.XsvcOutcome(err))
+		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.logger.Warn("delegationcheck: DeptDelegate transport error", "tenant_id", tenantID, "user_id", userID, "dept_id", deptID, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode >= 500 {
-			metrics.IncXsvcError(xsvcService, endpoint, "5xx")
+			metrics.IncDependencyError(xsvcService, endpoint, "5xx")
 		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		c.logger.Warn("delegationcheck: DeptDelegate non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))

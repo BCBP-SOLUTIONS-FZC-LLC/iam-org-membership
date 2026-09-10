@@ -165,8 +165,10 @@ groups:
     rules:
 
       - alert: IAMFutureLifecycleEventRejected
-        # EVT-15 future-time clamp — any occurrence pages.
-        expr: rate(iam_future_lifecycle_event_rejected_total[5m]) > 0
+        # EVT-15 future-time clamp — any occurrence pages. platform_dlq_messages_total
+        # is shared/generic (Tier 1) and may carry other reasons in future — filter
+        # to this alert's own cause so it doesn't page on an unrelated DLQ rejection.
+        expr: rate(platform_dlq_messages_total{reason="future_time_clamp"}[5m]) > 0
         for: 5m
         labels:
           severity: page
@@ -196,7 +198,7 @@ groups:
           runbook: "iam-org-membership/rls-cross-tenant"
 
       - alert: IAMTenantOwnerless
-        expr: iam_tenant_ownerless > 0
+        expr: iam_org_membership_tenant_ownerless > 0
         for: 30m
         labels:
           severity: page
@@ -215,7 +217,7 @@ groups:
     rules:
 
       - alert: IAMRealmSyncPendingSustained
-        expr: iam_realm_sync_pending > 0
+        expr: iam_org_membership_realm_sync_pending > 0
         for: 1h
         labels:
           severity: ticket
@@ -229,7 +231,7 @@ groups:
           runbook: "iam-org-membership/realm-sync-pending"
 
       - alert: IAMPendingInvitationsStale
-        expr: iam_pending_invitations_stale > 0
+        expr: iam_org_membership_pending_invitations_stale > 0
         for: 30m
         labels:
           severity: ticket
@@ -243,7 +245,7 @@ groups:
           runbook: "iam-org-membership/invitation-expiry"
 
       - alert: IAMSeatOverageActive
-        expr: iam_seat_overage_active > 0
+        expr: iam_org_membership_seat_overage_active > 0
         for: 24h
         labels:
           severity: ticket
@@ -283,7 +285,7 @@ groups:
     rules:
 
       - alert: IAMSessionRevokeFailedSustained
-        expr: rate(iam_session_revoke_failed_total[5m]) > 0.1
+        expr: rate(iam_auth_session_revoke_failed_total[5m]) > 0.1
         for: 15m
         labels:
           severity: page
@@ -298,7 +300,7 @@ groups:
           runbook: "iam-org-membership/auth8-revoke-fail-open"
 
       - alert: IAMStaleLifecycleEventSkippedElevated
-        expr: rate(iam_stale_lifecycle_event_skipped_total[10m]) > 1
+        expr: rate(iam_lifecycle_event_skipped_total[10m]) > 1
         for: 30m
         labels:
           severity: ticket
@@ -318,7 +320,7 @@ groups:
     rules:
 
       - alert: IAMUnknownEventType
-        expr: rate(iam_unknown_event_acknowledged_total[10m]) > 0
+        expr: rate(iam_org_membership_unknown_event_acknowledged_total[10m]) > 0
         for: 30m
         labels:
           severity: ticket

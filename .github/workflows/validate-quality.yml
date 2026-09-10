@@ -81,6 +81,13 @@ jobs:
           fi
           echo "RLS-6 non-LOCAL SET check passed."
 
+      # IAM Platform Observability Standard: every registered Prometheus
+      # collector must follow the platform_*/iam_*/iam_org_membership_*
+      # naming hierarchy, the _total/_seconds suffix rules, and the
+      # centrally-injected domain/service/environment label-set rules.
+      - name: Metric naming convention check
+        run: bash .github/scripts/check-metric-naming.sh
+
       - name: Format check
         run: |
           unformatted=$(gofmt -l .)

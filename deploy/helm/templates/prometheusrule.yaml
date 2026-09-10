@@ -148,7 +148,7 @@ spec:
           # a tenant has zero active tenant_owner and cannot self-recover.
           # Operator O-7 reassign-owner is the recovery path.
           expr: |
-            max(iam_tenant_ownerless) > 0
+            max(iam_org_membership_tenant_ownerless) > 0
           for: 5m
           labels:
             severity: critical
@@ -156,7 +156,7 @@ spec:
           annotations:
             summary: one or more tenants have no active tenant_owner (TM-12)
             description: >-
-              iam_tenant_ownerless = {{ "{{ $value | humanize }}" }} for 5m+. Recover via
+              iam_org_membership_tenant_ownerless = {{ "{{ $value | humanize }}" }} for 5m+. Recover via
               O-7 POST /operator/tenants/:id/reassign-owner with an existing
               active member as the new owner. Runbook: iam-org-membership/tenant-ownerless.
 
@@ -164,7 +164,7 @@ spec:
           # T-15 realm-sync-pending marker: the local write happened but Realm
           # Provisioner PatchRealmConfig has not yet acknowledged.
           expr: |
-            max(iam_realm_sync_pending) > 0
+            max(iam_org_membership_realm_sync_pending) > 0
           for: 15m
           labels:
             severity: warning
@@ -172,7 +172,7 @@ spec:
           annotations:
             summary: realm-config-sync CronJob not draining pending markers
             description: >-
-              iam_realm_sync_pending has stayed non-zero for 15 minutes.
+              iam_org_membership_realm_sync_pending has stayed non-zero for 15 minutes.
               Either the realm-config-sync CronJob isn't running or Realm Provisioner
               is returning non-2xx. Check RP health then the cron's last run.
 
@@ -181,7 +181,7 @@ spec:
           # Fires 5 days before grace window closes, giving ops a warning to
           # coordinate with Billing before enforcement kicks in.
           expr: |
-            max(iam_seat_overage_active) > 0
+            max(iam_org_membership_seat_overage_active) > 0
           for: 25d
           labels:
             severity: warning
@@ -197,7 +197,7 @@ spec:
           # Pending invitations past expires_at that invitation-expiry hasn't
           # flipped to 'expired'. Non-zero for >24h means the CronJob has stopped.
           expr: |
-            max(iam_pending_invitations_stale) > 0
+            max(iam_org_membership_pending_invitations_stale) > 0
           for: 24h
           labels:
             severity: warning
@@ -212,7 +212,7 @@ spec:
           # EVT-14 recency guard — normal at low rates (producer reordering),
           # but a sustained non-zero rate suggests consumer lag.
           expr: |
-            rate(iam_stale_lifecycle_event_skipped_total[10m]) > 0
+            rate(iam_lifecycle_event_skipped_total[10m]) > 0
           for: 10m
           labels:
             severity: info
@@ -227,9 +227,10 @@ spec:
         - alert: IAMFutureLifecycleEventRejected
           # EVT-15 future-time clamp — a producer's clock is skewed OR they
           # emitted an event >MAX_LIFECYCLE_EVENT_SKEW_SECONDS in the future.
-          # Any occurrence pages.
+          # Any occurrence pages. platform_dlq_messages_total is shared/generic
+          # (Tier 1) — filter to this alert's own reason.
           expr: |
-            increase(iam_future_lifecycle_event_rejected_total[5m]) > 0
+            increase(platform_dlq_messages_total{reason="future_time_clamp"}[5m]) > 0
           labels:
             severity: critical
             team: platform

@@ -25,9 +25,9 @@
 //     we add a variant verifying the cache error path).
 //  4. SlogStyleLogger.DebugContext / InfoContext — the two 0.0% methods in
 //     port/logger.go that are context-aware variants.
-//  5. metrics.IncMembershipExistsCheck, ObserveXsvcLatency, IncXsvcError,
-//     XsvcOutcome — nil-guard and non-nil path (require nil metric vars to be
-//     safe no-ops).
+//  5. metrics.IncMembershipExistsCheck, ObserveDependencyLatency,
+//     IncDependencyError, DependencyOutcome — nil-guard and non-nil path
+//     (require nil metric vars to be safe no-ops).
 //  6. eventbus.Publisher.WithLogger — 0.0% function.
 package unit_test
 
@@ -264,39 +264,39 @@ func TestMetrics_IncMembershipExistsCheck_NilMetric_NoPanic(t *testing.T) {
 	})
 }
 
-// TestMetrics_ObserveXsvcLatency_NilMetric_NoPanic verifies the nil-guard.
-func TestMetrics_ObserveXsvcLatency_NilMetric_NoPanic(t *testing.T) {
+// TestMetrics_ObserveDependencyLatency_NilMetric_NoPanic verifies the nil-guard.
+func TestMetrics_ObserveDependencyLatency_NilMetric_NoPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
-		metrics.ObserveXsvcLatency("catalog", "GET /plans", 0.005)
+		metrics.ObserveDependencyLatency("catalog", "GET /plans", 0.005)
 	})
 }
 
-// TestMetrics_IncXsvcError_NilMetric_NoPanic verifies the nil-guard.
-func TestMetrics_IncXsvcError_NilMetric_NoPanic(t *testing.T) {
+// TestMetrics_IncDependencyError_NilMetric_NoPanic verifies the nil-guard.
+func TestMetrics_IncDependencyError_NilMetric_NoPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
-		metrics.IncXsvcError("catalog", "GET /plans", "5xx")
+		metrics.IncDependencyError("catalog", "GET /plans", "5xx")
 	})
 }
 
-// TestMetrics_XsvcOutcome_Timeout_FromDeadlineExceeded verifies that
+// TestMetrics_DependencyOutcome_Timeout_FromDeadlineExceeded verifies that
 // context.DeadlineExceeded maps to "timeout".
-func TestMetrics_XsvcOutcome_Timeout_FromDeadlineExceeded(t *testing.T) {
-	outcome := metrics.XsvcOutcome(context.DeadlineExceeded)
+func TestMetrics_DependencyOutcome_Timeout_FromDeadlineExceeded(t *testing.T) {
+	outcome := metrics.DependencyOutcome(context.DeadlineExceeded)
 	assert.Equal(t, "timeout", outcome)
 }
 
-// TestMetrics_XsvcOutcome_Timeout_FromNetError verifies that a net.Error
+// TestMetrics_DependencyOutcome_Timeout_FromNetError verifies that a net.Error
 // with Timeout()=true maps to "timeout".
-func TestMetrics_XsvcOutcome_Timeout_FromNetError(t *testing.T) {
+func TestMetrics_DependencyOutcome_Timeout_FromNetError(t *testing.T) {
 	netErr := &net.OpError{Op: "dial", Net: "tcp", Err: &timeoutErr{}}
-	outcome := metrics.XsvcOutcome(netErr)
+	outcome := metrics.DependencyOutcome(netErr)
 	assert.Equal(t, "timeout", outcome)
 }
 
-// TestMetrics_XsvcOutcome_5xx_FromGenericError verifies that a non-timeout
+// TestMetrics_DependencyOutcome_5xx_FromGenericError verifies that a non-timeout
 // error maps to "5xx".
-func TestMetrics_XsvcOutcome_5xx_FromGenericError(t *testing.T) {
-	outcome := metrics.XsvcOutcome(errors.New("internal error"))
+func TestMetrics_DependencyOutcome_5xx_FromGenericError(t *testing.T) {
+	outcome := metrics.DependencyOutcome(errors.New("internal error"))
 	assert.Equal(t, "5xx", outcome)
 }
 

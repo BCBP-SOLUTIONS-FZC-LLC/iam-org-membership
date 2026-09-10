@@ -337,7 +337,7 @@ func TestTM12Escalation_IncrementsCounter(t *testing.T) {
 
 	after := counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed"))
 	assert.Equal(t, before+1, after,
-		"B13: removing the sole owner must increment iam_tenant_ownerless_escalated_total by 1")
+		"B13: removing the sole owner must increment iam_org_membership_tenant_ownerless_escalated_total by 1")
 
 	// Verify the tenant is now flagged ownerless.
 	var since *time.Time
@@ -422,4 +422,4 @@ func counterValue(counter interface {
 // re-run.
 var phase4MetricsOnce sync.Once
 
-func phase4TestMetricsInit() { phase4MetricsOnce.Do(metrics.Register) }
+func phase4TestMetricsInit() { phase4MetricsOnce.Do(func() { metrics.Register("test") }) }
