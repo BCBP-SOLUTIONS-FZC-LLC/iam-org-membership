@@ -53,6 +53,11 @@ func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	assert.NotNil(t, DependencyRequestSeconds, "DependencyRequestSeconds must be initialised")
 	assert.NotNil(t, DependencyErrors, "DependencyErrors must be initialised")
 
+	// Tier 3 predecessors (shadow-authoritative until ratification).
+	assert.NotNil(t, DependencyCallDurationSeconds, "DependencyCallDurationSeconds must be initialised")
+	assert.NotNil(t, DependencyCallFailuresTotal, "DependencyCallFailuresTotal must be initialised")
+	assert.NotNil(t, ProcessedEventsDuplicatesTotal, "ProcessedEventsDuplicatesTotal must be initialised")
+
 	// Tier 2 — iam_*.
 	assert.NotNil(t, RLSViolations, "RLSViolations must be initialised")
 	assert.NotNil(t, AuthSessionRevokeFailed, "AuthSessionRevokeFailed must be initialised")
@@ -94,6 +99,9 @@ func TestMetricNamesStable(t *testing.T) {
 	DLQMessages.WithLabelValues("stability-check", "stability-check").Inc()
 	DependencyRequestSeconds.WithLabelValues("stability-check", "stability-check").Observe(0.1)
 	DependencyErrors.WithLabelValues("stability-check", "stability-check", "stability-check").Inc()
+	DependencyCallDurationSeconds.WithLabelValues("stability-check", "stability-check").Observe(0.1)
+	DependencyCallFailuresTotal.WithLabelValues("stability-check", "stability-check", "stability-check").Inc()
+	ProcessedEventsDuplicatesTotal.WithLabelValues("stability-check").Inc()
 	UnknownEventAcknowledged.WithLabelValues("stability-check", "stability-check").Inc()
 	LifecycleEventSkipped.WithLabelValues("stability-check").Inc()
 	LifecycleEventLagSeconds.WithLabelValues("stability-check").Observe(0.1)
@@ -116,6 +124,10 @@ func TestMetricNamesStable(t *testing.T) {
 		"platform_dlq_messages_total",
 		"platform_dependency_request_seconds",
 		"platform_dependency_errors_total",
+		// Tier 3 predecessors, shadow-authoritative until ratification.
+		"iam_org_membership_dependency_call_duration_seconds",
+		"iam_org_membership_dependency_call_failures_total",
+		"iam_org_membership_processed_events_duplicates_total",
 		// Tier 2 — iam_* (shared across IAM-domain services).
 		"iam_rls_violations_total",
 		"iam_auth_session_revoke_failed_total",
@@ -318,5 +330,45 @@ func TestDependencyMetrics_CarryServiceConstLabel_AndTargetServiceVariableLabel(
 			assert.True(t, hasTarget,
 				"%s must label the downstream peer as 'target_service', not 'service'", mf.GetName())
 		}
+	}
+}
+
+// TestDependencyMetrics_DualEmitToTier3Predecessor — a single
+// ObserveDependencyLatency/IncDependencyError call must land on both the
+// Tier-1 candidate (shadow, pending ratification — registry.go) and its
+// Tier-3 predecessor (this repo's actual alerting/SLO source), matching
+// iam-realm-provisioner's shadow-emission pattern.
+func TestDependencyMetrics_DualEmitToTier3Predecessor(t *testing.T) {
+	ensureRegistered(t)
+
+	tier1Before := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dual-emit-check", "timeout"))
+	tier3Before := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual-emit-check", "timeout"))
+
+	IncDependencyError("delegation", "dual-emit-check", "timeout")
+
+	assert.Equal(t, tier1Before+1, testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dual-emit-check", "timeout")),
+		"Tier-1 candidate platform_dependency_errors_total must record the call")
+	assert.Equal(t, tier3Before+1, testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual-emit-check", "timeout")),
+		"Tier-3 predecessor iam_org_membership_dependency_call_failures_total must record the same call")
+
+	require.NotPanics(t, func() {
+		ObserveDependencyLatency("delegation", "dual-emit-check", 0.05)
+	})
+	assert.Positive(t, testutil.CollectAndCount(DependencyRequestSeconds), "Tier-1 latency histogram must have a sample")
+	assert.Positive(t, testutil.CollectAndCount(DependencyCallDurationSeconds), "Tier-3 predecessor latency histogram must have a sample")
+}
+
+// TestPlatformRegistry_EveryEntryHasATier3Predecessor — the standard's
+// governance rules (11/12) require a Proposed platform_* metric to stay
+// non-authoritative; this repo's mechanism for that is dual-emission to a
+// named Tier-3 predecessor. A registry entry without one would have no
+// authoritative fallback for alerts/SLOs to point at.
+func TestPlatformRegistry_EveryEntryHasATier3Predecessor(t *testing.T) {
+	for _, entry := range PlatformRegistry {
+		if entry.Status != StatusProposed {
+			continue
+		}
+		assert.NotEmpty(t, entry.SupersedesTier3,
+			"Proposed entry %q must name at least one Tier-3 predecessor", entry.Name)
 	}
 }

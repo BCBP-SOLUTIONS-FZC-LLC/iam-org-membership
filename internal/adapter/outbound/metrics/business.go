@@ -29,6 +29,22 @@
 // match the tiered platform_*/iam_*/iam_org_membership_* standard —
 // see each var's doc comment for its tier and, for tier-1/2 promotions
 // without a named example in the standard, the rationale.
+//
+// Three Tier-1 candidates — DependencyRequestSeconds
+// (platform_dependency_request_seconds), DuplicateMessages
+// (platform_duplicate_messages_total), and DependencyErrors
+// (platform_dependency_errors_total) — are emitted in shadow, alongside
+// their Tier-3 counterparts (DependencyCallDurationSeconds,
+// ProcessedEventsDuplicatesTotal, DependencyCallFailuresTotal), so real
+// production data backs their ratification packets without this repo's
+// own alerts/SLOs depending on an unratified name. See PlatformRegistry
+// (registry.go) for each candidate's full submitted packet — status,
+// semantic definition, required/approved labels and their allowed
+// values, cardinality justification, aggregation expectations. Every
+// alert/recording-rule/SLO in this repo reads the Tier-3 metric until a
+// candidate's Status there flips from Proposed to Canonical (matches
+// iam-realm-provisioner's pattern, .github/scripts/metrics-registry-lint.sh
+// enforces it in CI).
 package metrics
 
 import (
@@ -95,6 +111,30 @@ var (
 	// aren't recoverable from a latency histogram's buckets alone.
 	DependencyRequestSeconds *prometheus.HistogramVec
 	DependencyErrors         *prometheus.CounterVec
+
+	// ── Tier 3 predecessors, shadow-authoritative until ratification ────
+
+	// DependencyCallDurationSeconds is DependencyRequestSeconds's Tier-3
+	// predecessor — this repo's actual alerting/SLO source for
+	// cross-service dependency latency until platform_dependency_
+	// request_seconds's PlatformRegistry entry (registry.go) flips from
+	// Proposed to Canonical. Same call site, same values, different name.
+	DependencyCallDurationSeconds *prometheus.HistogramVec
+
+	// DependencyCallFailuresTotal is DependencyErrors's Tier-3
+	// predecessor — authoritative until platform_dependency_errors_total
+	// ratifies (registry.go). Unlike the other two shadow pairs, this
+	// Tier-1 candidate has no named counterpart in the standard's own
+	// examples at all (added by symmetry, see DependencyErrors's doc
+	// comment) — an even less settled proposal than the standard's own
+	// Registry-Proposed Examples, so this Tier-3 metric is not merely
+	// cautious but the only currently-sanctioned name for this signal.
+	DependencyCallFailuresTotal *prometheus.CounterVec
+
+	// ProcessedEventsDuplicatesTotal is DuplicateMessages's Tier-3
+	// predecessor — authoritative until platform_duplicate_messages_total
+	// ratifies (registry.go).
+	ProcessedEventsDuplicatesTotal *prometheus.CounterVec
 
 	// ── Tier 2 — iam_* (shared across IAM-domain services) ──────────────
 
@@ -214,18 +254,32 @@ func IncMessagesFailed(queue string) {
 // DependencyRequestSeconds is only non-nil once Register() has run (server
 // startup), so client/service unit tests that never call Register() get a
 // silent no-op rather than a nil-pointer panic.
+//
+// Dual-emits to DependencyCallDurationSeconds, the Tier-3 predecessor that
+// remains this repo's authoritative alerting/SLO source until
+// platform_dependency_request_seconds ratifies (registry.go).
 func ObserveDependencyLatency(targetService, endpoint string, seconds float64) {
 	if DependencyRequestSeconds != nil {
 		DependencyRequestSeconds.WithLabelValues(targetService, endpoint).Observe(seconds)
+	}
+	if DependencyCallDurationSeconds != nil {
+		DependencyCallDurationSeconds.WithLabelValues(targetService, endpoint).Observe(seconds)
 	}
 }
 
 // IncDependencyError records a cross-service call failure by outcome,
 // against the downstream peer (targetService). Nil-safe, see
 // ObserveDependencyLatency.
+//
+// Dual-emits to DependencyCallFailuresTotal, the Tier-3 predecessor that
+// remains this repo's authoritative alerting/SLO source until
+// platform_dependency_errors_total ratifies (registry.go).
 func IncDependencyError(targetService, endpoint, outcome string) {
 	if DependencyErrors != nil {
 		DependencyErrors.WithLabelValues(targetService, endpoint, outcome).Inc()
+	}
+	if DependencyCallFailuresTotal != nil {
+		DependencyCallFailuresTotal.WithLabelValues(targetService, endpoint, outcome).Inc()
 	}
 }
 
@@ -354,6 +408,26 @@ func registerMetrics(environment string) {
 		ConstLabels: pLabels,
 	}, []string{"target_service", "endpoint", "outcome"})
 
+	// ── Tier 3 predecessors, shadow-authoritative until ratification ────
+	DependencyCallDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:        "iam_org_membership_dependency_call_duration_seconds",
+		Help:        "Latency of synchronous cross-service dependency calls, by target_service and endpoint. Authoritative predecessor of platform_dependency_request_seconds (Proposed, registry.go) until ratification.",
+		Buckets:     []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
+		ConstLabels: sLabels,
+	}, []string{"target_service", "endpoint"})
+
+	DependencyCallFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name:        "iam_org_membership_dependency_call_failures_total",
+		Help:        "Cross-service dependency call failures by target_service/endpoint/outcome. Authoritative predecessor of platform_dependency_errors_total (Proposed, registry.go) until ratification.",
+		ConstLabels: sLabels,
+	}, []string{"target_service", "endpoint", "outcome"})
+
+	ProcessedEventsDuplicatesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name:        "iam_org_membership_processed_events_duplicates_total",
+		Help:        "SQS redeliveries filtered by the processed_events composite PK (IDEMP-4). Authoritative predecessor of platform_duplicate_messages_total (Proposed, registry.go) until ratification.",
+		ConstLabels: sLabels,
+	}, []string{"consumer"})
+
 	// ── Tier 2 — iam_* ───────────────────────────────────────────────────
 	RLSViolations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name:        "iam_rls_violations_total",
@@ -470,6 +544,9 @@ func registerMetrics(environment string) {
 		DLQMessages,
 		DependencyRequestSeconds,
 		DependencyErrors,
+		DependencyCallDurationSeconds,
+		DependencyCallFailuresTotal,
+		ProcessedEventsDuplicatesTotal,
 		RLSViolations,
 		AuthSessionRevokeFailed,
 		LifecycleEventSkipped,

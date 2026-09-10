@@ -88,6 +88,14 @@ jobs:
       - name: Metric naming convention check
         run: bash .github/scripts/check-metric-naming.sh
 
+      # Enterprise Platform Observability Standard governance rules 11/12:
+      # a Proposed (unratified) platform_* metric (PlatformRegistry,
+      # internal/adapter/outbound/metrics/registry.go) may never source a
+      # live alert/recording-rule/SLO expression — only its authoritative
+      # Tier-3 predecessor may.
+      - name: Metrics registry ratification check
+        run: bash .github/scripts/metrics-registry-lint.sh
+
       - name: Format check
         run: |
           unformatted=$(gofmt -l .)

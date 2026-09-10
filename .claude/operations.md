@@ -79,12 +79,20 @@ Cardinality-bounded: no `tenant_id`/`user_id`/`email` label anywhere (§16 A48) 
 | `platform_messages_received_total` | Counter | `queue` | Inbound SQS message dequeued, before processing — wired in `cmd/server/main.go`'s `instrumentedHandler`, around both `tenant-orgm-q` and `billing-orgm-q` |
 | `platform_messages_processed_total` | Counter | `queue` | Inbound SQS message whose `Handle` returned nil |
 | `platform_messages_failed_total` | Counter | `queue` | Inbound SQS message whose `Handle` returned an error (includes DLQ rejections) |
-| `platform_duplicate_messages_total` | Counter | `consumer` | SQS redelivery filtered by `processed_events` PK (IDEMP-4) |
-| `platform_dlq_messages_total` | Counter | `event_type`, `reason` | Events actively rejected to DLQ without recording `processed_events`. Currently `reason="future_time_clamp"` only (EVT-15) — **any nonzero rate pages** (producer clock skew) |
-| `platform_dependency_request_seconds` | Histogram | `target_service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint` | Latency of the three ADR-0007/ADR-0008 synchronous cross-service calls (buckets 5ms–3s). `target_service` is the downstream peer, distinct from the `service` const label (this service's own identity) |
-| `platform_dependency_errors_total` | Counter | `target_service`, `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failure; `fallback_served` is recorded by the calling `CatalogService`/`GroupMappingService`, not the client |
+| `platform_dlq_messages_total` | Counter | `event_type`, `reason` | Events actively rejected to DLQ without recording `processed_events`. Currently `reason="future_time_clamp"` only (EVT-15) — **any nonzero rate pages** (producer clock skew). Canonical per the standard's own plain Tier-1 Examples list — no ratification needed |
+| `platform_duplicate_messages_total` | Counter | `consumer` | SQS redelivery filtered by `processed_events` PK (IDEMP-4). **Status: Proposed** (`registry.go` `PlatformRegistry`) — named in the standard's own Registry-Proposed Examples but not yet ratified. Shadow-emitted only; `iam_org_membership_processed_events_duplicates_total` below is the authoritative alerting/SLO source until ratified |
+| `platform_dependency_request_seconds` | Histogram | `target_service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint` | Latency of the three ADR-0007/ADR-0008 synchronous cross-service calls (buckets 5ms–3s). `target_service` is the downstream peer, distinct from the `service` const label (this service's own identity). **Status: Proposed** — shadow-emitted only; `iam_org_membership_dependency_call_duration_seconds` below is authoritative until ratified |
+| `platform_dependency_errors_total` | Counter | `target_service`, `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failure; `fallback_served` is recorded by the calling `CatalogService`/`GroupMappingService`, not the client. **Status: Proposed** — and unlike the two metrics above, not even one of the standard's own named examples (added by symmetry, see `registry.go`). Shadow-emitted only; `iam_org_membership_dependency_call_failures_total` below is authoritative until ratified |
 
 `platform_queue_depth`/`platform_dlq_depth` (SQS `ApproximateNumberOfMessages*`) and `platform_retry_total` (the outbox publisher's own retry-on-publish-failure loop, which lives inside the vendored `platform-events` library, not this repo) are **not implemented** — the former needs a new SQS `GetQueueAttributes` polling goroutine (new AWS call + IAM permission, not added without an explicit decision) and the latter isn't ours to instrument from here.
+
+**Tier 1 candidates, shadow-emitted (Status: Proposed, `registry.go`)** — dual-emitted from the same call site as their Tier-1 counterpart above, but these Tier-3 names are what this repo's alerts/recording-rules/SLOs actually query until ratification flips a `PlatformRegistry` entry's `Status` to `StatusCanonical` (mirrors `iam-realm-provisioner`'s pattern):
+
+| Metric | Type | Labels | Supersedes |
+|---|---|---|---|
+| `iam_org_membership_dependency_call_duration_seconds` | Histogram | `target_service`, `endpoint` | `platform_dependency_request_seconds` |
+| `iam_org_membership_dependency_call_failures_total` | Counter | `target_service`, `endpoint`, `outcome` | `platform_dependency_errors_total` |
+| `iam_org_membership_processed_events_duplicates_total` | Counter | `consumer` | `platform_duplicate_messages_total` |
 
 **Tier 2 — `iam_*`**
 
@@ -118,6 +126,8 @@ Cardinality-bounded: no `tenant_id`/`user_id`/`email` label anywhere (§16 A48) 
 
 **CI enforcement:** `.github/scripts/check-metric-naming.sh` (wired into `Validate / Quality`) statically greps `internal/adapter/outbound/metrics/business.go` for every `Name: "..."` string and asserts: the name matches `^(platform|iam)_[a-z0-9_]+$`; every `CounterVec`/`Counter` name ends `_total`; every `HistogramVec` name ends `_seconds`; a `platform_*` name's registration block sets both `"domain"` and `"environment"` keys in its ConstLabels literal; an `iam_*` (non-`iam_org_membership_`) name's block sets `"environment"` but not `"domain"`; an `iam_org_membership_*` name has no additional label requirement. It does not (and cannot, staically) verify the *classification judgment* (shared vs. service-specific) — that's a review-time call per the decision tree, not a lint rule.
 
+**Registry ratification enforcement (rules 11/12):** `.github/scripts/metrics-registry-lint.sh` (also wired into `Validate / Quality`) reads `PlatformRegistry` (`internal/adapter/outbound/metrics/registry.go`) and fails if any entry with `Status: StatusProposed` appears as a live query target (inside an `expr:`) in `deploy/monitoring/app-alerts.yml`, `deploy/monitoring/slo-rules.yml`, or `deploy/helm/templates/prometheusrule.yaml` — a comment mentioning the name is fine, a PromQL selector/function using it is not. Mirrors `iam-realm-provisioner`'s own `registry.go`/script pair.
+
 Not implemented (do not treat as current): `iam_membership_joins_total`/`_leaves_total`, `iam_memberships_cache_hit_ratio`, `iam_membership_lookup_latency_seconds`, `iam_invitations_created_total`/`_accepted_total`/`_expired_total`/`_revoked_total`, `iam_invite_kc_cleanup_pending`/`_failed_total`, `iam_group_mapping_resolution_errors_total`, `iam_delegate_workflow_cancel_total` (separate from `iam_org_membership_delegate_reassignment_total{action=stop_workflows}`, which already covers that case) — these were on an earlier planned metric surface that was never built; this whole line is a Phase-6 note, not a current gap list.
 
 **Alerts:**
@@ -132,7 +142,7 @@ Not implemented (do not treat as current): `iam_membership_joins_total`/`_leaves
 - Sustained `iam_org_membership_delegate_removal_blocked_total` without matching `iam_org_membership_delegate_reassignment_total` → warn (admins hitting block, not completing resolution)
 - Spike in `iam_org_membership_seat_limit_reached_total` for a tenant → **informational Slack to CSM/Billing** (not on-call — genuine "buy more seats" signal)
 - `iam_org_membership_pending_invitations_stale > 0` sustained → warn (`invitation-expiry` cron not keeping up)
-- Sustained `platform_dependency_errors_total{target_service=catalog}` → warn (the one ADR-0007/ADR-0008 dependency that is NOT fail-open — see §20.7)
+- Sustained `iam_org_membership_dependency_call_failures_total{target_service=catalog}` → warn (the one ADR-0007/ADR-0008 dependency that is NOT fail-open — see §20.7). Query the Tier-3 predecessor, not `platform_dependency_errors_total` (Status: Proposed, shadow-emitted only — see the registry ratification note above)
 
 **Metric naming (§16 A50/J4):** IAM Platform Observability Standard three-tier hierarchy — see §11.2 above. Shared (`platform_*`/`iam_*`) names are disambiguated by the `service`/`domain` const labels, never by encoding the service into the name; dashboards/alerts on shared names aggregate `by (service)` (or `by (domain, service)` for Tier 1), not by the Prometheus `job` label, which HTTP-only metrics still use.
 

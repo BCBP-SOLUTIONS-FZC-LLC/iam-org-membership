@@ -53,12 +53,16 @@ func TestSkipDuplicate_IncrementsMetricOnHit(t *testing.T) {
 	})
 	metrics.Register("test")
 	metrics.DuplicateMessages.Reset()
+	metrics.ProcessedEventsDuplicatesTotal.Reset()
 	dedup := &stubDedup{seen: map[string]bool{"evt-1": true}}
 
 	hit, err := skipDuplicate(context.Background(), dedup, consumerName, "evt-1")
 	require.NoError(t, err)
 	assert.True(t, hit)
-	assert.InDelta(t, 1, testutil.ToFloat64(metrics.DuplicateMessages.WithLabelValues(consumerName)), 0.01)
+	assert.InDelta(t, 1, testutil.ToFloat64(metrics.DuplicateMessages.WithLabelValues(consumerName)), 0.01,
+		"Tier-1 candidate platform_duplicate_messages_total must record the hit")
+	assert.InDelta(t, 1, testutil.ToFloat64(metrics.ProcessedEventsDuplicatesTotal.WithLabelValues(consumerName)), 0.01,
+		"Tier-3 predecessor iam_org_membership_processed_events_duplicates_total must record the same hit")
 
 	hit, err = skipDuplicate(context.Background(), dedup, consumerName, "evt-new")
 	require.NoError(t, err)
