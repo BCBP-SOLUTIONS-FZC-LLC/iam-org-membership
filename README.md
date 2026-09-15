@@ -294,7 +294,7 @@ The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_me
 ### Prerequisites
 
 - Go 1.26.6+
-- Docker (Postgres, PgBouncer, Valkey, LocalStack — `make docker-up`)
+- Docker (Postgres, PgBouncer, Valkey, floci — `make docker-up`)
 - `GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/*` (`GONOSUMDB` too) and an SSH key registered with the BCBP org
 
 ### Setup
@@ -304,7 +304,7 @@ git clone https://github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership
 cd iam-org-membership
 make setup       # copies .env-example → .env (run once before anything else)
 make tidy        # go mod tidy
-make docker-up   # start PostgreSQL + PgBouncer + Valkey + LocalStack
+make docker-up   # start PostgreSQL + PgBouncer + Valkey + floci
 make run         # start the server on :8080 (metrics on :9090; kills the port first)
 ```
 
@@ -321,7 +321,7 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 | `make test-ci` | Same, with `-race` + merged coverage (used in CI) |
 | `make test-unit` | Unit tests only, no Docker |
 | `make test-postgres` | Postgres + RLS integration (testcontainers-go); every test calls `t.Parallel()`, capped at `TEST_POSTGRES_PARALLEL` (default 4) |
-| `make test-integration` | Cross-layer (SNS/SQS via LocalStack, testcontainers) |
+| `make test-integration` | Cross-layer (SNS/SQS/Glue via floci, testcontainers) |
 | `make test-e2e` | End-to-end tests |
 | `make test-smoke` | CI-only Docker image gate — size ≤200MB + startup check, not a functional test |
 | `make race` | All three suites with `-race`, no coverage merge |
@@ -329,7 +329,7 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 | `make build` | Compile both binaries to `bin/` |
 | `make cover` / `make cover-func` | Coverage HTML report / per-function summary |
 | `make ci` | `tidy` + `fmt-check` + `vet` + `lint` + `test-ci` + `build` |
-| `make docker-up` / `make docker-down` | Start/stop PostgreSQL + PgBouncer + Valkey + LocalStack |
+| `make docker-up` / `make docker-down` | Start/stop PostgreSQL + PgBouncer + Valkey + floci |
 | `make schema-verify` | Pre-deploy check: Glue registry schema names/versions vs `api/asyncapi.yaml` + embedded JSON schemas |
 | `make swag` / `make swag-check` | Regenerate / verify freshness of the Swagger REST contract |
 | `make clean` | Remove `bin/` artefacts and coverage files |
@@ -392,7 +392,7 @@ service layer  ──(same tx)──▶  outbox_events (Postgres)
                                outbox runner (OUTBOX_POLL_INTERVAL, 500 ms)
                                       │
                                       ▼
-                     SNS: iam.membership.events / iam.tenant.events   (LocalStack)
+                     SNS: iam.membership.events / iam.tenant.events   (floci)
                                       │
                     SNS fan-out to downstream SQS queues (local dev only)
 ```
@@ -405,13 +405,14 @@ An outbox insert is atomic with the business write — a `2xx` response guarante
 make docker-up
 ```
 
-`scripts/init-localstack.sh` runs automatically and provisions the two SNS topics plus the inbound `tenant-orgm-q`/`billing-orgm-q` queues (`SERVICES=sns,sqs` — Glue is Pro-only and not started by default; unset `GLUE_REGISTRY_*_NAME` falls back to `NoopCodec`, plain JSON, no Glue wire-format header).
+`scripts/init-floci.sh` runs automatically and provisions the two SNS topics, the inbound `tenant-orgm-q`/`billing-orgm-q` queues, and both Glue registries + all 14 schemas — floci includes Glue Schema Registry in its free tier, so `GLUE_REGISTRY_*_NAME` is set by default in `.env-example` and the real Glue wire-format codec runs locally instead of falling back to `NoopCodec`.
 
-### Step 2 — Verify SNS/SQS exist
+### Step 2 — Verify SNS/SQS/Glue exist
 
 ```bash
-docker compose exec localstack awslocal sns list-topics --region ap-south-1
-docker compose exec localstack awslocal sqs list-queues --region ap-south-1
+docker compose exec floci aws --region ap-south-1 sns list-topics
+docker compose exec floci aws --region ap-south-1 sqs list-queues
+docker compose exec floci aws --region ap-south-1 glue list-schemas --registry-id RegistryName=iam-membership-events
 ```
 
 ### Step 3 — Trigger an event and inspect the outbox
@@ -464,7 +465,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `SNS_TOPIC_MEMBERSHIP_ARN` / `SNS_TOPIC_TENANT_ARN` | — | **Required outside dev.** The two `RoutingPublisher` topic ARNs |
 | `SQS_TENANT_ORGM_QUEUE_URL` / `SQS_BILLING_ORGM_QUEUE_URL` | — | Inbound lifecycle-event queues |
 | `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_TENANT_NAME` | — | Unset → `NoopCodec` (plain JSON) |
-| `AWS_REGION` / `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `ap-south-1` / — | LocalStack override in dev; IRSA in production |
+| `AWS_REGION` / `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `ap-south-1` / — | floci override in dev; IRSA in production |
 | `OUTBOX_POLL_INTERVAL` / `OUTBOX_BATCH_SIZE` / `OUTBOX_MAX_ATTEMPTS` / `OUTBOX_DRAIN_TIMEOUT` / `OUTBOX_PUBLISH_CONCURRENCY` / `OUTBOX_PUBLISH_TIMEOUT` / `OUTBOX_STARTUP_JITTER` / `OUTBOX_CLAIM_LEASE_DURATION` | `500ms` / `50` / `5` / `30s` / `4` / `10s` / `2s` / `10m` | Outbox runner tunables |
 | `PROCESSED_EVENTS_TTL_DAYS` | `8` | Consumer dedup retention — deliberately > the 7-day SQS message lifetime (PE-1) |
 | `CACHE_TTL_SECONDS` | `300` | Base TTL for `om:*` keys (jitter applied per-write) |
@@ -566,9 +567,9 @@ Nine workflow files:
 | `postgres` | `postgres:17-alpine` | `5534 → 5432` | Primary store |
 | `pgbouncer` | `edoburu/pgbouncer:latest` | `5533 → 5432` | Transaction-pooling proxy in front of `postgres` |
 | `redis` | `valkey/valkey:8-alpine` | `6380 → 6379` | Advisory cache |
-| `localstack` | `localstack/localstack:4.4.0` | `4567 → 4566` | SNS/SQS (`SERVICES: sns,sqs`) |
+| `floci` | `floci/floci:2.1.0-compat` | `4567 → 4566` | SNS/SQS/Glue Schema Registry (all services free/always-on) |
 
-`make docker-up` only starts `postgres`/`pgbouncer`/`redis`/`localstack` — not `app` — so local dev typically still runs the service via `make run` for fast rebuilds. Host ports are deliberately offset from sibling `iam-user-profile2`'s (5433/5434/6379/4566) so both stacks can run side-by-side.
+`make docker-up` only starts `postgres`/`pgbouncer`/`redis`/`floci` — not `app` — so local dev typically still runs the service via `make run` for fast rebuilds. Host ports are deliberately offset from sibling `iam-user-profile2`'s (5433/5434/6379/4566) so both stacks can run side-by-side.
 
 ### Building the service image
 

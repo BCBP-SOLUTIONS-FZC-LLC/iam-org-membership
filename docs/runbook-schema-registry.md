@@ -142,11 +142,14 @@ permanently corrupts the audit trail for the duration.
 
 ## Local development
 
-`scripts/init-localstack.sh` registers all 14 schemas into LocalStack Glue mock
-across the two registries under the same PascalCase names. LocalStack Pro is
-required for Glue; without it the script logs and continues, and the app must
-run with both `GLUE_REGISTRY_NAME_*` env vars empty (NoopCodec) — dev only,
-never staging/prod.
+`scripts/init-floci.sh` registers all 14 schemas into floci's real Glue
+Schema Registry implementation across the two registries under the same
+PascalCase names, reading the schema definitions straight from
+`internal/adapter/outbound/eventbus/schemas/` (mounted read-only into the
+container). Unlike LocalStack Community, floci includes Glue Schema Registry
+in its free tier — no Pro token, no NoopCodec fallback needed for local dev.
+`GLUE_REGISTRY_*_NAME` is set by default in `.env-example`, so `make
+docker-up` runs the real Glue wire-format codec end-to-end out of the box.
 
 ## Adding a new event type
 
@@ -167,7 +170,7 @@ never staging/prod.
    registry table).
 7. Update `RoutingPublisher` config in `cmd/server/main.go` if the new event
    requires a topic O&M does not already publish to (rare).
-8. Update `scripts/init-localstack.sh` with the new `register_schema` call in
+8. Update `scripts/init-floci.sh` with the new `register_schema` call in
    the correct registry.
 9. Run `make schema-validate` locally (or `make schema-verify` against a dev
    AWS account).

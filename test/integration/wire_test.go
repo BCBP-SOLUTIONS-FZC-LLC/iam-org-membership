@@ -117,11 +117,11 @@ func TestOutboxRoundTrip(t *testing.T) {
 	e.subscribeQueue(t, membershipTopic, auditQ, "")
 
 	membershipPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: membershipTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: membershipTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	tenantPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: tenantTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: tenantTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	rp := eventbusadapter.NewRoutingPublisher(membershipPub, tenantPub)
@@ -175,11 +175,11 @@ func TestTenantLaneIsolated(t *testing.T) {
 	e.subscribeQueue(t, membershipTopic, membershipAuditQ, "")
 
 	membershipPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: membershipTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: membershipTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	tenantPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: tenantTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: tenantTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	rp := eventbusadapter.NewRoutingPublisher(membershipPub, tenantPub)
@@ -227,11 +227,11 @@ func TestMembershipLaneIsolated(t *testing.T) {
 	e.subscribeQueue(t, membershipTopic, membershipAuditQ, "")
 
 	membershipPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: membershipTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: membershipTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	tenantPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: tenantTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: tenantTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	rp := eventbusadapter.NewRoutingPublisher(membershipPub, tenantPub)
@@ -387,7 +387,7 @@ func TestPublisherStampsEventTypeAttribute(t *testing.T) {
 	e.subscribeQueue(t, topic, auditQ, "")
 
 	membershipPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: topic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: topic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	rp := eventbusadapter.NewRoutingPublisher(membershipPub, nil)

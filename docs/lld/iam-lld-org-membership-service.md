@@ -268,7 +268,7 @@ iam-org-membership/
 │   ├── helm/                                # Deployment + HPA(2-8) + 7 CronJobs + NetworkPolicy + PrometheusRule
 │   ├── iam/                                 # IRSA policies
 │   └── monitoring/                          # Prometheus alert rules
-├── scripts/                                 # init-db.sql, init-localstack.sh, patch-swagger-extensions.py, merge_coverage.py
+├── scripts/                                 # init-db.sql, init-floci.sh, patch-swagger-extensions.py, merge_coverage.py
 ├── test/{unit,postgres,integration,e2e}/
 └── Dockerfile  docker-compose.yml  Makefile  go.mod  .golangci.yml
 ```
@@ -3163,7 +3163,7 @@ Zap-backed. Slow queries (> 200 ms) logged at WARN with `tenant_id` redacted. RL
 | `SQS_TENANT_ORGM_QUEUE_URL` | (required) | `tenant-orgm-q` URL |
 | `SQS_BILLING_ORGM_QUEUE_URL` | (required) | `billing-orgm-q` URL |
 | `AWS_REGION` | `ap-south-1` | Shared across SNS/SQS/Glue clients |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_ENDPOINT_URL` | (dev: LocalStack creds/endpoint) | AWS SDK credentials/endpoint override for local dev |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_ENDPOINT_URL` | (dev: floci creds/endpoint) | AWS SDK credentials/endpoint override for local dev |
 | `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_MEMBERSHIP_ARN` | (empty → `NoopCodec`, plain JSON on that topic) | `iam-membership-events` registry name/ARN |
 | `GLUE_REGISTRY_TENANT_NAME` / `GLUE_REGISTRY_TENANT_ARN` | (empty → `NoopCodec`) | `iam-tenant-events` registry name/ARN |
 | `SCHEMA_GOV_IMAGE` | `ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4` | CI-only, not read by the running service |

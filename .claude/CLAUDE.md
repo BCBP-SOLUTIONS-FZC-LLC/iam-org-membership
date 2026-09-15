@@ -36,7 +36,7 @@ make test              # Unit + postgres + integration tests, run in parallel (r
 make test-ci           # Unit + postgres + integration with -race + coverage (used in CI)
 make test-unit         # Unit tests only (no Docker required)
 make test-postgres     # Postgres + RLS integration tests (via testcontainers-go)
-make test-integration  # Cross-layer integration tests (SNS/SQS via LocalStack, testcontainers)
+make test-integration  # Cross-layer integration tests (SNS/SQS/Glue via floci, testcontainers)
 make test-e2e          # End-to-end tests
 make test-smoke        # CI-only Docker image gate: image size ≤200MB + startup-gate check (not a functional test)
 make race              # All tests with -race flag
@@ -46,7 +46,7 @@ make cover             # Coverage HTML report (measures ./internal/...)
 make cover-func        # Coverage summary by function (terminal)
 make ci                # tidy + fmt-check + vet + lint + test-ci + build (full CI pipeline)
 make schema-verify     # Pre-deploy check: Glue registry schema names/versions vs api/asyncapi.yaml + internal/adapter/outbound/eventbus/schemas/*.json (via schema-gov)
-make docker-up         # Start PostgreSQL + PgBouncer + Valkey + LocalStack (Docker required)
+make docker-up         # Start PostgreSQL + PgBouncer + Valkey + floci (Docker required)
 make docker-down       # Stop containers
 make clean             # Remove bin/ artefacts and coverage files
 ```
@@ -57,7 +57,7 @@ go test ./test/unit/... -run TestMembership_RemovalResolution_ReplaceDelegate_Ha
 go test ./test/postgres/... -run TestRLS_Case5_NoCrossTenantLeakAcrossPool -v
 ```
 
-**Testcontainers note:** Postgres, Valkey, and SNS/SQS (LocalStack) integration tests spin up real containers via `testcontainers-go`. Docker must be running. Pass `-short` to skip integration tests without Docker.
+**Testcontainers note:** Postgres, Valkey, and SNS/SQS/Glue (floci — open-source, drop-in LocalStack replacement, Glue Schema Registry included free) integration tests spin up real containers via `testcontainers-go`. Docker must be running. Pass `-short` to skip integration tests without Docker.
 
 **`platform-schemagov` note:** `schema-gov` is a Python 3.12 CLI, **not a Go module** — invoked via `docker run ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4` in CI only (`.github/workflows/schema-registry.yml`: extract → validate → enforce-lifecycle → diff on PRs; register/changelog/metrics on `main`). Workspace is `api/asyncapi.yaml` + `internal/adapter/outbound/eventbus/schemas/*.json` (schemas colocated with the eventbus adapter, embedded via `//go:embed schemas/*.json` in the ValidatingCodec). Pinned to `0.4` in Phase 0 to match sibling `iam-user-profile2`.
 

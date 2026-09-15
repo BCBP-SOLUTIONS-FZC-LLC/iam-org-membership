@@ -1,20 +1,20 @@
 //go:build integration
 
-// Package integration_test hosts Phase 12 LocalStack integration tests that
-// exercise the async event pipeline end-to-end — outbox → SNS → SQS →
-// consumer round-trip — against real Postgres + real SNS/SQS (via LocalStack
-// community edition running in a testcontainer).
+// Package integration_test hosts Phase 12 integration tests that exercise
+// the async event pipeline end-to-end — outbox → SNS → SQS → consumer
+// round-trip — against real Postgres + real SNS/SQS (via floci, an
+// open-source AWS emulator running in a testcontainer).
 //
 // Design notes:
 //
-//   - One LocalStack container is spun up per test package via TestMain and
+//   - One floci container is spun up per test package via TestMain and
 //     shared across every test (cost: ~5–8s once). Postgres containers stay
 //     per-test to preserve the RLS-role isolation the sibling test/postgres
 //     suite depends on (~2s each).
 //
 //   - Every test provisions its OWN SNS topics + SQS queues with a unique
 //     suffix (test-name-derived) so parallel tests never see each other's
-//     traffic on the shared LocalStack. Cleanup deletes those resources.
+//     traffic on the shared floci instance. Cleanup deletes those resources.
 //
 //   - The outbox runner and SQS consumers run as goroutines with tight
 //     drain timeouts scoped to the test. `require.Eventually` polls the
@@ -54,97 +54,98 @@ import (
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
 )
 
-// ── Shared LocalStack container ────────────────────────────────────────────
+// ── Shared floci container ─────────────────────────────────────────────────
 
 const (
-	localstackImage   = "localstack/localstack:4.4.0"
-	localstackAccount = "000000000000"
-	localstackRegion  = "ap-south-1"
+	flociImage   = "floci/floci:2.1.0"
+	flociAccount = "000000000000"
+	flociRegion  = "ap-south-1"
 )
 
 var (
-	sharedLocalStack   testcontainers.Container
-	sharedEndpointURL  string
-	sharedLSErr        error
-	sharedLSOnce       sync.Once
-	sharedLSCtx        = context.Background()
-	sharedLSTerminated bool
+	sharedFloci           testcontainers.Container
+	sharedEndpointURL     string
+	sharedFlociErr        error
+	sharedFlociOnce       sync.Once
+	sharedFlociCtx        = context.Background()
+	sharedFlociTerminated bool
 )
 
-// TestMain boots one LocalStack container for the whole package and tears it
+// TestMain boots one floci container for the whole package and tears it
 // down on exit. Individual tests get a lightweight "phase12Env" via
-// newPhase12Env that reuses this LocalStack.
+// newPhase12Env that reuses this floci instance.
 func TestMain(m *testing.M) {
-	ensureLocalStackCredentials()
+	ensureFlociCredentials()
 	code := m.Run()
-	if sharedLocalStack != nil && !sharedLSTerminated {
-		_ = sharedLocalStack.Terminate(sharedLSCtx)
+	if sharedFloci != nil && !sharedFlociTerminated {
+		_ = sharedFloci.Terminate(sharedFlociCtx)
 	}
 	os.Exit(code)
 }
 
-// ensureLocalStackCredentials pins dummy static AWS credentials into the
+// ensureFlociCredentials pins dummy static AWS credentials into the
 // process environment when none are already configured. phase12Env's own
 // snsCli/sqsCli pass explicit static credentials, but the outbox-runner
 // SNS publishers the tests build via events.NewSNSPublisher only expose
 // Region/EndpointURL/Logger — no credentials override — so they fall back
 // to the AWS SDK's default credential chain. On a machine with no
 // ~/.aws/credentials and no AWS_* env vars, that chain finds nothing and
-// every real Publish call to LocalStack fails at credential-resolution
-// time (LocalStack accepts any credentials, real or fake, but the SDK
-// still requires *some*). Only set when unset, so a CI runner or developer
-// machine with real/intentional credentials is left untouched.
-func ensureLocalStackCredentials() {
+// every real Publish call to floci fails at credential-resolution time
+// (floci accepts any credentials, real or fake, but the SDK still requires
+// *some*). Only set when unset, so a CI runner or developer machine with
+// real/intentional credentials is left untouched.
+func ensureFlociCredentials() {
 	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
-		_ = os.Setenv("AWS_ACCESS_KEY_ID", "localstack")
+		_ = os.Setenv("AWS_ACCESS_KEY_ID", "test")
 	}
 	if os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
-		_ = os.Setenv("AWS_SECRET_ACCESS_KEY", "localstack")
+		_ = os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	}
 }
 
-// startLocalStack lazily boots the shared LocalStack container. Idempotent
-// across concurrent tests. Skips the test with a Docker-not-available message
-// if the container fails to start (matches sibling postgres helpers).
-func startLocalStack(t *testing.T) string {
+// startFloci lazily boots the shared floci container. Idempotent across
+// concurrent tests. Skips the test with a Docker-not-available message if
+// the container fails to start (matches sibling postgres helpers). Floci
+// starts every service (including Glue) by default — no LocalStack-style
+// SERVICES= selection var needed.
+func startFloci(t *testing.T) string {
 	t.Helper()
-	sharedLSOnce.Do(func() {
+	sharedFlociOnce.Do(func() {
 		req := testcontainers.ContainerRequest{
-			Image:        localstackImage,
+			Image:        flociImage,
 			ExposedPorts: []string{"4566/tcp"},
 			Env: map[string]string{
-				"SERVICES":           "sns,sqs",
-				"DEBUG":              "0",
-				"AWS_DEFAULT_REGION": localstackRegion,
+				"FLOCI_DEFAULT_REGION":     flociRegion,
+				"FLOCI_DEFAULT_ACCOUNT_ID": flociAccount,
 			},
 			WaitingFor: wait.ForLog("Ready.").
 				WithStartupTimeout(60 * time.Second),
 		}
-		c, err := testcontainers.GenericContainer(sharedLSCtx, testcontainers.GenericContainerRequest{
+		c, err := testcontainers.GenericContainer(sharedFlociCtx, testcontainers.GenericContainerRequest{
 			ContainerRequest: req,
 			Started:          true,
 		})
 		if err != nil {
-			sharedLSErr = fmt.Errorf("start localstack: %w", err)
+			sharedFlociErr = fmt.Errorf("start floci: %w", err)
 			return
 		}
-		sharedLocalStack = c
+		sharedFloci = c
 
-		host, hErr := c.Host(sharedLSCtx)
+		host, hErr := c.Host(sharedFlociCtx)
 		if hErr != nil {
-			sharedLSErr = fmt.Errorf("localstack host: %w", hErr)
+			sharedFlociErr = fmt.Errorf("floci host: %w", hErr)
 			return
 		}
-		port, pErr := c.MappedPort(sharedLSCtx, "4566/tcp")
+		port, pErr := c.MappedPort(sharedFlociCtx, "4566/tcp")
 		if pErr != nil {
-			sharedLSErr = fmt.Errorf("localstack port: %w", pErr)
+			sharedFlociErr = fmt.Errorf("floci port: %w", pErr)
 			return
 		}
 		sharedEndpointURL = fmt.Sprintf("http://%s:%s", host, port.Port())
-		log.Printf("Phase 12 LocalStack ready at %s", sharedEndpointURL)
+		log.Printf("Phase 12 floci ready at %s", sharedEndpointURL)
 	})
-	if sharedLSErr != nil {
-		t.Skipf("skipping — LocalStack unavailable (%v)", sharedLSErr)
+	if sharedFlociErr != nil {
+		t.Skipf("skipping — floci unavailable (%v)", sharedFlociErr)
 	}
 	return sharedEndpointURL
 }
@@ -153,14 +154,14 @@ func startLocalStack(t *testing.T) string {
 
 // phase12Env bundles everything a Phase 12 test needs: a fresh Postgres
 // container with migrations applied, an SNS+SQS client aimed at the shared
-// LocalStack, and a unique topic/queue namespace so parallel tests never
+// floci instance, and a unique topic/queue namespace so parallel tests never
 // collide. Tests inject events via publishToTopic or writeOutboxRow, then
 // observe on receiveMessages or via the DB.
 type phase12Env struct {
 	ctx      context.Context
 	endpoint string
 
-	// AWS clients (base-endpoint pinned to LocalStack).
+	// AWS clients (base-endpoint pinned to floci).
 	snsCli *sns.Client
 	sqsCli *sqs.Client
 
@@ -181,16 +182,16 @@ type phase12Env struct {
 }
 
 // newPhase12Env spins up a fresh Postgres container, applies migrations,
-// grabs an SNS+SQS client aimed at the shared LocalStack, and returns a
+// grabs an SNS+SQS client aimed at the shared floci instance, and returns a
 // per-test env with a unique namespace suffix.
 func newPhase12Env(t *testing.T) *phase12Env {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("skipping LocalStack integration test in short mode")
+		t.Skip("skipping floci integration test in short mode")
 	}
 	ctx := context.Background()
 
-	endpoint := startLocalStack(t)
+	endpoint := startFloci(t)
 
 	// Fresh Postgres per test — mirrors test/postgres/setupTestDB pattern
 	// (superuser-only; RLS roles aren't relevant at the wire boundary).
@@ -207,8 +208,8 @@ func newPhase12Env(t *testing.T) *phase12Env {
 	t.Cleanup(rawPool.Close)
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion(localstackRegion),
-		awsconfig.WithCredentialsProvider(awscreds.NewStaticCredentialsProvider("localstack", "localstack", "")),
+		awsconfig.WithRegion(flociRegion),
+		awsconfig.WithCredentialsProvider(awscreds.NewStaticCredentialsProvider("test", "test", "")),
 	)
 	require.NoError(t, err)
 
@@ -226,7 +227,7 @@ func newPhase12Env(t *testing.T) *phase12Env {
 	}
 
 	// Best-effort cleanup — delete every topic and queue this test
-	// provisioned so LocalStack state doesn't accumulate across the run.
+	// provisioned so floci state doesn't accumulate across the run.
 	t.Cleanup(func() { env.cleanupAWSResources() })
 
 	return env
@@ -302,7 +303,7 @@ func (e *phase12Env) subscribeQueue(t *testing.T, topicARN, queueURL, filterPoli
 		require.NoError(t, err, "set filter policy on %s", *subOut.SubscriptionArn)
 	}
 
-	// SNS+SQS subscriptions in LocalStack settle quickly but not instantly —
+	// SNS+SQS subscriptions in floci settle quickly but not instantly —
 	// give the propagation a tiny head-start so the first Publish doesn't
 	// race the subscription registry.
 	time.Sleep(150 * time.Millisecond)

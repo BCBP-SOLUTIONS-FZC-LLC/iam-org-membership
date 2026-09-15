@@ -85,11 +85,11 @@ func TestEVT16_001_TenantStateChangedRelayThroughWire(t *testing.T) {
 	// Publishers for the outbox runner (only membership lane matters — the
 	// relay we care about is TenantStateChanged, which routes there).
 	membershipPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: membershipTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: membershipTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	tenantPub, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: tenantTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: tenantTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	rp := eventbusadapter.NewRoutingPublisher(membershipPub, tenantPub)
@@ -222,7 +222,7 @@ func TestOUTBOX_RETRY_001_TransientPublisherFailureRetried(t *testing.T) {
 
 	// Real SNS membership publisher — but wrapped so the first 2 calls fail.
 	realMembership, err := events.NewSNSPublisher(events.SNSConfig{
-		TopicARN: membershipTopic, Region: localstackRegion, EndpointURL: e.endpoint,
+		TopicARN: membershipTopic, Region: flociRegion, EndpointURL: e.endpoint,
 	})
 	require.NoError(t, err)
 	flaky := &flakyPublisher{inner: realMembership, failFirstN: 2}

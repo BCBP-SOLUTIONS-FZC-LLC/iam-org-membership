@@ -25,12 +25,22 @@ services:
       VALKEY_URL: redis:6379
       SNS_TOPIC_MEMBERSHIP_ARN: arn:aws:sns:ap-south-1:000000000000:iam-membership-events
       SNS_TOPIC_TENANT_ARN: arn:aws:sns:ap-south-1:000000000000:iam-tenant-events
-      SQS_TENANT_ORGM_QUEUE_URL: http://localstack:4566/000000000000/tenant-orgm-q
-      SQS_BILLING_ORGM_QUEUE_URL: http://localstack:4566/000000000000/billing-orgm-q
+      SQS_TENANT_ORGM_QUEUE_URL: http://floci:4566/000000000000/tenant-orgm-q
+      SQS_BILLING_ORGM_QUEUE_URL: http://floci:4566/000000000000/billing-orgm-q
       AWS_REGION: ap-south-1
-      AWS_ACCESS_KEY_ID: localstack
-      AWS_SECRET_ACCESS_KEY: localstack
-      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://floci:4566
+      # Glue Schema Registry (LLD §7.3.1, SCHEMA-7) — one registry per SNS
+      # topic. Floci provisions both registries + all 14 schemas on start via
+      # scripts/init-floci.sh, so the real GlueCodec wire format runs locally
+      # instead of falling back to NoopCodec (Floci includes Glue Schema
+      # Registry in its free tier, unlike LocalStack Community which gated
+      # it behind Pro).
+      GLUE_REGISTRY_MEMBERSHIP_NAME: iam-membership-events
+      GLUE_REGISTRY_MEMBERSHIP_ARN: arn:aws:glue:ap-south-1:000000000000:registry/iam-membership-events
+      GLUE_REGISTRY_TENANT_NAME: iam-tenant-events
+      GLUE_REGISTRY_TENANT_ARN: arn:aws:glue:ap-south-1:000000000000:registry/iam-tenant-events
       OUTBOX_POLL_INTERVAL: 500ms
       OUTBOX_BATCH_SIZE: "50"
       OUTBOX_MAX_ATTEMPTS: "5"
@@ -43,7 +53,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      localstack:
+      floci:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
@@ -111,35 +121,46 @@ services:
       timeout: 5s
       retries: 10
 
-  localstack:
-    # Community edition — supports SNS + SQS (all this service needs at MVP).
-    # Glue Schema Registry and KMS are Pro-only; the service runs with the
-    # NoopCodec (plain JSON) on a topic whose GLUE_REGISTRY_*_NAME is unset
-    # (the default for local dev).
-    # Pro opt-in: `make docker-up-pro`
-    #   (docker compose -f docker-compose.yml -f docker-compose.pro.yml up)
-    image: localstack/localstack:4.4.0
+  floci:
+    # Floci — open-source (MIT), always-free AWS emulator; drop-in LocalStack
+    # replacement. Unlike LocalStack Community, Glue Schema Registry ships in
+    # the free tier, so this single service covers SNS + SQS + Glue with no
+    # Pro tier / auth token needed — scripts/init-floci.sh provisions both
+    # Glue registries and all 14 schemas alongside the SNS/SQS topology.
+    image: floci/floci:2.1.0-compat
     ports:
       # Host 4567 → container 4566. 4566 is claimed by iam-user-profile2's
-      # LocalStack so both services can run side-by-side.
+      # own emulator instance so both services can run side-by-side.
       - "4567:4566"
     environment:
-      SERVICES: sns,sqs
-      DEBUG: 0
-      AWS_DEFAULT_REGION: ap-south-1
+      FLOCI_DEFAULT_REGION: ap-south-1
+      FLOCI_DEFAULT_ACCOUNT_ID: "000000000000"
+      FLOCI_HOSTNAME: floci
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - localstack_data:/var/lib/localstack
-      - ./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-localstack.sh
+      - floci_data:/app/data
+      - ./scripts/init-floci.sh:/etc/floci/init/ready.d/init-floci.sh
+      - ./internal/adapter/outbound/eventbus/schemas:/etc/floci/init/schemas:ro
     healthcheck:
-      test: ["CMD", "awslocal", "sns", "list-topics"]
+      # The compat image's AWS CLI defaults to region us-east-1 regardless of
+      # FLOCI_DEFAULT_REGION — floci treats region as an isolation boundary
+      # (a topic created in ap-south-1 is invisible to an unscoped/us-east-1
+      # call), so --region must be explicit here.
+      #
+      # Checks for the LAST resource init-floci.sh creates (the TrialStarted
+      # Glue schema), not just SNS reachability — SNS topics exist ~10s into
+      # the script while Glue registration is still running, so a shallow
+      # `sns list-topics` check would report "healthy" (and unblock `app`'s
+      # depends_on) before GLUE_REGISTRY_*_NAME's schemas actually exist,
+      # crashing GlueCodec's startup prefetch.
+      test: ["CMD", "aws", "--region", "ap-south-1", "glue", "get-schema",
+             "--schema-id", "RegistryName=iam-tenant-events,SchemaName=TrialStarted"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
 volumes:
   postgres_data:
-  localstack_data:
+  floci_data:
 
 secrets:
   go_private_token:

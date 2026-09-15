@@ -58,7 +58,7 @@ graph TD
     subgraph tests["Tests  —  test/"]
         unit["unit/\nmembership_removeuser_test.go / membership_removal_test.go (§8.8 delegate-impact)\ninvitation_service_test.go / invitation_scenarios_test.go (§8.10)\nauthz_service_test.go (I-8, fully Docker-free — fakes port.AuthZRepository)\nvalidator · domain · port mocks (testify/mock)"]
         postgres_t["postgres/\nrls_test.go — Case 5 (RLS-6, pooled backend, no GUC leak)\nsubscription_lapse_test.go (I-16, cross-tenant BYPASSRLS read)\nconsumer_evt_test.go — EVT-14/15/16 · services_test.go — TM-12/T-15\nconcurrency_extra_test.go — SEAT-1/TM-13 races"]
-        integration["integration/\ncross-layer testcontainers (PG + Valkey + LocalStack SNS/SQS)\nrelay_test.go — EVT-16 wire path · dlq_idemp_test.go — DLQ + dedup"]
+        integration["integration/\ncross-layer testcontainers (PG + Valkey + floci SNS/SQS/Glue)\nrelay_test.go — EVT-16 wire path · dlq_idemp_test.go — DLQ + dedup"]
         e2e["e2e/\nharness_test.go — full router wired through the real NewRouter, no route-table drift possible"]
     end
 
@@ -970,7 +970,7 @@ Since this service has never been deployed, the schema is one consolidated `0000
 
 - **Postgres / RLS** (`test/postgres/`, testcontainers-go, real PG, full migration suite): `rls_test.go`'s **Case 5** (critical, RLS-6) — no cross-tenant leak across a pooled backend, `MaxConns=1`, tenant A tx → return connection → tenant B tx on the same backend → assert B sees 0 of A's rows; `subscription_lapse_test.go` (I-16's BYPASSRLS cross-tenant read, and its self-idempotence once a lapsed tenant is suspended); `consumer_evt_test.go` (EVT-14/15/16); `concurrency_extra_test.go` (SEAT-1/TM-13 races); `reconciler_convergence_test.go`/`reconcilers_test.go` (each of the 7 CronJobs' idempotent re-run behavior). CI additionally greps for the forbidden non-`LOCAL` `SET app.tenant_id`.
 
-- **Integration** (`test/integration/`, testcontainers, capped at `TEST_INTEGRATION_PARALLEL`) — real Postgres + Valkey + LocalStack SNS/SQS: `relay_test.go` (EVT-16's wire path — a consumed event's `TenantStateChanged` relay actually reaching the second topic); `dlq_idemp_test.go` (DLQ + `processed_events` dedup under redelivery); `wire_test.go` (the full `RoutingPublisher`/two-Glue-registry publish path).
+- **Integration** (`test/integration/`, testcontainers, capped at `TEST_INTEGRATION_PARALLEL`) — real Postgres + Valkey + floci SNS/SQS: `relay_test.go` (EVT-16's wire path — a consumed event's `TenantStateChanged` relay actually reaching the second topic); `dlq_idemp_test.go` (DLQ + `processed_events` dedup under redelivery); `wire_test.go` (the full `RoutingPublisher`/two-Glue-registry publish path).
 
 - **E2E** (`test/e2e/`, `-tags=e2e`) — `harness_test.go` wires the real `httpadapter.NewRouter` (the same function `cmd/server/main.go` calls), so the e2e suite and production share one route table by construction rather than a hand-copied duplicate that could drift.
 

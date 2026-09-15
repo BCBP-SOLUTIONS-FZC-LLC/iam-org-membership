@@ -54,12 +54,12 @@ export DEL_ID=12121212-1212-1212-1212-121212121212
 Two outbound SNS topics fan out to per-subscriber SQS queues:
 
 ```bash
-# List queues LocalStack created
-aws --endpoint-url=http://localhost:4567 sqs list-queues
+# List queues floci created
+aws --region ap-south-1 --endpoint-url=http://localhost:4567 sqs list-queues
 
-# Poll the membership-events subscriber queue (adjust queue URL from list-queues output)
-aws --endpoint-url=http://localhost:4567 sqs receive-message \
-  --queue-url http://localhost:4567/000000000000/iam-membership-events-workflow-q \
+# Poll the membership-events workflow subscriber queue (adjust queue URL from list-queues output)
+aws --region ap-south-1 --endpoint-url=http://localhost:4567 sqs receive-message \
+  --queue-url http://localhost:4567/000000000000/membership-workflow-q \
   --max-number-of-messages 10 --wait-time-seconds 5
 
 # Or peek the outbox table directly (useful for TDD):
@@ -346,7 +346,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
 **Events emitted:** on `iam.membership.events` — one event per state delta in the removal transaction
 - **`DepartmentMembershipRevoked`** — one per dept the user was in
 - **`TenantRoleRevoked`** — one per tenant-level role (§16 A14 multi-role)
-- **`DelegationEnded`** — if the user had an active delegation, `ended_reason: delegate_removed`
+- **`MembershipRevoked`** — one event, consumed by Delegation Service and Tender-ACL Service for their own async cascades (post-decomposition, Core owns neither table any more) and by AuthZ Enrichment for `om:memberships` cache eviction
 - **`TenantSeatOverageResolved`** — if this drops the tenant back under cap
 **Errors:**
 - `409 workflow_resolution_required` — sync WorkflowClient.GetDelegateImpact returned >0 active workflows. Resolve via P-26 below.
@@ -453,189 +453,6 @@ curl -sS -w "\nHTTP %{http_code}\n" -X PATCH \
 
 ---
 
-## Group-mapping routes (P-14..P-17, P-29)
-
-### GET .../group-mappings/roles — P-14
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tenant_admin" \
-  "$BASE/api/v1/tenants/$TENANT_A/group-mappings/roles"
-```
-**Response:** `200 OK`. **Events emitted:** none.
-
-### PUT .../group-mappings/roles — P-15: Full-replacement Keycloak-group → dept-role
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X PUT \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tenant_admin" \
-  -H "Content-Type: application/json" \
-  -d '{"mappings": [
-    {"keycloak_group_name": "eng-reviewers", "role_code": "reviewer"},
-    {"keycloak_group_name": "finance-approvers", "role_code": "approver"}
-  ]}' \
-  "$BASE/api/v1/tenants/$TENANT_A/group-mappings/roles"
-```
-**Response:** `200 OK`. **Events emitted:** none (mapping-only).
-
-### GET .../group-mappings/departments — P-16
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" \
-  -H "x-user-id: $ALICE" -H "x-tenant-id: $TENANT_A" -H "x-tenant-roles: tenant_admin" \
-  "$BASE/api/v1/tenants/$TENANT_A/group-mappings/departments"
-```
-**Response:** `200 OK`. **Events emitted:** none.
-
-### PUT .../group-mappings/departments — P-17
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X PUT \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tenant_admin" \
-  -H "Content-Type: application/json" \
-  -d '{"mappings": [
-    {"keycloak_group_name": "eng-team", "department_id": "'"$DEPT_ENG"'"}
-  ]}' \
-  "$BASE/api/v1/tenants/$TENANT_A/group-mappings/departments"
-```
-**Response:** `200 OK`. **Events emitted:** none.
-
-### PUT .../group-mappings/tenant-roles — P-29 (§16 A25)
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X PUT \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tenant_owner" \
-  -H "Content-Type: application/json" \
-  -d '{"mappings": [
-    {"keycloak_group_name": "sso-admins", "role_code": "tenant_admin"}
-  ]}' \
-  "$BASE/api/v1/tenants/$TENANT_A/group-mappings/tenant-roles"
-```
-**Response:** `200 OK`. **Events emitted:** none.
-**Errors:** `400 invalid_role` — `member` role is barred at both service and DB level (GTRM-6, `chk_gtrm_no_member`).
-
----
-
-## Delegation routes (P-18, P-19, P-20)
-
-### GET /api/v1/delegations — P-18: List active delegations
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: member" \
-  "$BASE/api/v1/delegations"
-```
-**Response:** `200 OK` — array of active delegations visible to caller.
-**Events emitted:** none
-
-### POST /api/v1/delegations — P-19: Create OOO delegation
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X POST \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: member" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"delegate_id\": \"$BOB\",
-    \"scope\": \"all\",
-    \"reason\": \"Annual leave — 21 to 28 July\",
-    \"starts_at\": \"2026-07-21T00:00:00Z\",
-    \"ends_at\": \"2026-07-28T23:59:59Z\"
-  }" \
-  "$BASE/api/v1/delegations"
-```
-**Response:** `201 Created` (payload includes new delegation `id` + `record_version`).
-Flow: §8.6 availability-first — O&M calls UP `SetAvailability` first; only on 200 does it INSERT the delegation row + enqueue the event, all in one tx.
-**Events emitted:** on `iam.membership.events`
-- **`DelegationStarted`** — one event, payload carries scope + starts_at/ends_at
-**Errors:**
-- `422 invalid_delegate` — UP rejected (delegate isn't a valid member)
-- `422 self_delegation` — delegator == delegate (chk_no_self_delegate)
-- `422 delegation_window_inverted` — ends_at <= starts_at
-- `422 scope_id_required` — scope != all but no scope_id provided (DEL-2)
-
-For a department-scoped delegation:
-```bash
-curl -sS -X POST \
-  -H "x-user-id: $ALICE" -H "x-tenant-id: $TENANT_A" -H "x-tenant-roles: member" \
-  -H "Content-Type: application/json" \
-  -d "{\"delegate_id\":\"$BOB\",\"scope\":\"department\",\"scope_id\":\"$DEPT_ENG\",\"starts_at\":\"2026-07-21T00:00:00Z\",\"ends_at\":\"2026-07-28T23:59:59Z\"}" \
-  "$BASE/api/v1/delegations"
-```
-
-### DELETE /api/v1/delegations/{id} — P-20: Cancel delegation
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: member" \
-  "$BASE/api/v1/delegations/$DEL_ID?record_version=1"
-```
-**Response:** `200 OK`.
-Flow: §8.7 pointer-clear — O&M calls UP with `{delegate_id: null}` first (NOT `{status: available}` — UP owns that transition), then flips `status='cancelled'` locally.
-**Events emitted:** on `iam.membership.events`
-- **`DelegationEnded`** — payload `ended_reason: cancelled`
-
----
-
-## Tender ACL routes (P-21, P-22, P-23)
-
-### GET .../tenders/{tender_id}/acl — P-21
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tender_admin" \
-  "$BASE/api/v1/tenants/$TENANT_A/tenders/$TENDER_X/acl"
-```
-**Response:** `200 OK` — active ACL entries only (`revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())`).
-**Events emitted:** none
-
-### POST .../tenders/{tender_id}/acl — P-22: Grant
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X POST \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tender_admin" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"user_id\": \"$CAROL\",
-    \"access_level\": \"edit\",
-    \"reason\": \"Ad-hoc access for tender review\",
-    \"expires_at\": \"2026-08-21T00:00:00Z\"
-  }" \
-  "$BASE/api/v1/tenants/$TENANT_A/tenders/$TENDER_X/acl"
-```
-**Response:** `201 Created`. **Events emitted:** none.
-**Errors:** `422 invalid_expires_at` (past date), `422 invalid_access_level`.
-
-### DELETE .../tenders/{tender_id}/acl/{user_id} — P-23: Revoke
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tender_admin" \
-  "$BASE/api/v1/tenants/$TENANT_A/tenders/$TENDER_X/acl/$CAROL"
-```
-**Response:** `200 OK`. **Events emitted:** none.
-
----
-
 ## Invitation routes (P-6 → members section; P-30, P-31 here)
 
 ### GET /api/v1/tenants/{id}/invitations — P-30: List pending
@@ -731,11 +548,11 @@ curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
   "$BASE/api/v1/internal/tenants/$TENANT_A/members/$CAROL"
 ```
 **Response:** `200 OK`.
-Cascade (single tx): soft-delete membership, revoke all tenant roles + department memberships, end delegations, set `ownerless_since` if this drops the tenant to zero owners (TM-12).
+Cascade (single tx): soft-delete membership, revoke all tenant roles + department memberships, set `ownerless_since` if this drops the tenant to zero owners (TM-12). Delegation/Tender-ACL cascades happen asynchronously in their own services now (they consume `MembershipRevoked` below) — Core no longer touches those tables directly.
 **Events emitted:** on `iam.membership.events`
 - **`DepartmentMembershipRevoked`** × depts
 - **`TenantRoleRevoked`** × tenant roles
-- **`DelegationEnded`** — if user had active delegations
+- **`MembershipRevoked`** — consumed by Delegation Service and Tender-ACL Service for their own async cascades, and by AuthZ Enrichment for `om:memberships` cache eviction
 - **`TenantSeatOverageResolved`** — if this drops back under cap
 
 ### GET /api/v1/internal/users/{id}/memberships — I-8 (HOT PATH)
@@ -768,19 +585,6 @@ curl -sS -w "\nHTTP %{http_code}\n" \
 ```
 **Response:** `200 OK` — same shape as P-27. **Events emitted:** none.
 
-### GET /api/v1/internal/tenants/{id}/tenders/{tender_id}/acl/{user_id} — I-12
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" \
-  -H "x-user-id: iam-system" -H "x-tenant-id: $TENANT_A" -H "x-tenant-roles: iam-system" \
-  "$BASE/api/v1/internal/tenants/$TENANT_A/tenders/$TENDER_X/acl/$CAROL"
-```
-**Response:** `200 OK`
-```json
-{ "has_access": true, "access_level": "edit" }
-```
-**Events emitted:** none.
-
 ### POST /api/v1/internal/tenants/{id}/tenders/{tender_id}/assignee-override — I-13
 
 ```bash
@@ -803,42 +607,6 @@ curl -sS -w "\nHTTP %{http_code}\n" -X POST \
 
 All operator routes require `x-tenant-roles: platform_operator`. `x-tenant-id` still required in header — use any UUID (usually the target tenant), but operator work is not tenant-scoped by RLS.
 
-### POST /api/v1/operator/departments — O-1: Add global-catalog department
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X POST \
-  -H "x-user-id: $ALICE" \
-  -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: platform_operator" \
-  -H "Content-Type: application/json" \
-  -d '{"code": "compliance", "name": "Compliance", "is_system": false}' \
-  "$BASE/api/v1/operator/departments"
-```
-**Response:** `201 Created`. **Events emitted:** none.
-
-### PATCH /api/v1/operator/departments/{id} — O-2: Update department
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X PATCH \
-  -H "x-user-id: $ALICE" -H "x-tenant-id: $TENANT_A" -H "x-tenant-roles: platform_operator" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Compliance & Legal", "is_active": true, "record_version": 1}' \
-  "$BASE/api/v1/operator/departments/$DEPT_ENG"
-```
-**Response:** `200 OK`.
-**Errors:** `422 field_immutable` (attempted to change `code` or `is_system`), `422 system_department_cannot_be_retired`.
-**Events emitted:** none.
-
-### DELETE /api/v1/operator/departments/{id} — O-3: BLOCKED (405)
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
-  -H "x-user-id: $ALICE" -H "x-tenant-id: $TENANT_A" -H "x-tenant-roles: platform_operator" \
-  "$BASE/api/v1/operator/departments/$DEPT_ENG"
-```
-**Response:** `405 Method Not Allowed` — retire via O-2 with `is_active=false` instead.
-**Events emitted:** none.
-
 ### PATCH /api/v1/operator/tenants/{id}/feature-flags — O-4
 
 ```bash
@@ -850,28 +618,6 @@ curl -sS -w "\nHTTP %{http_code}\n" -X PATCH \
 ```
 **Response:** `200 OK`. Full-replacement per-tenant delta on top of planDefaults (PLAN-6).
 **Errors:** `400 unknown_feature_flag`, `400 invalid_feature_value` (non-scalar).
-**Events emitted:** none.
-
-### GET /api/v1/operator/plans — O-5
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" \
-  -H "x-user-id: $ALICE" -H "x-tenant-id: $TENANT_A" -H "x-tenant-roles: platform_operator" \
-  "$BASE/api/v1/operator/plans"
-```
-**Response:** `200 OK` — 3 rows (`starter`, `pro`, `enterprise`).
-**Events emitted:** none.
-
-### PATCH /api/v1/operator/plans/{code} — O-6
-
-```bash
-curl -sS -w "\nHTTP %{http_code}\n" -X PATCH \
-  -H "x-user-id: $ALICE" -H "x-tenant-id: $TENANT_A" -H "x-tenant-roles: platform_operator" \
-  -H "Content-Type: application/json" \
-  -d '{"max_workflows": 500, "max_tenders": 200, "feature_set": {"sso": true, "branding": true}, "trial_duration_days": 30, "record_version": 1}' \
-  "$BASE/api/v1/operator/plans/pro"
-```
-**Response:** `200 OK`.
 **Events emitted:** none.
 
 ### POST /api/v1/operator/tenants/{id}/reassign-owner — O-7: Recover ownerless tenant
@@ -905,12 +651,12 @@ Two SQS queues that O&M subscribes to. These aren't testable via curl but refere
 
 Every consumed event that changes `tenants.status` or `tenants.plan` triggers an **EVT-16 relay** emit of **`TenantStateChanged`** on `iam.membership.events` in the same transaction. Guards: EVT-14 recency (stale events silently skipped but dedup-recorded), EVT-15 future-time clamp (>5 min ahead → DLQ, no dedup).
 
-To simulate a consumed event locally, publish onto the SNS topic in LocalStack:
+To simulate a consumed event locally, publish onto the SNS topic in floci:
 
 ```bash
 # Example: simulate billing suspending a tenant
-aws --endpoint-url=http://localhost:4567 sns publish \
-  --topic-arn arn:aws:sns:us-east-1:000000000000:billing.events \
+aws --region ap-south-1 --endpoint-url=http://localhost:4567 sns publish \
+  --topic-arn arn:aws:sns:ap-south-1:000000000000:billing-events \
   --message '{"id":"'"$(uuidgen)"'","type":"TenantPaymentPastDue","source":"billing.events","tenant_id":"'"$TENANT_A"'","subject":"'"$TENANT_A"'","time":"2026-07-21T12:00:00Z","specversion":"1","data":{"tenant_id":"'"$TENANT_A"'"}}' \
   --message-attributes 'event_type={DataType=String,StringValue=TenantPaymentPastDue}'
 ```
@@ -928,10 +674,8 @@ For a minimal end-to-end sanity check that exercises the golden path:
 3. **P-6** — Alice invites Bob — SEAT-1 cap check
 4. **P-28** — Grant Bob `tenant_admin` — `TenantRoleGranted`
 5. **P-10** — Add Carol to Engineering as `reviewer` — `DepartmentMembershipGranted`
-6. **P-19** — Alice creates a delegation to Bob — `DelegationStarted` (UP call must succeed first)
-7. **P-20** — Cancel the delegation — `DelegationEnded { reason: cancelled }`
-8. **P-8** — Attempt to delete Bob (should be clean if no workflows) — `TenantRoleRevoked + DepartmentMembershipRevoked`
-9. **O-7** — Reassign owner if TM-12 fires
+6. **P-8** — Attempt to delete Bob (should be clean if no workflows) — `TenantRoleRevoked + DepartmentMembershipRevoked + MembershipRevoked`
+7. **O-7** — Reassign owner if TM-12 fires
 
 Watch the outbox table between steps:
 ```bash
@@ -942,18 +686,20 @@ docker exec iam-org-membership-postgres-1 \
 
 ---
 
-## Reading events from SQS (LocalStack)
+## Reading events from SQS (floci)
 
 Two ways to see what your API calls actually emitted: read from the subscriber SQS queues (real end-to-end path), or peek the outbox table (faster during dev).
 
 ### One-time shell setup
 
 ```bash
-# Dummy creds so aws CLI doesn't complain when talking to LocalStack
+# Dummy creds so aws CLI doesn't complain when talking to floci. Region must
+# match FLOCI_DEFAULT_REGION (docker-compose.yml) — floci treats region as an
+# isolation boundary, so a mismatched region sees an empty queue/topic list.
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
-export AWS_DEFAULT_REGION=us-east-1
-export SQS=--endpoint-url=http://localhost:4567
+export AWS_DEFAULT_REGION=ap-south-1
+export SQS="--region ap-south-1 --endpoint-url=http://localhost:4567"
 ```
 
 ### 1. List queues (find the URL you want to read from)
@@ -968,7 +714,7 @@ Output shape:
   "QueueUrls": [
     "http://localhost:4567/000000000000/tenant-orgm-q",
     "http://localhost:4567/000000000000/billing-orgm-q",
-    "http://localhost:4567/000000000000/iam-membership-events-workflow-q"
+    "http://localhost:4567/000000000000/membership-workflow-q"
   ]
 }
 ```
@@ -979,7 +725,7 @@ Queues subscribing to `iam.membership.events` / `iam.tenant.events` are what rec
 ### 2. Count messages waiting
 
 ```bash
-QUEUE=http://localhost:4567/000000000000/iam-membership-events-workflow-q
+QUEUE=http://localhost:4567/000000000000/membership-workflow-q
 
 aws $SQS sqs get-queue-attributes \
   --queue-url "$QUEUE" \
@@ -1026,7 +772,7 @@ aws $SQS sqs delete-message --queue-url "$QUEUE" --receipt-handle "$RECEIPT"
 aws $SQS sqs purge-queue --queue-url "$QUEUE"
 ```
 
-Note: LocalStack rate-limits purges to one per 60 s per queue.
+Note: floci rate-limits purges to one per 60 s per queue (same LocalStack-compatible behavior).
 
 ### 6. Filter by event type (SNS `event_type` message attribute)
 
@@ -1040,7 +786,7 @@ aws $SQS sqs receive-message \
       | .Body | fromjson | .Message | fromjson'
 ```
 
-Swap `TenantRoleGranted` for any event type you care about — `DelegationStarted`, `TenantSeatOverageStarted`, `TenderAssigneeOverridden`, etc.
+Swap `TenantRoleGranted` for any event type you care about — `MembershipRevoked`, `TenantSeatOverageStarted`, `TenderAssigneeOverridden`, etc.
 
 ### 7. Fastest option during dev — read the outbox directly
 
@@ -1070,8 +816,7 @@ To exercise the consumer + EVT-14/15/16 guards (§13), publish onto `iam.tenant.
 
 ```bash
 aws $SQS sns publish \
-  --endpoint-url=http://localhost:4567 \
-  --topic-arn arn:aws:sns:us-east-1:000000000000:iam.tenant.events \
+  --topic-arn arn:aws:sns:ap-south-1:000000000000:iam-tenant-events \
   --message '{
     "id":"'"$(uuidgen)"'",
     "type":"TrialExpired",

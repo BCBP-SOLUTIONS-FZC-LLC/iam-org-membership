@@ -107,7 +107,7 @@ help:
 	@echo "  make test-ci         - test with race detector + coverage (used in CI)"
 	@echo "  make test-unit       - unit tests only (no Docker required)"
 	@echo "  make test-postgres   - Postgres + RLS integration tests (requires Docker)"
-	@echo "  make test-integration - cross-layer integration tests (SNS/SQS via LocalStack)"
+	@echo "  make test-integration - cross-layer integration tests (SNS/SQS/Glue via floci)"
 	@echo "  make test-e2e        - end-to-end tests (requires Docker)"
 	@echo "  make test-smoke      - CI-only image gate: size <=200MB + startup-gate check (requires a local docker image tagged iam-org-membership-ci-test)"
 	@echo "  make race            - all tests with -race flag"
@@ -116,8 +116,7 @@ help:
 	@echo "  make cover           - coverage HTML report"
 	@echo "  make cover-func      - coverage summary by function"
 	@echo "  make ci              - tidy + fmt-check + vet + lint + test-ci + build"
-	@echo "  make docker-up       - start local infra with LocalStack community (no token needed)"
-	@echo "  make docker-up-pro   - start local infra with LocalStack Pro (requires LOCALSTACK_AUTH_TOKEN in .env)"
+	@echo "  make docker-up       - start local infra incl. floci (SNS/SQS/Glue, always free — no token needed)"
 	@echo "  make docker-down     - stop local containers"
 	@echo "  make mod-verify      - go mod verify"
 	@echo "  make vuln-check      - govulncheck on internal + pkg"
@@ -305,14 +304,8 @@ build:
 
 .PHONY: docker-up
 docker-up:
-	@echo "Starting local PostgreSQL + PgBouncer + Valkey + LocalStack (community)..."
-	docker compose up -d postgres pgbouncer redis localstack
-
-.PHONY: docker-up-pro
-docker-up-pro:
-	@echo "Starting local PostgreSQL + PgBouncer + Valkey + LocalStack Pro (Glue + KMS)..."
-	@grep -q '^LOCALSTACK_AUTH_TOKEN=.\+' .env 2>/dev/null || { echo "ERROR: LOCALSTACK_AUTH_TOKEN not set in .env"; exit 1; }
-	docker compose -f docker-compose.yml -f docker-compose.pro.yml up -d postgres pgbouncer redis localstack
+	@echo "Starting local PostgreSQL + PgBouncer + Valkey + floci (SNS/SQS/Glue)..."
+	docker compose up -d postgres pgbouncer redis floci
 
 .PHONY: docker-down
 docker-down:
@@ -379,8 +372,11 @@ schema-diff:
 
 # schema-register: register event schemas to BOTH Glue registries (SCHEMA-7 —
 # unlike single-registry iam-user-profile, org-membership backs two SNS
-# topics with two registries). Requires AWS credentials or LocalStack; set
-# AWS_ENDPOINT_URL=http://localhost:4567 in .env for LocalStack.
+# topics with two registries). Requires AWS credentials or floci; set
+# AWS_ENDPOINT_URL=http://localhost:4567 in .env for floci. Note: `make
+# docker-up` already registers all 14 schemas via scripts/init-floci.sh —
+# this target is for re-registering after a schema change without a full
+# container restart, or for registering against real AWS.
 .PHONY: schema-register
 schema-register:
 	@test -n "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" || { \

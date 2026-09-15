@@ -5,7 +5,7 @@ This is an internal IAM microservice for the XpertPMS platform. This guide cover
 ## Prerequisites
 
 - Go 1.26.6+ (matches `go.mod`)
-- Docker (required for PostgreSQL + PgBouncer + Valkey + LocalStack integration tests via `testcontainers-go`)
+- Docker (required for PostgreSQL + PgBouncer + Valkey + floci integration tests via `testcontainers-go`)
 - `golangci-lint` is managed as a Go tool (`go tool golangci-lint`) — no separate install needed
 - `GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/*` (private module access; also `GONOSUMDB` for the same prefix)
 - SSH key registered with the BCBP org so `go mod download` can fetch `platform-events`, `platform-gincommon`, `platform-pgcommon`
@@ -17,7 +17,7 @@ git clone https://github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership
 cd iam-org-membership
 make setup      # copies .env-example → .env and installs .githooks/pre-commit
 make tidy       # go mod tidy
-make docker-up  # start PostgreSQL + PgBouncer + Valkey + LocalStack (community edition)
+make docker-up  # start PostgreSQL + PgBouncer + Valkey + floci (SNS/SQS/Glue, always free)
 make lint       # verify linter passes
 make test       # run all tests (requires Docker)
 make run        # start the server on :8080
@@ -31,7 +31,7 @@ make test-unit
 
 `make setup` installs `.githooks/pre-commit`, which runs `make tidy`, `fmt-check`, and `lint` before every commit. Re-run `make install-hooks` any time `.githooks/pre-commit` changes.
 
-Host ports for the local stack are deliberately offset from the sibling `iam-user-profile2` service so both can run side-by-side: PgBouncer `5533`, direct Postgres `5534`, Valkey `6380`, LocalStack `4567`. Container-internal ports remain unchanged.
+Host ports for the local stack are deliberately offset from the sibling `iam-user-profile2` service so both can run side-by-side: PgBouncer `5533`, direct Postgres `5534`, Valkey `6380`, floci `4567`. Container-internal ports remain unchanged.
 
 ## Project layout
 
@@ -130,11 +130,11 @@ For full layout details see [`.claude/architecture.md`](.claude/architecture.md)
 |-------|----------|--------|-------|
 | Unit | `test/unit/` | No | Fully isolated; mock `port.WorkflowClient`, `RealmProvisionerClient`, `CatalogAdminClient`, `GroupMappingClient`, `DelegationCheckClient` via `testify/mock` (no `UserProfileClient` — removed as dead code) |
 | PostgreSQL / RLS | `test/postgres/` | Yes | Real Postgres via testcontainers; covers RLS policy enforcement, `touch_row`, composite FKs |
-| Integration | `test/integration/` | Yes | Cross-layer tests (handler → service → repository); LocalStack for SNS/SQS |
+| Integration | `test/integration/` | Yes | Cross-layer tests (handler → service → repository); floci for SNS/SQS/Glue |
 | E2E | `test/e2e/` (`-tags=e2e`) | Yes | Full request flows against the app's own test harness: provision → member add → dept assign → seat-usage (no delegation step — that flow now runs against the standalone Delegation Service) |
 | Smoke | `make test-smoke` | No (image only) | Not functional: CI-only check that the built Docker image is ≤200 MB and exits non-zero on missing required env vars (`.github/scripts/smoke-tests.sh`) |
 
-All unit tests must pass without Docker (`make test-unit`). PostgreSQL, LocalStack, and reconciler tests spin up real containers automatically.
+All unit tests must pass without Docker (`make test-unit`). PostgreSQL, floci, and reconciler tests spin up real containers automatically.
 
 Run the race detector before submitting a PR (`make ci` does this automatically via `test-ci`):
 
@@ -173,7 +173,7 @@ Aim for meaningful coverage where it matters (validators, RLS-guarded repositori
 
 ### Testcontainers note
 
-Postgres, Valkey, and LocalStack integration tests spin up real containers. Docker must be running. Pass `-short` to skip them without Docker:
+Postgres, Valkey, and floci integration tests spin up real containers. Docker must be running. Pass `-short` to skip them without Docker:
 
 ```bash
 go test -short ./...

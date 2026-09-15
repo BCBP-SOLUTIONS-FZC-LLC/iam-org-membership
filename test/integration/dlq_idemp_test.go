@@ -62,7 +62,7 @@ func startConsumer(t *testing.T, e *phase12Env, queueURL string, handler events.
 	cons, err := events.NewSQSConsumerWithClient(
 		events.SQSConfig{
 			QueueURL:    queueURL,
-			Region:      localstackRegion,
+			Region:      flociRegion,
 			EndpointURL: e.endpoint,
 			WaitSeconds: 1,
 			MaxMessages: 5,
