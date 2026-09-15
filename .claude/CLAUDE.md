@@ -46,7 +46,7 @@ make cover             # Coverage HTML report (measures ./internal/...)
 make cover-func        # Coverage summary by function (terminal)
 make ci                # tidy + fmt-check + vet + lint + test-ci + build (full CI pipeline)
 make schema-verify     # Pre-deploy check: Glue registry schema names/versions vs api/asyncapi.yaml + internal/adapter/outbound/eventbus/schemas/*.json (via schema-gov)
-make docker-up         # Start PostgreSQL + PgBouncer + Valkey + floci (Docker required)
+make docker-up         # Start PostgreSQL + PgBouncer + Valkey + floci + floci-ui (web console, http://localhost:4500) — Docker required
 make docker-down       # Stop containers
 make clean             # Remove bin/ artefacts and coverage files
 ```

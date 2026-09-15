@@ -116,7 +116,7 @@ help:
 	@echo "  make cover           - coverage HTML report"
 	@echo "  make cover-func      - coverage summary by function"
 	@echo "  make ci              - tidy + fmt-check + vet + lint + test-ci + build"
-	@echo "  make docker-up       - start local infra incl. floci (SNS/SQS/Glue, always free — no token needed)"
+	@echo "  make docker-up       - start local infra incl. floci (SNS/SQS/Glue, always free) + floci-ui web console"
 	@echo "  make docker-down     - stop local containers"
 	@echo "  make mod-verify      - go mod verify"
 	@echo "  make vuln-check      - govulncheck on internal + pkg"
@@ -304,8 +304,8 @@ build:
 
 .PHONY: docker-up
 docker-up:
-	@echo "Starting local PostgreSQL + PgBouncer + Valkey + floci (SNS/SQS/Glue)..."
-	docker compose up -d postgres pgbouncer redis floci
+	@echo "Starting local PostgreSQL + PgBouncer + Valkey + floci (SNS/SQS/Glue) + floci-ui (http://localhost:4500)..."
+	docker compose up -d postgres pgbouncer redis floci floci-ui
 
 .PHONY: docker-down
 docker-down:

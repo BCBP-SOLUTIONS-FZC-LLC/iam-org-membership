@@ -415,6 +415,78 @@ docker compose exec floci aws --region ap-south-1 sqs list-queues
 docker compose exec floci aws --region ap-south-1 glue list-schemas --registry-id RegistryName=iam-membership-events
 ```
 
+### Step 2b — Verify event delivery in the browser (floci-ui)
+
+`make docker-up` also starts **floci-ui**, a web console for floci, at **http://localhost:4500**. It's a faster way to confirm an event landed on the right queue than shelling into the CLI each time:
+
+1. Open **http://localhost:4500** → sidebar → **Integration → SQS**. You'll see all 20 queues `init-floci.sh` provisioned (`membership-audit-q`, `membership-workflow-q`, `tenant-orgm-q`, ...), each with a **Messages** column.
+2. Trigger an event — either exercise a real endpoint (`make run` + a P-* call, per Step 3 below) or publish one directly to skip the app entirely:
+   ```bash
+   docker compose exec floci aws --region ap-south-1 sns publish \
+     --topic-arn arn:aws:sns:ap-south-1:000000000000:iam-membership-events \
+     --message '{"id":"demo-1","type":"TenderAssigneeOverridden","tenant_id":"t1"}' \
+     --message-attributes 'EventType={DataType=String,StringValue=TenderAssigneeOverridden}'
+   ```
+3. Refresh the SQS list. The **Messages** count should have gone to `1` on exactly the queues whose filter policy (§7.3.2) matches that `EventType` — for `TenderAssigneeOverridden` that's `membership-audit-q` (catch-all) and `membership-workflow-q`, and nowhere else. That's the visual equivalent of `get-queue-attributes --attribute-names ApproximateNumberOfMessages` — a wrong or missing count on a queue you expected to receive the event means the filter policy or the event's `EventType` attribute is wrong.
+
+Two things the UI does **not** do (yet):
+- **Read a message's payload.** The UI shows queue metadata (message counts, ARN, retention) only, no message browser — see Step 2c below for the CLI equivalent. Tracked upstream: [floci-io/floci-ui#148](https://github.com/floci-io/floci-ui/pull/148) ("add SQS queue explorer" — peek/receive, delete-message, purge), open but not yet merged/released as of 2026-09-15. Once it ships we can bump the pinned `floci/floci-ui` tag in `docker-compose.yml` and this becomes click-through.
+- **Browse SNS topics/subscriptions.** floci-ui has no SNS adapter yet, so the topic → queue fan-out wiring itself (subscriptions, filter policies) isn't visible there — see Step 2d below.
+
+### Step 2c — Retrieve the event body (CLI, until floci-ui#148 ships)
+
+Once you see a non-zero **Messages** count on a queue in the UI, get the actual event JSON out of it:
+
+```bash
+# Peek without deleting — the message stays and becomes visible again after
+# the queue's VisibilityTimeout (30s by default).
+docker compose exec floci aws --region ap-south-1 sqs receive-message \
+  --queue-url http://floci:4566/000000000000/membership-workflow-q \
+  --max-number-of-messages 10 --message-attribute-names All
+```
+
+Every subscription `init-floci.sh` creates sets `RawMessageDelivery=true` (LLD §7.3.2), so `Body` is already the plain event JSON — no SNS envelope to unwrap. Pretty-print it with `jq`:
+
+```bash
+docker compose exec floci aws --region ap-south-1 sqs receive-message \
+  --queue-url http://floci:4566/000000000000/membership-workflow-q \
+  --max-number-of-messages 10 --message-attribute-names All \
+  | jq -r '.Messages[] | .Body | fromjson'
+```
+
+Or skip SQS entirely and read the outbox table directly — fastest during dev, and shows the plain-JSON payload before any Glue/Noop wire-format encoding is applied at publish time:
+
+```bash
+docker compose exec postgres psql -U org_membership_app -d org_membership -c \
+  "SELECT event_type, jsonb_pretty(payload::jsonb) FROM outbox_events ORDER BY created_at DESC LIMIT 3;"
+```
+
+Swap `membership-workflow-q` for whichever queue you're inspecting; see `test.md`'s "Reading events from SQS" section for the full cookbook (count messages, delete-and-consume, filter by `EventType`, purge).
+
+### Step 2d — Inspect SNS topics and subscriptions (CLI, no floci-ui equivalent)
+
+floci-ui has no SNS adapter (see Step 2b above), so the topic → queue fan-out wiring itself — which queues are subscribed to which topic, and their filter policies (LLD §7.3.2) — is CLI-only:
+
+```bash
+# All 10 subscriptions across both topics
+docker compose exec floci aws --region ap-south-1 sns list-subscriptions
+
+# Just iam-membership-events' 6 fan-out queues
+docker compose exec floci aws --region ap-south-1 sns list-subscriptions-by-topic \
+  --topic-arn arn:aws:sns:ap-south-1:000000000000:iam-membership-events \
+  --query 'Subscriptions[].{Queue:Endpoint,Arn:SubscriptionArn}' --output table
+```
+
+To see *why* a queue did or didn't receive an event — its filter policy — grab a `SubscriptionArn` from the above and inspect it:
+
+```bash
+docker compose exec floci aws --region ap-south-1 sns get-subscription-attributes \
+  --subscription-arn <SubscriptionArn> \
+  --query 'Attributes.{FilterPolicy:FilterPolicy,RawMessageDelivery:RawMessageDelivery}'
+```
+
+A missing `FilterPolicy` means the subscription is a catch-all (e.g. `membership-audit-q`, `tenant-audit-q`) — it receives every event on that topic. A queue you expected an event on but that showed `Messages: 0` in floci-ui (Step 2b) almost always means the event's `EventType` message attribute isn't in this list.
+
 ### Step 3 — Trigger an event and inspect the outbox
 
 ```bash
@@ -430,7 +502,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `outbox_events` row never gets `published_at` set | Topic ARN mismatch, or outbox runner not started | Re-check `.env`'s `SNS_TOPIC_*_ARN` against `awslocal sns list-topics` |
+| `outbox_events` row never gets `published_at` set | Topic ARN mismatch, or outbox runner not started | Re-check `.env`'s `SNS_TOPIC_*_ARN` against `aws --region ap-south-1 sns list-topics` (or floci-ui at http://localhost:4500) |
 | `outbox_events` empty after a write | Row was published and pruned, or the write never committed | Re-check the HTTP response code — a `2xx` guarantees the row was committed |
 | Messages keep reappearing after `receive-message` | Normal — SQS visibility timeout, not deletion | Use `delete-message` |
 
@@ -568,8 +640,9 @@ Nine workflow files:
 | `pgbouncer` | `edoburu/pgbouncer:latest` | `5533 → 5432` | Transaction-pooling proxy in front of `postgres` |
 | `redis` | `valkey/valkey:8-alpine` | `6380 → 6379` | Advisory cache |
 | `floci` | `floci/floci:2.1.0-compat` | `4567 → 4566` | SNS/SQS/Glue Schema Registry (all services free/always-on) |
+| `floci-ui` | `floci/floci-ui:0.5.0` | `4500 → 4500` | Web console for `floci` — http://localhost:4500 |
 
-`make docker-up` only starts `postgres`/`pgbouncer`/`redis`/`floci` — not `app` — so local dev typically still runs the service via `make run` for fast rebuilds. Host ports are deliberately offset from sibling `iam-user-profile2`'s (5433/5434/6379/4566) so both stacks can run side-by-side.
+`make docker-up` only starts `postgres`/`pgbouncer`/`redis`/`floci`/`floci-ui` — not `app` — so local dev typically still runs the service via `make run` for fast rebuilds. Host ports are deliberately offset from sibling `iam-user-profile2`'s (5433/5434/6379/4566) so both stacks can run side-by-side.
 
 ### Building the service image
 

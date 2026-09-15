@@ -51,7 +51,7 @@ export DEL_ID=12121212-1212-1212-1212-121212121212
 
 ### Watching SQS events during tests
 
-Two outbound SNS topics fan out to per-subscriber SQS queues:
+Two outbound SNS topics fan out to per-subscriber SQS queues. Quickest check — open **http://localhost:4500** (floci-ui, started by `make docker-up`) → **Integration → SQS** and watch the **Messages** column on the queue you expect to receive the event; see README.md's "Verify event delivery in the browser" for a full walkthrough. It shows live message counts but not payloads or SNS topics/subscriptions — for those, or for scripting, use the CLI:
 
 ```bash
 # List queues floci created
@@ -64,8 +64,8 @@ aws --region ap-south-1 --endpoint-url=http://localhost:4567 sqs receive-message
 
 # Or peek the outbox table directly (useful for TDD):
 docker exec -it iam-org-membership-postgres-1 \
-  psql -U org_membership_migrator -d org_membership \
-  -c "SELECT type, subject, source, created_at FROM outbox ORDER BY created_at DESC LIMIT 20;"
+  psql -U org_membership_app -d org_membership \
+  -c "SELECT event_type, tenant_id, created_at FROM outbox_events ORDER BY created_at DESC LIMIT 20;"
 ```
 
 ---
@@ -680,8 +680,8 @@ For a minimal end-to-end sanity check that exercises the golden path:
 Watch the outbox table between steps:
 ```bash
 docker exec iam-org-membership-postgres-1 \
-  psql -U org_membership_migrator -d org_membership \
-  -c "SELECT type, source, subject, created_at FROM outbox ORDER BY created_at DESC LIMIT 20;"
+  psql -U org_membership_app -d org_membership \
+  -c "SELECT event_type, tenant_id, created_at FROM outbox_events ORDER BY created_at DESC LIMIT 20;"
 ```
 
 ---
@@ -745,14 +745,14 @@ aws $SQS sqs receive-message \
   --attribute-names All
 ```
 
-The raw response wraps our CloudEvents envelope inside SNS's `Body → Message` string. Unwrap with `jq`:
+Every subscription init-floci.sh creates sets `RawMessageDelivery=true` (LLD §7.3.2), so SQS's `Body` is already the plain event JSON — no SNS envelope wrapping to unwrap. Pretty-print it with `jq`:
 
 ```bash
 aws $SQS sqs receive-message \
   --queue-url "$QUEUE" \
   --max-number-of-messages 10 \
   --message-attribute-names All \
-  | jq -r '.Messages[] | .Body | fromjson | .Message | fromjson'
+  | jq -r '.Messages[] | .Body | fromjson'
 ```
 
 That prints just the events — one JSON object per event with `id`, `type`, `subject`, `source`, `time`, `data`, etc.
@@ -762,7 +762,7 @@ That prints just the events — one JSON object per event with `id`, `type`, `su
 ```bash
 MSG=$(aws $SQS sqs receive-message --queue-url "$QUEUE" --max-number-of-messages 1)
 RECEIPT=$(echo "$MSG" | jq -r '.Messages[0].ReceiptHandle')
-echo "$MSG" | jq -r '.Messages[0].Body | fromjson | .Message | fromjson'
+echo "$MSG" | jq -r '.Messages[0].Body | fromjson'
 aws $SQS sqs delete-message --queue-url "$QUEUE" --receipt-handle "$RECEIPT"
 ```
 
@@ -782,8 +782,8 @@ aws $SQS sqs receive-message \
   --max-number-of-messages 10 \
   --message-attribute-names All \
   | jq -r '.Messages[]
-      | select(.MessageAttributes.event_type.StringValue == "TenantRoleGranted")
-      | .Body | fromjson | .Message | fromjson'
+      | select(.MessageAttributes.EventType.StringValue == "TenantRoleGranted")
+      | .Body | fromjson'
 ```
 
 Swap `TenantRoleGranted` for any event type you care about — `MembershipRevoked`, `TenantSeatOverageStarted`, `TenderAssigneeOverridden`, etc.
@@ -794,20 +794,20 @@ The outbox is what `RoutingPublisher` drains into SNS. Reading it skips the SNS�
 
 ```bash
 docker exec iam-org-membership-postgres-1 \
-  psql -U org_membership_migrator -d org_membership \
-  -c "SELECT id, type, source, subject, created_at, dispatched_at
-      FROM outbox
+  psql -U org_membership_app -d org_membership \
+  -c "SELECT id, event_type, tenant_id, created_at, published_at
+      FROM outbox_events
       ORDER BY created_at DESC LIMIT 20;"
 ```
 
-- `dispatched_at IS NULL` → still queued locally (publisher hasn't drained it yet).
-- `dispatched_at IS NOT NULL` → already published to SNS; downstream SQS should have it within seconds.
+- `published_at IS NULL` → still queued locally (publisher hasn't drained it yet).
+- `published_at IS NOT NULL` → already published to SNS; downstream SQS should have it within seconds.
 
 To see the payload:
 ```bash
 docker exec iam-org-membership-postgres-1 \
-  psql -U org_membership_migrator -d org_membership \
-  -c "SELECT type, jsonb_pretty(payload::jsonb) FROM outbox ORDER BY created_at DESC LIMIT 3;"
+  psql -U org_membership_app -d org_membership \
+  -c "SELECT event_type, jsonb_pretty(payload::jsonb) FROM outbox_events ORDER BY created_at DESC LIMIT 3;"
 ```
 
 ### 8. Sanity — publish a test event onto the inbound topic
@@ -830,11 +830,11 @@ aws $SQS sns publish \
   --message-attributes 'event_type={DataType=String,StringValue=TrialExpired}'
 ```
 
-Then check the tenant flipped and the relay fired:
+Then check the tenant flipped and the relay fired. `tenants` is RLS-protected (RLS-1..6) — `org_membership_app` needs `app.tenant_id` set in the same session or every row is filtered out, even ones it has a table-level grant on:
 ```bash
-docker exec iam-org-membership-postgres-1 psql -U org_membership_migrator -d org_membership \
-  -c "SELECT id, status, last_event_at FROM tenants WHERE id = '$TENANT_A';"
+docker exec iam-org-membership-postgres-1 psql -U org_membership_app -d org_membership \
+  -c "BEGIN; SET LOCAL app.tenant_id = '$TENANT_A'; SELECT id, status, last_event_at FROM tenants WHERE id = '$TENANT_A'; COMMIT;"
 
-docker exec iam-org-membership-postgres-1 psql -U org_membership_migrator -d org_membership \
-  -c "SELECT type, subject, created_at FROM outbox WHERE type='TenantStateChanged' ORDER BY created_at DESC LIMIT 3;"
+docker exec iam-org-membership-postgres-1 psql -U org_membership_app -d org_membership \
+  -c "SELECT event_type, tenant_id, created_at FROM outbox_events WHERE event_type='TenantStateChanged' ORDER BY created_at DESC LIMIT 3;"
 ```

@@ -135,7 +135,19 @@ services:
     environment:
       FLOCI_DEFAULT_REGION: ap-south-1
       FLOCI_DEFAULT_ACCOUNT_ID: "000000000000"
+      # Rewrites the host in SQS QueueUrl / SNS TopicArn responses (e.g.
+      # http://floci:4566/... instead of http://localhost:4566/...) so the
+      # floci-ui container below — which resolves those URLs directly,
+      # AWS-SDK-console fashion — can actually reach them from inside its
+      # own container. Without this, floci-ui's queue list loads fine but
+      # every per-queue attribute (message counts included) silently comes
+      # back empty.
       FLOCI_HOSTNAME: floci
+      # init-floci.sh makes ~50 sequential aws CLI round-trips (3 topics, 20
+      # queues, 10 subscriptions, 2 registries, 14 schemas); floci's default
+      # 30s ready-hook timeout is right at that edge on a busy host and was
+      # observed to trip it. Give real headroom.
+      FLOCI_INIT_HOOKS_TIMEOUT_SECONDS: "90"
     volumes:
       - floci_data:/app/data
       - ./scripts/init-floci.sh:/etc/floci/init/ready.d/init-floci.sh
@@ -157,6 +169,37 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  floci-ui:
+    # Web console for floci — browse SNS/SQS/Glue resources at
+    # http://localhost:4500 instead of the aws CLI. Talks to `floci` over
+    # the compose network. Shows queue/topic metadata including live message
+    # counts — good for visually confirming an event landed in the right
+    # queue — but does not (yet) show message bodies or SNS
+    # topics/subscriptions; use the CLI cookbook in test.md for that.
+    image: floci/floci-ui:0.5.0
+    ports:
+      - "4500:4500"
+    environment:
+      AWS_REGION: ap-south-1
+      AWS_ACCESS_KEY_ID: test
+      # NOT the same as AWS_ENDPOINT_URL below. The AWS SDK clients that
+      # actually list/describe resources pick AWS_ENDPOINT_URL up on their
+      # own (standard SDK env support), but floci-ui's own connectivity
+      # probe and "Connected"/"Not connected" banner read this separate,
+      # floci-ui-specific var (packages/api/src/service/runtimeProbe.ts
+      # upstream: `process.env.FLOCI_ENDPOINT ?? 'http://localhost:4566'`).
+      # Leaving it unset makes the console probe localhost:4566 from
+      # *inside its own container* — itself, not `floci` — so it always
+      # shows "Not connected http://localhost:4566" regardless of whether
+      # resource listing actually works.
+      FLOCI_ENDPOINT: http://floci:4566
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://floci:4566
+      PORT: "4500"
+    depends_on:
+      floci:
+        condition: service_healthy
 
 volumes:
   postgres_data:
