@@ -3751,3 +3751,104 @@ The delegation request-path and expiry indexes (`idx_delegations_delegator`, `id
 Unchanged. SEAT-1's active-member count (`SELECT count(*) FROM tenant_memberships WHERE tenant_id=$1 AND deleted_at IS NULL AND status='active'`) is covered by the pre-existing `idx_tm_status (tenant_id, status) WHERE deleted_at IS NULL` — no new index needed.
 
 ---
+
+---
+
+## Appendix — Compatibility Gap Fixes (2026-09-15)
+
+Cross-service compatibility audit of `iam-org-membership` against all four dependency services identified 18 gaps. The following fixes were applied directly to this service.
+
+### Fix 1 — TenantRealmReady Consumer Reads Correct Fields (Gap 1)
+
+**Problem:** org_membership's `TenantRealmReady` consumer was reading `"realm_id"` and `"realm_type"` fields that did not exist in Realm Provisioner's frozen `TenantRealmReadyPayload`. Every delivery silently blanked `tenants.realm_id` and `tenants.realm_type`.
+
+**Fix (this service):** Consumer now reads `"realm_id"` and `"realm_type"` directly after Realm Provisioner added these fields to its payload.
+
+**Corresponding fix in Realm Provisioner:** `TenantRealmReadyPayload` now includes `realm_id` and `realm_type`.
+
+**Files changed:**
+- `internal/adapter/inbound/consumer/membership_event_consumer.go` — `TenantRealmReady` case updated to read `realm_id` and `realm_type` from payload
+
+---
+
+### Fix 2 — DirectPaidSignup Consumer Reads plan (Gap 2)
+
+**Problem:** `DirectPaidSignup` handler read `plan` from a payload that never had that field. Result was always a silent fallback to `prevPlan` (trial plan).
+
+**Fix (this service):** Consumer reads `plan` directly now that Realm Provisioner adds it to `DirectPaidSignupPayload`.
+
+**Files changed:**
+- `internal/adapter/inbound/consumer/membership_event_consumer.go` — `DirectPaidSignup` case updated with Gap-2 fix comment
+
+---
+
+### Fix 3 — Delegation Check Timeout Raised + Startup Warning (Gap 8)
+
+**Problem:** `DELEGATION_BASE_URL` was missing from some environments; default timeout of 300ms was too tight for the DLG-I3 dept-scope lookup during member removal. Under load, org_membership fell back to tenant-wide impact scoping more often than intended.
+
+**Fix:**
+- Default timeout raised from 300ms to 1000ms
+- Startup `WarnContext` log added when `DELEGATION_BASE_URL` is not set
+
+**Files changed:**
+- `internal/adapter/outbound/delegationcheck/http_client.go` — timeout `300ms` → `1000ms`; startup warn added in `New()`
+
+---
+
+### Fix 4 — x-tenant-id Comment for CAT-I1/CAT-I2 (Gap 11)
+
+**Problem:** Outbound calls to Catalog Service sent `x-tenant-id: uuid.Nil` as a placeholder because the service has no tenant concept but the middleware requires the header. This was a workaround with no documentation.
+
+**Fix:** Added a detailed comment explaining the workaround, the risk, and a TODO.
+
+**Files changed:**
+- `internal/adapter/outbound/catalogadmin/http_client.go` — `setInternalHeaders` comment updated
+
+---
+
+### Fix 5 — DepartmentCatalogChanged Full Event Architecture (Gap 12)
+
+**Problem:** Catalog writes took up to 11 minutes to propagate to org_membership's `om:departments` cache (60s cat:departments + 600s om:departments TTL chain). TL Decision: Option C — add a `DepartmentCatalogChanged` event.
+
+**This service — consumer side (fully done):**
+- Added `internal/adapter/inbound/consumer/catalog_consumer.go` — clears `om:departments` + `om:departments:stale` on every `DepartmentCatalogChanged` event
+- Wired in `cmd/server/main.go` on `SQS_CATALOG_ORGM_QUEUE_URL`
+
+**Catalog Admin — publisher side (architecture done, SNS impl pending):**
+- Added `port.EventNotifier` interface + `NoopEventNotifier` default (zero deps)
+- `DepartmentService.Create()` and `Patch()` now call `notify()` after every write
+- Terraform IaC for `iam-catalog-events` SNS topic + `catalog-orgm-q` SQS queue at `deploy/messaging/`
+
+**Remaining — infra + one code file:**
+
+| What | Who | Status |
+|------|-----|--------|
+| `SNSEventNotifier` impl in catalog-admin | Catalog developer | ⏳ After SNS_TOPIC_ARN |
+| Apply `deploy/messaging/sns_infrastructure.tf.example` | Infra team | ⏳ Pending |
+| Set `SNS_TOPIC_ARN` in catalog-admin Helm | DevOps | ⏳ After infra |
+| Set `SQS_CATALOG_ORGM_QUEUE_URL` in this service Helm | DevOps | ⏳ After infra |
+
+---
+
+### Summary of All 18 Gaps
+
+| Gap | Description | Status |
+|-----|-------------|--------|
+| 1 | TenantRealmReady field names | ✅ Fixed (both services) |
+| 2 | DirectPaidSignup missing plan | ✅ Fixed (both services) |
+| 3 | trial_ends_at type mismatch | ✅ Fixed in Realm Provisioner |
+| 4 | x-tenant-id workaround I-16 | ✅ Documented |
+| 5 | Suspend phase silent skip | ✅ Fixed in Realm Provisioner |
+| 6 | SNS subscription delegation-cascade-q | ✅ Terraform IaC added in Delegation |
+| 7 | ScrubTenant doc mismatch | ✅ Fixed in Delegation docs |
+| 8 | Delegation timeout 300ms | ✅ Fixed in this service |
+| 9 | Metrics caller = unknown | ✅ Fixed in Delegation |
+| 10 | DepartmentResponse.ID type | ✅ Fixed in Catalog Admin |
+| 11 | x-tenant-id workaround CAT | ✅ Documented in this service |
+| 12 | DepartmentCatalogChanged event | ⏳ Code architecture done (both sides); infra + SNSEventNotifier pending |
+| 13 | Tracing broken | ✅ Verified working (no code change) |
+| 14 | SNS subscription groupmap-q | ✅ Terraform IaC added in Group Mapping |
+| 15 | Glue header decode | ✅ Fixed in Group Mapping |
+| 16 | gm:departments stale cache | ✅ Fixed in Group Mapping |
+| 17 | Module name wrong | ✅ Fixed in Group Mapping |
+| 18 | Cache propagation comment | ✅ Fixed in Group Mapping |
