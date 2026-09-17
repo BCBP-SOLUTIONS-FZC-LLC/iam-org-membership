@@ -616,7 +616,7 @@ Since this service has never been deployed, the schema is one consolidated `0000
 Nine workflow files:
 
 - **`ci.yml`** — orchestrator. Runs `validate-test.yml` and `validate-quality.yml` in parallel with `build-image` (Hadolint → Buildx cached build → Trivy CVE scan → smoke tests). On push to `main`: builds+pushes to GHCR with provenance+SBOM.
-- **`validate-test.yml`** (reusable) — `make test-ci` (unit + postgres/RLS + integration, `-race`, merged coverage) → coverage threshold gate (**95%**) → `go-arch-lint` → Swagger staleness check → event-schema sync check (`schema-gov extract --check`).
+- **`validate-test.yml`** (reusable) — `make test-ci` (unit + postgres/RLS + integration, `-race`, merged coverage) → coverage threshold gate (**95%**) → `make test-e2e` (real HTTP router via `httptest`, no coverage/`-race`) → `go-arch-lint` → Swagger staleness check → event-schema sync check (`schema-gov extract --check`).
 - **`validate-quality.yml`** (reusable) — `go mod verify` → `gofmt` check → `go mod tidy` drift check → `go vet` → `golangci-lint` → `govulncheck`.
 - **`changelog-check.yml`** — fails a PR touching `internal/`, `api/`, `deploy/`, or `cmd/` without a `CHANGELOG.md` update.
 - **`release.yml`** — tag-triggered release pipeline: re-validate → build+cross-compile → Docker build/push/sign → optional deploy-gate → GitHub Release publish.

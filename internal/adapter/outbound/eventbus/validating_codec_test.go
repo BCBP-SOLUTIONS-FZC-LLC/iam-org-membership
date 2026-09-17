@@ -10,10 +10,6 @@ import (
 )
 
 // Phase 18 · 0%-units sweep — ValidatingCodec was at 0% direct coverage.
-// Every test carries the standard metadata registry pointer:
-// full metadata in Reference_doc/Test_metadata_P12_P16.md is out of scope
-// for the 0%-units sweep; these tests are documented via the T18 block in
-// Test_cover.md.
 
 // TestConstructionLoadsEmbeddedSchemas — NewValidatingCodec
 // must succeed and populate the schema cache from the embedded FS.

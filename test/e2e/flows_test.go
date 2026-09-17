@@ -5,7 +5,9 @@
 //   - P13-FLOW-001: GET /api/v1/tenants/:id — happy path returns 200 with
 //     the seeded tenant projection (JSON keys per swagger spec).
 //   - P13-FLOW-002: invite → list-invitations two-hop flow (P-6, P-30).
-//   - P13-FLOW-003: create → list → cancel delegation (P-19, P-18, P-20).
+//   - P13-FLOW-003: removed (ADR-0008 v2) — create → list → cancel delegation
+//     (P-19, P-18, P-20) moved to the standalone Delegation Service; see the
+//     stub below and retired_routes_test.go.
 //   - P13-FLOW-004: seat-usage endpoint returns valid shape (P-27).
 //   - P13-FLOW-005: internal GetMemberships hot path returns full projection.
 //   - P13-FLOW-006: internal ProvisionTenant (I-1) creates tenant + 5 depts
@@ -15,9 +17,6 @@
 //
 // These are the "does the whole thing actually work when you call it over
 // HTTP" tests. Handler-layer validation tests live in Phase 3/9.
-//
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package e2e_test
 
 import (

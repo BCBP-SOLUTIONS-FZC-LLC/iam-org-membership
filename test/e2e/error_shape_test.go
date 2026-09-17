@@ -11,9 +11,6 @@
 // The error body shape mirrors sibling iam-user-profile2 (see dto.go
 // ErrorResponse struct). Both `error` and `code` fields must be populated
 // — `code` is the legacy alias kept for backwards compatibility.
-//
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package e2e_test
 
 import (

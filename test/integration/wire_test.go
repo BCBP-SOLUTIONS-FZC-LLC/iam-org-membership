@@ -14,11 +14,6 @@
 //     authz/realm/notification/workflow/billing per-list).
 //   - P12-ATTR-001: the publisher stamps EventType as an SNS MessageAttribute
 //     — without this, every filter policy would silently drop everything.
-//
-// Test IDs use the P12-* namespace per the Test_cover.md stability rule.
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md — the canonical registry mandated
-// by Test_prompt.md's "Test Case Documentation Format" section.
 package integration_test
 
 import (
