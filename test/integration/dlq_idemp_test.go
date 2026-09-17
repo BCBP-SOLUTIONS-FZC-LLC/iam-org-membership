@@ -10,9 +10,6 @@
 //   - P12-IDEMP-002: the processed_events row is keyed by (event_id,
 //     consumer) — a second CONSUMER seeing the same envelope IS free to
 //     project independently (PE-1 semantics).
-//
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package integration_test
 
 import (

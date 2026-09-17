@@ -1,6 +1,6 @@
 # Reusable workflow — test gate.
-# Race detector (unit · postgres · integration) + coverage + arch lint +
-# Swagger staleness + event schema sync.
+# Race detector (unit · postgres · integration) + coverage + e2e (real HTTP
+# router) + arch lint + Swagger staleness + event schema sync.
 # Called by ci.yml and release.yml. Gates trivy and smoke.
 name: Validate / Test
 
@@ -32,8 +32,11 @@ jobs:
     # branch's ~227-container test/postgres suite instead of running it
     # 2-wide, which can meaningfully increase wall-clock time. 35 min leaves
     # headroom over the internal `go test -timeout 1500s` (25 min) for
-    # checkout/setup/lint/build.
-    timeout-minutes: 35
+    # checkout/setup/lint/build. Raised to 40: the e2e step (48 tests, its
+    # own testcontainers Postgres per test) adds ~2-4 min sequentially after
+    # the unit/postgres/integration step, since it doesn't fit in that
+    # step's -j3 parallel group (different coverage/race shape, see below).
+    timeout-minutes: 40
     outputs:
       pct: ${{ steps.gate.outputs.pct }}
     steps:
@@ -103,6 +106,20 @@ jobs:
           path: coverage.out
           if-no-files-found: ignore
           retention-days: 30
+
+      # Mandatory blocking gate: real end-to-end HTTP tests against the
+      # actual router (httptest.NewServer wrapping the real handler chain),
+      # each with its own testcontainers Postgres — happy-path flows,
+      # cross-tenant/RLS rejection, error-envelope shape, and confirmation
+      # that ADR-0007/0008-retired routes (P-18..23, I-12) are fully
+      # unregistered (404), not merely gated. No coverage/-race here (mirrors
+      # `make test-e2e` exactly) — this tier is about real request/response
+      # behavior, not statement coverage; unit/postgres/integration above
+      # already carry the coverage gate and race detector.
+      - name: Tests — e2e (real HTTP router)
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+        run: make test-e2e
 
       # Enforces Clean Architecture dependency rules defined in .go-arch-lint.yml.
       # Prevents adapter code from being imported by core/domain or core/service.

@@ -2,8 +2,7 @@
 
 // Phase 14 · security tests. Uses the same e2e harness (real Gin router +
 // RLS-enforcing pgcommon.Pool + gateway-forwarded identity headers) to
-// exercise the malicious-input and abuse-of-privilege boundary conditions
-// named in Test_cover.md Phase 14.
+// exercise malicious-input and abuse-of-privilege boundary conditions.
 //
 // Coverage:
 //
@@ -21,10 +20,6 @@
 //     tenant differs from the URL tenant.
 //   - Replay — same envelope submitted twice → second call is a business-
 //     level 409, not a silent duplicate.
-//
-// Test IDs use the P14-* namespace per Test_cover.md Rule 4.
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package e2e_test
 
 import (

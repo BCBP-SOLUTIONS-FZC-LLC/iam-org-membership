@@ -12,10 +12,6 @@
 //   - MW-5: /internal without iam-system role → 403.
 //   - MW-6: /operator without platform_operator role → 403.
 //   - MW-7: RequireJSONContentType — POST with text/plain → 415.
-//
-// Test IDs use the P13-* namespace per Test_cover.md Rule 4.
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package e2e_test
 
 import (

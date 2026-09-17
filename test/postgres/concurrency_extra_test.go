@@ -1,8 +1,7 @@
 //go:build integration
 
 // Phase 15 · concurrency stress. Extends the existing concurrency_test.go
-// suite (SEAT-1, TM-13, TM-11 rejoin, PI-1) with the harder races named in
-// Test_cover.md Phase 15:
+// suite (SEAT-1, TM-13, TM-11 rejoin, PI-1) with harder races:
 //
 //   - P15-JIT-001 — two concurrent JIT-style membership adds for the same
 //     (tenant, user) → uq_tm_active_user permits exactly one active row.
@@ -19,9 +18,6 @@
 //   - P15-OUTBOX-001 — two outbox-runner-style claim queries → SKIP LOCKED
 //     guarantees disjoint batches (no duplicate publish under horizontal
 //     scale).
-//
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package postgres_test
 
 import (

@@ -27,10 +27,6 @@
 //   - BenchmarkP16_OutboxInsertOne — one enqueue tx cost.
 //   - BenchmarkP16_OutboxDrain50 — throughput of a 50-row drain (raw
 //     UPDATE ... published_at = NOW() batch).
-//
-// Test IDs use the P16-* namespace per Test_cover.md Rule 4.
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package postgres_test
 
 import (

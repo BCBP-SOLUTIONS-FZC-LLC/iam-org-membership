@@ -13,9 +13,6 @@
 //   - P12-OUTBOX-RETRY-001: publisher returns an error on the first attempt;
 //     outbox_events row is retried and eventually delivered — attempts count
 //     climbs but the row is not moved to dead_letters until MaxAttempts.
-//
-// Full test-case metadata (Module · Feature · Priority · Severity) lives in
-// Reference_doc/Test_metadata_P12_P16.md.
 package integration_test
 
 import (
