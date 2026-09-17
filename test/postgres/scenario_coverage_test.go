@@ -10,6 +10,8 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -265,11 +268,43 @@ func TestInvite_SeatCapExact_Returns409(t *testing.T) {
 // `SELECT ... FOR UPDATE`. This test drives that real race with two
 // goroutines rather than pre-exhausting the cap, so the loser actually
 // exercises the lost-race branch instead of being rejected by preflight.
+//
+// The two goroutines share a start barrier so they clear the preflight
+// check together — but that only shrinks the window, it can't close it:
+// preflightSeatCheck rejects a racer whose call it sees AFTER the other
+// racer's full RP-call + tx has already committed, and nothing short of a
+// production-side testability hook between preflight and the RP call can
+// guarantee the Go scheduler never lets one goroutine run that far ahead
+// of the other (observed ~7% unsynchronized, ~2.5% even with the barrier,
+// exacerbated by -race's scheduling overhead). When that happens the loser
+// is rejected before RP.CreateInvitedUser ever runs, so there's no
+// Keycloak user / pending_invitations row for it — a gap in this test's
+// ability to force the scenario, not in Invite itself (preflightSeatCheck
+// is correctly advisory-only; SEAT-1 is still enforced under FOR UPDATE
+// either way). driveSeatCapLostRace retries on a fresh tenant when it
+// detects exactly that outcome.
 func TestInvite_SeatCapLostRace_CommitsDurableCleanupRow(t *testing.T) {
 	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
-	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, "p6-lostrace")
+
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if driveSeatCapLostRace(t, ctx, fx, attempt, attempt == maxAttempts) {
+			return
+		}
+	}
+}
+
+// driveSeatCapLostRace runs one attempt at the race on a fresh tenant.
+// Returns true once it has asserted a complete, successful outcome. When
+// the loser's row turns out to be missing — the known preflight-race gap
+// described above — it either retries (returning false, unless final is
+// true) or fails with the same assertion the deterministic case would have
+// hit (on the final attempt), so a genuine regression still fails the test.
+func driveSeatCapLostRace(t *testing.T, ctx context.Context, fx *testFixtures, attempt int, final bool) bool {
+	t.Helper()
+	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, fmt.Sprintf("p6-lostrace-%d", attempt))
 
 	// Owner already consumes 1 seat; licensed_seats=2 leaves exactly one
 	// seat free for the two racers to contend over.
@@ -277,19 +312,32 @@ func TestInvite_SeatCapLostRace_CommitsDurableCleanupRow(t *testing.T) {
 		`UPDATE tenants SET licensed_seats = 2 WHERE id = $1`, tenantID)
 	require.NoError(t, err)
 
-	emails := []string{"racer-a@example.com", "racer-b@example.com"}
+	emails := []string{
+		fmt.Sprintf("racer-a-%d@example.com", attempt),
+		fmt.Sprintf("racer-b-%d@example.com", attempt),
+	}
 	results := make([]error, len(emails))
 	var wg sync.WaitGroup
+	// Start barrier: release both goroutines at the same instant instead of
+	// relying on `go func()` launch order — shrinks, but cannot eliminate,
+	// the scheduling race described above.
+	var ready sync.WaitGroup
+	start := make(chan struct{})
+	ready.Add(len(emails))
 	for i, email := range emails {
 		wg.Add(1)
 		go func(idx int, email string) {
 			defer wg.Done()
+			ready.Done()
+			<-start
 			_, results[idx] = fx.Invitation.Invite(withSystemAndTenant(ctx, tenantID), tenantID, service.InvitationInput{
 				Email:    email,
 				FullName: "Racer",
 			}, actorID)
 		}(i, email)
 	}
+	ready.Wait()
+	close(start)
 	wg.Wait()
 
 	var winners, losers int
@@ -319,6 +367,10 @@ func TestInvite_SeatCapLostRace_CommitsDurableCleanupRow(t *testing.T) {
 		`SELECT status, kc_cleanup_pending, keycloak_user_id FROM pending_invitations
 		 WHERE tenant_id = $1 AND email = $2`,
 		tenantID, loserEmail).Scan(&status, &kcPending, &kcUserID)
+	if !final && errors.Is(err, pgx.ErrNoRows) {
+		t.Logf("attempt %d: loser %s was rejected by the cheap preflight check (no RP call, no row) instead of the transactional lost-race path — retrying on a fresh tenant", attempt, loserEmail)
+		return false
+	}
 	require.NoError(t, err, "the lost-race row must exist — it must be committed, not rolled back")
 	assert.Equal(t, string(domain.InviteRevoked), status)
 	assert.True(t, kcPending, "kc_cleanup_pending must be true so the reconciler sweeps this row")
@@ -330,6 +382,7 @@ func TestInvite_SeatCapLostRace_CommitsDurableCleanupRow(t *testing.T) {
 		`SELECT count(*) FROM pending_invitations WHERE tenant_id = $1 AND status = 'pending' AND expires_at > now()`,
 		tenantID).Scan(&pendingCount))
 	assert.Equal(t, 1, pendingCount, "only the winner's row should hold a seat")
+	return true
 }
 
 // ── P10-HAPPY-01 ──────────────────────────────────────────────────────
