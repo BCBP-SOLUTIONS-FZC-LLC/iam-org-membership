@@ -68,8 +68,12 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// Gap-8 fix: raised default from 300ms to 1000ms. 300ms was too tight —
+	// under load or cold-start the Delegation Service timed out frequently,
+	// causing org_membership to fall back to tenant-wide impact scoping more
+	// often than intended. DELEGATION_TIMEOUT_MS can still override this.
 	if timeout <= 0 {
-		timeout = 300 * time.Millisecond
+		timeout = 1000 * time.Millisecond
 	}
 	return &HTTPClient{
 		baseURL: baseURL,
@@ -83,7 +87,13 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 // gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("DELEGATION_BASE_URL", "")
-	timeout := envDurationMs("DELEGATION_TIMEOUT_MS", 300*time.Millisecond)
+	// Gap-8 fix: raised default from 300ms to 1000ms — see NewHTTPClient.
+	timeout := envDurationMs("DELEGATION_TIMEOUT_MS", 1000*time.Millisecond)
+	if baseURL == "" {
+		// Warn at construction time so a missing DELEGATION_BASE_URL is
+		// visible in startup logs, not silently discovered on first call.
+		slog.Default().Warn("delegationcheck: DELEGATION_BASE_URL is not set — dept-scope precision lookup (DLG-I3) will be unavailable; falling back to tenant-wide impact scoping on every removal")
+	}
 	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
 }
 

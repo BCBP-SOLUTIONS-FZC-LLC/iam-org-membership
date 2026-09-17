@@ -320,18 +320,13 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 	case "TrialTenantProvisioned":
 		return prevStatus, prevPlan, nil
 	case "TenantRealmReady":
-		// RP's frozen TenantRealmReadyPayload (§25) carries the realm name
-		// under json:"realm", not "realm_id" — and has no realm_type field
-		// at all. Corrected: a prior version of this handler read
-		// nonexistent "realm_id"/"realm_type" fields, so every real event
-		// silently blanked tenants.realm_id/realm_type to empty strings
-		// (execLifecyclePatch's UPDATE has no COALESCE guard). RP's own doc
-		// comment on TenantRealmReadyPayload confirms this event is "emitted
-		// by RP-2 or RP-3 (never for trial)" — both dedicated-realm paths —
-		// so realm_type is hardcoded rather than read from a field RP never
-		// sends.
+		// Gap-1 fix: RP now sends explicit realm_id and realm_type fields
+		// (added to TenantRealmReadyPayload). We read them directly instead
+		// of hardcoding realm_type="dedicated" and mapping "realm"→realm_id.
+		// realm field is still present in the payload for backward compat.
 		var payload struct {
-			Realm         string `json:"realm"`
+			RealmID       string `json:"realm_id"`
+			RealmType     string `json:"realm_type"`
 			KeycloakShard string `json:"keycloak_shard"`
 		}
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -339,8 +334,8 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		}
 		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:            port.LifecycleSetRealm,
-			RealmID:       payload.Realm,
-			RealmType:     string(domain.RealmDedicated),
+			RealmID:       payload.RealmID,
+			RealmType:     payload.RealmType,
 			KeycloakShard: payload.KeycloakShard,
 		})
 		return prevStatus, prevPlan, err
@@ -361,6 +356,8 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		})
 		return domain.StatusActive, newPlan, err
 	case "DirectPaidSignup":
+		// Gap-2 fix: RP now includes plan in DirectPaidSignupPayload, so we
+		// read it directly instead of silently falling back to prevPlan.
 		var payload struct {
 			Plan string `json:"plan"`
 		}
@@ -369,6 +366,9 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		}
 		newPlan := domain.TenantPlan(payload.Plan)
 		if newPlan == "" {
+			// Safety fallback: plan should always be present now (Gap-2 fix),
+			// but if an older RP version sends the event without it, we fall
+			// back to prevPlan so the tenant is at least activated.
 			newPlan = prevPlan
 		}
 		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{

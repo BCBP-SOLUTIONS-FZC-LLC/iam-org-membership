@@ -684,19 +684,67 @@ CATALOG_ADMIN_BASE_URL=http://localhost:8084
 
 ## Cross-service dependencies
 
+### 1. Synchronous outbound calls (this service → other services)
+
 Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service dependency — Postgres + Valkey only.
 
-| Operation | Sync dependency | Posture | On failure |
-|---|---|---|---|
-| Invite (P-6) | Realm Provisioner | fail-closed | `503 realm_provisioner_unavailable`, no invite written |
-| MFA reset (P-34) | Realm Provisioner (RP-9) | fail-closed | `503`, no `MFAReset` emitted — no reconciler exists for this |
-| User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow | fail-closed | `503 workflow_service_unavailable`, no change |
-| — dept-scope precision leg | Delegation | degrade | Falls back to tenant-wide impact scoping (correct, less precise) |
-| Suspension advisory (P-7) | Workflow | fail-open | Suspend commits; advisory omitted |
-| `local_accounts_enabled` change (P-2) | Realm Provisioner | fail-open + durable reconcile | Commits; `realm_sync_pending`, reconciler converges |
-| Any P-6/P-24/P-10 catalog validation | Catalog Service | **fail-closed** | `503 catalog_unavailable` — the one dependency here that is deliberately not fail-open |
-| I-10 SAML JIT group resolution | Group Mapping Service | fail-open | Empty resolution — never fails a login |
-| RP-C3 subscription-lapse sweep (I-16) | — (this service is the callee) | — | A Realm Provisioner outage just means its own sweep sees a stale/empty list this cycle |
+| Operation | Dependency | Adapter package | Posture | On failure |
+|---|---|---|---|---|
+| Invite (P-6) | Realm Provisioner | `outbound/realmprovisioner/` | fail-closed | `503 realm_provisioner_unavailable`, no invite written |
+| MFA reset (P-34) | Realm Provisioner (RP-9) | `outbound/realmprovisioner/` | fail-closed | `503`, no `MFAReset` emitted — no reconciler exists for this |
+| Invitation KC cleanup reconciler | Realm Provisioner | `outbound/realmprovisioner/` | fail-open | Retry next cron cycle; `kc_cleanup_pending` stays set |
+| `local_accounts_enabled` change (P-2) | Realm Provisioner | `outbound/realmprovisioner/` | fail-open + durable reconcile | Commits; `realm_sync_pending`, reconciler converges |
+| Session revoke on suspend/remove (AUTH-8) | Realm Provisioner | `outbound/realmprovisioner/` | fail-open (best-effort) | Cutoff falls back to access-token TTL + 300 s cache TTL |
+| User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow Service | `outbound/workflow/` | fail-closed | `503 workflow_service_unavailable`, no change committed |
+| Suspension advisory (P-7) | Workflow Service | `outbound/workflow/` | fail-open | Suspend commits; advisory call omitted |
+| Any P-6/P-24/P-10 catalog validation | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` — the one dependency deliberately not fail-open |
+| I-10 SAML JIT group resolution | Group Mapping / JIT Config Service | `outbound/groupmappingclient/` | fail-open | Empty resolution — never fails a login |
+| Dept-scope precision leg of delegate-impact pre-check (§8.8.4) | Delegation Service | `outbound/delegationcheck/` | degrade | Falls back to tenant-wide impact scoping (correct, less precise) |
+| RP-C3 subscription-lapse sweep (I-16) | — (this service is the callee) | — | — | A Realm Provisioner outage just means its own sweep sees a stale/empty list this cycle |
+
+### 2. Inbound callers (other services → this service)
+
+| Caller | Endpoints used | Purpose |
+|---|---|---|
+| **Realm Provisioner** | I-1, I-2, I-16 | Provision tenant row; set `realm_id`/`realm_type`/`keycloak_shard`; poll subscription lapses (RP-C3) |
+| **Signup BFF** | I-1 | Provision new tenant row on trial sign-up |
+| **AuthZ Enrichment** | I-8, I-14 | Hot-path full membership projection (p50 ≤ 15 ms); authoritative MFA-freshness read for step-up gate |
+| **Billing** | I-11 (same handler as P-27) | Seat-usage pre-check before a seat-reduction plan change |
+| **LLM Service** | I-9 | Tenant default locale for prompt assembly |
+| **Workflow Service** | I-13 | Validate-and-emit on tender assignee override — persists nothing here |
+| **Tender ACL Service** | I-15 | Grant-time membership-existence check (replaces composite FK lost across DB split) |
+| **Delegation Service** | I-15 | Grant-time membership-existence check (replaces composite FK lost across DB split) |
+
+### 3. Async event dependencies
+
+**Events this service consumes:**
+
+| Queue | Producer | Events |
+|---|---|---|
+| `tenant-orgm-q` | Realm Provisioner | `TenantRealmReady`, `TenantConverted`, `TenantSuspended`, `TenantOffboarded`, `TrialExpired`, `TrialReactivated`, `TenantReactivated` |
+| `billing-orgm-q` | Billing | `TenantSeatsChanged`, `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated` |
+
+**Events this service produces** (via `iam.membership.events` / `iam.tenant.events`) and their downstream consumers:
+
+| Consumer | Queue | Events consumed |
+|---|---|---|
+| **Audit Log Service** | `membership-audit-q` | Catch-all — every event on both topics |
+| **AuthZ Enrichment** | `membership-authz-q` | Every membership write — cache invalidation for `om:memberships:{tenant}:{user}` |
+| **Workflow Service** | `membership-workflow-q` | `TenantStateChanged`, `TenderAssigneeOverridden`, `MembershipRevoked` |
+| **Tender ACL Service** | (subscribes to membership topic) | `MembershipRevoked`, `TenantMembershipsPurged` — async cascade-deletes on offboarding |
+| **Delegation Service** | (subscribes to membership topic) | `MembershipRevoked`, `TenantMembershipsPurged` — async cascade-deletes on offboarding |
+| **Group Mapping / JIT Config Service** | (subscribes to membership topic) | `TenantMembershipsPurged` — async cascade-deletes on offboarding |
+| **Realm Provisioner** | `tenant-orgm-q` | `TrialStarted{tenant_id, plan, trial_ends_at}` — seeds RP's own trial-expiry sweep (no polling either direction) |
+
+### 4. Infrastructure dependencies
+
+| System | Role |
+|---|---|
+| **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 8 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
+| **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
+| **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
+| **AWS SQS** | `tenant-orgm-q` and `billing-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`) |
+| **AWS Glue Schema Registry** | `iam-membership-events` and `iam-tenant-events` — wire-format validation at publish and consume time |
 
 ---
 

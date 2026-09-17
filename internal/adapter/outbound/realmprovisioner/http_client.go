@@ -186,9 +186,13 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 		c.logger.Warn("rp: baseURL not configured — PatchRealmConfig no-op (dev)")
 		return nil
 	}
-	body := map[string]any{}
-	if patch.LocalAccountsEnabled != nil {
-		body["local_accounts_enabled"] = *patch.LocalAccountsEnabled
+	// RP expects generic {setting_key, desired_value} envelope (idp_handler.go applyRealmConfigRequest).
+	if patch.LocalAccountsEnabled == nil {
+		return nil // nothing to patch
+	}
+	body := map[string]any{
+		"setting_key":   "local_accounts_enabled",
+		"desired_value": *patch.LocalAccountsEnabled,
 	}
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,

@@ -202,8 +202,16 @@ func (c *HTTPClient) Plans(ctx context.Context) ([]port.CatalogPlan, error) {
 // setInternalHeaders authenticates as the reserved iam-system principal
 // (RLS-5/IAPI-2-equivalent on the catalog-admin-config side). That
 // service has no tenant concept, but its identity-bridge middleware still
-// requires a well-formed UUID in x-tenant-id — uuid.Nil is the
-// placeholder value, ignored server-side.
+// requires a well-formed UUID in x-tenant-id.
+//
+// Gap-11 workaround: uuid.Nil ("00000000-0000-0000-0000-000000000000") is
+// sent as a placeholder because CAT-I1/CAT-I2 are cross-tenant calls with
+// no real tenant to scope to. The Catalog Service's IdentityBridgeMiddleware
+// accepts uuid.Nil (it is a valid UUID format) and never reads the value.
+// Risk: if platform-gincommon is ever updated to reject uuid.Nil as invalid,
+// these calls will start returning 401.
+// TODO: Add a platform-level escape hatch in platform-gincommon for
+// truly cross-tenant internal routes so this workaround is no longer needed.
 func (c *HTTPClient) setInternalHeaders(req *http.Request) {
 	req.Header.Set("x-user-id", "iam-system")
 	req.Header.Set("x-tenant-id", uuid.Nil.String())

@@ -326,6 +326,28 @@ func main() {
 		log.Warn("SQS_BILLING_ORGM_QUEUE_URL unset — billing consumer disabled", nil)
 	}
 
+	// Gap-12 fix: catalog-orgm-q consumer — clears om:departments /
+	// om:departments:stale cache on every DepartmentCatalogChanged event
+	// published by iam-catalog-admin, eliminating the 11-min TTL delay.
+	// Requires Catalog Service to publish DepartmentCatalogChanged events and
+	// infra to provision the catalog-orgm-q SQS queue + SNS subscription.
+	catalogConsumer := consumeradapter.NewCatalogConsumer(cache, idempotencyStore, log)
+	if url := os.Getenv("SQS_CATALOG_ORGM_QUEUE_URL"); url != "" {
+		cons, err := events.NewSQSConsumerWithClient(
+			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
+			sqsClient,
+			instrumentedHandler("catalog-orgm-q", catalogConsumer.Handle),
+			events.WithConcurrency(envInt("SQS_CATALOG_ORGM_CONCURRENCY", 2)),
+		)
+		if err != nil {
+			panic(fmt.Sprintf("build catalog-orgm-q consumer: %v", err))
+		}
+		sqsConsumers = append(sqsConsumers, cons)
+		log.Info("catalog-orgm-q consumer wired", map[string]interface{}{"queue_url": url})
+	} else {
+		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments cache TTL-only)", nil)
+	}
+
 	for _, cons := range sqsConsumers {
 		cons := cons
 		go func() {
