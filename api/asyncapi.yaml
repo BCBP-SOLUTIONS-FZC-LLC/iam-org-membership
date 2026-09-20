@@ -3906,6 +3906,7 @@ components:
     # ignores.
     TrialTenantProvisionedPayload:
       type: object
+      additionalProperties: true
       description: |
         No fields are read by this consumer — applyProjection's
         TrialTenantProvisioned case is a deliberate no-op (see the message
@@ -3913,6 +3914,7 @@ components:
 
     TenantRealmReadyPayload:
       type: object
+      additionalProperties: true
       properties:
         realm_id:
           type: string
@@ -3926,6 +3928,7 @@ components:
 
     TenantConvertedPayload:
       type: object
+      additionalProperties: true
       properties:
         plan:
           type: string
@@ -3936,6 +3939,7 @@ components:
 
     DirectPaidSignupPayload:
       type: object
+      additionalProperties: true
       properties:
         plan:
           type: string
@@ -3946,10 +3950,12 @@ components:
 
     TrialExpiredPayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='trial_expired').
 
     TrialReactivatedPayload:
       type: object
+      additionalProperties: true
       description: |
         No fields are read by this consumer. The new trial_ends_at is
         computed server-side from plans.trial_duration_days for the
@@ -3957,6 +3963,7 @@ components:
 
     TenantSuspendedPayload:
       type: object
+      additionalProperties: true
       required: [source]
       properties:
         source:
@@ -3978,6 +3985,7 @@ components:
 
     TenantOffboardedPayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='offboarded', terminal).
 
     DepartmentCatalogChangedPayload:
@@ -3998,6 +4006,7 @@ components:
 
     TenantPlanChangedPayload:
       type: object
+      additionalProperties: true
       properties:
         plan:
           type: string
@@ -4009,14 +4018,17 @@ components:
 
     TenantPaymentPastDuePayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='past_due').
 
     TenantSubscriptionCancelledPayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='cancelled', cancelled_at set if not already).
 
     TenantReactivatedPayload:
       type: object
+      additionalProperties: true
       description: |
         No fields are read by this consumer. The projection itself is
         guarded server-side: rejected as a no-op if the tenant is already
@@ -4024,6 +4036,7 @@ components:
 
     TenantSeatsChangedPayload:
       type: object
+      additionalProperties: true
       required:
         - licensed_seats
       properties:

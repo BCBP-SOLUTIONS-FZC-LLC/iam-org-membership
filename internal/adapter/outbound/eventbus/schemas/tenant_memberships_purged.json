@@ -5,7 +5,7 @@
   "required": [
     "tenant_id"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "tenant_id": {
       "type": "string",

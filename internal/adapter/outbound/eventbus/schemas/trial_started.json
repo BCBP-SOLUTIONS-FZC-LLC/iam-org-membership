@@ -7,7 +7,7 @@
     "plan",
     "trial_ends_at"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "tenant_id": {
       "type": "string",

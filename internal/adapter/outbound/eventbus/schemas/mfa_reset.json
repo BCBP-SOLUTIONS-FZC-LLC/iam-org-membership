@@ -7,7 +7,7 @@
     "user_id",
     "actor_id"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "tenant_id": {
       "type": "string",

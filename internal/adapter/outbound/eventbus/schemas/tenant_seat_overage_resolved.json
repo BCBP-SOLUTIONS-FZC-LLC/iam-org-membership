@@ -6,7 +6,7 @@
     "tenant_id",
     "resolved_at"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "tenant_id": {
       "type": "string",

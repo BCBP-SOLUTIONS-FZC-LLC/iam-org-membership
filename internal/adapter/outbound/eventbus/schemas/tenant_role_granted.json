@@ -8,7 +8,7 @@
     "role_code",
     "actor_id"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "user_id": {
       "type": "string",

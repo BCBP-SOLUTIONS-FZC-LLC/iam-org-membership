@@ -9,7 +9,7 @@
     "pending_invitations",
     "overage_since"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "tenant_id": {
       "type": "string",
