@@ -6,7 +6,7 @@
     "tenant_id",
     "user_id"
   ],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "tenant_id": {
       "type": "string",

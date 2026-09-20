@@ -11,7 +11,7 @@ info:
 
       Topic                        Glue registry            Events
       ─────────────────────────────────────────────────────────────
-      iam-membership-events        iam-membership-events    11 (see below)
+      iam-membership-events        iam-membership-events    12 (see below)
       iam-tenant-events            iam-tenant-events        2  (TenantCreated, TrialStarted)
 
     The two-topic split follows HLD §9.1: tenant lifecycle (creation,
@@ -74,31 +74,17 @@ info:
     transaction is rolled back — the event is never written to the outbox.
     Consumers do not need to handle oversized messages; they cannot arrive.
 
-    Payload budget guidance (per event type): all 13 payloads emitted by this
+    Payload budget guidance (per event type): all 14 payloads emitted by this
     service are small — UUIDs, short enums, timestamps, and (for
     TenantStateChanged) a bounded event-type string. None approach the
     240 KB soft limit under any realistic load.
 
-    ── Schema Evolution Rules (CLOSED schemas) ──────────────────────────────────
-    All 13 on-disk JSON Schemas at internal/adapter/outbound/eventbus/schemas/*.json
-    declare "additionalProperties": false. This is a deliberate contract choice
-    (see §16 open-question register): consumers MAY safely reject unknown fields
-    at the JSON-schema-validation layer, and every payload change is observable.
-
-    This means the reference "add optional field = silent Glue version bump"
-    workflow used by iam-user-profile DOES NOT APPLY here. Under closed schemas:
-
-      • Adding ANY payload field (even an optional one) is a Glue schema version
-        bump AND requires a coordinated producer → consumer rollout: consumers
-        that strictly validate against the previous schema version will reject
-        the new envelope until they are redeployed with the updated schema.
-      • Removing a field is a breaking change.
-      • Renaming a field is a breaking change.
-      • Widening an enum is a Glue schema version bump; consumers that switch
-        exhaustively on the enum MUST include a default/else branch before the
-        widened version is deployed on the producer.
-      • Narrowing an enum, changing a field's type/format, or making an optional
-        field required are breaking changes.
+    ── Schema Evolution Rules ───────────────────────────────────────────────────
+    Backward-compatible changes (NEW Glue schema version UUID, SAME type):
+      • Adding optional fields to a payload — consumers ignore unknown fields.
+      • Widening an enum.
+      • Making a required field optional.
+      Effect: dataschema UUID in the envelope changes; type stays the same.
 
     Breaking changes (MUST bump wire type to <EventName>.v2):
       • Removing or renaming a field.
@@ -109,33 +95,32 @@ info:
     When introducing a v2: publish BOTH the old and new type for one release
     cycle to give all consumers time to migrate, then retire the old type.
 
+    (As of 2026-09-21 — LLD §16 OQ-6 — this service's produced payload schemas
+    are OPEN, additionalProperties: true, matching the sibling iam-user-profile
+    service's convention; see x-forward-compatibility below. An earlier
+    revision of this document specified a CLOSED-schema contract instead; that
+    decision is superseded, not merely corrected — see OQ-6 for the full
+    history and rationale.)
+
     ── Consumer Conformance ─────────────────────────────────────────────────────
     See ARCHITECTURE.md § "Consumer conformance checklist" for the full checklist
     that downstream services must satisfy before subscribing to these channels.
-    See x-forward-compatibility below for the closed-schema rollout protocol.
+    See x-forward-compatibility below for per-language deserialization settings.
 
   x-forward-compatibility:
     summary: >-
-      This service publishes CLOSED-schema payloads (additionalProperties: false
-      on every on-disk JSON Schema). Consequently there is NO free forward-
-      compatibility — every payload addition requires a coordinated rollout of
-      the producer AND all validating consumers, in that order.
-    schema-shape: CLOSED
+      Non-breaking schema updates (added fields, widened enums) are registered
+      in Glue and deployed to the producer WITHOUT requiring a consumer
+      migration cycle. Consumers MUST be forward-compatible or they will
+      silently drop or crash on new fields. The CI diff step
+      (schema-registry.yml) surfaces non-breaking vs breaking changes;
+      breaking changes are blocked entirely.
+    schema-shape: OPEN
     rollout-sequence:
       - "1. Register new schema in the appropriate Glue registry (membership or tenant); the UUID rotates and envelope.dataschema changes accordingly."
-      - "2. Deploy all consumers with the updated schema embedded (or with lenient deserialization enabled — see defense-in-depth below)."
-      - "3. Deploy the producer (starts emitting the new field / wider enum). ONLY step 3 causes wire behaviour to change; earlier steps merely prepare consumers."
-    defense-in-depth-settings:
-      summary: >-
-        Even with closed schemas at the wire-contract level, consumers are
-        RECOMMENDED (not required) to enable lenient JSON deserialization at the
-        SDK/language layer. This protects against Glue version drift during
-        a rolling deploy — a consumer replica that has not yet picked up the
-        new schema definition still decodes the message body cleanly rather
-        than crashing on an unknown-field error. JSON-schema validation
-        against the pinned schema version is where the closed-schema contract
-        is enforced; SDK-level strict mode adds no safety and only creates
-        deploy-order fragility.
+      - "2. Deploy all consumers with forward-compatible deserialization settings (required-settings below) in place."
+      - "3. Deploy the producer (starts emitting the new field / wider enum)."
+    required-settings:
       go-encoding-json: "Do NOT call json.Decoder.DisallowUnknownFields(). Unknown fields are silently ignored by default."
       go-sonic: "Do NOT use sonic.ConfigStrict. Use sonic.ConfigDefault or sonic.ConfigFastest."
       java-jackson: "mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false) OR @JsonIgnoreProperties(ignoreUnknown=true) on every payload class."
@@ -143,25 +128,33 @@ info:
       kotlin-serialization: "Json { ignoreUnknownKeys = true } on the Json instance used to decode payloads."
     enum-safety: >-
       All switch/match/when on enum values MUST include a default/else branch.
-      Enum widening bumps the Glue schema version but does NOT force a wire type
-      bump — a rolling deploy will briefly have consumer replicas seeing values
-      they do not recognise. An unhandled enum value crashes exhaustive matchers.
-    closed-schema-contract: >-
-      All payload schemas in internal/adapter/outbound/eventbus/schemas/ declare
-      "additionalProperties": false. This is a deliberate contract signal: the
-      shape is CLOSED and every field addition is observable at the JSON-schema
-      layer. CI schema-registry.yml enforces registration and lifecycle diff
-      against this convention. Do NOT flip any payload to additionalProperties:
-      true without an org-wide decision and a matching update to schema-gov
-      configuration — the closed-schema decision is documented in the LLD §16
-      open-question register.
+      Enum widening is a backward-compatible change; new values can appear in
+      production without a consumer migration. An unhandled enum value
+      crashes exhaustive matchers.
+    open-schema-contract: >-
+      All 14 produced payload schemas in
+      internal/adapter/outbound/eventbus/schemas/, and their corresponding
+      components in this file, declare "additionalProperties": true (as of
+      2026-09-21 — LLD §16 OQ-6, superseding this document's earlier
+      CLOSED-schema decision). This is an explicit contract signal: the shape
+      is OPEN — new fields may appear in any Glue schema version without a
+      version bump. schema-gov's Pass 5 (open-schema guard) enforces this by
+      rejecting any schema that declares "additionalProperties": false. Do
+      not add that keyword back — not in the JSON files, not in this file's
+      payload schema components. On the consumer side, the required-settings
+      above must be in place BEFORE the producer is deployed, or new fields
+      will crash strict-mode consumers.
     ci-integration: >-
-      .github/workflows/schema-registry.yml runs the platform-schemagov container
-      (ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4) on every PR:
-      extract → validate → enforce-lifecycle → diff. On main it additionally runs
-      register / changelog / metrics against BOTH Glue registries. The diff step
-      distinguishes breaking from non-breaking changes and blocks the former;
-      the enforce-lifecycle step blocks any active-status schema removal.
+      .github/workflows/schema-registry.yml runs the platform-schemagov
+      container (ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4) on
+      every PR: extract → validate → enforce-lifecycle → diff. On main it
+      additionally runs register / changelog / metrics against BOTH Glue
+      registries. The diff step distinguishes breaking from non-breaking
+      changes and blocks the former; the enforce-lifecycle step blocks any
+      active-status schema removal; Pass 5 of the validate step blocks any
+      schema that declares additionalProperties: false, preventing the
+      closed-schema pattern from being re-introduced by a future schema
+      regeneration or manual edit.
 
   x-semantic-contract:
     summary: >-
@@ -3290,14 +3283,14 @@ components:
             data:
               $ref: '#/components/schemas/TrialStartedPayload'
 
-    # ── Event payload schemas (CLOSED — additionalProperties: false) ────────
+    # ── Event payload schemas (OPEN — additionalProperties: true, LLD §16 OQ-6) ─
     # tenant_id IS repeated at the payload level for these events because the
     # on-disk JSON Schemas at internal/adapter/outbound/eventbus/schemas/*.json
     # require it — this reflects the ValidatingCodec's payload contract, which
     # is independent of the CloudEvents envelope-level tenant_id.
     DepartmentMembershipGrantedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3328,7 +3321,7 @@ components:
 
     DepartmentMembershipRevokedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3350,7 +3343,7 @@ components:
 
     DepartmentMembershipLevelChangedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3380,7 +3373,7 @@ components:
 
     TenantRoleGrantedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3405,7 +3398,7 @@ components:
 
     TenantRoleRevokedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3427,7 +3420,7 @@ components:
 
     MembershipRevokedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - user_id
@@ -3450,7 +3443,7 @@ components:
 
     MFAResetPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - user_id
@@ -3470,7 +3463,7 @@ components:
 
     TenderAssigneeOverriddenPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tender_id
         - tenant_id
@@ -3493,7 +3486,7 @@ components:
 
     TenantSeatOverageStartedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - licensed_seats
@@ -3527,7 +3520,7 @@ components:
 
     TenantSeatOverageResolvedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - resolved_at
@@ -3544,7 +3537,7 @@ components:
 
     TenantStateChangedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - status
@@ -3600,7 +3593,7 @@ components:
 
     TenantMembershipsPurgedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
       properties:
@@ -3618,7 +3611,7 @@ components:
 
     TenantCreatedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - slug
@@ -3651,7 +3644,7 @@ components:
 
     TrialStartedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - plan

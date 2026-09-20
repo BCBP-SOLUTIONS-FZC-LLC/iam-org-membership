@@ -10,7 +10,7 @@
     "new_level",
     "actor_id"
   ],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "user_id": {
       "type": "string",

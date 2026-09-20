@@ -1131,7 +1131,7 @@ Before a downstream service subscribes to `iam.membership.events` or `iam.tenant
 - [ ] Do not assume SNS preserves delivery order — handle via upsert-style projections, not insert-only. `MembershipRevoked` and a later re-grant for the same user can theoretically be redelivered out of order.
 
 **Infrastructure**
-- [ ] Configure a DLQ on the SQS subscription queue with `maxReceiveCount ≤ 5` — matches this service's own two inbound queues (`tenant-orgm-q`, `billing-orgm-q`).
+- [ ] Configure a DLQ on the SQS subscription queue with `maxReceiveCount ≤ 5` — matches this service's own three inbound queues (`tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q`).
 - [ ] Enforce `aws:SourceArn` in the SQS queue resource policy against the correct topic ARN.
 
 **Observability**
