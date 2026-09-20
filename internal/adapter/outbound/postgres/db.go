@@ -241,10 +241,6 @@ func isOperatorOrSystemErrorSQLState(err error) bool {
 	return strings.Contains(msg, "SQLSTATE 57") || strings.Contains(msg, "SQLSTATE 58")
 }
 
-// suppress unused-import warning until we add repositories in later phases;
-// withPool is exercised through the future repository layer.
-var _ = withPool
-
 // itoa is a tiny helper so callers can inline a LIMIT clause into a raw SQL
 // string without importing strconv for a single conversion. Moved here
 // (originally lived in the now-removed delegation_repository.go, ADR-0008

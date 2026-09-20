@@ -33,7 +33,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -59,27 +58,15 @@ func (c *HTTPClient) url(path string) string {
 	return c.baseURL + internalAPIBase + path
 }
 
-// Logger is the structured logging interface this client uses (Warn only).
-// *slog.Logger satisfies it directly (existing tests keep working
-// unchanged); so does port.SlogStyleLogger, which New() passes in from
-// main.go so these warnings flow through the same gincommon-backed sink as
-// the rest of the service instead of slog.Default().
-type Logger interface {
-	Warn(msg string, args ...any)
-}
-
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  Logger
+	logger  port.Logger
 }
 
 var _ port.RealmProvisionerClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
@@ -91,12 +78,17 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 }
 
 // New preserves the Phase 2 factory name so existing wiring compiles. log
-// is the shared gincommon-backed Logger (may be nil — see
-// port.SlogStyleLogger).
+// is the shared gincommon Zap logger (may be nil — warn() is then a no-op).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("REALM_PROVISIONER_BASE_URL", "")
 	timeout := envDurationMs("REALM_PROVISIONER_TIMEOUT_MS", 3*time.Second)
-	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
+	return NewHTTPClient(baseURL, timeout, log)
+}
+
+func (c *HTTPClient) warn(msg string, kv ...any) {
+	if c.logger != nil {
+		c.logger.Warn(msg, port.Fields(kv...))
+	}
 }
 
 func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {
@@ -104,7 +96,7 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 		// Dev fallback: return a random UUID so the invitation flow can
 		// proceed end-to-end without a running RP. Prod deployments set
 		// REALM_PROVISIONER_BASE_URL.
-		c.logger.Warn("rp: baseURL not configured — returning random KC user id (dev fallback)",
+		c.warn("rp: baseURL not configured — returning random KC user id (dev fallback)",
 			"email", req.Email)
 		return &port.CreateInvitedUserResponse{KeycloakUserID: uuid.New()}, nil
 	}
@@ -135,7 +127,7 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		c.logger.Warn("rp: CreateInvitedUser transport error", "email", req.Email, "error", err.Error())
+		c.warn("rp: CreateInvitedUser transport error", "email", req.Email, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -154,7 +146,7 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 
 func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error {
 	if c.baseURL == "" {
-		c.logger.Warn("rp: baseURL not configured — DeleteUser no-op (dev)")
+		c.warn("rp: baseURL not configured — DeleteUser no-op (dev)")
 		return nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
@@ -166,7 +158,7 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.logger.Warn("rp: DeleteUser transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
+		c.warn("rp: DeleteUser transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
 		return err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -183,12 +175,16 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 
 func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, patch port.RealmConfigPatch) error {
 	if c.baseURL == "" {
-		c.logger.Warn("rp: baseURL not configured — PatchRealmConfig no-op (dev)")
+		c.warn("rp: baseURL not configured — PatchRealmConfig no-op (dev)")
 		return nil
 	}
-	body := map[string]any{}
-	if patch.LocalAccountsEnabled != nil {
-		body["local_accounts_enabled"] = *patch.LocalAccountsEnabled
+	// RP expects generic {setting_key, desired_value} envelope (idp_handler.go applyRealmConfigRequest).
+	if patch.LocalAccountsEnabled == nil {
+		return nil // nothing to patch
+	}
+	body := map[string]any{
+		"setting_key":   "local_accounts_enabled",
+		"desired_value": *patch.LocalAccountsEnabled,
 	}
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
@@ -201,7 +197,7 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.logger.Warn("rp: PatchRealmConfig transport error", "tenant_id", tenantID, "error", err.Error())
+		c.warn("rp: PatchRealmConfig transport error", "tenant_id", tenantID, "error", err.Error())
 		return err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -218,7 +214,7 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 // backstop.
 func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error {
 	if c.baseURL == "" {
-		c.logger.Warn("rp: baseURL not configured — RevokeUserSessions no-op (dev, TTL backstop)")
+		c.warn("rp: baseURL not configured — RevokeUserSessions no-op (dev, TTL backstop)")
 		return nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -233,7 +229,7 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 		if metrics.AuthSessionRevokeFailed != nil {
 			metrics.AuthSessionRevokeFailed.WithLabelValues("transport").Inc()
 		}
-		c.logger.Warn("rp: RevokeUserSessions transport error — fail-open",
+		c.warn("rp: RevokeUserSessions transport error — fail-open",
 			"keycloak_user_id", keycloakUserID, "error", err.Error())
 		return err
 	}
@@ -245,7 +241,7 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 		metrics.AuthSessionRevokeFailed.WithLabelValues(fmt.Sprintf("%d", resp.StatusCode)).Inc()
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	c.logger.Warn("rp: RevokeUserSessions non-2xx — fail-open",
+	c.warn("rp: RevokeUserSessions non-2xx — fail-open",
 		"keycloak_user_id", keycloakUserID, "status", resp.StatusCode, "body", string(msg))
 	return fmt.Errorf("rp: RevokeUserSessions returned %d", resp.StatusCode)
 }
@@ -258,7 +254,7 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 // maps it to realm_provisioner_unavailable, 503), never swallowed.
 func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid.UUID) error {
 	if c.baseURL == "" {
-		c.logger.Warn("rp: baseURL not configured — ResetMFA no-op (dev)")
+		c.warn("rp: baseURL not configured — ResetMFA no-op (dev)")
 		return nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -270,7 +266,7 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.logger.Warn("rp: ResetMFA transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
+		c.warn("rp: ResetMFA transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
 		return err
 	}
 	defer resp.Body.Close() //nolint:errcheck

@@ -508,3 +508,57 @@ func (r *rcAndPubTxRunner) RunInTx(ctx context.Context, fn func(context.Context)
 }
 
 var _ port.TxRunner = (*rcAndPubTxRunner)(nil)
+
+// ── AUTH-9 (IB-3) — service-account defense-in-depth reject ────────────────
+
+// fakeTokenServiceClient is a settable stand-in for port.TokenServiceClient,
+// shared across this package's AUTH-9 tests (Assign here, ReconcileRoles in
+// membership_scenarios_test.go).
+type fakeTokenServiceClient struct {
+	isServiceAccountFn func(context.Context, uuid.UUID, uuid.UUID) (bool, error)
+}
+
+func (f *fakeTokenServiceClient) IsServiceAccount(ctx context.Context, tenantID, userID uuid.UUID) (bool, error) {
+	if f.isServiceAccountFn != nil {
+		return f.isServiceAccountFn(ctx, tenantID, userID)
+	}
+	return false, nil
+}
+
+var _ port.TokenServiceClient = (*fakeTokenServiceClient)(nil)
+
+// TestDeptMembership_Assign_ServiceAccountTarget_Returns403 verifies AUTH-9:
+// a target user that Token Service reports as a service account is rejected
+// before any other check (invalid-level check already passed).
+func TestDeptMembership_Assign_ServiceAccountTarget_Returns403(t *testing.T) {
+	ts := &fakeTokenServiceClient{
+		isServiceAccountFn: func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+			return true, nil
+		},
+	}
+	svc := service.NewDeptMembershipService(nil, nil, nil, nil, nil, nil, nil, &passthroughTxRunner{}).
+		WithTokenServiceClient(ts)
+
+	_, err := svc.Assign(context.Background(), uuid.New(), uuid.New(), uuid.New(), domain.DeptPreparator, uuid.New())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrServiceAccountNotGrantable)
+}
+
+// TestDeptMembership_Assign_TokenServiceError_FailsOpen verifies AUTH-9's
+// fail-open degrade: a Token Service error must not block Assign — the
+// primary guarantee is the structural composite-FK bar (TR-8/DM-4).
+func TestDeptMembership_Assign_TokenServiceError_FailsOpen(t *testing.T) {
+	ts := &fakeTokenServiceClient{
+		isServiceAccountFn: func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+			return false, errors.New("token_service_unavailable")
+		},
+	}
+	svc := buildAssignSvc(
+		&dmsFullDeptMemRepo{}, &dmsMembershipRepo{}, &dmsActiveTenantDeptRepo{}, nil,
+	).WithTokenServiceClient(ts)
+
+	_, err := svc.Assign(context.Background(), uuid.New(), uuid.New(), uuid.New(), domain.DeptPreparator, uuid.New())
+
+	require.NoError(t, err, "AUTH-9 check must fail open on Token Service outage")
+}

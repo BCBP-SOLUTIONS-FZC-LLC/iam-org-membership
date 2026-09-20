@@ -27,6 +27,7 @@ type InvitationService struct {
 	deptMems         port.DeptMembershipRepository
 	tenants          port.TenantRepository
 	rp               port.RealmProvisionerClient
+	tokenService     port.TokenServiceClient // AUTH-9 defense-in-depth — optional, see WithTokenServiceClient
 	cache            port.Cache
 	txRunner         port.TxRunner
 	logger           port.SlogStyleLogger
@@ -58,6 +59,32 @@ func NewInvitationService(
 		tenants: t, rp: rp, cache: cache, txRunner: txRunner,
 		logger: port.NewSlogStyleLogger(logger), expiryDays: expiryDays,
 	}
+}
+
+// WithTokenServiceClient injects the AUTH-9 defense-in-depth check. Optional
+// — nil (the zero value) means the check is skipped entirely (isServiceAccountOrDegrade
+// treats a nil client the same as a failed call: allow the operation), which
+// is safe because the primary guarantee is structural (composite FK bar).
+func (s *InvitationService) WithTokenServiceClient(c port.TokenServiceClient) *InvitationService {
+	s.tokenService = c
+	return s
+}
+
+// isServiceAccountOrDegrade calls Token Service's TS-5 lookup and, on
+// failure, degrades to false (allow the operation) rather than blocking the
+// whole Invite/AddFromRegister — AUTH-9 is defense-in-depth on top of the
+// structural composite-FK bar (TR-8/DM-4), not the primary guarantee.
+func (s *InvitationService) isServiceAccountOrDegrade(ctx context.Context, tenantID, userID uuid.UUID) bool {
+	if s.tokenService == nil {
+		return false
+	}
+	isServiceAccount, err := s.tokenService.IsServiceAccount(ctx, tenantID, userID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "invitation: IsServiceAccount call failed — degrading to allow (AUTH-9 is defense-in-depth, not the primary guarantee)",
+			"tenant_id", tenantID, "user_id", userID, "error", err.Error())
+		return false
+	}
+	return isServiceAccount
 }
 
 // WithReinviteCooldown sets the PI-11 per-email cooldown. 0 disables.
@@ -182,6 +209,17 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 	})
 	if err != nil {
 		return nil, domain.NewError(domain.ErrRealmProvisionerUnavailable, "realm provisioner unavailable")
+	}
+
+	// AUTH-9 defense-in-depth: reject if the just-created Keycloak user
+	// somehow resolves to the tenant's automation principal. In normal
+	// operation this can never fire — the automation principal is minted
+	// directly by the Realm Provisioner and never flows through this path
+	// — but checked here, before any local write, rather than relying
+	// solely on the structural composite-FK bar.
+	if s.isServiceAccountOrDegrade(ctx, tenantID, rpResp.KeycloakUserID) {
+		return nil, domain.NewError(domain.ErrServiceAccountNotGrantable,
+			"service accounts cannot be invited as tenant members")
 	}
 
 	// SEAT-1/TM-13 (LLD line 815, 40): transactional cap re-check under
@@ -323,6 +361,16 @@ func (s *InvitationService) preflightSeatCheck(ctx context.Context, tenantID uui
 // — in that case we still let acceptance proceed (SEAT-3 keeps existing
 // users; only new invites are blocked), matching the LLD's SEAT-4 posture.
 func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userID uuid.UUID, keycloakUserID uuid.UUID, email string) (*domain.TenantMembership, error) {
+	// AUTH-9 defense-in-depth: reject before any write if the registering
+	// subject resolves to the tenant's automation principal. In normal
+	// operation this can never fire — the automation principal is minted
+	// directly by the Realm Provisioner and never flows through the
+	// REGISTER webhook — but checked here rather than relying solely on
+	// the structural composite-FK bar.
+	if s.isServiceAccountOrDegrade(ctx, tenantID, keycloakUserID) {
+		return nil, domain.NewError(domain.ErrServiceAccountNotGrantable,
+			"service accounts cannot be enrolled as tenant members")
+	}
 	// Look for a matching pending invitation.
 	email = normalizeEmail(email)
 	// GAP-I3-1: reject structurally invalid email before any DB call.

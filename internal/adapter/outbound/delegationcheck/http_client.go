@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,29 +46,21 @@ import (
 // from the metric's "service" const label (this service's own identity).
 const xsvcService = "delegation"
 
-// Logger is the structured logging interface this client uses (Warn only).
-// *slog.Logger satisfies it directly (existing tests keep working
-// unchanged); so does port.SlogStyleLogger, which New() passes in from
-// main.go so these warnings flow through the same gincommon-backed sink as
-// the rest of the service instead of slog.Default().
-type Logger interface {
-	Warn(msg string, args ...any)
-}
-
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  Logger
+	logger  port.Logger
 }
 
 var _ port.DelegationCheckClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
+	// Gap-8 fix: raised default from 300ms to 1000ms. 300ms was too tight —
+	// under load or cold-start the Delegation Service timed out frequently,
+	// causing org_membership to fall back to tenant-wide impact scoping more
+	// often than intended. DELEGATION_TIMEOUT_MS can still override this.
 	if timeout <= 0 {
-		timeout = 300 * time.Millisecond
+		timeout = 1000 * time.Millisecond
 	}
 	return &HTTPClient{
 		baseURL: baseURL,
@@ -80,11 +71,27 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 
 // New preserves the sibling clients' factory-name convention so main.go's
 // wiring reads the same way for every outbound client. log is the shared
-// gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
+// gincommon Zap logger (may be nil — warn() is then a no-op).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("DELEGATION_BASE_URL", "")
-	timeout := envDurationMs("DELEGATION_TIMEOUT_MS", 300*time.Millisecond)
-	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
+	// Gap-8 fix: raised default from 300ms to 1000ms — see NewHTTPClient.
+	timeout := envDurationMs("DELEGATION_TIMEOUT_MS", 1000*time.Millisecond)
+	if baseURL == "" {
+		// Warn at construction time so a missing DELEGATION_BASE_URL is
+		// visible in startup logs, not silently discovered on first call.
+		warn(log, "delegationcheck: DELEGATION_BASE_URL is not set — dept-scope precision lookup (DLG-I3) will be unavailable; falling back to tenant-wide impact scoping on every removal")
+	}
+	return NewHTTPClient(baseURL, timeout, log)
+}
+
+func warn(log port.Logger, msg string, kv ...any) {
+	if log != nil {
+		log.Warn(msg, port.Fields(kv...))
+	}
+}
+
+func (c *HTTPClient) warn(msg string, kv ...any) {
+	warn(c.logger, msg, kv...)
 }
 
 // deptDelegateResponse mirrors iam-delegation's DeptDelegateResponse DTO
@@ -119,7 +126,7 @@ func (c *HTTPClient) DeptDelegate(ctx context.Context, tenantID, userID, deptID 
 	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
-		c.logger.Warn("delegationcheck: DeptDelegate transport error", "tenant_id", tenantID, "user_id", userID, "dept_id", deptID, "error", err.Error())
+		c.warn("delegationcheck: DeptDelegate transport error", "tenant_id", tenantID, "user_id", userID, "dept_id", deptID, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -128,7 +135,7 @@ func (c *HTTPClient) DeptDelegate(ctx context.Context, tenantID, userID, deptID 
 			metrics.IncDependencyError(xsvcService, endpoint, "5xx")
 		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		c.logger.Warn("delegationcheck: DeptDelegate non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))
+		c.warn("delegationcheck: DeptDelegate non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))
 		return nil, fmt.Errorf("delegationcheck: DeptDelegate returned %d: %s", resp.StatusCode, string(msg))
 	}
 	var out deptDelegateResponse

@@ -8,7 +8,7 @@
     "user_id",
     "actor_id"
   ],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "tender_id": {
       "type": "string",

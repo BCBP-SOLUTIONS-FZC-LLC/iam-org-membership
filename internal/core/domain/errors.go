@@ -17,12 +17,22 @@ import "errors"
 //   - Phase 4: outbound-client 503 codes
 var (
 	// Common / cross-cutting
-	ErrValidation             = errors.New("validation_error")
-	ErrMissingIdentity        = errors.New("missing_identity_headers")
-	ErrInsufficientRole       = errors.New("insufficient_role")
-	ErrOptimisticLockConflict = errors.New("optimistic_lock_conflict")
-	ErrDependencyUnavailable  = errors.New("dependency_unavailable")
-	ErrNoMutableField         = errors.New("no_mutable_field")
+	ErrValidation       = errors.New("validation_error")
+	ErrMissingIdentity  = errors.New("missing_identity_headers")
+	ErrInsufficientRole = errors.New("insufficient_role")
+	// ErrServiceAccountNotGrantable is AUTH-9's defense-in-depth reject on
+	// the membership-create (P-6/I-3) and role-grant (P-10/P-28) paths: the
+	// target subject resolves to a service_account-typed Keycloak principal
+	// (the per-tenant `platform-automation` automation principal, HLD §5.8)
+	// — non-members cannot be enrolled or granted a role. The primary
+	// guarantee is structural (the automation principal never flows through
+	// these paths and both role tables carry a composite FK to
+	// tenant_memberships, TR-8/DM-4 — "grant cannot exist without
+	// membership"); this error only fires if that's somehow bypassed.
+	ErrServiceAccountNotGrantable = errors.New("service_account_not_grantable")
+	ErrOptimisticLockConflict     = errors.New("optimistic_lock_conflict")
+	ErrDependencyUnavailable      = errors.New("dependency_unavailable")
+	ErrNoMutableField             = errors.New("no_mutable_field")
 
 	// Not-found (§17 404 family)
 	ErrTenantNotFound     = errors.New("tenant_not_found")

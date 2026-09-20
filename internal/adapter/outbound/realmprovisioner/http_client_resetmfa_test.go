@@ -14,7 +14,6 @@ package realmprovisioner
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,7 +25,7 @@ import (
 
 func TestResetMFA_EmptyBaseURL_NoOpReturnsNil(t *testing.T) {
 	// Branch 1: baseURL == "" → dev fallback, no-op.
-	c := NewHTTPClient("", 0, slog.Default())
+	c := NewHTTPClient("", 0, nil)
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	assert.NoError(t, err, "empty baseURL must be a no-op returning nil")
 }
@@ -39,7 +38,7 @@ func TestResetMFA_TransportError_ReturnsError(t *testing.T) {
 	// Close the server immediately so any connection attempt fails.
 	srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err, "transport error must be surfaced to the caller (fail-closed)")
 }
@@ -51,7 +50,7 @@ func TestResetMFA_Non2xx_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err, "non-2xx must be surfaced to the caller (fail-closed)")
 	assert.Contains(t, err.Error(), "503")
@@ -66,7 +65,7 @@ func TestResetMFA_Success_2xx_ReturnsNil(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	assert.NoError(t, err, "2xx response must return nil (success)")
 }

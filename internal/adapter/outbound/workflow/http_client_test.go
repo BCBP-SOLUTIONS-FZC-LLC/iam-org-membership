@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,7 +56,7 @@ func TestP10WF001_GetDelegateImpactHappy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	impact, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, impact)
@@ -84,7 +83,7 @@ func TestP10WF001_GetDelegateImpactHappy(t *testing.T) {
 //
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
 func TestP10WF002_WFI13FailOpenWhenUnconfigured(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	c := NewHTTPClient("", 5*time.Second, nil)
 	impact, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err, "WFI-13 fail-open: no error when unconfigured")
 	require.NotNil(t, impact)
@@ -112,7 +111,7 @@ func TestP10WF003_GetDelegateImpactWithDelegationID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	delID := uuid.New()
 	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), &delID)
 	require.NoError(t, err)
@@ -137,7 +136,7 @@ func TestP10WF004_GetDelegateImpactNon2xx(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.Error(t, err, "5xx must propagate as an error")
 }
@@ -162,7 +161,7 @@ func TestP10WF005_TimeoutEnforced(t *testing.T) {
 		_, _ = w.Write([]byte(`{"active_workflows":0}`))
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 50*time.Millisecond, slog.Default())
+	c := NewHTTPClient(srv.URL, 50*time.Millisecond, nil)
 	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.Error(t, err, "server latency > timeout must produce transport error")
 }
@@ -195,7 +194,7 @@ func TestP10WF006_ReassignDelegateHappy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	tenant, old, new := uuid.New(), uuid.New(), uuid.New()
 	delID := uuid.New()
 	err := c.ReassignDelegate(context.Background(), tenant, old, new, &delID)
@@ -220,7 +219,7 @@ func TestP10WF006_ReassignDelegateHappy(t *testing.T) {
 //
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
 func TestP10WF007_ReassignDelegateWFI13Fail(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	c := NewHTTPClient("", 5*time.Second, nil)
 	err := c.ReassignDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err, "WFI-13: unconfigured Workflow client returns nil for POSTs")
 }
@@ -236,7 +235,7 @@ func TestP10WF008_CancelByDelegateHappy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 }
@@ -251,7 +250,7 @@ func TestP10WF009_CancelByDelegateNon2xx(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
 	require.Error(t, err)
 }
@@ -283,7 +282,7 @@ func TestP10WF010_HeadersPropagated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	tenant := uuid.New()
 	_, err := c.GetDelegateImpact(context.Background(), tenant, uuid.New(), nil)
 	require.NoError(t, err)
@@ -308,7 +307,7 @@ func TestP10WF011_ParsesWorkflowIDsArray(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	impact, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 3, impact.ActiveWorkflows)
@@ -328,7 +327,7 @@ func TestP10WF012_PostSetsContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.ReassignDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(gotCT, "application/json"),

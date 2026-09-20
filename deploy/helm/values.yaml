@@ -111,9 +111,19 @@ env:
   GROUP_MAPPING_TIMEOUT_MS: "300"
   # delegation (ADR-0008 v2) — fails open on the §8.8.4 dept-scope
   # pre-filter, degrading to tenant-wide delegate-impact scoping; see
-  # internal/adapter/outbound/delegationcheck.
+  # internal/adapter/outbound/delegationcheck. Gap-8 fix (2026-09-17) raised
+  # the code default from 300ms to 1000ms — 300ms was too tight under load
+  # or cold-start; this value was left stale at the old default, which would
+  # have silently overridden the fix on every real deploy. Corrected here.
   DELEGATION_BASE_URL: ""
-  DELEGATION_TIMEOUT_MS: "300"
+  DELEGATION_TIMEOUT_MS: "1000"
+  # token-service (AUTH-9/IB-3) — fails open on the membership-create
+  # (P-6/I-3) and role-grant (P-10/P-28) service-account-not-grantable
+  # check; the primary guarantee is structural (composite FK bar, TR-8/
+  # DM-4), so an unset/unreachable value just degrades to allowing the
+  # operation. See internal/adapter/outbound/tokenservice.
+  TOKEN_SERVICE_BASE_URL: ""
+  TOKEN_SERVICE_TIMEOUT_MS: "1000"
 
   # OpenTelemetry.
   OTEL_SERVICE_NAME: "iam-org-membership"

@@ -1,56 +1,79 @@
-// Metric exporter goroutines started from main.go (§11.2). Each polls
-// the sysPool every 5 minutes and updates the corresponding gauge.
-// Follows the sibling iam-user-profile2 pattern.
+// Metric exporter goroutines started from main.go (§11.2). Each polls the
+// BYPASSRLS sysPool on an interval and refreshes one DB-state gauge.
+// Follows the sibling iam-realm-provisioner cmd/server/exporters.go pattern:
+// exporters run as goroutines in the server pod, not as CronJobs, so the
+// pod that serves /metrics is also the one that populates them. The SQL
+// itself lives in the postgres adapter (pgadapter.GaugeRepository) — no
+// SQL and no pgxpool.WithConn in this file.
 package main
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/jackc/pgx/v5/pgxpool"
+	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 )
 
 const exporterInterval = 5 * time.Minute
 
 // runBusinessExporters starts 4 goroutines that keep the T-13, T-15,
-// SEAT-5, and invitation-stale gauges fresh. The sysPool bypasses RLS
-// (§4.4) since these queries are cross-tenant.
+// SEAT-5, and invitation-stale gauges fresh. gauges MUST be constructed
+// over the BYPASSRLS sysPool (§4.4) since these queries are cross-tenant.
 //
 // Every exporter emits once at startup (populates the gauge before the
 // first Prometheus scrape), then on a 5-minute ticker. Errors are logged
 // at Warn — a scrape returning stale data is preferable to a panic.
-func runBusinessExporters(ctx context.Context, sysPool *pgcommon.Pool, log Logger) {
-	go runGaugeExporter(ctx, sysPool, log,
-		"tenant_ownerless",
-		`SELECT count(*) FROM tenants WHERE ownerless_since IS NOT NULL AND deleted_at IS NULL`,
-		func(v int) { metrics.TenantOwnerless.Set(float64(v)) })
-	go runGaugeExporter(ctx, sysPool, log,
-		"realm_sync_pending",
-		`SELECT count(*) FROM tenants WHERE realm_sync_pending = true AND deleted_at IS NULL`,
-		func(v int) { metrics.RealmSyncPending.Set(float64(v)) })
-	go runGaugeExporter(ctx, sysPool, log,
-		"seat_overage_active",
-		`SELECT count(*) FROM tenants WHERE overage_since IS NOT NULL AND deleted_at IS NULL`,
-		func(v int) { metrics.SeatOverageActive.Set(float64(v)) })
-	go runGaugeExporter(ctx, sysPool, log,
-		"pending_invitations_stale",
-		`SELECT count(*) FROM pending_invitations WHERE status = 'pending' AND expires_at < now()`,
-		func(v int) { metrics.PendingInvitationsStale.Set(float64(v)) })
-}
-
-func runGaugeExporter(ctx context.Context, pool *pgcommon.Pool, log Logger, name, sql string, set func(int)) {
-	tick(ctx, name, log, func() error {
-		var n int
-		err := pool.WithConn(ctx, func(ctx context.Context, conn *pgxpool.Conn) error {
-			return conn.QueryRow(ctx, sql).Scan(&n)
-		})
+func runBusinessExporters(ctx context.Context, gauges *pgadapter.GaugeRepository, log port.Logger) {
+	go tick(ctx, "tenant_ownerless", log, func() error {
+		n, err := gauges.CountOwnerlessTenants(ctx)
 		if err != nil {
 			return err
 		}
-		set(n)
+		metrics.TenantOwnerless.Set(float64(n))
+		return nil
+	})
+	go tick(ctx, "realm_sync_pending", log, func() error {
+		n, err := gauges.CountRealmSyncPending(ctx)
+		if err != nil {
+			return err
+		}
+		metrics.RealmSyncPending.Set(float64(n))
+		return nil
+	})
+	go tick(ctx, "seat_overage_active", log, func() error {
+		n, err := gauges.CountSeatOverageActive(ctx)
+		if err != nil {
+			return err
+		}
+		metrics.SeatOverageActive.Set(float64(n))
+		return nil
+	})
+	go tick(ctx, "pending_invitations_stale", log, func() error {
+		n, err := gauges.CountPendingInvitationsStale(ctx)
+		if err != nil {
+			return err
+		}
+		metrics.PendingInvitationsStale.Set(float64(n))
+		return nil
+	})
+	// iam_rls_violations_total was registered but never incremented in
+	// production — this closes that gap, mirroring iam-user-profile's
+	// runRLSViolationExporter. Counter is monotone (never decreases), so
+	// alerts use rate()/increase() over the same window and stay stable
+	// across pod restarts; rls_violation_log is the source of truth, not
+	// this counter's in-memory value.
+	go tick(ctx, "rls_violations", log, func() error {
+		counts, err := gauges.RLSViolationCounts(ctx, exporterInterval)
+		if err != nil {
+			return err
+		}
+		for vType, n := range counts {
+			if n > 0 {
+				metrics.RLSViolations.WithLabelValues(vType).Add(float64(n))
+			}
+		}
 		return nil
 	})
 }
@@ -59,10 +82,10 @@ func runGaugeExporter(ctx context.Context, pool *pgcommon.Pool, log Logger, name
 // Prometheus scrape), then again on every exporterInterval tick, until ctx
 // is canceled. emit errors are logged at Warn — a scrape returning stale
 // data is preferable to a panic — and never stop the loop.
-func tick(ctx context.Context, name string, log Logger, emit func() error) {
+func tick(ctx context.Context, name string, log port.Logger, emit func() error) {
 	run := func() {
 		if err := emit(); err != nil {
-			log.Warn("gauge exporter query failed", map[string]interface{}{"gauge": name, "error": err.Error()})
+			log.Warn("gauge exporter query failed", map[string]any{"gauge": name, "error": err.Error()})
 		}
 	}
 	run()
@@ -77,14 +100,3 @@ func tick(ctx context.Context, name string, log Logger, emit func() error) {
 		}
 	}
 }
-
-// Logger is the narrow subset of the gincommon zap logger this file uses;
-// declared here so we don't take a dependency on the full type.
-type Logger interface {
-	Warn(msg string, fields map[string]interface{})
-	Info(msg string, fields map[string]interface{})
-	Error(msg string, fields map[string]interface{})
-}
-
-// silence unused-import warning under -tags=integration
-var _ = slog.Default

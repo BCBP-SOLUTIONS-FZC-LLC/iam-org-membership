@@ -23,8 +23,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
+	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 )
 
 // ── shared RP fake for reconciler tests ─────────────────────────────────────
@@ -71,8 +73,15 @@ func TestREC_OUTBOX_001_PruneDropsOnlyRowsPastRetention(t *testing.T) {
 	// Unpublished — never touched by prune.
 	unpubIDs := insertOutboxRows(t, ctx, rawPool, tenantID, 2, "-30 days", false)
 
+	outboxRunner, err := outbox.NewRunner(outbox.Config{
+		Pool:      sysPool,
+		Publisher: eventbusadapter.NoopPublisher{},
+	})
+	require.NoError(t, err)
+
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
 		Reconciler:          pgadapter.NewReconcilerStore(sysPool),
+		OutboxRunner:        outboxRunner,
 		OutboxRetentionDays: 8,
 	})
 	require.NoError(t, err)
@@ -96,8 +105,15 @@ func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
 	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
 	ctx := context.Background()
+	outboxRunner, err := outbox.NewRunner(outbox.Config{
+		Pool:      sysPool,
+		Publisher: eventbusadapter.NoopPublisher{},
+	})
+	require.NoError(t, err)
+
 	res, err := jobs.OutboxPrune(ctx, &jobs.Context{
 		Reconciler:          pgadapter.NewReconcilerStore(sysPool),
+		OutboxRunner:        outboxRunner,
 		OutboxRetentionDays: 8,
 	})
 	require.NoError(t, err)

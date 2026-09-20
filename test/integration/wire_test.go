@@ -19,7 +19,6 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -413,6 +412,3 @@ func TestPublisherStampsEventTypeAttribute(t *testing.T) {
 	assert.Equal(t, domain.EventMembershipRevoked, *attr.StringValue,
 		"P12-ATTR-001: EventType attribute must equal event Type")
 }
-
-// Silence unused-import in this file when trimmed.
-var _ = slog.Default

@@ -2,7 +2,7 @@
 
 This document describes the internal structure, dependency rules, and runtime data flows of `iam-org-membership`.
 
-`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.6) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.3, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **two binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus two inbound SQS consumers and the transactional outbox runner) and `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 7 CronJobs).
+`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.6) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.3, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **two binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers and the transactional outbox runner) and `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 7 CronJobs).
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service. This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -19,7 +19,7 @@ The service is organised in concentric Clean Architecture layers. Inner layers h
 ```mermaid
 graph TD
     subgraph cmd["Composition Roots  —  cmd/"]
-        main["server/main.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6)\nrouter registration + gincommon.DefaultMiddlewares\n4 in-process metric exporters (ticker goroutines):\n  iam_org_membership_tenant_ownerless · iam_org_membership_realm_sync_pending\n  iam_org_membership_seat_overage_active · iam_org_membership_pending_invitations_stale\nRoutingPublisher (2 SNS topics, each with its own GlueCodec) + outbox runner\ngraceful shutdown: SIGTERM → gincommon.Shutdown, terminationGracePeriodSeconds=75"]
+        main["server/main.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6)\nrouter registration + gincommon.DefaultMiddlewares\n5 in-process metric exporters (ticker goroutines):\n  iam_org_membership_tenant_ownerless · iam_org_membership_realm_sync_pending\n  iam_org_membership_seat_overage_active · iam_org_membership_pending_invitations_stale\n  iam_rls_violations_total (counter, rls_violation_log scrape)\nRoutingPublisher (2 SNS topics, each with its own GlueCodec) + outbox runner\ngraceful shutdown: SIGTERM → gincommon.Shutdown, terminationGracePeriodSeconds=75"]
         swagger_info["server/swagger_info.go\nSwaggo API metadata annotations"]
         reconciler["reconciler/main.go\nsingle binary, --job=<name> dispatch\nselects one of 7 CronJobs (§13.1):\n  invitation-expiry · invitation-kc-cleanup\n  realm-config-sync · seat-overage-reconcile\n  trial-cleanup · outbox-prune · processed-events-prune"]
     end
@@ -37,7 +37,8 @@ graph TD
         rp["realmprovisioner/\nport.RealmProvisionerClient impl (HTTP)\nCreateInvitedUser (§8.10) · DeleteUser (idempotent, PI-9)\nPatchRealmConfig (T-15) · RevokeUserSessions (AUTH-8 fail-open) · ResetMFA (RP-9 fail-closed)\nREALM_PROVISIONER_TIMEOUT_MS=3000"]
         catalogadmin["catalogadmin/\nport.CatalogAdminClient impl (HTTP)\nGET /internal/plans · GET /internal/departments\nADR-0007 Wave 1, NOT fail-open — catalog_unavailable on cold-cache+failure\nCATALOG_ADMIN_TIMEOUT_MS=3000"]
         groupmappingclient["groupmappingclient/\nport.GroupMappingClient impl (HTTP)\nPOST /internal/tenants/:id/group-resolution (I-10 JIT)\nADR-0007 Wave 2, fails OPEN (empty resolution)\nGROUP_MAPPING_TIMEOUT_MS=300"]
-        delegationcheck["delegationcheck/\nport.DelegationCheckClient impl (HTTP)\nGET /internal/delegations/dept-delegate (§8.8.4 precision lookup)\nADR-0008, fails OPEN to tenant-wide impact scoping\nDELEGATION_TIMEOUT_MS=300"]
+        delegationcheck["delegationcheck/\nport.DelegationCheckClient impl (HTTP)\nGET /internal/delegations/dept-delegate (§8.8.4 precision lookup)\nADR-0008, fails OPEN to tenant-wide impact scoping\nDELEGATION_TIMEOUT_MS=1000 (raised from 300, Gap-8 fix)"]
+        tokenservice["tokenservice/\nport.TokenServiceClient impl (HTTP)\nGET /service-accounts?principal_sub= (Token Service TS-5)\nAUTH-9/IB-3, fails OPEN — degrades to allowing the membership-create\n(P-6/I-3) / role-grant (P-10/P-28) operation\nTOKEN_SERVICE_TIMEOUT_MS=1000"]
         metrics["metrics/\nbusiness.go — 19 counters, 2 histograms, 4 gauges, three-tier IAM Platform\nObservability Standard (platform_*/iam_*/iam_org_membership_*):\nplatform_messages_received/processed/failed_total{queue} · platform_duplicate_messages_total{consumer}\niam_org_membership_delegate_removal_blocked_total{scope} · iam_org_membership_seat_limit_reached_total{plan}\niam_lifecycle_event_skipped_total (EVT-14) · platform_dlq_messages_total (EVT-15)\niam_org_membership_tenant_ownerless (gauge) · iam_org_membership_realm_sync_pending (gauge) · iam_org_membership_seat_overage_active (gauge)\niam_org_membership_pending_invitations_stale (gauge) · iam_lifecycle_event_lag_seconds (histogram)\nplatform_dependency_request_seconds{target_service,endpoint} · platform_dependency_errors_total{target_service,endpoint,outcome}"]
     end
 
@@ -72,6 +73,7 @@ graph TD
     main        --> catalogadmin
     main        --> groupmappingclient
     main        --> delegationcheck
+    main        --> tokenservice
     main        --> metrics
     reconciler  --> postgres
     reconciler  --> eventbus
@@ -96,6 +98,7 @@ graph TD
     catalogadmin --> port
     groupmappingclient --> port
     delegationcheck --> port
+    tokenservice --> port
     port        --> domain
     unit        -.->|"imports"| service
     unit        -.->|"imports"| domain
@@ -131,6 +134,7 @@ graph LR
     catalogadmin(["adapter/outbound/catalogadmin"])
     groupmappingclient(["adapter/outbound/groupmappingclient"])
     delegationcheck(["adapter/outbound/delegationcheck"])
+    tokenservice(["adapter/outbound/tokenservice\n(AUTH-9/IB-3, fails OPEN)"])
     metrics(["adapter/outbound/metrics\n(observability)"])
 
     tenant_svc(["core/service — TenantService"])
@@ -160,6 +164,7 @@ graph LR
     main        --> catalogadmin
     main        --> groupmappingclient
     main        --> delegationcheck
+    main        --> tokenservice
     main        --> metrics
     main        --> tenant_svc
     main        --> dept_svc
@@ -229,6 +234,7 @@ graph LR
     catalogadmin --> port
     groupmappingclient --> port
     delegationcheck --> port
+    tokenservice --> port
 
     port        --> domain
 ```
@@ -611,11 +617,131 @@ Note the honest gap this diagram documents: five key builders exist on `valkey.C
 
 ---
 
-## Data model overview
+## Data model
 
-Database `org_membership` on shared RDS PostgreSQL (Multi-AZ, PgBouncer transaction pooling). **8 tables**: 7 tenant-scoped with `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` (two separate `ALTER TABLE` statements per table — `FORCE` is what makes the policy apply even to the table owner) + `REVOKE ALL FROM PUBLIC` + a `tenant_isolation` policy on `app.tenant_id` (`tenants`, `tenant_departments`, `tenant_memberships`, `tenant_roles`, `dept_memberships`, `dept_role_labels`, `pending_invitations`), plus `processed_events` (RLS-exempt, global, 8-day retention — PE-1, strictly longer than the 7-day SQS message lifetime). `rls_violation_log` is a 9th, 1%-sampled audit table written by `log_rls_violation()`, with RLS deliberately disabled on it so its own insert can't recurse into a policy check. Since this service has never been deployed, the schema is one consolidated migration (`000000_initial_schema`) rather than an incremental history with dead expand/contract steps to carry forward.
+Database `org_membership` on shared RDS PostgreSQL (Multi-AZ, PgBouncer transaction pooling). **8 tables**, RLS via the `app.tenant_id` GUC on the 7 tenant-scoped ones — no cross-database foreign keys (the composite FKs the ADR-0007/ADR-0008 decomposition lost are replaced by app-level checks against read-through caches, or by other services' new I-15 existence check, described below the diagram). Since this service has never been deployed, the schema is one consolidated migration (`000000_initial_schema`) rather than an incremental history with dead expand/contract steps to carry forward.
 
-7 of the 8 tables carry `record_version` (all but `processed_events`), bumped by the shared `touch_row()` `BEFORE UPDATE` trigger, guarded by `WHEN (OLD.* IS DISTINCT FROM NEW.*)` so a no-op write never spuriously advances the version or triggers a redundant event (TRG-1/TRG-3). Partial unique indexes (`WHERE deleted_at IS NULL` on `tenant_memberships`/`tenant_roles`/`dept_memberships`, `WHERE status = 'pending'` on `pending_invitations`) let a user rejoin a tenant or department previously left. `tenants.realm_id` carries a partial unique index scoped to `WHERE realm_type = 'dedicated'` — a shared-realm tenant's `realm_id` is deliberately not unique.
+> Source: [`docs/architecture/mermaid/data-model.mmd`](docs/architecture/mermaid/data-model.mmd)
+
+```mermaid
+erDiagram
+    tenants {
+        uuid id PK
+        text slug UK "immutable (T-1)"
+        text name
+        tenant_plan plan "ENUM starter-pro-enterprise, no local FK — validated against Catalog Service (om:plans)"
+        jsonb feature_flags "override delta only, not the effective set (T-9)"
+        subscription_status status "ENUM trial-active-past_due-cancelled-suspended-trial_expired-offboarded"
+        timestamptz trial_ends_at "required for trial/trial_expired (T-4)"
+        int trial_reactivation_count "0..1 cap (T-14)"
+        timestamptz subscription_started_at "required for paid statuses (T-5)"
+        timestamptz cancelled_at "biconditional with status, CASE'd by suspension_source (T-11/T-16)"
+        suspension_source suspension_source "ENUM billing_lapse-operator, non-NULL iff status=suspended (T-16)"
+        timestamptz last_event_at "EVT-14 recency high-water mark"
+        text realm_id "unique WHERE realm_type=dedicated (T-6)"
+        realm_type realm_type "ENUM shared-dedicated, explicit not derived (T-6)"
+        text keycloak_shard "RP-owned projection, O&M never selects (T-12)"
+        int mfa_freshness_seconds "60..900 (T-10)"
+        boolean local_accounts_enabled
+        boolean realm_sync_pending "T-15 Option A reconcile marker"
+        text default_locale "BCP-47"
+        int licensed_seats "SEAT-1 cap, must be positive (T-8)"
+        timestamptz ownerless_since "set by TM-12, cleared only by O-7 (T-13)"
+        timestamptz overage_since "SEAT-5"
+        bigint record_version "optimistic lock, DB-owned (TRG-1)"
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at "GDPR wipe only (T-7)"
+    }
+    tenant_departments {
+        uuid tenant_id PK "composite PK with department_id, no separate id — also FK to tenants (TD-7)"
+        uuid department_id PK "external — global catalog lives in Catalog Service, no local FK"
+        boolean is_active
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    tenant_memberships {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id "Keycloak sub"
+        membership_status status "ENUM active-suspended-left, lifecycle only — no role data (§16 A14)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at "GDPR wipe only (TM-5)"
+    }
+    tenant_roles {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id
+        uuid tenant_membership_id FK "composite (id,tenant_id,user_id) -> tenant_memberships, TR-8"
+        tenant_role role_code "ENUM tenant_owner-tenant_admin-tender_admin, 'member' barred at DB level (TR-7)"
+        uuid granted_by "granter's Keycloak sub, audit only"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at "soft-delete on revoke"
+    }
+    dept_memberships {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id
+        uuid tenant_membership_id FK "composite (id,tenant_id,user_id) -> tenant_memberships, DM-4"
+        uuid department_id FK "composite (tenant_id,department_id) -> tenant_departments — user can only be assigned to an activated dept"
+        dept_role role_level "ENUM preparator-reviewer-approver"
+        uuid granted_by "'iam-system' UUID for JIT grants (DM-5)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at
+    }
+    dept_role_labels {
+        uuid id PK
+        uuid tenant_id FK
+        dept_role role_code UK "ENUM, paired with tenant_id for uniqueness"
+        text display_name "presentation only, no group-mapping data (DRL-2)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    pending_invitations {
+        uuid id PK
+        uuid tenant_id FK
+        citext email "case-insensitive — one PII exception, cleared at acceptance"
+        text full_name "second PII exception, cleared at acceptance"
+        tenant_role_array initial_tenant_roles "native ENUM array, not jsonb"
+        jsonb initial_dept_mappings "[{department_id, level}], applied on acceptance"
+        uuid invited_by "inviting admin's Keycloak sub"
+        uuid keycloak_user_id "set post-RP CreateInvitedUser, nullable until then"
+        invitation_status status "ENUM pending-accepted-expired-revoked (§16 A11)"
+        timestamptz expires_at "default 7d, coupled to INVITATION_EXPIRY_DAYS / KC action-token lifespan"
+        timestamptz accepted_at "biconditional with status=accepted (PI-2)"
+        boolean kc_cleanup_pending "saga-compensation marker for invitation-kc-cleanup CronJob (PI-9)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    processed_events {
+        text event_id PK "envelope id, SQS dedup"
+        text consumer PK "iam-org-membership or catalog — two independent dedup buckets"
+        timestamptz processed_at
+    }
+
+    tenants ||--o{ tenant_departments  : "fk_td_tenant, ON DELETE CASCADE"
+    tenants ||--o{ tenant_memberships  : "fk_tm_tenant, ON DELETE CASCADE"
+    tenants ||--o{ tenant_roles        : "fk_tnr_tenant, ON DELETE CASCADE"
+    tenants ||--o{ dept_memberships    : "fk_dm_tenant, ON DELETE CASCADE"
+    tenants ||--o{ dept_role_labels    : "fk_drl_tenant, ON DELETE CASCADE"
+    tenants ||--o{ pending_invitations : "fk_pi_tenant, ON DELETE CASCADE"
+    tenant_memberships ||--o{ tenant_roles     : "fk_tnr_tenant_membership, composite (id,tenant_id,user_id)"
+    tenant_memberships ||--o{ dept_memberships : "fk_dm_tenant_membership, composite (id,tenant_id,user_id)"
+    tenant_departments ||--o{ dept_memberships : "fk_dm_tenant_dept, composite (tenant_id,department_id)"
+```
+
+`rls_violation_log` also exists (not a business table — a 1%-sampled RLS-disabled audit sink written by `log_rls_violation()`, disabled specifically so its own insert can't recurse into a policy check) and is omitted from the ER diagram for that reason, same convention as `iam-delegation`'s own data model.
+
+7 of the 8 tables carry `record_version` (all but `processed_events`), bumped by the shared `touch_row()` `BEFORE UPDATE` trigger, guarded by `WHEN (OLD.* IS DISTINCT FROM NEW.*)` so a no-op write never spuriously advances the version or triggers a redundant event (TRG-1/TRG-3). Partial unique indexes (`WHERE deleted_at IS NULL` on `tenant_memberships`/`tenant_roles`/`dept_memberships`, `WHERE status = 'pending'` on `pending_invitations`) let a user rejoin a tenant or department previously left.
 
 **Three Postgres roles** (`rls_check_tenant`/`app_tenant_id` are the enforcement functions the policies call):
 
@@ -734,7 +860,7 @@ graph LR
     subgraph request["Per-request (gincommon.ObservabilityMiddlewares — every HTTP call)"]
         panic["PanicRecovery\n· defer recover()\n· log panic + stack\n· record OTel error on span\n· emit http_panic_total\n· return 500 JSON"]
         reqid["RequestID\n· read x-request-id or generate UUID\n· echo X-Request-ID header"]
-        trace["Tracing (OTel)\n· extract W3C traceparent\n· start HTTP server span\n· propagated to Workflow/RP/Catalog/GroupMapping/Delegation\n  via each client's own propagateTraceparent"]
+        trace["Tracing (OTel)\n· extract W3C traceparent\n· start HTTP server span\n· propagated to Workflow/RP/Catalog/GroupMapping/Delegation/TokenService\n  via each client's shared httpx.NewClient (otelhttp transport)"]
         metricsmw["Metrics\n· increment http_active_requests\n· defer: duration, sizes, status class"]
         logging["Logging (Zap)\n· defer: structured http_request log\n· sanitize header values"]
         guc["GUCBridgeMiddleware\n· pgcommon.GUCSetFromContext binds\n  SET LOCAL app.tenant_id per tx (RLS-6)\n· never session-scoped SET (would leak\n  across pooled PgBouncer backends)"]
@@ -912,6 +1038,7 @@ if tag.RowsAffected() == 0 {
 | MFA reset (P-34) | Realm Provisioner (RP-9) | fail-closed | `503`, no `MFAReset` emitted — no reconciler exists for this |
 | User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow | fail-closed | `503 workflow_service_unavailable`, no change |
 | — dept-scope precision leg | Delegation | degrade | Falls back to tenant-wide impact scoping (correct, less precise) |
+| Service-account-not-grantable check (Invite P-6/I-3, role-grant P-10/P-28, AUTH-9/IB-3) | Token Service | fail-open | Degrades to allowing the operation — structural composite-FK bar (TR-8/DM-4) is the primary guarantee |
 | Suspension advisory (P-7) | Workflow | fail-open | Suspend commits; advisory omitted |
 | `local_accounts_enabled` change (P-2) | Realm Provisioner | fail-open + durable reconcile | Commits; `realm_sync_pending`, `realm-config-sync` CronJob converges |
 | P-6/P-24/P-10 catalog validation | Catalog Service | **fail-closed** | `503 catalog_unavailable` — the one dependency here that is deliberately not fail-open |
@@ -940,6 +1067,9 @@ if tag.RowsAffected() == 0 {
 | Cache is never the source of truth (CACHE-2/CACHE-9) | Every read path falls through to Postgres or the owning upstream on a miss/timeout/outage |
 | Secret material never touches this service | No Keycloak admin credential, no IdP secret — Keycloak Admin API calls are entirely Realm Provisioner's responsibility |
 | Delegate-impact gate never silently skips a blocked removal (WFI-3) | `active_workflows > 0` returns `409` with no DB write and no event — resolved only via explicit P-26 |
+| Every DB connection/pool goes through `pgcommon.NewPool`, never a raw `pgxpool`/`pgx.Connect`/`database/sql` | `golangci-lint`'s `forbidigo` rule (`.golangci.yml`), added 2026-09-20 — bans the construction functions repo-wide, production and test |
+| Every `outbox_events` mutation goes through `platform-events` (`outbox.Enqueue`/`outbox.Runner.PrunePublished`), never hand-rolled SQL | `.github/scripts/check-outbox-access.sh` (wired into `validate-quality.yml`), added 2026-09-21 — scans Go raw-string literals for SQL against `outbox_events` outside `internal/adapter/outbound/eventbus/` |
+| Every SNS publish / SQS consume goes through `platform-events`, never a raw `aws-sdk-go-v2` SNS/SQS call or a hand-built `events.Envelope{}` | `.github/scripts/check-forbidden-events-bypass.sh` (wired into `validate-quality.yml`), added 2026-09-21 |
 
 ---
 
@@ -949,7 +1079,7 @@ if tag.RowsAffected() == 0 {
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 2 SQS consumers + 4 metric-exporter goroutines |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 3 SQS consumers (`tenant-orgm-q`/`billing-orgm-q`/`catalog-orgm-q`) + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs |
 
 Two-stage `Dockerfile`: `golang:1.26.6-alpine` builder (pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root UID 65532) — only the two compiled binaries are copied in, which is why `api/asyncapi.yaml` is compiled in via `//go:embed` rather than read from disk at runtime.
@@ -1001,7 +1131,7 @@ Before a downstream service subscribes to `iam.membership.events` or `iam.tenant
 - [ ] Do not assume SNS preserves delivery order — handle via upsert-style projections, not insert-only. `MembershipRevoked` and a later re-grant for the same user can theoretically be redelivered out of order.
 
 **Infrastructure**
-- [ ] Configure a DLQ on the SQS subscription queue with `maxReceiveCount ≤ 5` — matches this service's own two inbound queues (`tenant-orgm-q`, `billing-orgm-q`).
+- [ ] Configure a DLQ on the SQS subscription queue with `maxReceiveCount ≤ 5` — matches this service's own three inbound queues (`tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q`).
 - [ ] Enforce `aws:SourceArn` in the SQS queue resource policy against the correct topic ARN.
 
 **Observability**

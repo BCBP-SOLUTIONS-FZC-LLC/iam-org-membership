@@ -457,7 +457,8 @@ func domainErrorStatus(de *domain.DomainError) int {
 		errors.Is(de.Cause, domain.ErrCannotRemoveOwner),
 		errors.Is(de.Cause, domain.ErrTenantTrialExpired),
 		errors.Is(de.Cause, domain.ErrTenantSuspended),
-		errors.Is(de.Cause, domain.ErrTenantReadOnly):
+		errors.Is(de.Cause, domain.ErrTenantReadOnly),
+		errors.Is(de.Cause, domain.ErrServiceAccountNotGrantable):
 		return http.StatusForbidden
 	case errors.Is(de.Cause, domain.ErrTenantNotFound),
 		errors.Is(de.Cause, domain.ErrMemberNotFound),

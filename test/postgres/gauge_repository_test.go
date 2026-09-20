@@ -14,6 +14,7 @@ package postgres_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/google/uuid"
@@ -142,4 +143,42 @@ func TestGaugeRepo_AllCountsZeroOnEmptySchema(t *testing.T) {
 	n4, err := repo.CountPendingInvitationsStale(ctx)
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, n4)
+
+	counts, err := repo.RLSViolationCounts(ctx, 5*time.Minute)
+	require.NoError(t, err)
+	assert.Empty(t, counts)
+}
+
+// TestGaugeRepo_RLSViolationCounts_GroupsByTypeWithinWindow backs the
+// iam_rls_violations_total exporter (§11.2) — verifies the real
+// rls_violation_log column names/types (violation_type, occurred_at), the
+// GROUP BY grouping, and that rows outside the trailing window are excluded.
+// rls_violation_log has RLS disabled (recursion guard), so a direct INSERT
+// via rawPool is the correct way to seed it — it is never written through
+// the app pool in production either (only log_rls_violation() writes it).
+func TestGaugeRepo_RLSViolationCounts_GroupsByTypeWithinWindow(t *testing.T) {
+	t.Parallel()
+	_, rawPool, sysPool := setupTestDB(t)
+	ctx := context.Background()
+
+	insert := func(violationType string, occurredAt time.Time) {
+		_, err := rawPool.Exec(ctx, `
+			INSERT INTO rls_violation_log (table_name, violation_type, occurred_at)
+			VALUES ('tenant_memberships', $1, $2)`, violationType, occurredAt)
+		require.NoError(t, err)
+	}
+
+	now := time.Now().UTC()
+	insert("cross_tenant_access", now.Add(-1*time.Minute))
+	insert("cross_tenant_access", now.Add(-2*time.Minute))
+	insert("missing_or_invalid_guc", now.Add(-3*time.Minute))
+	// Outside the 5-minute window — must not be counted.
+	insert("cross_tenant_access", now.Add(-10*time.Minute))
+
+	repo := pgadapter.NewGaugeRepository(sysPool)
+	counts, err := repo.RLSViolationCounts(ctx, 5*time.Minute)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, counts["cross_tenant_access"], "only the 2 in-window rows count")
+	assert.EqualValues(t, 1, counts["missing_or_invalid_guc"])
+	assert.Len(t, counts, 2, "no other violation_type present")
 }

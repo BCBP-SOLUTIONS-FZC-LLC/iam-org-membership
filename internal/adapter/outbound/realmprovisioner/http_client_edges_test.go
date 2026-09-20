@@ -8,7 +8,6 @@ package realmprovisioner
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,13 +21,13 @@ import (
 func TestP19RPEdges_NewHTTPClient_DefaultsOnZeroTimeoutAndNilLogger(t *testing.T) {
 	c := NewHTTPClient("http://x", 0, nil)
 	require.NotNil(t, c)
-	assert.NotNil(t, c.logger)
+	assert.Nil(t, c.logger, "nil logger is a no-op; warn() must not panic")
 	assert.Equal(t, "http://x", c.baseURL)
 	assert.NotZero(t, c.client.Timeout)
 }
 
 func TestP19RPEdges_CreateInvitedUser_BadBaseURL_RequestBuildError(t *testing.T) {
-	c := NewHTTPClient("http://\x7f", 0, slog.Default())
+	c := NewHTTPClient("http://\x7f", 0, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: uuid.New(), Email: "a@x.com", FullName: "A",
 	})
@@ -41,7 +40,7 @@ func TestP19RPEdges_CreateInvitedUser_Non2xx_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: uuid.New(), Email: "a@x.com",
 	})
@@ -55,7 +54,7 @@ func TestP19RPEdges_CreateInvitedUser_MalformedJSON_DecodeError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: uuid.New(), Email: "a@x.com",
 	})
@@ -68,7 +67,7 @@ func TestP19RPEdges_DeleteUser_404IsSuccess_PI9(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	assert.NoError(t, err, "PI-9: 404 is idempotent success")
 }
@@ -79,14 +78,14 @@ func TestP19RPEdges_DeleteUser_Non2xx_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
 }
 
 func TestP19RPEdges_DeleteUser_BadBaseURL_RequestBuildError(t *testing.T) {
-	c := NewHTTPClient("http://\x7f", 0, slog.Default())
+	c := NewHTTPClient("http://\x7f", 0, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	assert.Error(t, err)
 }
@@ -98,7 +97,7 @@ func TestP19RPEdges_PatchRealmConfig_Non2xx_ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	local := true
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{
 		LocalAccountsEnabled: &local,
 	})
@@ -107,8 +106,16 @@ func TestP19RPEdges_PatchRealmConfig_Non2xx_ReturnsError(t *testing.T) {
 }
 
 func TestP19RPEdges_PatchRealmConfig_BadBaseURL_RequestBuildError(t *testing.T) {
-	c := NewHTTPClient("http://\x7f", 0, slog.Default())
-	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{})
+	// A patch with LocalAccountsEnabled unset is a documented no-op (nothing
+	// to patch) that returns nil before ever building a request — an empty
+	// port.RealmConfigPatch{} here would never reach the bad-URL path this
+	// test means to exercise, so it must set the one field PatchRealmConfig
+	// actually reads.
+	local := true
+	c := NewHTTPClient("http://\x7f", 0, nil)
+	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{
+		LocalAccountsEnabled: &local,
+	})
 	assert.Error(t, err)
 }
 
@@ -118,14 +125,14 @@ func TestP19RPEdges_RevokeUserSessions_Non2xx_FailOpen_ReturnsError(t *testing.T
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "503")
 }
 
 func TestP19RPEdges_RevokeUserSessions_BadBaseURL_RequestBuildError(t *testing.T) {
-	c := NewHTTPClient("http://\x7f", 0, slog.Default())
+	c := NewHTTPClient("http://\x7f", 0, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	assert.Error(t, err)
 }

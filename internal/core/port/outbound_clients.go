@@ -121,6 +121,22 @@ type DelegationCheckClient interface {
 	DeptDelegate(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*uuid.UUID, error)
 }
 
+// TokenServiceClient is the outbound HTTP client for the Token Service's
+// TS-5 lookup (AUTH-9, §5.4/§5.5 there) — the only way this service can
+// answer "does this subject resolve to a service_account-typed Keycloak
+// principal" without ever generating principal_sub itself (this service
+// has no Keycloak Admin API access at all, RP-INV-1 — Realm Provisioner is
+// the sole writer).
+type TokenServiceClient interface {
+	// IsServiceAccount reports whether userID is tenantID's automation
+	// principal. err is non-nil ONLY when the check itself could not be
+	// performed (network/timeout/5xx) — callers degrade to false (allow the
+	// operation) rather than failing the whole Invite/Assign/Reconcile, per
+	// AUTH-9's framing as defense-in-depth on top of the structural FK bar,
+	// not the primary guarantee.
+	IsServiceAccount(ctx context.Context, tenantID, userID uuid.UUID) (bool, error)
+}
+
 // CatalogAdminClient is the outbound HTTP client for the Catalog / Admin
 // Config Service (catalog-admin-config), which owns the global
 // departments/plans catalogs as of ADR-0007 Wave 1. Read-only, mesh-only

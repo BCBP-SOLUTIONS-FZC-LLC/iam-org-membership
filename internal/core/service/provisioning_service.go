@@ -31,10 +31,9 @@ type ProvisioningService struct {
 	log         port.SlogStyleLogger // optional — see WithLogger
 }
 
-// WithLogger injects the shared gincommon-backed Logger so this service's
+// WithLogger injects the shared gincommon Zap logger so this service's
 // tenant_ownerless_escalation alert flows through the same sink as HTTP/
-// consumer/outbound-client logs instead of slog.Default(). Optional — the
-// zero value falls back to the top-level slog functions.
+// consumer/outbound-client logs. Optional — the zero value is a no-op.
 func (s *ProvisioningService) WithLogger(log port.Logger) *ProvisioningService {
 	s.log = port.NewSlogStyleLogger(log)
 	return s

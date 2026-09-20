@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,27 +28,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// Logger is the structured logging interface this client uses (Warn only).
-// *slog.Logger satisfies it directly (existing tests keep working
-// unchanged); so does port.SlogStyleLogger, which New() passes in from
-// main.go so these warnings flow through the same gincommon-backed sink as
-// the rest of the service instead of slog.Default().
-type Logger interface {
-	Warn(msg string, args ...any)
-}
-
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  Logger
+	logger  port.Logger
 }
 
 var _ port.WorkflowClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
@@ -62,11 +49,17 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 
 // New is the composition-root constructor reading env directly.
 // Preserves the Phase 2 factory name so existing wiring compiles. log is
-// the shared gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
+// the shared gincommon Zap logger (may be nil — warn() is then a no-op).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("WORKFLOW_SERVICE_BASE_URL", "")
 	timeout := envDurationMs("WORKFLOW_TIMEOUT_MS", 3*time.Second)
-	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
+	return NewHTTPClient(baseURL, timeout, log)
+}
+
+func (c *HTTPClient) warn(msg string, kv ...any) {
+	if c.logger != nil {
+		c.logger.Warn(msg, port.Fields(kv...))
+	}
 }
 
 // zeroImpactWhenUnconfigured returns "no active workflows" when baseURL is
@@ -74,7 +67,7 @@ func New(log port.Logger) *HTTPClient {
 // not block removal flows.
 func (c *HTTPClient) zeroImpactWhenUnconfigured(operation string) *port.DelegateImpact {
 	if c.baseURL == "" {
-		c.logger.Warn("workflow: baseURL not configured — returning empty impact (WFI-13 fail-open)",
+		c.warn("workflow: baseURL not configured — returning empty impact (WFI-13 fail-open)",
 			"operation", operation)
 		return &port.DelegateImpact{ActiveWorkflows: 0}
 	}
@@ -101,7 +94,7 @@ func (c *HTTPClient) GetDelegateImpact(ctx context.Context, tenantID, userID uui
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.logger.Warn("workflow: GetDelegateImpact transport error", "user_id", userID, "error", err.Error())
+		c.warn("workflow: GetDelegateImpact transport error", "user_id", userID, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -124,7 +117,7 @@ func (c *HTTPClient) GetDelegateImpact(ctx context.Context, tenantID, userID uui
 
 func (c *HTTPClient) ReassignDelegate(ctx context.Context, tenantID, oldUserID, newUserID uuid.UUID, delegationID *uuid.UUID) error {
 	if c.baseURL == "" {
-		c.logger.Warn("workflow: baseURL not configured — no-op",
+		c.warn("workflow: baseURL not configured — no-op",
 			"operation", "ReassignDelegate", "old_user_id", oldUserID, "new_user_id", newUserID)
 		return nil
 	}
@@ -141,7 +134,7 @@ func (c *HTTPClient) ReassignDelegate(ctx context.Context, tenantID, oldUserID, 
 
 func (c *HTTPClient) CancelByDelegate(ctx context.Context, tenantID, userID uuid.UUID, delegationID *uuid.UUID) error {
 	if c.baseURL == "" {
-		c.logger.Warn("workflow: baseURL not configured — no-op",
+		c.warn("workflow: baseURL not configured — no-op",
 			"operation", "CancelByDelegate", "user_id", userID)
 		return nil
 	}
@@ -169,7 +162,7 @@ func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, path 
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.logger.Warn("workflow: transport error", "path", path, "error", err.Error())
+		c.warn("workflow: transport error", "path", path, "error", err.Error())
 		return err
 	}
 	defer resp.Body.Close() //nolint:errcheck

@@ -5,7 +5,7 @@
   "required": [
     "source"
   ],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "source": {
       "type": "string",

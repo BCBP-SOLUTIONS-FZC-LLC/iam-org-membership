@@ -106,14 +106,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 
 	kind := classify(env.Type)
 	if kind == kindUnknown {
-		if metrics.UnknownEventAcknowledged != nil {
-			metrics.UnknownEventAcknowledged.WithLabelValues("unknown", env.Type).Inc()
-		}
-		c.logger.Info("unknown event type — silently acknowledging",
-			"event_id", env.ID, "event_type", env.Type)
-		return c.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
-		})
+		return ackUnknown(ctx, c.txRunner, c.idempotency, c.logger, consumerName, env)
 	}
 
 	tenantID, err := uuid.Parse(env.TenantID)
@@ -122,7 +115,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	// Cheap dedup probe outside the tx to save a lock acquisition on replay.
-	seen, err := c.idempotency.IsProcessed(ctx, consumerName, env.ID)
+	seen, err := skipDuplicate(ctx, c.idempotency, consumerName, env.ID)
 	if err != nil {
 		return err
 	}
@@ -322,13 +315,18 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 	case "TenantRealmReady":
 		// RP's frozen TenantRealmReadyPayload (§25) carries the realm name
 		// under json:"realm", not "realm_id" — and has no realm_type field
-		// at all. Corrected: a prior version of this handler read
-		// nonexistent "realm_id"/"realm_type" fields, so every real event
-		// silently blanked tenants.realm_id/realm_type to empty strings
-		// (execLifecyclePatch's UPDATE has no COALESCE guard). RP's own doc
-		// comment on TenantRealmReadyPayload confirms this event is "emitted
-		// by RP-2 or RP-3 (never for trial)" — both dedicated-realm paths —
-		// so realm_type is hardcoded rather than read from a field RP never
+		// at all (verified against iam-realm-provisioner's own
+		// internal/core/domain/event.go — the realm_id/realm_type pair
+		// exists only in RP's outbound/orgmembership client, its struct for
+		// the *synchronous* PATCH /internal/tenants/:id REST call, a
+		// different code path from this async event payload). Corrected: a
+		// prior version of this handler read nonexistent "realm_id"/
+		// "realm_type" fields, so every real event silently blanked
+		// tenants.realm_id/realm_type to empty strings (execLifecyclePatch's
+		// UPDATE has no COALESCE guard). RP's own doc comment on
+		// TenantRealmReadyPayload confirms this event is "emitted by RP-2 or
+		// RP-3 (never for trial)" — both dedicated-realm paths — so
+		// realm_type is hardcoded rather than read from a field RP never
 		// sends.
 		var payload struct {
 			Realm         string `json:"realm"`
@@ -361,6 +359,17 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		})
 		return domain.StatusActive, newPlan, err
 	case "DirectPaidSignup":
+		// RP's actual DirectPaidSignupPayload (iam-realm-provisioner
+		// internal/core/domain/event.go) is {tenant_id, realm,
+		// direct_signup} — it has no "plan" field, so this read always
+		// misses and always falls through to prevPlan below. A prior
+		// commit on this branch claimed RP had added "plan" to the
+		// payload and that the fallback was now just a safety net for
+		// "older RP versions" — that was never true; verified against
+		// RP's real source, not the claim. Left as-is (harmless: the
+		// fallback already does the right thing, activating the tenant
+		// at its current plan) rather than removing the dead read, since
+		// changing it isn't this fix's job.
 		var payload struct {
 			Plan string `json:"plan"`
 		}

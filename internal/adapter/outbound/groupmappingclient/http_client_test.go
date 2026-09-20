@@ -13,7 +13,6 @@ package groupmappingclient
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,7 +54,7 @@ func TestResolveGroups_Happy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	res, err := c.ResolveGroups(context.Background(), tenantID, []string{"eng-team", "tender-admins"})
 	require.NoError(t, err)
 	require.Len(t, res.DeptMappings, 1)
@@ -79,7 +78,7 @@ func TestResolveGroups_EmptyDimensionsAreNonNilSlices(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	res, err := c.ResolveGroups(context.Background(), tenantID, []string{"nonexistent-group"})
 	require.NoError(t, err)
 	assert.NotNil(t, res.DeptMappings)
@@ -97,7 +96,7 @@ func TestResolveGroups_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.ResolveGroups(context.Background(), uuid.New(), []string{"eng-team"})
 	require.Error(t, err)
 }
@@ -112,20 +111,20 @@ func TestResolveGroups_EmptyBaseURL_Errors(t *testing.T) {
 }
 
 func TestResolveGroups_TransportError(t *testing.T) {
-	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, slog.Default())
+	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, nil)
 	_, err := c.ResolveGroups(context.Background(), uuid.New(), []string{"eng-team"})
 	require.Error(t, err)
 }
 
 func TestNewHTTPClientGM_NilLogger_FallsBackToSlogDefault(t *testing.T) {
-	// nil logger → defaults to slog.Default() — must not panic.
+	// nil logger → no-op sink — must not panic.
 	c := NewHTTPClient("http://localhost", 5*time.Second, nil)
 	require.NotNil(t, c)
 }
 
 func TestNewHTTPClientGM_ZeroTimeout_DefaultsTo300ms(t *testing.T) {
 	// timeout <= 0 → defaults to 300ms.
-	c := NewHTTPClient("http://localhost", 0, slog.Default())
+	c := NewHTTPClient("http://localhost", 0, nil)
 	require.NotNil(t, c)
 	assert.Equal(t, 300*time.Millisecond, c.client.Timeout)
 }
@@ -139,7 +138,7 @@ func TestResolveGroups_400Status_4xxErrorNotIncremented(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.ResolveGroups(context.Background(), uuid.New(), []string{"eng-team"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "400")

@@ -11,7 +11,7 @@
     "changed_at",
     "cause"
   ],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "tenant_id": {
       "type": "string",

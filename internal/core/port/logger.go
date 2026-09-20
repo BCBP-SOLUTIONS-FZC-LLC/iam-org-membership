@@ -32,15 +32,16 @@ type Logger interface {
 // correlation slog.WarnContext got for free from a context-aware handler,
 // reconstructed explicitly here since Logger itself is context-free.
 //
-// The zero value is safe to use directly and falls back to the top-level
-// slog functions — this preserves exact pre-injection behavior for
-// callers/tests that never wire in a real Logger.
+// The zero value is safe to use directly and is a no-op — logs never
+// fall through to slog.Default(). Production wiring always injects the
+// Zap logger from platform-gincommon's logger.NewLogger. Tests that omit
+// a logger simply emit nothing, matching iam-user-profile's GlueCodec.
 type SlogStyleLogger struct {
 	log Logger
 }
 
 // NewSlogStyleLogger wraps log for slog-style call sites. A nil log
-// behaves exactly like the zero value (falls back to top-level slog).
+// behaves exactly like the zero value (no-op; never slog.Default()).
 func NewSlogStyleLogger(log Logger) SlogStyleLogger {
 	return SlogStyleLogger{log: log}
 }
@@ -78,7 +79,6 @@ func (s SlogStyleLogger) log4(ctx context.Context, level slog.Level, msg string,
 		}
 	}
 	if s.log == nil {
-		slog.Default().Log(ctx, level, msg, args...)
 		return
 	}
 	fields := kvToFields(args)
@@ -94,6 +94,13 @@ func (s SlogStyleLogger) log4(ctx context.Context, level slog.Level, msg string,
 	default:
 		s.log.Error(msg, fields)
 	}
+}
+
+// Fields pairs slog-style key/value args into the map shape Logger
+// expects. Used by outbound adapters that still write Warn("msg", "k", v)
+// while storing a gincommon Zap logger.
+func Fields(kv ...any) map[string]any {
+	return kvToFields(kv)
 }
 
 // kvToFields pairs alternating string-key/value slog-style args into a

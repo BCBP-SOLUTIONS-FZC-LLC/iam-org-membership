@@ -160,19 +160,33 @@ subscribe_queue iam-membership-events membership-realm-q \
   '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked"]}'
 
 # Notification — everything that generates user/admin emails or banners.
+# Note: DelegationStarted/DelegationEnded were removed (ADR-0008) — those events
+# now live on iam-delegation's own topic (iam.delegation.events), not here.
 create_queue_with_dlq membership-notification-q
 subscribe_queue iam-membership-events membership-notification-q \
-  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked","DelegationStarted","DelegationEnded","TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
+  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked","TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
 
-# Workflow Service — delegation + override + membership + tenant-state relay.
+# Workflow Service — override + membership + tenant-state relay.
+# Note: DelegationStarted/DelegationEnded were removed (ADR-0008) — Workflow
+# subscribes to those via iam-delegation's own topic (iam.delegation.events).
 create_queue_with_dlq membership-workflow-q
 subscribe_queue iam-membership-events membership-workflow-q \
-  '{"EventType": ["DelegationStarted","DelegationEnded","TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged"]}'
+  '{"EventType": ["TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged"]}'
 
 # Billing Service — narrow filter, seat-overage only (§16 A59, SEAT-3/5).
 create_queue_with_dlq membership-billing-q
 subscribe_queue iam-membership-events membership-billing-q \
   '{"EventType": ["TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
+
+# Delegation Service cascade queue (Gap OM-2 fix, Option A) —
+# iam-delegation consumes MembershipRevoked and TenantMembershipsPurged to
+# end active delegations when a member is removed or a tenant is purged
+# (DLG-D3, LLD §7.5). This subscription must be provisioned by the topic
+# owner (iam-org-membership); delegation's own init-localstack.sh can
+# only create the queue, not the SNS→SQS subscription on a topic it doesn't own.
+create_queue_with_dlq delegation-cascade-q
+subscribe_queue iam-membership-events delegation-cascade-q \
+  '{"EventType": ["MembershipRevoked","TenantMembershipsPurged"]}'
 
 # iam-tenant-events fan-out ---------------------------------------------
 
@@ -199,7 +213,7 @@ register_schema iam-membership-events department_membership_granted.json       D
 register_schema iam-membership-events department_membership_level_changed.json DepartmentMembershipLevelChanged
 register_schema iam-membership-events department_membership_revoked.json       DepartmentMembershipRevoked
 register_schema iam-membership-events membership_revoked.json                  MembershipRevoked
-register_schema iam-membership-events mfareset.json                            MFAReset
+register_schema iam-membership-events mfa_reset.json                           MFAReset
 register_schema iam-membership-events tenant_memberships_purged.json           TenantMembershipsPurged
 register_schema iam-membership-events tenant_role_granted.json                 TenantRoleGranted
 register_schema iam-membership-events tenant_role_revoked.json                 TenantRoleRevoked

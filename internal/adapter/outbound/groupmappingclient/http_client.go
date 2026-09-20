@@ -34,7 +34,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -52,27 +51,15 @@ import (
 // from the metric's "service" const label (this service's own identity).
 const xsvcService = "group_mapping"
 
-// Logger is the structured logging interface this client uses (Warn only).
-// *slog.Logger satisfies it directly (existing tests keep working
-// unchanged); so does port.SlogStyleLogger, which New() passes in from
-// main.go so these warnings flow through the same gincommon-backed sink as
-// the rest of the service instead of slog.Default().
-type Logger interface {
-	Warn(msg string, args ...any)
-}
-
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  Logger
+	logger  port.Logger
 }
 
 var _ port.GroupMappingClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 300 * time.Millisecond
 	}
@@ -85,11 +72,17 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 
 // New preserves the sibling clients' factory-name convention so main.go's
 // wiring reads the same way for every outbound client. log is the shared
-// gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
+// gincommon Zap logger (may be nil — warn() is then a no-op).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("GROUP_MAPPING_BASE_URL", "")
 	timeout := envDurationMs("GROUP_MAPPING_TIMEOUT_MS", 300*time.Millisecond)
-	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
+	return NewHTTPClient(baseURL, timeout, log)
+}
+
+func (c *HTTPClient) warn(msg string, kv ...any) {
+	if c.logger != nil {
+		c.logger.Warn(msg, port.Fields(kv...))
+	}
 }
 
 type groupResolutionRequest struct {
@@ -135,7 +128,7 @@ func (c *HTTPClient) ResolveGroups(ctx context.Context, tenantID uuid.UUID, grou
 	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
-		c.logger.Warn("groupmappingclient: ResolveGroups transport error", "tenant_id", tenantID, "error", err.Error())
+		c.warn("groupmappingclient: ResolveGroups transport error", "tenant_id", tenantID, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -144,7 +137,7 @@ func (c *HTTPClient) ResolveGroups(ctx context.Context, tenantID uuid.UUID, grou
 			metrics.IncDependencyError(xsvcService, endpoint, "5xx")
 		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		c.logger.Warn("groupmappingclient: ResolveGroups non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))
+		c.warn("groupmappingclient: ResolveGroups non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))
 		return nil, fmt.Errorf("groupmappingclient: ResolveGroups returned %d: %s", resp.StatusCode, string(msg))
 	}
 	var out groupResolutionResponse

@@ -110,8 +110,10 @@ func TopicForEvent(eventType string) string {
 
 // IsProducedEvent reports whether eventType is one of the 14 events this
 // service publishes (and therefore registers in Glue). schema-gov extract
-// also writes the 13 consumed, producer-owned payloads into the same
-// schema directory for coverage; those must not be prefetched or
+// also writes the 14 consumed, producer-owned payloads (13 from Realm
+// Provisioner/Billing on tenant-orgm-q/billing-orgm-q, plus
+// DepartmentCatalogChanged from Catalog Service on catalog-orgm-q) into
+// the same schema directory for coverage; those must not be prefetched or
 // registered here.
 func IsProducedEvent(eventType string) bool {
 	switch eventType {

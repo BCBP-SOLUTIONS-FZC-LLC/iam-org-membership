@@ -47,7 +47,7 @@ const (
 //
 // Event Type strings (e.g. "DepartmentMembershipGranted") are the
 // PascalCase Glue schema name and envelope.type. schema-gov extract 0.4
-// writes snake_case filenames (tenant_created.json, mfareset.json);
+// writes snake_case filenames (tenant_created.json, mfa_reset.json);
 // AllSchemaNames / ValidatingCodec recover the Glue name via the
 // schemaFileNames map below, the same hand-maintained
 // filename→PascalCase-name convention as the sibling services'
@@ -58,16 +58,17 @@ type GlueCodec struct {
 	registryName string
 	mu           sync.RWMutex
 	versionCache map[string]string // schema name → schema version UUID string
-	log          port.SlogStyleLogger
+	log          port.Logger
 }
 
 var _ events.Codec = (*GlueCodec)(nil)
 
 // WithLogger routes StartRefresher's background refresh-failure warnings
-// through the same gincommon-backed sink as the rest of the service.
-// Optional — the zero value falls back to the top-level slog functions.
+// through the same gincommon Zap sink as the rest of the service.
+// Optional — production always injects logger.NewLogger; tests that omit
+// WithLogger skip the refresh warning (no slog.Default() fallback).
 func (g *GlueCodec) WithLogger(log port.Logger) *GlueCodec {
-	g.log = port.NewSlogStyleLogger(log)
+	g.log = log
 	return g
 }
 
@@ -193,8 +194,8 @@ func (g *GlueCodec) StartRefresher(ctx context.Context, interval time.Duration) 
 						g.mu.Lock()
 						g.versionCache[name] = id
 						g.mu.Unlock()
-					} else {
-						g.log.Warn("glue schema version refresh failed — using cached ID", "schema", name, "error", err.Error())
+					} else if g.log != nil {
+						g.log.Warn("glue schema version refresh failed — using cached ID", map[string]any{"schema": name, "error": err.Error()})
 					}
 				}
 			}
@@ -257,18 +258,19 @@ func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
 // extract 0.4's snake_case output) to its PascalCase Glue schema name /
 // envelope.type — the same hand-maintained, one-line-per-event convention
 // as the sibling services' eventschema.ByEventType maps, rather than
-// deriving it at runtime from each file's JSON content. Covers all 27
+// deriving it at runtime from each file's JSON content. Covers all 28
 // embedded files: the 14 this service produces (domain.IsProducedEvent)
-// plus the 13 consumed, other-service-owned extracts kept here only for
+// plus the 14 consumed, other-service-owned extracts kept here only for
 // schema-gov coverage (LLD §16). A new schema file needs one entry added
 // here.
 var schemaFileNames = map[string]string{
+	"department_catalog_changed.json":          "DepartmentCatalogChanged",
 	"department_membership_granted.json":       domain.EventDepartmentMembershipGranted,
 	"department_membership_level_changed.json": domain.EventDepartmentMembershipLevelChanged,
 	"department_membership_revoked.json":       domain.EventDepartmentMembershipRevoked,
 	"direct_paid_signup.json":                  "DirectPaidSignup",
 	"membership_revoked.json":                  domain.EventMembershipRevoked,
-	"mfareset.json":                            domain.EventMFAReset,
+	"mfa_reset.json":                           domain.EventMFAReset,
 	"tenant_converted.json":                    "TenantConverted",
 	"tenant_created.json":                      domain.EventTenantCreated,
 	"tenant_memberships_purged.json":           domain.EventTenantMembershipsPurged,

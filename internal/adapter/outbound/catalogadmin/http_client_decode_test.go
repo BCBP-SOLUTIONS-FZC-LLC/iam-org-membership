@@ -8,7 +8,6 @@ package catalogadmin
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,7 +25,7 @@ func TestDepartments_MalformedJSON_DecodeError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.Departments(context.Background())
 	require.Error(t, err)
 	assert.Error(t, err, "Departments must surface the JSON decode error")
@@ -40,7 +39,7 @@ func TestPlans_MalformedJSON_DecodeError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.Plans(context.Background())
 	require.Error(t, err)
 	assert.Error(t, err, "Plans must surface the JSON decode error")

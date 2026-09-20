@@ -32,7 +32,12 @@ go.work.sum
 bin/
 .coverage/
 mockwf
-server
+# Root-anchored: a bare `server` (no leading slash) also matches the
+# cmd/server/ *directory* at any depth, silently hiding real source files
+# (wiring.go, wiring_test.go, exporters_test.go) from git. `/server` matches
+# only a root-level `server` binary (e.g. from `go build ./cmd/server` run
+# without -o from the repo root), which is what this was meant to ignore.
+/server
 
 # macOS
 .DS_Store

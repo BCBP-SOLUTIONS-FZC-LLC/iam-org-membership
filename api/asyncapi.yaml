@@ -11,7 +11,7 @@ info:
 
       Topic                        Glue registry            Events
       ─────────────────────────────────────────────────────────────
-      iam-membership-events        iam-membership-events    11 (see below)
+      iam-membership-events        iam-membership-events    12 (see below)
       iam-tenant-events            iam-tenant-events        2  (TenantCreated, TrialStarted)
 
     The two-topic split follows HLD §9.1: tenant lifecycle (creation,
@@ -74,31 +74,17 @@ info:
     transaction is rolled back — the event is never written to the outbox.
     Consumers do not need to handle oversized messages; they cannot arrive.
 
-    Payload budget guidance (per event type): all 13 payloads emitted by this
+    Payload budget guidance (per event type): all 14 payloads emitted by this
     service are small — UUIDs, short enums, timestamps, and (for
     TenantStateChanged) a bounded event-type string. None approach the
     240 KB soft limit under any realistic load.
 
-    ── Schema Evolution Rules (CLOSED schemas) ──────────────────────────────────
-    All 13 on-disk JSON Schemas at internal/adapter/outbound/eventbus/schemas/*.json
-    declare "additionalProperties": false. This is a deliberate contract choice
-    (see §16 open-question register): consumers MAY safely reject unknown fields
-    at the JSON-schema-validation layer, and every payload change is observable.
-
-    This means the reference "add optional field = silent Glue version bump"
-    workflow used by iam-user-profile DOES NOT APPLY here. Under closed schemas:
-
-      • Adding ANY payload field (even an optional one) is a Glue schema version
-        bump AND requires a coordinated producer → consumer rollout: consumers
-        that strictly validate against the previous schema version will reject
-        the new envelope until they are redeployed with the updated schema.
-      • Removing a field is a breaking change.
-      • Renaming a field is a breaking change.
-      • Widening an enum is a Glue schema version bump; consumers that switch
-        exhaustively on the enum MUST include a default/else branch before the
-        widened version is deployed on the producer.
-      • Narrowing an enum, changing a field's type/format, or making an optional
-        field required are breaking changes.
+    ── Schema Evolution Rules ───────────────────────────────────────────────────
+    Backward-compatible changes (NEW Glue schema version UUID, SAME type):
+      • Adding optional fields to a payload — consumers ignore unknown fields.
+      • Widening an enum.
+      • Making a required field optional.
+      Effect: dataschema UUID in the envelope changes; type stays the same.
 
     Breaking changes (MUST bump wire type to <EventName>.v2):
       • Removing or renaming a field.
@@ -109,33 +95,32 @@ info:
     When introducing a v2: publish BOTH the old and new type for one release
     cycle to give all consumers time to migrate, then retire the old type.
 
+    (As of 2026-09-21 — LLD §16 OQ-6 — this service's produced payload schemas
+    are OPEN, additionalProperties: true, matching the sibling iam-user-profile
+    service's convention; see x-forward-compatibility below. An earlier
+    revision of this document specified a CLOSED-schema contract instead; that
+    decision is superseded, not merely corrected — see OQ-6 for the full
+    history and rationale.)
+
     ── Consumer Conformance ─────────────────────────────────────────────────────
     See ARCHITECTURE.md § "Consumer conformance checklist" for the full checklist
     that downstream services must satisfy before subscribing to these channels.
-    See x-forward-compatibility below for the closed-schema rollout protocol.
+    See x-forward-compatibility below for per-language deserialization settings.
 
   x-forward-compatibility:
     summary: >-
-      This service publishes CLOSED-schema payloads (additionalProperties: false
-      on every on-disk JSON Schema). Consequently there is NO free forward-
-      compatibility — every payload addition requires a coordinated rollout of
-      the producer AND all validating consumers, in that order.
-    schema-shape: CLOSED
+      Non-breaking schema updates (added fields, widened enums) are registered
+      in Glue and deployed to the producer WITHOUT requiring a consumer
+      migration cycle. Consumers MUST be forward-compatible or they will
+      silently drop or crash on new fields. The CI diff step
+      (schema-registry.yml) surfaces non-breaking vs breaking changes;
+      breaking changes are blocked entirely.
+    schema-shape: OPEN
     rollout-sequence:
       - "1. Register new schema in the appropriate Glue registry (membership or tenant); the UUID rotates and envelope.dataschema changes accordingly."
-      - "2. Deploy all consumers with the updated schema embedded (or with lenient deserialization enabled — see defense-in-depth below)."
-      - "3. Deploy the producer (starts emitting the new field / wider enum). ONLY step 3 causes wire behaviour to change; earlier steps merely prepare consumers."
-    defense-in-depth-settings:
-      summary: >-
-        Even with closed schemas at the wire-contract level, consumers are
-        RECOMMENDED (not required) to enable lenient JSON deserialization at the
-        SDK/language layer. This protects against Glue version drift during
-        a rolling deploy — a consumer replica that has not yet picked up the
-        new schema definition still decodes the message body cleanly rather
-        than crashing on an unknown-field error. JSON-schema validation
-        against the pinned schema version is where the closed-schema contract
-        is enforced; SDK-level strict mode adds no safety and only creates
-        deploy-order fragility.
+      - "2. Deploy all consumers with forward-compatible deserialization settings (required-settings below) in place."
+      - "3. Deploy the producer (starts emitting the new field / wider enum)."
+    required-settings:
       go-encoding-json: "Do NOT call json.Decoder.DisallowUnknownFields(). Unknown fields are silently ignored by default."
       go-sonic: "Do NOT use sonic.ConfigStrict. Use sonic.ConfigDefault or sonic.ConfigFastest."
       java-jackson: "mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false) OR @JsonIgnoreProperties(ignoreUnknown=true) on every payload class."
@@ -143,25 +128,33 @@ info:
       kotlin-serialization: "Json { ignoreUnknownKeys = true } on the Json instance used to decode payloads."
     enum-safety: >-
       All switch/match/when on enum values MUST include a default/else branch.
-      Enum widening bumps the Glue schema version but does NOT force a wire type
-      bump — a rolling deploy will briefly have consumer replicas seeing values
-      they do not recognise. An unhandled enum value crashes exhaustive matchers.
-    closed-schema-contract: >-
-      All payload schemas in internal/adapter/outbound/eventbus/schemas/ declare
-      "additionalProperties": false. This is a deliberate contract signal: the
-      shape is CLOSED and every field addition is observable at the JSON-schema
-      layer. CI schema-registry.yml enforces registration and lifecycle diff
-      against this convention. Do NOT flip any payload to additionalProperties:
-      true without an org-wide decision and a matching update to schema-gov
-      configuration — the closed-schema decision is documented in the LLD §16
-      open-question register.
+      Enum widening is a backward-compatible change; new values can appear in
+      production without a consumer migration. An unhandled enum value
+      crashes exhaustive matchers.
+    open-schema-contract: >-
+      All 14 produced payload schemas in
+      internal/adapter/outbound/eventbus/schemas/, and their corresponding
+      components in this file, declare "additionalProperties": true (as of
+      2026-09-21 — LLD §16 OQ-6, superseding this document's earlier
+      CLOSED-schema decision). This is an explicit contract signal: the shape
+      is OPEN — new fields may appear in any Glue schema version without a
+      version bump. schema-gov's Pass 5 (open-schema guard) enforces this by
+      rejecting any schema that declares "additionalProperties": false. Do
+      not add that keyword back — not in the JSON files, not in this file's
+      payload schema components. On the consumer side, the required-settings
+      above must be in place BEFORE the producer is deployed, or new fields
+      will crash strict-mode consumers.
     ci-integration: >-
-      .github/workflows/schema-registry.yml runs the platform-schemagov container
-      (ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4) on every PR:
-      extract → validate → enforce-lifecycle → diff. On main it additionally runs
-      register / changelog / metrics against BOTH Glue registries. The diff step
-      distinguishes breaking from non-breaking changes and blocks the former;
-      the enforce-lifecycle step blocks any active-status schema removal.
+      .github/workflows/schema-registry.yml runs the platform-schemagov
+      container (ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4) on
+      every PR: extract → validate → enforce-lifecycle → diff. On main it
+      additionally runs register / changelog / metrics against BOTH Glue
+      registries. The diff step distinguishes breaking from non-breaking
+      changes and blocks the former; the enforce-lifecycle step blocks any
+      active-status schema removal; Pass 5 of the validate step blocks any
+      schema that declares additionalProperties: false, preventing the
+      closed-schema pattern from being re-introduced by a future schema
+      regeneration or manual edit.
 
   x-semantic-contract:
     summary: >-
@@ -466,7 +459,7 @@ servers:
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
-  # ── Inbound: the two queues this service consumes (§7.1) ──────────────────
+  # ── Inbound: the three queues this service consumes (§7.1) ────────────────
   # Owned by this service (iam-org-membership), NOT by the producer. Each is
   # subscribed to a topic owned and published by another service.
   sqsTenantOrgm:
@@ -503,6 +496,30 @@ servers:
         TenantPaymentPastDue, TenantSubscriptionCancelled, TenantReactivated,
         TenantSeatsChanged]
       Consumer short-name: orgm. Configured via SQS_BILLING_ORGM_QUEUE_URL.
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsCatalogOrgm:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue owned and managed by this service, intended to subscribe to
+      a future SNS topic owned by the Catalog / Admin Config Service
+      (iam-catalog-admin). Queue: catalog-orgm-q  |  DLQ: catalog-orgm-q-dlq
+      (maxReceiveCount=5). Consumer short-name: orgm. Configured via
+      SQS_CATALOG_ORGM_QUEUE_URL.
+
+      Added 2026-09-20 to document what already exists in code (Gap 12,
+      gap_doc/pending_gap_sep15.md): this service's consumer
+      (internal/adapter/inbound/consumer/catalog_consumer.go) is real,
+      tested code — but the producer side does not exist yet. Verified
+      directly against iam-catalog-admin's own source and docs: its
+      .claude/api-and-events.md lists DepartmentCatalogChanged as a
+      "deferred option" (CAT-D3) it has not committed to building, not a
+      contract this service can treat as settled. SQS_CATALOG_ORGM_QUEUE_URL
+      is unset in every environment today, so this queue does not exist yet
+      either — this server entry documents the intended shape, not a live
+      resource.
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -1099,6 +1116,38 @@ channels:
               name: billing-orgm-q-dlq
             maxReceiveCount: 5
 
+  catalogOrgmQueue:
+    address: "catalog-orgm-q"
+    servers:
+      - $ref: '#/servers/sqsCatalogOrgm'
+    description: |
+      SQS queue this service's consumer (catalog_consumer.go) is written
+      to consume from — intended to be produced by the Catalog / Admin
+      Config Service whenever a department is created, renamed, or
+      retired, closing the ~11-minute worst-case om:departments cache
+      propagation delay (Gap 12). Clears om:departments + om:departments:
+      stale on receipt; does not otherwise decode the payload (no field
+      is read — the handler only checks EventType and marks
+      processed_events). Inert today: the producer side does not exist in
+      iam-catalog-admin yet (tracked there as a deferred option, CAT-D3,
+      not a committed contract), and SQS_CATALOG_ORGM_QUEUE_URL is unset
+      in every environment. See gap_doc/pending_gap_sep15.md Gap 12.
+    messages:
+      DepartmentCatalogChanged:
+        $ref: '#/components/messages/DepartmentCatalogChanged'
+    bindings:
+      sqs:
+        queue:
+          name: catalog-orgm-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: catalog-orgm-q-dlq
+            maxReceiveCount: 5
+
 operations:
   publishMembershipEvents:
     action: send
@@ -1520,7 +1569,7 @@ operations:
     messages:
       - $ref: '#/channels/tenantRealmQueue/messages/TrialStarted'
 
-  # ── Inbound operations — the two queues this service consumes (§7.1) ───────
+  # ── Inbound operations — the three queues this service consumes (§7.1) ─────
   consumeTenantOrgm:
     action: receive
     channel:
@@ -1626,6 +1675,48 @@ operations:
       - $ref: '#/channels/billingOrgmQueue/messages/TenantReactivated'
       - $ref: '#/channels/billingOrgmQueue/messages/TenantSeatsChanged'
 
+  consumeCatalogOrgm:
+    action: receive
+    channel:
+      $ref: '#/channels/catalogOrgmQueue'
+    tags:
+      - $ref: '#/components/tags/consumed'
+    summary: Consume Catalog Service department-catalog-change events (Gap 12) — inert, no live producer yet
+    description: |
+      Consumer: this service (iam-org-membership), catalog_consumer.go
+      Producer: Catalog / Admin Config Service (iam-catalog-admin) — NOT YET BUILT
+      Queue   : catalog-orgm-q  |  DLQ: catalog-orgm-q-dlq
+      Filter  : EventType IN [DepartmentCatalogChanged]
+
+      Handled by CatalogConsumer.Handle (internal/adapter/inbound/consumer/
+      catalog_consumer.go), a separate entry point from MembershipEventConsumer
+      above — dedicated to this one queue, sharing the same skipDuplicate/
+      ackUnknown/markProcessedInTx helpers (dedup.go) for IDEMP-1..4
+      consistency, but not the tenants-projection logic. On receipt it
+      clears the om:departments and om:departments:stale Valkey keys and
+      nothing else — it does not decode event.Data at all, so no payload
+      field is load-bearing to this service today.
+
+      Idempotency key: (id, consumer="catalog") in processed_events — a
+      distinct consumer bucket from "iam-org-membership" above, so a
+      redelivered id can never collide across the two queues.
+
+      Status as of 2026-09-20 (Gap 12, gap_doc/pending_gap_sep15.md):
+      this consumer is real, tested code (catalog_consumer_test.go), but
+      the chain is inert end-to-end — iam-catalog-admin has not built the
+      publisher side (verified against its own source: no port.EventNotifier,
+      no notify() call sites, no Terraform for the SNS topic/SQS
+      subscription; its own .claude/api-and-events.md lists this event as
+      a "deferred option" it has not committed to, CAT-D3) and
+      SQS_CATALOG_ORGM_QUEUE_URL is unset in every environment. The
+      DepartmentCatalogChangedPayload schema below is consequently a
+      minimal open placeholder, not a confirmed producer contract — this
+      service's own handler does not depend on it having any particular
+      shape, and it should be replaced once iam-catalog-admin actually
+      defines and ships the real payload.
+    messages:
+      - $ref: '#/channels/catalogOrgmQueue/messages/DepartmentCatalogChanged'
+
 components:
   securitySchemes:
     iamRole:
@@ -1642,7 +1733,7 @@ components:
         (12 event types) or iam-tenant-events (2 event types, co-produced
         alongside Realm Provisioner and Billing) via the transactional
         outbox (LLD §7.3/§7.4). Every message in components/messages except
-        the 13 consumed ones below, the publishMembershipEvents /
+        the 14 consumed ones below, the publishMembershipEvents /
         publishTenantEvents send operations, and the downstream fan-out
         receive operations (Audit/AuthZ/Realm Provisioner/Notification/
         Workflow/Billing — informational, documenting how other teams
@@ -1651,18 +1742,22 @@ components:
       name: consumed
       description: |
         This service is the consumer, not the producer. Per §7.1, Org &
-        Membership subscribes to exactly two inbound queues:
-        tenant-orgm-q (Realm Provisioner's iam.tenant.events — 8
-        tenant-lifecycle event types) and billing-orgm-q (Billing's
-        billing.events — 5 billing event types), both handled by the
-        single MembershipEventConsumer in
-        internal/adapter/inbound/consumer/membership_event_consumer.go
+        Membership subscribes to three inbound queues: tenant-orgm-q
+        (Realm Provisioner's iam.tenant.events — 8 tenant-lifecycle event
+        types) and billing-orgm-q (Billing's billing.events — 5 billing
+        event types), both handled by the single MembershipEventConsumer
+        in internal/adapter/inbound/consumer/membership_event_consumer.go
         (EVT-14 recency guard, EVT-15 future-time clamp, EVT-16 tenant-
-        state relay). Canonical schema ownership for anything tagged
-        consumed sits with the producing service's own AsyncAPI spec, not
-        this file — treat these definitions as this service's consumer-side
-        documentation, kept in sync with upstream, not as the source of
-        truth.
+        state relay); and catalog-orgm-q (Catalog / Admin Config Service's
+        DepartmentCatalogChanged — 1 event type, Gap 12), handled by a
+        separate CatalogConsumer in
+        internal/adapter/inbound/consumer/catalog_consumer.go with no
+        EVT-14/15/16 guards — it only clears the om:departments cache on
+        receipt, still inert pending iam-catalog-admin's producer side.
+        Canonical schema ownership for anything tagged consumed sits with
+        the producing service's own AsyncAPI spec, not this file — treat
+        these definitions as this service's consumer-side documentation,
+        kept in sync with upstream, not as the source of truth.
 
   messageTraits:
     glueWireFormat:
@@ -2594,6 +2689,44 @@ components:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
 
+    DepartmentCatalogChanged:
+      name: DepartmentCatalogChanged
+      title: Department Catalog Changed
+      summary: |
+        Consumed by this service (catalog_consumer.go), not published.
+        NOT YET PRODUCED — iam-catalog-admin has not built the publisher
+        side (verified against its own source and docs; tracked there as
+        a deferred option, CAT-D3, not a committed contract). This
+        service's consumer clears om:departments + om:departments:stale
+        on receipt and does not decode any payload field, so
+        DepartmentCatalogChangedPayload below is a minimal open
+        placeholder, not a confirmed producer contract — replace it once
+        iam-catalog-admin ships the real shape. See gap_doc/
+        pending_gap_sep15.md Gap 12.
+      x-lifecycle:
+        status: active    # the consumer code is active/tested; the wider feature is inert pending the producer — see summary
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/DepartmentCatalogChangedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: DepartmentCatalogChanged
+              description: Would be set by the producer (Catalog / Admin Config Service) if it existed. Matches this service's SNS filter policy on catalog-orgm-q.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-catalog-admin".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="catalog", a distinct bucket from consumer="iam-org-membership" above).
+
     TenantPlanChanged:
       name: TenantPlanChanged
       title: Tenant Plan Changed
@@ -3150,14 +3283,14 @@ components:
             data:
               $ref: '#/components/schemas/TrialStartedPayload'
 
-    # ── Event payload schemas (CLOSED — additionalProperties: false) ────────
+    # ── Event payload schemas (OPEN — additionalProperties: true, LLD §16 OQ-6) ─
     # tenant_id IS repeated at the payload level for these events because the
     # on-disk JSON Schemas at internal/adapter/outbound/eventbus/schemas/*.json
     # require it — this reflects the ValidatingCodec's payload contract, which
     # is independent of the CloudEvents envelope-level tenant_id.
     DepartmentMembershipGrantedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3188,7 +3321,7 @@ components:
 
     DepartmentMembershipRevokedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3210,7 +3343,7 @@ components:
 
     DepartmentMembershipLevelChangedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3240,7 +3373,7 @@ components:
 
     TenantRoleGrantedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3265,7 +3398,7 @@ components:
 
     TenantRoleRevokedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - user_id
         - tenant_id
@@ -3287,7 +3420,7 @@ components:
 
     MembershipRevokedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - user_id
@@ -3310,7 +3443,7 @@ components:
 
     MFAResetPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - user_id
@@ -3330,7 +3463,7 @@ components:
 
     TenderAssigneeOverriddenPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tender_id
         - tenant_id
@@ -3353,7 +3486,7 @@ components:
 
     TenantSeatOverageStartedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - licensed_seats
@@ -3387,7 +3520,7 @@ components:
 
     TenantSeatOverageResolvedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - resolved_at
@@ -3404,7 +3537,7 @@ components:
 
     TenantStateChangedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - status
@@ -3460,7 +3593,7 @@ components:
 
     TenantMembershipsPurgedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
       properties:
@@ -3478,7 +3611,7 @@ components:
 
     TenantCreatedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - slug
@@ -3511,7 +3644,7 @@ components:
 
     TrialStartedPayload:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required:
         - tenant_id
         - plan
@@ -3684,6 +3817,42 @@ components:
             data:
               $ref: '#/components/schemas/TenantOffboardedPayload'
 
+    # DepartmentCatalogChangedEnvelope deliberately does NOT extend
+    # ConsumedTenantLifecycleEnvelopeBase — that base's `type` enum and
+    # required `tenant_id` are specific to the tenant-orgm-q/billing-orgm-q
+    # consumed set (both queues project onto a single tenant's row); a
+    # global department-catalog change is not inherently tenant-scoped, and
+    # the real shape isn't defined yet (see DepartmentCatalogChanged
+    # message summary) — this is a minimal, self-contained CloudEvents-
+    # shaped envelope (§7.4) with only the fields catalog_consumer.go
+    # actually reads (id, type), not a claim about fields it does not.
+    DepartmentCatalogChangedEnvelope:
+      type: object
+      required:
+        - id
+        - type
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: RFC 4122 UUID v7 from the producer. Used as the processed_events idempotency key under consumer="catalog".
+          example: "018f4c3e-a1b2-7000-9d3e-4f8c1a2b3d4e"
+        type:
+          type: string
+          enum:
+            - DepartmentCatalogChanged
+        source:
+          type: string
+          description: Publishing-service identifier — expected "iam-catalog-admin" once the producer exists.
+          example: "iam-catalog-admin"
+        time:
+          type: string
+          format: date-time
+          description: Not read by this consumer today (no ordering/staleness guard exists for this queue, unlike EVT-14/EVT-15 on tenant-orgm-q/billing-orgm-q).
+          example: "2026-06-13T10:30:00Z"
+        data:
+          $ref: '#/components/schemas/DepartmentCatalogChangedPayload'
+
     TenantPlanChangedEnvelope:
       allOf:
         - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
@@ -3734,6 +3903,7 @@ components:
     # ignores.
     TrialTenantProvisionedPayload:
       type: object
+      additionalProperties: true
       description: |
         No fields are read by this consumer — applyProjection's
         TrialTenantProvisioned case is a deliberate no-op (see the message
@@ -3741,6 +3911,7 @@ components:
 
     TenantRealmReadyPayload:
       type: object
+      additionalProperties: true
       properties:
         realm_id:
           type: string
@@ -3754,6 +3925,7 @@ components:
 
     TenantConvertedPayload:
       type: object
+      additionalProperties: true
       properties:
         plan:
           type: string
@@ -3764,6 +3936,7 @@ components:
 
     DirectPaidSignupPayload:
       type: object
+      additionalProperties: true
       properties:
         plan:
           type: string
@@ -3774,10 +3947,12 @@ components:
 
     TrialExpiredPayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='trial_expired').
 
     TrialReactivatedPayload:
       type: object
+      additionalProperties: true
       description: |
         No fields are read by this consumer. The new trial_ends_at is
         computed server-side from plans.trial_duration_days for the
@@ -3785,6 +3960,7 @@ components:
 
     TenantSuspendedPayload:
       type: object
+      additionalProperties: true
       required: [source]
       properties:
         source:
@@ -3806,10 +3982,28 @@ components:
 
     TenantOffboardedPayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='offboarded', terminal).
+
+    DepartmentCatalogChangedPayload:
+      type: object
+      additionalProperties: true
+      description: |
+        Deliberately open/undefined — iam-catalog-admin has not built the
+        producer side of this event yet (tracked there as a deferred
+        option, CAT-D3, not a committed contract; verified against its
+        own source and .claude/api-and-events.md, not assumed). This
+        service's consumer (catalog_consumer.go) does not decode any
+        field of this payload — it only matches on the envelope's
+        EventType and clears the om:departments cache — so no field list
+        here would be more than a guess. Replace this schema with the
+        real one once iam-catalog-admin defines and ships it; do not add
+        speculative fields (department_id, change_type, etc.) without a
+        confirmed contract from that service.
 
     TenantPlanChangedPayload:
       type: object
+      additionalProperties: true
       properties:
         plan:
           type: string
@@ -3821,14 +4015,17 @@ components:
 
     TenantPaymentPastDuePayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='past_due').
 
     TenantSubscriptionCancelledPayload:
       type: object
+      additionalProperties: true
       description: No fields are read by this consumer — the projection is unconditional (status='cancelled', cancelled_at set if not already).
 
     TenantReactivatedPayload:
       type: object
+      additionalProperties: true
       description: |
         No fields are read by this consumer. The projection itself is
         guarded server-side: rejected as a no-op if the tenant is already
@@ -3836,6 +4033,7 @@ components:
 
     TenantSeatsChangedPayload:
       type: object
+      additionalProperties: true
       required:
         - licensed_seats
       properties:

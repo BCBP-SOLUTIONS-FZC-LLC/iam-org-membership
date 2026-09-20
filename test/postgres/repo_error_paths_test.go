@@ -1135,16 +1135,9 @@ func TestErrPaths_ReconcilerStore(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	// ERRPATH-RECON-004 — PruneOutbox ctx cancelled (lines 101,109)
-	t.Run("PruneOutbox_CtxCancelled", func(t *testing.T) {
-		t.Parallel()
-		ctx := context.Background()
-		cancelCtx, cancel := context.WithCancel(ctx)
-		cancel()
-		store := pgadapter.NewReconcilerStore(sysPool)
-		_, err := store.PruneOutbox(cancelCtx, 8, 100)
-		assert.Error(t, err)
-	})
+	// ERRPATH-RECON-004 — removed 2026-09-20: PruneOutbox (and its hand-rolled
+	// DELETE against outbox_events) no longer exists — pruning goes entirely
+	// through platform-events' outbox.Runner.PrunePublished now.
 
 	// ERRPATH-RECON-005 — PruneProcessedEvents ctx cancelled (lines 120,128)
 	t.Run("PruneProcessedEvents_CtxCancelled", func(t *testing.T) {

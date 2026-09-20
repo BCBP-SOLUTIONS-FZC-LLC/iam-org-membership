@@ -1,0 +1,113 @@
+erDiagram
+    tenants {
+        uuid id PK
+        text slug UK "immutable (T-1)"
+        text name
+        tenant_plan plan "ENUM starter-pro-enterprise, no local FK — validated against Catalog Service (om:plans)"
+        jsonb feature_flags "override delta only, not the effective set (T-9)"
+        subscription_status status "ENUM trial-active-past_due-cancelled-suspended-trial_expired-offboarded"
+        timestamptz trial_ends_at "required for trial/trial_expired (T-4)"
+        int trial_reactivation_count "0..1 cap (T-14)"
+        timestamptz subscription_started_at "required for paid statuses (T-5)"
+        timestamptz cancelled_at "biconditional with status, CASE'd by suspension_source (T-11/T-16)"
+        suspension_source suspension_source "ENUM billing_lapse-operator, non-NULL iff status=suspended (T-16)"
+        timestamptz last_event_at "EVT-14 recency high-water mark"
+        text realm_id "unique WHERE realm_type=dedicated (T-6)"
+        realm_type realm_type "ENUM shared-dedicated, explicit not derived (T-6)"
+        text keycloak_shard "RP-owned projection, O&M never selects (T-12)"
+        int mfa_freshness_seconds "60..900 (T-10)"
+        boolean local_accounts_enabled
+        boolean realm_sync_pending "T-15 Option A reconcile marker"
+        text default_locale "BCP-47"
+        int licensed_seats "SEAT-1 cap, must be positive (T-8)"
+        timestamptz ownerless_since "set by TM-12, cleared only by O-7 (T-13)"
+        timestamptz overage_since "SEAT-5"
+        bigint record_version "optimistic lock, DB-owned (TRG-1)"
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at "GDPR wipe only (T-7)"
+    }
+    tenant_departments {
+        uuid tenant_id PK "composite PK with department_id, no separate id — also FK to tenants (TD-7)"
+        uuid department_id PK "external — global catalog lives in Catalog Service, no local FK"
+        boolean is_active
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    tenant_memberships {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id "Keycloak sub"
+        membership_status status "ENUM active-suspended-left, lifecycle only — no role data (§16 A14)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at "GDPR wipe only (TM-5)"
+    }
+    tenant_roles {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id
+        uuid tenant_membership_id FK "composite (id,tenant_id,user_id) -> tenant_memberships, TR-8"
+        tenant_role role_code "ENUM tenant_owner-tenant_admin-tender_admin, 'member' barred at DB level (TR-7)"
+        uuid granted_by "granter's Keycloak sub, audit only"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at "soft-delete on revoke"
+    }
+    dept_memberships {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id
+        uuid tenant_membership_id FK "composite (id,tenant_id,user_id) -> tenant_memberships, DM-4"
+        uuid department_id FK "composite (tenant_id,department_id) -> tenant_departments — user can only be assigned to an activated dept"
+        dept_role role_level "ENUM preparator-reviewer-approver"
+        uuid granted_by "'iam-system' UUID for JIT grants (DM-5)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at
+    }
+    dept_role_labels {
+        uuid id PK
+        uuid tenant_id FK
+        dept_role role_code UK "ENUM, paired with tenant_id for uniqueness"
+        text display_name "presentation only, no group-mapping data (DRL-2)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    pending_invitations {
+        uuid id PK
+        uuid tenant_id FK
+        citext email "case-insensitive — one PII exception, cleared at acceptance"
+        text full_name "second PII exception, cleared at acceptance"
+        tenant_role_array initial_tenant_roles "native ENUM array, not jsonb"
+        jsonb initial_dept_mappings "[{department_id, level}], applied on acceptance"
+        uuid invited_by "inviting admin's Keycloak sub"
+        uuid keycloak_user_id "set post-RP CreateInvitedUser, nullable until then"
+        invitation_status status "ENUM pending-accepted-expired-revoked (§16 A11)"
+        timestamptz expires_at "default 7d, coupled to INVITATION_EXPIRY_DAYS / KC action-token lifespan"
+        timestamptz accepted_at "biconditional with status=accepted (PI-2)"
+        boolean kc_cleanup_pending "saga-compensation marker for invitation-kc-cleanup CronJob (PI-9)"
+        bigint record_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    processed_events {
+        text event_id PK "envelope id, SQS dedup"
+        text consumer PK "iam-org-membership or catalog — two independent dedup buckets"
+        timestamptz processed_at
+    }
+
+    tenants ||--o{ tenant_departments  : "fk_td_tenant, ON DELETE CASCADE"
+    tenants ||--o{ tenant_memberships  : "fk_tm_tenant, ON DELETE CASCADE"
+    tenants ||--o{ tenant_roles        : "fk_tnr_tenant, ON DELETE CASCADE"
+    tenants ||--o{ dept_memberships    : "fk_dm_tenant, ON DELETE CASCADE"
+    tenants ||--o{ dept_role_labels    : "fk_drl_tenant, ON DELETE CASCADE"
+    tenants ||--o{ pending_invitations : "fk_pi_tenant, ON DELETE CASCADE"
+    tenant_memberships ||--o{ tenant_roles     : "fk_tnr_tenant_membership, composite (id,tenant_id,user_id)"
+    tenant_memberships ||--o{ dept_memberships : "fk_dm_tenant_membership, composite (id,tenant_id,user_id)"
+    tenant_departments ||--o{ dept_memberships : "fk_dm_tenant_dept, composite (tenant_id,department_id)"

@@ -52,6 +52,8 @@ TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
 COVER_PKG_LIST := $(shell $(GO) list ./internal/... ./pkg/... 2>/dev/null | tr '\n' ',' | sed 's/,$$//')
 
 SCHEMA_GOV_IMAGE ?= ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4
+# Image is published linux/amd64 only; Apple Silicon needs this for pull/run.
+SCHEMA_GOV_PLATFORM ?= linux/amd64
 
 # -----------------------------
 # SETUP
@@ -337,21 +339,29 @@ cover-func: test-ci
 
 .PHONY: schema-pull
 schema-pull:
-	docker pull "$(SCHEMA_GOV_IMAGE)"
+	docker pull --platform "$(SCHEMA_GOV_PLATFORM)" "$(SCHEMA_GOV_IMAGE)"
 
 .PHONY: extract-schemas
 extract-schemas:
 	@echo "Extracting event schemas from api/asyncapi.yaml..."
-	docker run --rm \
+	docker run --rm --platform "$(SCHEMA_GOV_PLATFORM)" \
 	  -v "$(CURDIR)":/workspace \
 	  "$(SCHEMA_GOV_IMAGE)" extract \
 	  --asyncapi   api/asyncapi.yaml \
 	  --schema-dir internal/adapter/outbound/eventbus/schemas
+	@# platform-schemagov:0.4's extract writer and its validate Pass-7 coverage
+	@# check derive different expected filenames for the MFAReset event
+	@# (mfareset.json vs mfa_reset.json) -- a confirmed inconsistency in the
+	@# tool itself (LLD rev 2.10). This repo keeps mfa_reset.json so Pass 7
+	@# stays clean; every extract run recreates the other name as a stray,
+	@# never-wanted duplicate. Remove it so validate (below) sees the real,
+	@# expected 28-file state instead of a misleading 29-file/15-error one.
+	@rm -f internal/adapter/outbound/eventbus/schemas/mfareset.json
 	@echo "Done. Run 'git add internal/adapter/outbound/eventbus/schemas/' to stage."
 
 .PHONY: schema-validate
 schema-validate: extract-schemas
-	docker run --rm \
+	docker run --rm --platform "$(SCHEMA_GOV_PLATFORM)" \
 	  -v "$(CURDIR)":/workspace \
 	  "$(SCHEMA_GOV_IMAGE)" validate \
 	  --asyncapi   api/asyncapi.yaml \
@@ -363,7 +373,7 @@ schema-diff:
 	  echo "Usage: make schema-diff CURRENT=<current.json> PROPOSED=<proposed.json>"; \
 	  exit 1; \
 	}
-	docker run --rm \
+	docker run --rm --platform "$(SCHEMA_GOV_PLATFORM)" \
 	  -v "$(CURDIR)":/workspace \
 	  "$(SCHEMA_GOV_IMAGE)" diff \
 	  --current     "$(CURRENT)" \
@@ -391,7 +401,7 @@ schema-register:
 	bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-membership membership; \
 	bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-tenant tenant; \
 	echo "Registering schemas -> $(GLUE_REGISTRY_MEMBERSHIP_NAME)"; \
-	docker run --rm \
+	docker run --rm --platform "$(SCHEMA_GOV_PLATFORM)" \
 	  -v "$(CURDIR)":/workspace \
 	  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
 	  -e AWS_REGION="$(AWS_REGION)" \
@@ -400,7 +410,7 @@ schema-register:
 	  --registry   "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" \
 	  --schema-dir .tmp/glue-membership || exit 1; \
 	echo "Registering schemas -> $(GLUE_REGISTRY_TENANT_NAME)"; \
-	docker run --rm \
+	docker run --rm --platform "$(SCHEMA_GOV_PLATFORM)" \
 	  -v "$(CURDIR)":/workspace \
 	  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
 	  -e AWS_REGION="$(AWS_REGION)" \
@@ -458,7 +468,7 @@ schema-prune:
 	@test -n "$(GLUE_REGISTRY_TENANT_NAME)" || { echo "GLUE_REGISTRY_TENANT_NAME is not set"; exit 1; }
 	@for registry in $(GLUE_REGISTRY_MEMBERSHIP_NAME) $(GLUE_REGISTRY_TENANT_NAME); do \
 	  echo "Pruning orphaned schemas -> $$registry"; \
-	  docker run --rm \
+	  docker run --rm --platform "$(SCHEMA_GOV_PLATFORM)" \
 	    -v "$(CURDIR)":/workspace \
 	    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
 	    -e AWS_REGION="$(AWS_REGION)" \

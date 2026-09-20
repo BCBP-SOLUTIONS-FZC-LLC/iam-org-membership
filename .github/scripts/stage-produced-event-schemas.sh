@@ -30,7 +30,7 @@ membership_name_for() {
     tenant_role_granted)                 echo TenantRoleGranted ;;
     tenant_role_revoked)                 echo TenantRoleRevoked ;;
     tender_assignee_overridden)          echo TenderAssigneeOverridden ;;
-    mfareset)                            echo MFAReset ;;
+    mfa_reset)                           echo MFAReset ;;
     tenant_seat_overage_started)         echo TenantSeatOverageStarted ;;
     tenant_seat_overage_resolved)        echo TenantSeatOverageResolved ;;
     tenant_state_changed)                echo TenantStateChanged ;;

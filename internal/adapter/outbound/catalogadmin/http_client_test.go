@@ -12,7 +12,6 @@ package catalogadmin
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,7 +40,7 @@ func TestDepartments_Happy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	depts, err := c.Departments(context.Background())
 	require.NoError(t, err)
 	require.Len(t, depts, 1)
@@ -58,7 +57,7 @@ func TestDepartments_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.Departments(context.Background())
 	require.Error(t, err)
 }
@@ -89,7 +88,7 @@ func TestPlans_Happy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	plans, err := c.Plans(context.Background())
 	require.NoError(t, err)
 	require.Len(t, plans, 2)
@@ -106,13 +105,13 @@ func TestPlans_EmptyBaseURL_ErrorsNotFailOpen(t *testing.T) {
 }
 
 func TestPlans_TransportError(t *testing.T) {
-	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, slog.Default())
+	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, nil)
 	_, err := c.Plans(context.Background())
 	require.Error(t, err)
 }
 
 func TestNewHTTPClient_NilLogger_FallsBackToSlogDefault(t *testing.T) {
-	// nil logger → defaults to slog.Default() — must not panic and client must work.
+	// nil logger → no-op sink — must not panic and client must work.
 	c := NewHTTPClient("http://localhost", 5*time.Second, nil)
 	require.NotNil(t, c)
 	// Verify client still errors on unreachable host (nil logger not used until a log call).
@@ -122,7 +121,7 @@ func TestNewHTTPClient_NilLogger_FallsBackToSlogDefault(t *testing.T) {
 
 func TestNewHTTPClient_ZeroTimeout_DefaultsTo3s(t *testing.T) {
 	// timeout <= 0 → defaults to 3s — must not panic.
-	c := NewHTTPClient("http://localhost", 0, slog.Default())
+	c := NewHTTPClient("http://localhost", 0, nil)
 	require.NotNil(t, c)
 	assert.Equal(t, 3*time.Second, c.client.Timeout)
 }
@@ -135,7 +134,7 @@ func TestDepartments_500Status_IncrementsMetricAndErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.Departments(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
@@ -148,7 +147,7 @@ func TestPlans_500Status_IncrementsMetricAndErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.Plans(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
