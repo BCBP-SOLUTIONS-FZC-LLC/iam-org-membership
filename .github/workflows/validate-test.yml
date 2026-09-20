@@ -148,14 +148,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # platform-schemagov:0.4 has a confirmed internal inconsistency (2026-09-21,
+      # verified by running both subcommands directly against this repo): its
+      # `extract` writer and its `validate` Pass-7 coverage check derive
+      # different expected filenames for the MFAReset event ("mfareset.json"
+      # vs "mfa_reset.json"). No filename satisfies both. This repo keeps
+      # mfa_reset.json so schema-registry.yml's validate/Pass 7 stays clean,
+      # which means `extract --check` here will always report exactly that
+      # one file as drifted. The wrapper below treats ONLY that single, known
+      # exception as non-blocking — any other drift (a real regression) still
+      # fails the build.
       - name: Event schema sync check (AsyncAPI → JSON)
         env:
           SCHEMA_GOV_IMAGE: ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4
         run: |
-          docker run --rm \
+          set +e
+          OUTPUT=$(docker run --rm \
             -v "${{ github.workspace }}":/workspace \
             -e GITHUB_ACTIONS \
             "${SCHEMA_GOV_IMAGE}" extract \
             --asyncapi   api/asyncapi.yaml \
             --schema-dir internal/adapter/outbound/eventbus/schemas \
-            --check
+            --check 2>&1)
+          EXIT_CODE=$?
+          set -e
+          echo "${OUTPUT}"
+
+          if [ "${EXIT_CODE}" -eq 0 ]; then
+            echo "Event schema sync check passed cleanly."
+            exit 0
+          fi
+
+          DRIFTED=$(echo "${OUTPUT}" | grep -oE 'DRIFT[[:space:]]+[^[:space:]]+' | awk '{print $2}' | sort -u)
+          KNOWN_EXCEPTION="internal/adapter/outbound/eventbus/schemas/mfa_reset.json"
+
+          if [ "${DRIFTED}" = "${KNOWN_EXCEPTION}" ]; then
+            echo "::warning::Known platform-schemagov:0.4 naming inconsistency — extract expects mfareset.json for MFAReset, but this repo intentionally keeps mfa_reset.json so validate's Pass 7 (schema-registry.yml) stays clean. Treating this single, expected drift as non-blocking."
+            exit 0
+          fi
+
+          echo "::error::Event schema sync check found unexpected drift beyond the known mfa_reset.json exception."
+          exit "${EXIT_CODE}"
