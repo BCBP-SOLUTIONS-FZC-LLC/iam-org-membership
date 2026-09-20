@@ -605,6 +605,92 @@ func TestAddFromRegister_ExpiredInvitation_PlainAdd(t *testing.T) {
 	assert.Equal(t, 0, roleCount, "plain-add: no initial roles applied")
 }
 
+// ── AUTH9-INVITE-01 / AUTH9-REGISTER-01 (IB-3 — service-account reject) ──
+
+// Test Case ID:      AUTH9-INVITE-01
+// Feature:           AUTH-9 · Invite rejects a service-account principal with
+//
+//	403 service_account_not_grantable, defense-in-depth on top of the
+//	structural composite-FK bar (TR-8/DM-4).
+//
+// Priority: P1 · Severity: Major · Automation Status: Automated
+func TestInvite_ServiceAccountTarget_Returns403(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, "auth9-invite")
+
+	fx.TokenService.isServiceAccountFn = func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+		return true, nil
+	}
+
+	_, err := fx.Invitation.Invite(withSystemAndTenant(ctx, tenantID), tenantID, service.InvitationInput{
+		Email:    "svc-account@example.com",
+		FullName: "Service Account",
+	}, actorID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrServiceAccountNotGrantable)
+
+	var count int
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT count(*) FROM pending_invitations WHERE tenant_id=$1 AND email=$2`,
+		tenantID, "svc-account@example.com").Scan(&count))
+	assert.Equal(t, 0, count, "no pending_invitations row for a rejected service-account invite")
+}
+
+// Test Case ID:      AUTH9-INVITE-02
+// Feature:           AUTH-9 · Token Service outage degrades fail-open — Invite
+//
+//	still succeeds rather than blocking on an unavailable defense-in-depth
+//	check (structural composite-FK bar is the primary guarantee).
+//
+// Priority: P2 · Severity: Medium · Automation Status: Automated
+func TestInvite_TokenServiceError_FailsOpen_StillCreatesInvitation(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, actorID := seedTenantWithOwner(t, ctx, fx, "auth9-invite-degrade")
+
+	fx.TokenService.isServiceAccountFn = func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+		return false, errors.New("fake token service outage")
+	}
+
+	inv, err := fx.Invitation.Invite(withSystemAndTenant(ctx, tenantID), tenantID, service.InvitationInput{
+		Email:    "degrade@example.com",
+		FullName: "Degrade Path",
+	}, actorID)
+	require.NoError(t, err, "AUTH-9 check must fail open on Token Service outage")
+	assert.Equal(t, domain.InvitePending, inv.Status)
+}
+
+// Test Case ID:      AUTH9-REGISTER-01
+// Feature:           AUTH-9 · AddFromRegister rejects a service-account
+//
+//	principal with 403 service_account_not_grantable.
+//
+// Priority: P1 · Severity: Major · Automation Status: Automated
+func TestAddFromRegister_ServiceAccountTarget_Returns403(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "auth9-register")
+	userID := uuid.New()
+
+	fx.TokenService.isServiceAccountFn = func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+		return true, nil
+	}
+
+	_, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrServiceAccountNotGrantable)
+
+	var count int
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT count(*) FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2`,
+		tenantID, userID).Scan(&count))
+	assert.Equal(t, 0, count, "no tenant_memberships row for a rejected service-account register")
+}
+
 // ── P25-MEMBERS-REMAIN-01 (TD-2 — memberships survive deactivation) ───────
 
 // Test Case ID:      P25-MEMBERS-REMAIN-01

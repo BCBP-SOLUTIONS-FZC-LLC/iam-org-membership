@@ -23,6 +23,7 @@ type MembershipService struct {
 	invitations     port.InvitationRepository
 	cache           port.Cache
 	rp              port.RealmProvisionerClient
+	tokenService    port.TokenServiceClient // AUTH-9 defense-in-depth — optional, see WithTokenServiceClient
 	workflow        port.WorkflowClient
 	txRunner        port.TxRunner
 	logger          port.SlogStyleLogger
@@ -53,6 +54,32 @@ func NewMembershipService(
 		cache: cache, rp: rp, workflow: workflow, txRunner: txRunner,
 		logger: port.NewSlogStyleLogger(logger), seatOverageDays: seatOverageDays,
 	}
+}
+
+// WithTokenServiceClient injects the AUTH-9 defense-in-depth check. Optional
+// — nil (the zero value) means the check is skipped entirely (isServiceAccountOrDegrade
+// treats a nil client the same as a failed call: allow the operation), which
+// is safe because the primary guarantee is structural (composite FK bar).
+func (s *MembershipService) WithTokenServiceClient(c port.TokenServiceClient) *MembershipService {
+	s.tokenService = c
+	return s
+}
+
+// isServiceAccountOrDegrade calls Token Service's TS-5 lookup and, on
+// failure, degrades to false (allow the operation) rather than blocking the
+// whole ReconcileRoles call — AUTH-9 is defense-in-depth on top of the
+// structural composite-FK bar (TR-8/DM-4), not the primary guarantee.
+func (s *MembershipService) isServiceAccountOrDegrade(ctx context.Context, tenantID, userID uuid.UUID) bool {
+	if s.tokenService == nil {
+		return false
+	}
+	isServiceAccount, err := s.tokenService.IsServiceAccount(ctx, tenantID, userID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "membership: IsServiceAccount call failed — degrading to allow (AUTH-9 is defense-in-depth, not the primary guarantee)",
+			"tenant_id", tenantID, "user_id", userID, "error", err.Error())
+		return false
+	}
+	return isServiceAccount
 }
 
 // DelegateImpactAdvisory carries the WFI-13 advisory attached to a P-7
@@ -252,6 +279,16 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 // Enforces TM-8 last-owner guard: if the actor is stripping the tenant_owner
 // role from the last active owner, return 422 last_owner_removal.
 func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID uuid.UUID, desired []domain.TenantRoleCode, actorID uuid.UUID) ([]domain.TenantRole, []domain.TenantRole, error) {
+	// AUTH-9 defense-in-depth: reject a service-account target before any
+	// other check. In normal operation this can never fire — the automation
+	// principal never acquires a tenant_memberships row, so the membership
+	// lookup below would already reject it with 404 member_not_found — but
+	// this returns the more specific 403 rather than relying solely on that
+	// structural side effect.
+	if s.isServiceAccountOrDegrade(ctx, tenantID, userID) {
+		return nil, nil, domain.NewError(domain.ErrServiceAccountNotGrantable,
+			"service accounts cannot be granted a tenant role")
+	}
 	// Validate: no 'member' in desired set (TR-7). Use ErrInvalidRole (→ 422)
 	// not ErrValidation (→ 400) per LLD §17 invalid_role taxonomy.
 	for _, code := range desired {

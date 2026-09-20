@@ -320,13 +320,23 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 	case "TrialTenantProvisioned":
 		return prevStatus, prevPlan, nil
 	case "TenantRealmReady":
-		// Gap-1 fix: RP now sends explicit realm_id and realm_type fields
-		// (added to TenantRealmReadyPayload). We read them directly instead
-		// of hardcoding realm_type="dedicated" and mapping "realm"→realm_id.
-		// realm field is still present in the payload for backward compat.
+		// RP's frozen TenantRealmReadyPayload (§25) carries the realm name
+		// under json:"realm", not "realm_id" — and has no realm_type field
+		// at all (verified against iam-realm-provisioner's own
+		// internal/core/domain/event.go — the realm_id/realm_type pair
+		// exists only in RP's outbound/orgmembership client, its struct for
+		// the *synchronous* PATCH /internal/tenants/:id REST call, a
+		// different code path from this async event payload). Corrected: a
+		// prior version of this handler read nonexistent "realm_id"/
+		// "realm_type" fields, so every real event silently blanked
+		// tenants.realm_id/realm_type to empty strings (execLifecyclePatch's
+		// UPDATE has no COALESCE guard). RP's own doc comment on
+		// TenantRealmReadyPayload confirms this event is "emitted by RP-2 or
+		// RP-3 (never for trial)" — both dedicated-realm paths — so
+		// realm_type is hardcoded rather than read from a field RP never
+		// sends.
 		var payload struct {
-			RealmID       string `json:"realm_id"`
-			RealmType     string `json:"realm_type"`
+			Realm         string `json:"realm"`
 			KeycloakShard string `json:"keycloak_shard"`
 		}
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -334,8 +344,8 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		}
 		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:            port.LifecycleSetRealm,
-			RealmID:       payload.RealmID,
-			RealmType:     payload.RealmType,
+			RealmID:       payload.Realm,
+			RealmType:     string(domain.RealmDedicated),
 			KeycloakShard: payload.KeycloakShard,
 		})
 		return prevStatus, prevPlan, err
@@ -356,8 +366,17 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		})
 		return domain.StatusActive, newPlan, err
 	case "DirectPaidSignup":
-		// Gap-2 fix: RP now includes plan in DirectPaidSignupPayload, so we
-		// read it directly instead of silently falling back to prevPlan.
+		// RP's actual DirectPaidSignupPayload (iam-realm-provisioner
+		// internal/core/domain/event.go) is {tenant_id, realm,
+		// direct_signup} — it has no "plan" field, so this read always
+		// misses and always falls through to prevPlan below. A prior
+		// commit on this branch claimed RP had added "plan" to the
+		// payload and that the fallback was now just a safety net for
+		// "older RP versions" — that was never true; verified against
+		// RP's real source, not the claim. Left as-is (harmless: the
+		// fallback already does the right thing, activating the tenant
+		// at its current plan) rather than removing the dead read, since
+		// changing it isn't this fix's job.
 		var payload struct {
 			Plan string `json:"plan"`
 		}
@@ -366,9 +385,6 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		}
 		newPlan := domain.TenantPlan(payload.Plan)
 		if newPlan == "" {
-			// Safety fallback: plan should always be present now (Gap-2 fix),
-			// but if an older RP version sends the event without it, we fall
-			// back to prevPlan so the tenant is at least activated.
 			newPlan = prevPlan
 		}
 		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{

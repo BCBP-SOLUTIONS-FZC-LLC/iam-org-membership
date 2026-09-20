@@ -150,10 +150,11 @@ func TestNewHTTPClient_NilLogger_UsesDefault(t *testing.T) {
 }
 
 func TestNewHTTPClient_ZeroTimeout_UsesDefaultTimeout(t *testing.T) {
-	// timeout ≤ 0 must be replaced with the 300 ms default.
+	// timeout ≤ 0 must be replaced with the 1000 ms default (Gap-8: raised
+	// from 300ms, which was too tight for the DLG-I3 dept-scope lookup).
 	c := NewHTTPClient("http://delegation.internal", 0, slog.Default())
 	assert.NotNil(t, c)
-	assert.Equal(t, 300*time.Millisecond, c.client.Timeout)
+	assert.Equal(t, 1000*time.Millisecond, c.client.Timeout)
 }
 
 func TestNewHTTPClient_ExplicitURL_ReturnsFunctionalClient(t *testing.T) {

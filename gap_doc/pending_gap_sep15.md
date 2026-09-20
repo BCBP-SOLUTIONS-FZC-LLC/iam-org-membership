@@ -80,14 +80,21 @@ A `DepartmentCatalogChanged` event would eliminate this delay — consumers clea
 
 **What has already been done?**
 
+Corrected 2026-09-17: the table below previously claimed the catalog-admin
+side (`port.EventNotifier`, `NoopEventNotifier`, `notify()` calls, Terraform)
+was done. Verified against `iam-catalog-admin`'s actual source: none of it
+exists there — zero matches for `EventNotifier`/`DepartmentCatalogChanged`/
+`notify()` anywhere in that repo, and no `deploy/messaging/` Terraform in
+either repo. Only the last row (this service's consumer) is real.
+
 | Component | Status |
 |---|---|
-| `port.EventNotifier` interface in catalog-admin | ✅ Done |
-| `NoopEventNotifier` default (zero deps) | ✅ Done |
-| `DepartmentService` calls `notify()` after every write | ✅ Done |
-| `main.go` wired with `NoopEventNotifier` | ✅ Done |
-| Terraform IaC for SNS + SQS | ✅ Done |
-| org_membership consumer (`catalog_consumer.go`) | ✅ Done and waiting |
+| `port.EventNotifier` interface in catalog-admin | ❌ Does not exist |
+| `NoopEventNotifier` default (zero deps) | ❌ Does not exist |
+| `DepartmentService` calls `notify()` after every write | ❌ Does not exist |
+| `main.go` wired with `NoopEventNotifier` | ❌ Does not exist |
+| Terraform IaC for SNS + SQS | ❌ Does not exist in either repo |
+| org_membership consumer (`catalog_consumer.go`) | ✅ Done, but has no test coverage and is inert (never fires) until `SQS_CATALOG_ORGM_QUEUE_URL` is set and something upstream actually publishes `DepartmentCatalogChanged` |
 
 **Step 1 — Infra team: Apply Terraform**
 

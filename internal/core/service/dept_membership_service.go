@@ -17,6 +17,7 @@ type DeptMembershipService struct {
 	tenantDepts     port.TenantDepartmentRepository
 	catalog         port.DepartmentCatalogReader // global catalog — D-5/TD-6 retired check
 	delegationCheck port.DelegationCheckClient   // ADR-0008 v2 §6.4: Core→Delegation DLG-I3 call, replaces the local FindActiveDeptDelegateForUser lookup
+	tokenService    port.TokenServiceClient      // AUTH-9 defense-in-depth — optional, see WithTokenServiceClient
 	workflow        port.WorkflowClient
 	cache           port.Cache
 	txRunner        port.TxRunner
@@ -45,6 +46,32 @@ func NewDeptMembershipService(
 func (s *DeptMembershipService) WithLogger(log port.Logger) *DeptMembershipService {
 	s.log = port.NewSlogStyleLogger(log)
 	return s
+}
+
+// WithTokenServiceClient injects the AUTH-9 defense-in-depth check. Optional
+// — nil (the zero value) means the check is skipped entirely (isServiceAccountOrDegrade
+// treats a nil client the same as a failed call: allow the operation), which
+// is safe because the primary guarantee is structural (composite FK bar).
+func (s *DeptMembershipService) WithTokenServiceClient(c port.TokenServiceClient) *DeptMembershipService {
+	s.tokenService = c
+	return s
+}
+
+// isServiceAccountOrDegrade calls Token Service's TS-5 lookup and, on
+// failure, degrades to false (allow the operation) rather than blocking the
+// whole Assign — AUTH-9 is defense-in-depth on top of the structural
+// composite-FK bar (TR-8/DM-4), not the primary guarantee.
+func (s *DeptMembershipService) isServiceAccountOrDegrade(ctx context.Context, tenantID, userID uuid.UUID) bool {
+	if s.tokenService == nil {
+		return false
+	}
+	isServiceAccount, err := s.tokenService.IsServiceAccount(ctx, tenantID, userID)
+	if err != nil {
+		s.log.WarnContext(ctx, "deptmembership: IsServiceAccount call failed — degrading to allow (AUTH-9 is defense-in-depth, not the primary guarantee)",
+			"tenant_id", tenantID, "user_id", userID, "error", err.Error())
+		return false
+	}
+	return isServiceAccount
 }
 
 // deptDelegateOrDegrade calls the Delegation Service's DLG-I3 dept-delegate
@@ -80,6 +107,17 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	if level != domain.DeptPreparator && level != domain.DeptReviewer && level != domain.DeptApprover {
 		return nil, domain.NewError(domain.ErrInvalidRole, "invalid role_level").
 			WithDetails(map[string]any{"code": "invalid_role_level"})
+	}
+	// AUTH-9 defense-in-depth: reject a service-account target before any
+	// other check. In normal operation this can never fire — the automation
+	// principal never acquires a tenant_memberships row (it never flows
+	// through the invite/registration paths), so the membership check below
+	// would already reject it with 422 member_not_active — but this returns
+	// the more specific 403 rather than relying solely on that structural
+	// side effect.
+	if s.isServiceAccountOrDegrade(ctx, tenantID, userID) {
+		return nil, domain.NewError(domain.ErrServiceAccountNotGrantable,
+			"service accounts cannot be granted a department role")
 	}
 	// D-5/TD-6 step 1: global catalog must be active (department_retired).
 	if s.catalog != nil {

@@ -107,8 +107,16 @@ func TestP19RPEdges_PatchRealmConfig_Non2xx_ReturnsError(t *testing.T) {
 }
 
 func TestP19RPEdges_PatchRealmConfig_BadBaseURL_RequestBuildError(t *testing.T) {
+	// A patch with LocalAccountsEnabled unset is a documented no-op (nothing
+	// to patch) that returns nil before ever building a request — an empty
+	// port.RealmConfigPatch{} here would never reach the bad-URL path this
+	// test means to exercise, so it must set the one field PatchRealmConfig
+	// actually reads.
+	local := true
 	c := NewHTTPClient("http://\x7f", 0, slog.Default())
-	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{})
+	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{
+		LocalAccountsEnabled: &local,
+	})
 	assert.Error(t, err)
 }
 

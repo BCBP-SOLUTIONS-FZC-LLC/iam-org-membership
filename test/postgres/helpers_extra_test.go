@@ -82,7 +82,32 @@ type testFixtures struct {
 	// AssignFromGroups set resolveFn instead of seeding those tables via
 	// raw SQL. Defaults to an empty resolution (fail-open) when unset.
 	GroupMappingClient *fakeGroupMappingClient
+
+	// TokenService stands in for port.TokenServiceClient (AUTH-9). Defaults
+	// to "not a service account" (fx.Invitation/DeptMembership/Membership
+	// all wire the same instance) — tests exercising the reject path set
+	// fx.TokenService.isServiceAccountFn to return true, and tests
+	// exercising the fail-open degrade set it to return an error.
+	TokenService *fakeTokenServiceClient
 }
+
+// fakeTokenServiceClient is a settable stand-in for port.TokenServiceClient.
+type fakeTokenServiceClient struct {
+	mu                 sync.Mutex
+	isServiceAccountFn func(ctx context.Context, tenantID, userID uuid.UUID) (bool, error)
+}
+
+func (f *fakeTokenServiceClient) IsServiceAccount(ctx context.Context, tenantID, userID uuid.UUID) (bool, error) {
+	f.mu.Lock()
+	fn := f.isServiceAccountFn
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, tenantID, userID)
+	}
+	return false, nil
+}
+
+var _ port.TokenServiceClient = (*fakeTokenServiceClient)(nil)
 
 // fakeGroupMappingClient is a settable stand-in for port.GroupMappingClient.
 type fakeGroupMappingClient struct {
@@ -155,10 +180,11 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		txRunner, nil, // cache=nil (advisory)
 		&fakeRealmProvisioner{}, // no-op RP client
 	)
+	fx.TokenService = &fakeTokenServiceClient{}
 	fx.DeptMembership = service.NewDeptMembershipService(
 		deptMems, memberships, tenantDepts, catalogDepts, nil, // delegationCheck: unused in these tests
 		&fakeWorkflow{}, nil, txRunner,
-	)
+	).WithTokenServiceClient(fx.TokenService)
 	fx.GroupMappingClient = &fakeGroupMappingClient{}
 	fx.GroupMapping = service.NewGroupMappingService(
 		memberships, roles, deptMems, txRunner, nil, fx.GroupMappingClient,
@@ -167,7 +193,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		memberships, roles, deptMems, tenants, invitations, nil, // cache
 		&fakeRealmProvisioner{}, &fakeWorkflow{},
 		txRunner, nil, 30, // seatOverageDays
-	)
+	).WithTokenServiceClient(fx.TokenService)
 	fx.Operator = service.NewOperatorService(
 		tenants, roles, memberships, nil, txRunner,
 	)
@@ -179,7 +205,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	fx.Invitation = service.NewInvitationService(
 		invitations, memberships, roles, deptMems, tenants,
 		fx.RP, nil, txRunner, nil, 7,
-	)
+	).WithTokenServiceClient(fx.TokenService)
 	fx.AuthZ = service.NewAuthZService(authzRepo, catalogPlans, catalogDepts, nil)
 	fx.Tenant = service.NewTenantService(tenants, nil, fx.RP)
 	fx.Department = service.NewDepartmentService(catalogDepts, tenantDepts, nil)

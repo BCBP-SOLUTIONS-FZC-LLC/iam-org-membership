@@ -36,6 +36,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
+	tokenserviceclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/tokenservice"
 	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/valkey"
 	workflowclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/workflow"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -394,6 +395,15 @@ func main() {
 	// have been fully removed from this service — Group Mapping Service is
 	// now the sole owner of that config surface.
 	groupMappingClient := groupmappingclient.New(log)
+	// tokenServiceClient: AUTH-9's defense-in-depth service-account-not-
+	// grantable check on the membership-create (P-6/I-3) and role-grant
+	// (P-10/P-28) paths goes through Token Service's TS-5 lookup — the only
+	// way this service can resolve a subject's Keycloak sub against the
+	// tenant's automation principal without ever touching Keycloak itself
+	// (RP-INV-1). Fails open: a Token Service outage degrades to allowing
+	// the operation, since the primary guarantee is structural (composite
+	// FK bar, TR-8/DM-4).
+	tokenServiceClient := tokenserviceclient.New(log)
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	// I-16 (§16 RP-C3): bound against sysPool (BYPASSRLS), NOT pool — RP's
@@ -410,13 +420,17 @@ func main() {
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
-	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays)
-	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogReader, delegationCheckClient, wfClient, cache, txRunner).WithLogger(log)
+	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays).
+		WithTokenServiceClient(tokenServiceClient)
+	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogReader, delegationCheckClient, wfClient, cache, txRunner).
+		WithLogger(log).
+		WithTokenServiceClient(tokenServiceClient)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, cache)
 	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache, groupMappingClient).WithLogger(log)
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, log, invitationExpiryDays).
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
-		WithMaxInvitesPerHour(inviteMaxPerHour)
+		WithMaxInvitesPerHour(inviteMaxPerHour).
+		WithTokenServiceClient(tokenServiceClient)
 	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(sysTenantRepo, subscriptionGraceDays)
 

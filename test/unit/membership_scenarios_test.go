@@ -3,6 +3,7 @@ package unit_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -197,6 +198,67 @@ func TestReconcileRoles_GrantAdmin_Succeeds(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, granted, 1)
 	assert.Equal(t, domain.RoleTenantAdmin, granted[0].RoleCode)
+}
+
+// ── AUTH9-RECONCILE-01/02 (IB-3 — service-account reject) ─────────────
+
+// Test Case ID:      AUTH9-RECONCILE-01
+// Feature:           AUTH-9 · ReconcileRoles rejects a service-account
+//
+//	target with 403 service_account_not_grantable, before any repo call.
+//
+// Priority: P1 · Severity: Major · Automation Status: Automated
+func TestReconcileRoles_ServiceAccountTarget_Returns403(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	ts := &fakeTokenServiceClient{
+		isServiceAccountFn: func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+			return true, nil
+		},
+	}
+	svc := buildMembershipSvcWithTx(nil, nil).WithTokenServiceClient(ts)
+
+	_, _, err := svc.ReconcileRoles(context.Background(), tenantID, userID,
+		[]domain.TenantRoleCode{domain.RoleTenantAdmin}, uuid.New())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrServiceAccountNotGrantable)
+}
+
+// Test Case ID:      AUTH9-RECONCILE-02
+// Feature:           AUTH-9 · Token Service outage degrades fail-open —
+//
+//	ReconcileRoles still proceeds to the happy-path grant.
+//
+// Priority: P2 · Severity: Medium · Automation Status: Automated
+func TestReconcileRoles_TokenServiceError_FailsOpen(t *testing.T) {
+	tenantID, userID := uuid.New(), uuid.New()
+	mem := &domain.TenantMembership{ID: uuid.New(), TenantID: tenantID, UserID: userID, Status: domain.MembershipActive}
+
+	roles := &extRoleRepo{
+		listByUserFn: func(_ context.Context, _, _ uuid.UUID) ([]domain.TenantRole, error) {
+			return []domain.TenantRole{}, nil // plain member
+		},
+		grantFn: func(_ context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
+			return tr, nil
+		},
+	}
+	m := &fakeMembershipRepo{
+		findByUserIDFn: func(_ context.Context, _, _ uuid.UUID) (*domain.TenantMembership, error) {
+			return mem, nil
+		},
+	}
+	ts := &fakeTokenServiceClient{
+		isServiceAccountFn: func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+			return false, errors.New("token_service_unavailable")
+		},
+	}
+	svc := buildMembershipSvcWithTx(m, roles).WithTokenServiceClient(ts)
+
+	granted, _, err := svc.ReconcileRoles(context.Background(), tenantID, userID,
+		[]domain.TenantRoleCode{domain.RoleTenantAdmin}, uuid.New())
+
+	require.NoError(t, err, "AUTH-9 check must fail open on Token Service outage")
+	require.Len(t, granted, 1)
 }
 
 // ── P28-TM8-RACE-01: authoritative recheck inside tx (BUG-P28-1 fix) ──
