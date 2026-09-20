@@ -466,7 +466,7 @@ servers:
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
-  # ── Inbound: the two queues this service consumes (§7.1) ──────────────────
+  # ── Inbound: the three queues this service consumes (§7.1) ────────────────
   # Owned by this service (iam-org-membership), NOT by the producer. Each is
   # subscribed to a topic owned and published by another service.
   sqsTenantOrgm:
@@ -1576,7 +1576,7 @@ operations:
     messages:
       - $ref: '#/channels/tenantRealmQueue/messages/TrialStarted'
 
-  # ── Inbound operations — the two queues this service consumes (§7.1) ───────
+  # ── Inbound operations — the three queues this service consumes (§7.1) ─────
   consumeTenantOrgm:
     action: receive
     channel:
@@ -1740,7 +1740,7 @@ components:
         (12 event types) or iam-tenant-events (2 event types, co-produced
         alongside Realm Provisioner and Billing) via the transactional
         outbox (LLD §7.3/§7.4). Every message in components/messages except
-        the 13 consumed ones below, the publishMembershipEvents /
+        the 14 consumed ones below, the publishMembershipEvents /
         publishTenantEvents send operations, and the downstream fan-out
         receive operations (Audit/AuthZ/Realm Provisioner/Notification/
         Workflow/Billing — informational, documenting how other teams
@@ -1749,18 +1749,22 @@ components:
       name: consumed
       description: |
         This service is the consumer, not the producer. Per §7.1, Org &
-        Membership subscribes to exactly two inbound queues:
-        tenant-orgm-q (Realm Provisioner's iam.tenant.events — 8
-        tenant-lifecycle event types) and billing-orgm-q (Billing's
-        billing.events — 5 billing event types), both handled by the
-        single MembershipEventConsumer in
-        internal/adapter/inbound/consumer/membership_event_consumer.go
+        Membership subscribes to three inbound queues: tenant-orgm-q
+        (Realm Provisioner's iam.tenant.events — 8 tenant-lifecycle event
+        types) and billing-orgm-q (Billing's billing.events — 5 billing
+        event types), both handled by the single MembershipEventConsumer
+        in internal/adapter/inbound/consumer/membership_event_consumer.go
         (EVT-14 recency guard, EVT-15 future-time clamp, EVT-16 tenant-
-        state relay). Canonical schema ownership for anything tagged
-        consumed sits with the producing service's own AsyncAPI spec, not
-        this file — treat these definitions as this service's consumer-side
-        documentation, kept in sync with upstream, not as the source of
-        truth.
+        state relay); and catalog-orgm-q (Catalog / Admin Config Service's
+        DepartmentCatalogChanged — 1 event type, Gap 12), handled by a
+        separate CatalogConsumer in
+        internal/adapter/inbound/consumer/catalog_consumer.go with no
+        EVT-14/15/16 guards — it only clears the om:departments cache on
+        receipt, still inert pending iam-catalog-admin's producer side.
+        Canonical schema ownership for anything tagged consumed sits with
+        the producing service's own AsyncAPI spec, not this file — treat
+        these definitions as this service's consumer-side documentation,
+        kept in sync with upstream, not as the source of truth.
 
   messageTraits:
     glueWireFormat:
