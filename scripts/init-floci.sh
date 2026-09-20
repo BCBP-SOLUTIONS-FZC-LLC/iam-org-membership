@@ -213,7 +213,7 @@ register_schema iam-membership-events department_membership_granted.json       D
 register_schema iam-membership-events department_membership_level_changed.json DepartmentMembershipLevelChanged
 register_schema iam-membership-events department_membership_revoked.json       DepartmentMembershipRevoked
 register_schema iam-membership-events membership_revoked.json                  MembershipRevoked
-register_schema iam-membership-events mfareset.json                            MFAReset
+register_schema iam-membership-events mfa_reset.json                           MFAReset
 register_schema iam-membership-events tenant_memberships_purged.json           TenantMembershipsPurged
 register_schema iam-membership-events tenant_role_granted.json                 TenantRoleGranted
 register_schema iam-membership-events tenant_role_revoked.json                 TenantRoleRevoked

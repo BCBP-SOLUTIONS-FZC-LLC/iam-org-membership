@@ -423,7 +423,7 @@ func TestAllSchemaNames_AllEntriesAreValidSchemaNames(t *testing.T) {
 	assert.Contains(t, names, "TenantCreated")
 	assert.Contains(t, names, "MFAReset")
 	assert.NotContains(t, names, "tenant_created")
-	assert.NotContains(t, names, "mfareset")
+	assert.NotContains(t, names, "mfa_reset")
 	assert.NotContains(t, names, "TenantOffboarded")
 }
 

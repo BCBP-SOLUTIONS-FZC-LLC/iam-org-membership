@@ -70,6 +70,6 @@ func TestIsProducedEvent_OutboundCatalogue(t *testing.T) {
 	}
 	assert.False(t, domain.IsProducedEvent("TenantOffboarded"),
 		"consumed producer-owned events must not be treated as produced")
-	assert.False(t, domain.IsProducedEvent("mfareset"),
+	assert.False(t, domain.IsProducedEvent("mfa_reset"),
 		"snake_case extract stems are not Glue names")
 }

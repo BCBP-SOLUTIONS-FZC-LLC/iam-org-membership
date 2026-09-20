@@ -5,7 +5,7 @@
   "required": [
     "licensed_seats"
   ],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "licensed_seats": {
       "type": "integer",

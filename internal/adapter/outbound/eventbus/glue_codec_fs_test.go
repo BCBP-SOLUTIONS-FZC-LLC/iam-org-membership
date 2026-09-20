@@ -47,7 +47,7 @@ func TestAllSchemaNamesFromFS_NonJSONFile_Skipped(t *testing.T) {
 
 func TestAllSchemaNamesFromFS_UsesStaticMapNotFilename(t *testing.T) {
 	mapFS := fstest.MapFS{
-		"schemas/mfareset.json": {Data: []byte(`{"type":"object"}`)},
+		"schemas/mfa_reset.json": {Data: []byte(`{"type":"object"}`)},
 	}
 
 	names, err := allSchemaNamesFromFS(mapFS)
