@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/jackc/pgx/v5"
@@ -77,4 +78,40 @@ func (r *GaugeRepository) count(ctx context.Context, sql string) (int64, error) 
 		return 0, err
 	}
 	return n, nil
+}
+
+const rlsViolationCountsSQL = `
+SELECT violation_type, count(*) FROM rls_violation_log
+ WHERE occurred_at >= $1
+ GROUP BY violation_type`
+
+// RLSViolationCounts returns violation-count-by-type over the given trailing
+// window, so the caller can increment iam_rls_violations_total without
+// exposing rls_violation_log itself (§11.2). rls_violation_log has RLS
+// disabled (recursion guard — see the migration's own comment), so this
+// query is inherently cross-tenant regardless of pool; it still runs over
+// the BYPASSRLS sysPool for consistency with every other query in this
+// repository. Mirrors iam-user-profile's MaintenanceSweeper.RLSViolationCounts.
+func (r *GaugeRepository) RLSViolationCounts(ctx context.Context, window time.Duration) (map[string]int64, error) {
+	counts := make(map[string]int64)
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, rlsViolationCountsSQL, time.Now().UTC().Add(-window))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var vType string
+			var n int64
+			if err := rows.Scan(&vType, &n); err != nil {
+				return err
+			}
+			counts[vType] = n
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return counts, nil
 }

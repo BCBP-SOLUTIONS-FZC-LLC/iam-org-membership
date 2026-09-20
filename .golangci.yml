@@ -9,6 +9,7 @@ linters:
   enable:
     - bodyclose
     - exhaustive
+    - forbidigo
     - nilerr
     - noctx
     - revive
@@ -22,6 +23,32 @@ linters:
         - name: error-return
         - name: error-strings
         - name: error-naming
+    # Every DB connection/pool in this service — production and test alike —
+    # must go through pgcommon.NewPool (internal/adapter/outbound/postgres/
+    # db.go, test/dbseed/pool.go) so GUC binding (RLS-6), tracing, and
+    # slow-query logging can never be silently bypassed. This bans the raw
+    # construction *functions*, not the pgxpool/pgx *types* — pgcommon's own
+    # WithConn/RunInTx callbacks legitimately need *pgxpool.Conn/pgx.Tx as
+    # parameter types (test/dbseed/pool.go, test/e2e/security_test.go), so a
+    # blanket import ban (depguard) would false-positive on those. Verified
+    # zero call sites of any of these three across the whole repo before
+    # adding this gate (2026-09-20).
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # With analyze-types: true, forbidigo matches the resolved qualified
+        # identifier (e.g. "pgxpool.New"), NOT the call-with-parens source
+        # text — a trailing \( here would silently never match anything.
+        # Verified against golangci-lint's own forbidigo test fixtures
+        # (pkg/golinters/forbidigo/testdata/forbidigo_struct.yml) after an
+        # initial version of this rule (with a trailing \() silently matched
+        # zero call sites in a deliberate sanity-check violation.
+        - pattern: 'pgxpool\.(New|NewWithConfig|Connect)$'
+          msg: "construct pools only via pgcommon.NewPool (internal/adapter/outbound/postgres/db.go / test/dbseed/pool.go) — never pgxpool directly"
+        - pattern: 'pgx\.Connect(Config)?$'
+          msg: "construct connections only via pgcommon.NewPool — never a bare pgx.Connect"
+        - pattern: 'sql\.Open$'
+          msg: "this service uses pgx/pgcommon, not database/sql"
 
 issues:
   exclude-rules:

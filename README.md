@@ -144,17 +144,17 @@ Clean Architecture — dependencies point inward; outer layers never import inne
 ```
 iam-org-membership/
 ├── cmd/
-│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrations, outbox runner, SQS consumer, 4 metric-exporter goroutines
+│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrations, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 4 metric-exporter goroutines; wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
 │   └── reconciler/                    # Single binary, --job=<name>; jobs/ holds the 7 CronJob entry points
 ├── internal/
 │   ├── core/
 │   │   ├── domain/                    # Entities, value objects, DomainError catalogue — no external deps
-│   │   ├── port/                      # TenantRepository, MembershipRepository, AuthZRepository (NEW), WorkflowClient, RealmProvisionerClient, CatalogAdminClient, GroupMappingClient, DelegationCheckClient
+│   │   ├── port/                      # TenantRepository, MembershipRepository, AuthZRepository (NEW), WorkflowClient, RealmProvisionerClient, CatalogAdminClient, GroupMappingClient, DelegationCheckClient, TokenServiceClient (AUTH-9/IB-3)
 │   │   └── service/                   # MembershipService, TenantService, AuthZService, ProvisioningService, OperatorService, InvitationService, CatalogService, GroupMappingService, SubscriptionLapseService
 │   └── adapter/
 │       ├── inbound/
 │       │   ├── http/                  # Gin handlers (P-*/I-*/O-*), DTOs, middleware, router.go, Swagger UI
-│       │   └── consumer/              # SQS consumer: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards)
+│       │   └── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged — Gap 12, inert until iam-catalog-admin's publisher side ships)
 │       └── outbound/
 │           ├── postgres/              # Repository impls + single consolidated 000000_initial_schema migration
 │           ├── valkey/                # Cache adapter (go-redis/v9) — advisory only
@@ -164,7 +164,7 @@ iam-org-membership/
 │           ├── catalogadmin/           # Catalog Service HTTP client — departments/plans (NOT fail-open)
 │           ├── groupmappingclient/     # Group Mapping Service HTTP client — I-10 JIT resolution (fails open)
 │           ├── delegationcheck/        # Delegation Service HTTP client — §8.8.4 dept-scope precision lookup (fails open)
-│           ├── httpx/                  # Shared otelhttp-instrumented http.Client factory — scaffolded, NOT yet wired into any of the 5 outbound clients above (each still builds its own http.Client + local propagateTraceparent)
+│           ├── httpx/                  # Shared otelhttp-instrumented http.Client factory — httpx.NewClient(timeout) is now built by all 6 outbound clients above (verified by grep; zero leftover manual traceparent code); otelhttp.NewTransport handles injection + client-span emission
 │           └── metrics/                # iam_*-prefixed Prometheus counters/gauges/histograms
 ├── pkg/requestctx/                    # Typed RequestContext{UserID, TenantID, Roles, ClientIP, UserAgent}
 ├── api/
@@ -285,7 +285,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 | `outbox-prune` | `0 3 * * *` | Prunes published `outbox_events` past `OUTBOX_RETENTION_DAYS` |
 | `processed-events-prune` | `0 4 * * *` | Prunes `processed_events` rows past `PROCESSED_EVENTS_TTL_DAYS` |
 
-The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`) run as **ticker goroutines inside `cmd/server`**, not CronJobs.
+The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`) run as **ticker goroutines inside `cmd/server`**, not CronJobs. (A 5th exporter for the `iam_rls_violations_total` counter, mirroring `iam-user-profile`'s `runRLSViolationExporter`, has its query implemented and tested at the repository level — `pgadapter.GaugeRepository.RLSViolationCounts` — but is not yet wired into a ticker goroutine.)
 
 ---
 
@@ -518,7 +518,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 
 ### Coverage
 
-`.github/scripts/coverage-gate.sh` reads `go tool cover -func=coverage.out`'s total and fails below `COVERAGE_THRESHOLD` (default **95%**, not overridden in this repo's `validate-test.yml`). Coverage is measured over `./internal/...` and `./pkg/...` (`COVER_PKG_LIST` in the Makefile), merged across the unit/postgres/integration suites via `scripts/merge_coverage.py` (max-count strategy). The current merged total is **98.4%**, comfortably above the enforced floor. `internal/adapter/inbound/http` sits at 100%; `internal/core/domain`, `internal/core/port`, `pkg/requestctx`, and `internal/adapter/outbound/httpx` are all at 100% as well; `internal/core/service` and `internal/adapter/outbound/postgres` are both above 99%. The handful of packages below 95% (`catalogadmin`, `realmprovisioner`, `consumer`) have only a few residual statements each — mostly defensive branches (e.g. a `json.Marshal` error path on an always-marshalable struct) that are impractical to exercise without contriving unrealistic inputs, not real gaps.
+`.github/scripts/coverage-gate.sh` reads `go tool cover -func=coverage.out`'s total and fails below `COVERAGE_THRESHOLD` (default **95%**, not overridden in this repo's `validate-test.yml`). Coverage is measured over `./internal/...` and `./pkg/...` (`COVER_PKG_LIST` in the Makefile), merged across the unit/postgres/integration suites via `scripts/merge_coverage.py` (max-count strategy). The current merged total is **99.1%** (verified 2026-09-20, up from a previously-documented 98.4%), comfortably above the enforced floor. `internal/adapter/inbound/http` sits at 100%; `internal/core/domain`, `internal/core/port`, `pkg/requestctx`, and `internal/adapter/outbound/httpx` are all at 100% as well; `internal/core/service` and `internal/adapter/outbound/postgres` are both above 99%. The handful of packages below 95% (`catalogadmin`, `realmprovisioner`, `consumer`) have only a few residual statements each — mostly defensive branches (e.g. a `json.Marshal` error path on an always-marshalable struct) that are impractical to exercise without contriving unrealistic inputs, not real gaps.
 
 ---
 
@@ -536,16 +536,20 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `VALKEY_URL` | `localhost:6380` (dev) | Advisory cache; `rediss://` required outside dev |
 | `SNS_TOPIC_MEMBERSHIP_ARN` / `SNS_TOPIC_TENANT_ARN` | — | **Required outside dev.** The two `RoutingPublisher` topic ARNs |
 | `SQS_TENANT_ORGM_QUEUE_URL` / `SQS_BILLING_ORGM_QUEUE_URL` | — | Inbound lifecycle-event queues |
+| `SQS_CATALOG_ORGM_QUEUE_URL` | — (unset in every environment today) | Inbound `catalog-orgm-q` ← `DepartmentCatalogChanged` (Gap 12). The consumer (`catalog_consumer.go`) is done and tested, but this queue is inert until both this var is set **and** `iam-catalog-admin` ships its publisher side |
+| `SQS_TENANT_ORGM_CONCURRENCY` / `SQS_BILLING_ORGM_CONCURRENCY` / `SQS_CATALOG_ORGM_CONCURRENCY` | `4` / `2` / `2` | Per-queue consumer concurrency overlay onto the shared `platform-events` `eventcfg.LoadSQS()` env contract |
 | `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_TENANT_NAME` | — | Unset → `NoopCodec` (plain JSON) |
 | `AWS_REGION` / `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `ap-south-1` / — | floci override in dev; IRSA in production |
 | `OUTBOX_POLL_INTERVAL` / `OUTBOX_BATCH_SIZE` / `OUTBOX_MAX_ATTEMPTS` / `OUTBOX_DRAIN_TIMEOUT` / `OUTBOX_PUBLISH_CONCURRENCY` / `OUTBOX_PUBLISH_TIMEOUT` / `OUTBOX_STARTUP_JITTER` / `OUTBOX_CLAIM_LEASE_DURATION` | `500ms` / `50` / `5` / `30s` / `4` / `10s` / `2s` / `10m` | Outbox runner tunables |
 | `PROCESSED_EVENTS_TTL_DAYS` | `8` | Consumer dedup retention — deliberately > the 7-day SQS message lifetime (PE-1) |
+| `OUTBOX_RETENTION_DAYS` | `8` | `outbox-prune` CronJob retention, now consumed by `platform-events`' own `outbox.Runner.PrunePublished` (migrated off a local hand-rolled batched delete) |
 | `CACHE_TTL_SECONDS` | `300` | Base TTL for `om:*` keys (jitter applied per-write) |
 | `WORKFLOW_SERVICE_BASE_URL` / `WORKFLOW_TIMEOUT_MS` | — / `3000` | §8.8 delegate-impact gate — fail-closed |
 | `REALM_PROVISIONER_BASE_URL` / `REALM_PROVISIONER_TIMEOUT_MS` | — / `3000` | Invite/MFA-reset fail-closed; realm-config/session-revoke fail-open |
 | `CATALOG_ADMIN_BASE_URL` / `CATALOG_ADMIN_TIMEOUT_MS` | — / `3000` | **NOT fail-open** — surfaces `catalog_unavailable` (503) on a cold-cache-plus-failure intersection |
 | `GROUP_MAPPING_BASE_URL` / `GROUP_MAPPING_TIMEOUT_MS` | — / `300` | I-10 JIT resolution — fails open (never fails a SAML login) |
-| `DELEGATION_BASE_URL` / `DELEGATION_TIMEOUT_MS` | — / `300` | §8.8.4 dept-scope pre-filter — fails open to tenant-wide scoping |
+| `DELEGATION_BASE_URL` / `DELEGATION_TIMEOUT_MS` | — / `1000` | §8.8.4 dept-scope pre-filter — fails open to tenant-wide scoping (raised from 300ms, Gap-8 fix: too tight under load/cold-start) |
+| `TOKEN_SERVICE_BASE_URL` / `TOKEN_SERVICE_TIMEOUT_MS` | — / `1000` | AUTH-9/IB-3 service-account-not-grantable check (P-6/I-3 invite/register, P-10/P-28 role-grant) — fails open, degrading to allow (structural composite-FK bar, TR-8/DM-4, is the primary guarantee) |
 | `INVITATION_EXPIRY_DAYS` | `7` | Must equal Keycloak's invite action-token lifespan |
 | `SEAT_OVERAGE_GRACE_DAYS` | `30` | Informational seat-overage grace window (SEAT-5) — Billing owns enforcement |
 | `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's cancellation-to-suspension threshold — this service owns the math so RP's sweep never keeps a second copy of the rule |
@@ -578,7 +582,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 
 Per the IAM Platform Observability Standard's three-tier hierarchy (`internal/adapter/outbound/metrics/business.go`), with `domain`/`service`/`environment` injected centrally in `metrics.Register(environment)` — never left to a call site:
 
-- **Tier 1 — `platform_*`** (concept common across domains; carries `domain="iam"` + `service` + `environment`): `platform_messages_received_total{queue}` / `platform_messages_processed_total{queue}` / `platform_messages_failed_total{queue}` (SQS consumer lifecycle, both queues), `platform_duplicate_messages_total{consumer}` (IDEMP-4), `platform_dlq_messages_total{event_type,reason}` (EVT-15 clamp), `platform_dependency_request_seconds{target_service,endpoint}` / `platform_dependency_errors_total{target_service,endpoint,outcome}` (`target_service` = catalog\|group_mapping\|delegation, the downstream peer — distinct from the `service` const label).
+- **Tier 1 — `platform_*`** (concept common across domains; carries `domain="iam"` + `service` + `environment`): `platform_messages_received_total{queue}` / `platform_messages_processed_total{queue}` / `platform_messages_failed_total{queue}` (SQS consumer lifecycle, all three queues), `platform_duplicate_messages_total{consumer}` (IDEMP-4), `platform_dlq_messages_total{event_type,reason}` (EVT-15 clamp), `platform_dependency_request_seconds{target_service,endpoint}` / `platform_dependency_errors_total{target_service,endpoint,outcome}` (`target_service` = catalog\|group_mapping\|delegation, the downstream peer — distinct from the `service` const label).
 - **Tier 2 — `iam_*`** (concept shared across IAM-domain services; carries `service` + `environment`, no `domain`): `iam_rls_violations_total{violation_type}`, `iam_auth_session_revoke_failed_total{reason}`, `iam_lifecycle_event_skipped_total{event_type}` (EVT-14), `iam_lifecycle_event_lag_seconds{event_type}`.
 - **Tier 3 — `iam_org_membership_*`** (unique to this service): `unknown_event_acknowledged_total`, `delegate_suspend_impact_total`, `tenant_ownerless_escalated_total`, `seat_overage_started_total`, `seat_limit_reached_total`, `invite_throttled_total{reason}`, `realm_sync_failed_total`, `delegate_removal_blocked_total`, `delegate_reassignment_total`, `membership_exists_check_total` (I-15), plus 4 gauges refreshed by ticker goroutines every 5 minutes against the BYPASSRLS sys pool: `tenant_ownerless`, `realm_sync_pending`, `seat_overage_active`, `pending_invitations_stale`.
 
@@ -596,7 +600,7 @@ A CI script (`.github/scripts/check-metric-naming.sh`) enforces naming/suffix/la
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + SQS consumer + 4 metric-exporter goroutines |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 3 SQS consumers + 4 metric-exporter goroutines |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs |
 
 Two-stage `Dockerfile`: `golang:1.26.6-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the two compiled binaries are copied in. `EXPOSE 8080 9090`.
@@ -617,7 +621,7 @@ Nine workflow files:
 
 - **`ci.yml`** — orchestrator. Runs `validate-test.yml` and `validate-quality.yml` in parallel with `build-image` (Hadolint → Buildx cached build → Trivy CVE scan → smoke tests). On push to `main`: builds+pushes to GHCR with provenance+SBOM.
 - **`validate-test.yml`** (reusable) — `make test-ci` (unit + postgres/RLS + integration, `-race`, merged coverage) → coverage threshold gate (**95%**) → `make test-e2e` (real HTTP router via `httptest`, no coverage/`-race`) → `go-arch-lint` → Swagger staleness check → event-schema sync check (`schema-gov extract --check`).
-- **`validate-quality.yml`** (reusable) — `go mod verify` → `gofmt` check → `go mod tidy` drift check → `go vet` → `golangci-lint` → `govulncheck`.
+- **`validate-quality.yml`** (reusable) — `go mod verify` → RLS-6 non-`LOCAL` `SET app.tenant_id` grep → metric naming/registry-ratification checks → `gofmt` check → `go mod tidy` drift check → `go vet` → `golangci-lint` (incl. a `forbidigo` rule banning raw `pgxpool`/`pgx.Connect`/`sql.Open` outside `pgcommon.NewPool`) → `govulncheck`.
 - **`changelog-check.yml`** — fails a PR touching `internal/`, `api/`, `deploy/`, or `cmd/` without a `CHANGELOG.md` update.
 - **`release.yml`** — tag-triggered release pipeline: re-validate → build+cross-compile → Docker build/push/sign → optional deploy-gate → GitHub Release publish.
 - **`schema-registry.yml`** — registers this service's event schemas to the shared Glue registries: PR read-only validate+diff, push-to-`main` full validate→diff→register→changelog.
@@ -700,6 +704,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | Any P-6/P-24/P-10 catalog validation | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` — the one dependency deliberately not fail-open |
 | I-10 SAML JIT group resolution | Group Mapping / JIT Config Service | `outbound/groupmappingclient/` | fail-open | Empty resolution — never fails a login |
 | Dept-scope precision leg of delegate-impact pre-check (§8.8.4) | Delegation Service | `outbound/delegationcheck/` | degrade | Falls back to tenant-wide impact scoping (correct, less precise) |
+| Service-account-not-grantable check (Invite P-6/I-3, role-grant P-10/P-28, AUTH-9/IB-3) | Token Service | `outbound/tokenservice/` | fail-open | Degrades to allowing the operation — the structural composite-FK bar (TR-8/DM-4) is the primary guarantee |
 | RP-C3 subscription-lapse sweep (I-16) | — (this service is the callee) | — | — | A Realm Provisioner outage just means its own sweep sees a stale/empty list this cycle |
 
 ### 2. Inbound callers (other services → this service)
@@ -723,6 +728,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 |---|---|---|
 | `tenant-orgm-q` | Realm Provisioner | `TenantRealmReady`, `TenantConverted`, `TenantSuspended`, `TenantOffboarded`, `TrialExpired`, `TrialReactivated`, `TenantReactivated` |
 | `billing-orgm-q` | Billing | `TenantSeatsChanged`, `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated` |
+| `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (Gap 12) — **inert today**: consumer is done/tested, but `iam-catalog-admin` has no publisher side yet and `SQS_CATALOG_ORGM_QUEUE_URL` is unset everywhere |
 
 **Events this service produces** (via `iam.membership.events` / `iam.tenant.events`) and their downstream consumers:
 

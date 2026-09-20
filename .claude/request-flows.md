@@ -120,7 +120,7 @@ type WorkflowClient interface {
 
 `delegation_id`: nil = tenant-wide (§8.8 full removal); non-nil = scoped to that specific delegation (§8.8.4 dept-level). Workflow Service already tags task assignments `reason="delegation:<id>"`.
 
-HTTP adapter: `adapter/outbound/workflow/http_client.go`, its own local `propagateTraceparent(ctx, req)` helper (built directly on `otel`/`propagation.NewCompositeTextMapPropagator`, not `gincommon.PropagateHeaders` — every outbound client in this repo follows the same pattern), `WORKFLOW_SERVICE_TIMEOUT_MS` (default 3000).
+HTTP adapter: `adapter/outbound/workflow/http_client.go`, `httpx.NewClient(timeout)` for W3C trace propagation (`otelhttp`-wrapped transport, not a local `propagateTraceparent` helper and not `gincommon.PropagateHeaders` — every outbound client in this repo follows the same pattern), `WORKFLOW_SERVICE_TIMEOUT_MS` (default 3000).
 
 ### 8.8.2 DELETE Pre-check
 
@@ -366,7 +366,7 @@ Idempotent via `processed_events`. The whole wipe (steps 1–3) commits as one t
 |---|---|---|
 | `processed_events` | 8 d | `processed-events-prune` CronJob (IDEMP-4 window; > 7-d SQS lifetime) |
 | `rls_violation_log` | 30 d | Hourly CronJob |
-| `outbox_events` (published) | 8 days | `outbox-prune` CronJob — batched raw-SQL delete, capped at `jctx.BatchLimit` per tick (not `outbox.Runner.PrunePublished`) |
+| `outbox_events` (published) | 8 days | `outbox-prune` CronJob — being migrated to `outbox.Runner.PrunePublished(ctx, retention, batchLimit)` (`platform-events`) off the earlier hand-rolled batched raw-SQL delete against `port.ReconcilerStore`; still uncommitted as of 2026-09-20, but its `test/postgres` integration-test gap (tests never wired the new `OutboxRunner` dependency, so they exercised the no-op skip path instead of real prune logic) was found and fixed the same day — full `test/postgres` suite passes |
 | `pending_invitations` (terminal) | not hard-deleted by any job | No `invitation-cleanup` CronJob exists in this repo — terminal rows (`accepted`/`expired`/`revoked`) persist until tenant offboarding cascade (`ON DELETE CASCADE`) or an explicit GDPR erasure-by-email (§15.8) |
 
 **Removed from this table (ADR-0008/ADR-0007):** `delegations` and `tender_acl_entries` retention rows — Core owns neither table any more; their soft-delete-then-hard-delete retention is now the Delegation Service's and Tender-ACL Service's own concern in their respective databases.
