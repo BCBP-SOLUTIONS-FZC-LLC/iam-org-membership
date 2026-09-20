@@ -20,9 +20,13 @@ import (
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/config"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgmetrics"
 	"go.opentelemetry.io/otel"
 )
 
@@ -88,6 +92,7 @@ func run() int {
 	// spans/metrics/logs are attributable to this binary, not the HTTP
 	// server, on a shared {service} dashboard.
 	serviceName := envOr("APP_NAME", "iam-org-membership-reconciler")
+	buildVersion := envOr("BUILD_VERSION", "dev")
 
 	// Same TracerProvider as cmd/server so db.query spans from this job
 	// export through gincommon's OTLP pipeline when the collector is set.
@@ -96,7 +101,7 @@ func run() int {
 	// gincommon.Shutdown defer, registered FIRST, fires LAST — so the
 	// TracerProvider shuts down (below) before the Zap flush, matching
 	// cmd/server/main.go's explicit shutdownTracing() → gincommon.Shutdown()
-	// sequence (same order iam-delegation/iam-realm-provisioner use).
+	// sequence (same order iam-user-profile uses).
 	defer func() {
 		if err := gincommon.Shutdown(rawLog); err != nil {
 			log.Error("logger/tracer flush error", "error", err.Error())
@@ -105,18 +110,18 @@ func run() int {
 	defer shutdownTracing()
 
 	// ObservabilityMiddlewares is gincommon's public metrics-init API —
-	// call it here (mirrors cmd/server/main.go) so business metrics land on
-	// gincommon.MetricsRegisterer with the same {service, version} const
-	// labels cmd/server uses, even though this CronJob binary never serves
-	// /metrics itself: RealmConfigSync and future jobs increment those
-	// same collectors, and a scrape-on-exit / pushgateway path can rely on
-	// them existing regardless of which binary registered them first.
+	// call it here (mirrors cmd/server/main.go) so business / events /
+	// pgcommon metrics land on gincommon.MetricsRegisterer with matching
+	// {service, version} const labels. This CronJob never serves /metrics;
+	// collectors still have to exist because jobs increment them.
 	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
 		Logger:       rawLog,
 		ServiceName:  serviceName,
-		BuildVersion: envOr("BUILD_VERSION", "dev"),
+		BuildVersion: buildVersion,
 	})
 	metrics.Register(appEnv)
+	events.InitWithRegisterer(serviceName, buildVersion, gincommon.MetricsRegisterer())
+	pgmetrics.InitWithRegisterer(serviceName, buildVersion, gincommon.MetricsRegisterer())
 
 	log.Info("reconciler starting", "job", jobName)
 
@@ -193,11 +198,25 @@ func run() int {
 	}
 	outboxPublisher := eventbusadapter.New("iam-org-membership-reconciler", codec).WithLogger(rawLog)
 
+	// Prune-only runner: LoadOutbox + RunnerConfigFromEnv is the
+	// platform-events composition contract. Publisher is NoopPublisher
+	// because this binary never Start()s the poll loop — OutboxPrune only
+	// calls PrunePublished against the outbox_events schema ApplySchema
+	// created at server startup.
+	outboxEnv := eventcfg.LoadOutbox()
+	eventcfg.LogWarningsTo(rawLog, outboxEnv.Warnings)
+	outboxRunner, err := outbox.NewRunner(eventcfg.RunnerConfigFromEnv(outboxEnv, sysPool, eventbusadapter.NoopPublisher{}, rawLog))
+	if err != nil {
+		log.Error("create outbox runner", "error", err.Error())
+		return 1
+	}
+
 	jctx := &jobs.Context{
 		TxRunner:               pgadapter.NewTxRunner(pool, outboxPublisher),
 		Tenants:                pgadapter.NewTenantRepository(pool),
 		Invitations:            pgadapter.NewInvitationRepository(sysPool),
 		Reconciler:             pgadapter.NewReconcilerStore(sysPool),
+		OutboxRunner:           outboxRunner,
 		RealmProvisioner:       realmprovisionerclient.New(rawLog),
 		Logger:                 log,
 		Metrics:                metrics.Recorder{},

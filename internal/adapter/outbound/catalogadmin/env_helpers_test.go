@@ -4,7 +4,6 @@
 package catalogadmin
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 
@@ -68,6 +67,6 @@ func TestEnvDurationMs_InvalidValue_ReturnsDefault(t *testing.T) {
 // TestNewHTTPClient_WithExplicitURL_ReturnsFunctionalClient verifies
 // NewHTTPClient returns a non-nil *HTTPClient when given a non-empty URL.
 func TestNewHTTPClient_WithExplicitURL_ReturnsFunctionalClient(t *testing.T) {
-	c := NewHTTPClient("http://catalog.internal", 5*time.Second, slog.Default())
+	c := NewHTTPClient("http://catalog.internal", 5*time.Second, nil)
 	assert.NotNil(t, c)
 }

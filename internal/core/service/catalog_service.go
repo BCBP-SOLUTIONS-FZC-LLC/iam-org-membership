@@ -46,10 +46,9 @@ func NewCatalogService(client port.CatalogAdminClient, cache port.Cache) *Catalo
 	return &CatalogService{client: client, cache: cache}
 }
 
-// WithLogger injects the shared gincommon-backed Logger so this service's
+// WithLogger injects the shared gincommon Zap logger so this service's
 // stale-if-error fallback warnings flow through the same sink as HTTP/
-// consumer/outbound-client logs instead of slog.Default(). Optional — the
-// zero value falls back to the top-level slog functions.
+// consumer/outbound-client logs. Optional — the zero value is a no-op.
 func (s *CatalogService) WithLogger(log port.Logger) *CatalogService {
 	s.log = port.NewSlogStyleLogger(log)
 	return s

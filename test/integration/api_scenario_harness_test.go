@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -30,6 +29,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
@@ -128,7 +128,7 @@ var _ port.GroupMappingClient = (*scenarioGroupMappingClient)(nil)
 // apiTestEnv holds everything a scenario test needs.
 type apiTestEnv struct {
 	server  *httptest.Server
-	rawPool *pgxpool.Pool // superuser — bypasses RLS for seeding
+	rawPool *dbseed.Pool // superuser — pgcommon-backed, bypasses RLS for seeding
 	client  *http.Client
 }
 
@@ -264,7 +264,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	superDSN, err := pgC.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	rawPool, err := pgxpool.New(ctx, superDSN)
+	rawPool, err := dbseed.New(ctx, superDSN)
 	require.NoError(t, err)
 	t.Cleanup(rawPool.Close)
 

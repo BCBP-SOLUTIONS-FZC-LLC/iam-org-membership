@@ -20,7 +20,6 @@ package realmprovisioner
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,7 +52,7 @@ func closedServer() *httptest.Server {
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestP20RPT01_CreateInvitedUser_TransportError_LogsAndReturnsError(t *testing.T) {
 	srv := closedServer()
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: uuid.New(),
 		Email:    "a@example.com",
@@ -70,7 +69,7 @@ func TestP20RPT01_CreateInvitedUser_TransportError_LogsAndReturnsError(t *testin
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestP20RPT02_DeleteUser_TransportError_LogsAndReturnsError(t *testing.T) {
 	srv := closedServer()
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err, "transport error from DeleteUser c.client.Do must propagate")
 }
@@ -84,7 +83,7 @@ func TestP20RPT02_DeleteUser_TransportError_LogsAndReturnsError(t *testing.T) {
 func TestP20RPT03_PatchRealmConfig_TransportError_LogsAndReturnsError(t *testing.T) {
 	srv := closedServer()
 	enabled := true
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{
 		LocalAccountsEnabled: &enabled,
 	})
@@ -114,7 +113,7 @@ func TestP20RPT04_RevokeUserSessions_TransportError_IncrementsMetricAndReturnsEr
 	defer func() { metrics.AuthSessionRevokeFailed = original }()
 
 	srv := closedServer()
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err, "transport error from RevokeUserSessions must propagate (AUTH-8 surface for fail-count)")
 
@@ -153,7 +152,7 @@ func TestP20RPT05_RevokeUserSessions_Non2xx_NilMetric_ReturnsError(t *testing.T)
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err,
 		"non-2xx RevokeUserSessions must surface the error even when the metric counter is nil")
@@ -187,7 +186,7 @@ func TestP20RPT05b_RevokeUserSessions_Non2xx_NonNilMetric_IncrementsStatusLabel(
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 0, slog.Default())
+	c := NewHTTPClient(srv.URL, 0, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "502")
@@ -214,7 +213,7 @@ func TestP20RPT06_ResetMFA_BadBaseURL_RequestBuildError(t *testing.T) {
 	// "\x7f" (DEL) is an invalid URL character that makes http.NewRequestWithContext
 	// return an error without hitting the network — same pattern used in
 	// TestP19RPEdges_CreateInvitedUser_BadBaseURL_RequestBuildError.
-	c := NewHTTPClient("http://\x7f", 0, slog.Default())
+	c := NewHTTPClient("http://\x7f", 0, nil)
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err,
 		"invalid base URL must cause http.NewRequestWithContext to fail before any network I/O")

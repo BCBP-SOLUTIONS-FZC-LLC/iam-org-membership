@@ -7,7 +7,6 @@ package groupmappingclient
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,7 +26,7 @@ func TestResolveGroups_MalformedJSON_DecodeError(t *testing.T) {
 	defer srv.Close()
 
 	tenantID := uuid.New()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.ResolveGroups(context.Background(), tenantID, []string{"group1"})
 	require.Error(t, err)
 	assert.Error(t, err, "ResolveGroups must surface the JSON decode error")

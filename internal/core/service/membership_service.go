@@ -30,11 +30,9 @@ type MembershipService struct {
 	seatOverageDays int
 }
 
-// NewMembershipService builds a MembershipService. logger may be nil — it
-// then falls back to the top-level log/slog functions (port.SlogStyleLogger's
-// zero-value behavior), preserving pre-injection behavior for callers/tests
-// that don't wire one in. Production wiring (cmd/server/main.go) passes the
-// same gincommon-backed Logger used for HTTP/consumer/outbound-client logs.
+// NewMembershipService builds a MembershipService. logger may be nil —
+// logs are then a no-op (never slog.Default()). Production wiring
+// (cmd/server/main.go) passes the gincommon Zap logger from logger.NewLogger.
 func NewMembershipService(
 	memberships port.MembershipRepository,
 	roles port.TenantRoleRepository,

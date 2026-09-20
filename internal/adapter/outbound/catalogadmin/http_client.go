@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -44,24 +43,12 @@ const xsvcService = "catalog"
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  Logger
-}
-
-// Logger is the structured logging interface this client uses (Warn only).
-// *slog.Logger satisfies it directly (existing tests keep working
-// unchanged); so does port.SlogStyleLogger, which New() passes in from
-// main.go so these warnings flow through the same gincommon-backed sink as
-// the rest of the service instead of slog.Default().
-type Logger interface {
-	Warn(msg string, args ...any)
+	logger  port.Logger
 }
 
 var _ port.CatalogAdminClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
@@ -74,11 +61,17 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 
 // New preserves the sibling clients' factory-name convention so main.go's
 // wiring reads the same way for every outbound client. log is the shared
-// gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
+// gincommon Zap logger (may be nil — warn() is then a no-op).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("CATALOG_ADMIN_BASE_URL", "")
 	timeout := envDurationMs("CATALOG_ADMIN_TIMEOUT_MS", 3*time.Second)
-	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
+	return NewHTTPClient(baseURL, timeout, log)
+}
+
+func (c *HTTPClient) warn(msg string, kv ...any) {
+	if c.logger != nil {
+		c.logger.Warn(msg, port.Fields(kv...))
+	}
 }
 
 // catalogDepartmentsResponse mirrors catalog-admin-config's
@@ -129,7 +122,7 @@ func (c *HTTPClient) Departments(ctx context.Context) ([]port.CatalogDepartment,
 	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
-		c.logger.Warn("catalogadmin: Departments transport error", "error", err.Error())
+		c.warn("catalogadmin: Departments transport error", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -171,7 +164,7 @@ func (c *HTTPClient) Plans(ctx context.Context) ([]port.CatalogPlan, error) {
 	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
-		c.logger.Warn("catalogadmin: Plans transport error", "error", err.Error())
+		c.warn("catalogadmin: Plans transport error", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck

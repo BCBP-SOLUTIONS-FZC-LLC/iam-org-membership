@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,26 +46,15 @@ import (
 // metric's "service" const label (this service's own identity).
 const xsvcService = "token_service"
 
-// Logger is the structured logging interface this client uses (Warn only).
-// *slog.Logger satisfies it directly; so does port.SlogStyleLogger, which
-// New() passes in from main.go so these warnings flow through the same
-// gincommon-backed sink as the rest of the service instead of slog.Default().
-type Logger interface {
-	Warn(msg string, args ...any)
-}
-
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
-	logger  Logger
+	logger  port.Logger
 }
 
 var _ port.TokenServiceClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPClient {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 1000 * time.Millisecond
 	}
@@ -79,16 +67,26 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger Logger) *HTTPCl
 
 // New preserves the sibling clients' factory-name convention so main.go's
 // wiring reads the same way for every outbound client. log is the shared
-// gincommon-backed Logger (may be nil — see port.SlogStyleLogger).
+// gincommon Zap logger (may be nil — warn() is then a no-op).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("TOKEN_SERVICE_BASE_URL", "")
 	timeout := envDurationMs("TOKEN_SERVICE_TIMEOUT_MS", 1000*time.Millisecond)
 	if baseURL == "" {
 		// Warn at construction time so a missing TOKEN_SERVICE_BASE_URL is
 		// visible in startup logs, not silently discovered on first call.
-		slog.Default().Warn("tokenservice: TOKEN_SERVICE_BASE_URL is not set — AUTH-9 service-account check will be unavailable; every Invite/Assign/ReconcileRoles call degrades to allowing the operation (the structural composite-FK bar still holds)")
+		warn(log, "tokenservice: TOKEN_SERVICE_BASE_URL is not set — AUTH-9 service-account check will be unavailable; every Invite/Assign/ReconcileRoles call degrades to allowing the operation (the structural composite-FK bar still holds)")
 	}
-	return NewHTTPClient(baseURL, timeout, port.NewSlogStyleLogger(log))
+	return NewHTTPClient(baseURL, timeout, log)
+}
+
+func warn(log port.Logger, msg string, kv ...any) {
+	if log != nil {
+		log.Warn(msg, port.Fields(kv...))
+	}
+}
+
+func (c *HTTPClient) warn(msg string, kv ...any) {
+	warn(c.logger, msg, kv...)
 }
 
 // principalResponseBody mirrors iam-token-service's principalResponseBody
@@ -118,7 +116,7 @@ func (c *HTTPClient) IsServiceAccount(ctx context.Context, tenantID, userID uuid
 	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
-		c.logger.Warn("tokenservice: IsServiceAccount transport error", "tenant_id", tenantID, "user_id", userID, "error", err.Error())
+		c.warn("tokenservice: IsServiceAccount transport error", "tenant_id", tenantID, "user_id", userID, "error", err.Error())
 		return false, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -132,7 +130,7 @@ func (c *HTTPClient) IsServiceAccount(ctx context.Context, tenantID, userID uuid
 			metrics.IncDependencyError(xsvcService, endpoint, "5xx")
 		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		c.logger.Warn("tokenservice: IsServiceAccount non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))
+		c.warn("tokenservice: IsServiceAccount non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))
 		return false, fmt.Errorf("tokenservice: IsServiceAccount returned %d: %s", resp.StatusCode, string(msg))
 	}
 	var out principalResponseBody

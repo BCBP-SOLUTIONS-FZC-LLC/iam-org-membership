@@ -54,7 +54,7 @@ func TestEnvDurationMs_NegativeIntFallsBackToDefault(t *testing.T) {
 func TestNewHTTPClient_NilLoggerAndZeroTimeoutDefault(t *testing.T) {
 	c := NewHTTPClient("http://x", 0, nil)
 	assert.NotNil(t, c)
-	assert.NotNil(t, c.logger, "nil logger should be replaced by slog.Default()")
+	assert.Nil(t, c.logger, "nil logger is a no-op; warn() must not panic")
 	assert.Equal(t, "http://x", c.baseURL)
 	assert.NotZero(t, c.client.Timeout)
 }

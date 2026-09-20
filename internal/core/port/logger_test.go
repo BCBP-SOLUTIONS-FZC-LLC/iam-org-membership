@@ -2,7 +2,7 @@
 // Covers the remaining uncovered branches in SlogStyleLogger.log4:
 //   - Debug() and Error() convenience wrappers (0.0%)
 //   - withCtx=true + valid OTel span → trace_id appended to args
-//   - log.nil → slog.Default() fallback path (called by DebugContext/ErrorContext with nil log)
+//   - log.nil → no-op (called by DebugContext/ErrorContext with nil log)
 //   - default: case in the level switch (unreachable via public API; tested via direct call)
 package port
 
@@ -176,4 +176,9 @@ func TestLog4_DefaultLevelBranch_CallsLogError(t *testing.T) {
 	sl.log4(context.Background(), slog.Level(999), "default branch", nil, false)
 	assert.Equal(t, "default branch", log.errorMsg,
 		"unrecognised log level must fall back to Logger.Error")
+}
+
+func TestFields_PairsKeysAndDropsInvalid(t *testing.T) {
+	got := Fields("a", 1, "b", "x", 3, "skipped-nonstring-key", "trailing")
+	assert.Equal(t, map[string]any{"a": 1, "b": "x"}, got)
 }

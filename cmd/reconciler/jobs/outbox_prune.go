@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"time"
 )
 
 // defaultPruneBatchLimit is used by OutboxPrune/ProcessedEventsPrune when
@@ -11,34 +12,32 @@ import (
 // (LIMIT 0) or falling back to an unbounded delete.
 const defaultPruneBatchLimit = 500
 
-// OutboxPrune deletes outbox_events rows that have been successfully
-// published + acknowledged past the retention window (default 8 days;
-// the outbox runner's own PrunePublished writes to a status column).
-//
-// We implement this directly against the outbox_events schema (created by
-// platform-events/outbox.ApplySchema at startup): the runner marks rows
-// with published_at IS NOT NULL after successful SNS publish; anything
-// older than the retention window is safe to drop.
-//
-// Batched by jctx.BatchLimit (subquery + LIMIT, then DELETE ... WHERE id IN
-// (...)) rather than one unbounded DELETE — closes a real gap the
-// LLD-vs-code audit found: a backlog larger than one tick's worth would
-// otherwise produce a single long-running DELETE holding row locks across
-// however many rows exist, instead of converging over several ticks like
-// every other batched reconciler in this package.
+// OutboxPrune deletes published outbox_events rows older than the
+// retention window via platform-events' outbox.Runner.PrunePublished —
+// the library's own batched DELETE (same SQL the runner uses in-process).
+// Retention defaults to 8 days (OUTBOX_RETENTION_DAYS); batch size follows
+// RECONCILER_BATCH_LIMIT so a backlog converges over several ticks.
 func OutboxPrune(ctx context.Context, jctx *Context) (Result, error) {
+	var res Result
+	if jctx.OutboxRunner == nil {
+		jctx.Logger.Warn("outbox-prune: no outbox.Runner wired — skipping")
+		return res, nil
+	}
 	batchLimit := jctx.BatchLimit
 	if batchLimit <= 0 {
 		batchLimit = defaultPruneBatchLimit
 	}
-	var res Result
-	n, err := jctx.Reconciler.PruneOutbox(ctx, jctx.OutboxRetentionDays, batchLimit)
+	retentionDays := jctx.OutboxRetentionDays
+	if retentionDays <= 0 {
+		retentionDays = 8
+	}
+	n, err := jctx.OutboxRunner.PrunePublished(ctx, time.Duration(retentionDays)*24*time.Hour, batchLimit)
 	if err != nil {
 		return res, err
 	}
-	res.Attempted = n
-	res.Succeeded = n
+	res.Attempted = int(n)
+	res.Succeeded = int(n)
 	jctx.Logger.Info("outbox-prune complete",
-		"deleted", res.Succeeded, "retention_days", jctx.OutboxRetentionDays)
+		"deleted", res.Succeeded, "retention_days", retentionDays)
 	return res, nil
 }

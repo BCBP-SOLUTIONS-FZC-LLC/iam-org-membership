@@ -106,14 +106,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 
 	kind := classify(env.Type)
 	if kind == kindUnknown {
-		if metrics.UnknownEventAcknowledged != nil {
-			metrics.UnknownEventAcknowledged.WithLabelValues("unknown", env.Type).Inc()
-		}
-		c.logger.Info("unknown event type — silently acknowledging",
-			"event_id", env.ID, "event_type", env.Type)
-		return c.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
-		})
+		return ackUnknown(ctx, c.txRunner, c.idempotency, c.logger, consumerName, env)
 	}
 
 	tenantID, err := uuid.Parse(env.TenantID)
@@ -122,7 +115,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	// Cheap dedup probe outside the tx to save a lock acquisition on replay.
-	seen, err := c.idempotency.IsProcessed(ctx, consumerName, env.ID)
+	seen, err := skipDuplicate(ctx, c.idempotency, consumerName, env.ID)
 	if err != nil {
 		return err
 	}

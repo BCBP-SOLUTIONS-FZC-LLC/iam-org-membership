@@ -144,7 +144,7 @@ Clean Architecture — dependencies point inward; outer layers never import inne
 ```
 iam-org-membership/
 ├── cmd/
-│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrations, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 4 metric-exporter goroutines; wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
+│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrations, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 5 metric-exporter goroutines (4 gauges + iam_rls_violations_total counter); wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
 │   └── reconciler/                    # Single binary, --job=<name>; jobs/ holds the 7 CronJob entry points
 ├── internal/
 │   ├── core/
@@ -285,7 +285,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 | `outbox-prune` | `0 3 * * *` | Prunes published `outbox_events` past `OUTBOX_RETENTION_DAYS` |
 | `processed-events-prune` | `0 4 * * *` | Prunes `processed_events` rows past `PROCESSED_EVENTS_TTL_DAYS` |
 
-The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`) run as **ticker goroutines inside `cmd/server`**, not CronJobs. (A 5th exporter for the `iam_rls_violations_total` counter, mirroring `iam-user-profile`'s `runRLSViolationExporter`, has its query implemented and tested at the repository level — `pgadapter.GaugeRepository.RLSViolationCounts` — but is not yet wired into a ticker goroutine.)
+The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`), plus a 5th exporter for the `iam_rls_violations_total` counter (`pgadapter.GaugeRepository.RLSViolationCounts`, mirrors `iam-user-profile`'s `runRLSViolationExporter`), run as **ticker goroutines inside `cmd/server`** (`runBusinessExporters`, `exporters.go`), not CronJobs.
 
 ---
 
@@ -600,7 +600,7 @@ A CI script (`.github/scripts/check-metric-naming.sh`) enforces naming/suffix/la
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 3 SQS consumers + 4 metric-exporter goroutines |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs |
 
 Two-stage `Dockerfile`: `golang:1.26.6-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the two compiled binaries are copied in. `EXPOSE 8080 9090`.
@@ -621,7 +621,7 @@ Nine workflow files:
 
 - **`ci.yml`** — orchestrator. Runs `validate-test.yml` and `validate-quality.yml` in parallel with `build-image` (Hadolint → Buildx cached build → Trivy CVE scan → smoke tests). On push to `main`: builds+pushes to GHCR with provenance+SBOM.
 - **`validate-test.yml`** (reusable) — `make test-ci` (unit + postgres/RLS + integration, `-race`, merged coverage) → coverage threshold gate (**95%**) → `make test-e2e` (real HTTP router via `httptest`, no coverage/`-race`) → `go-arch-lint` → Swagger staleness check → event-schema sync check (`schema-gov extract --check`).
-- **`validate-quality.yml`** (reusable) — `go mod verify` → RLS-6 non-`LOCAL` `SET app.tenant_id` grep → metric naming/registry-ratification checks → events-bypass check (`check-forbidden-events-bypass.sh`, no raw SNS/SQS SDK calls or hand-built `events.Envelope{}` outside `platform-events`) → `gofmt` check → `go mod tidy` drift check → `go vet` → `golangci-lint` (incl. a `forbidigo` rule banning raw `pgxpool`/`pgx.Connect`/`sql.Open` outside `pgcommon.NewPool`) → `govulncheck`.
+- **`validate-quality.yml`** (reusable) — `go mod verify` → RLS-6 non-`LOCAL` `SET app.tenant_id` grep → metric naming/registry-ratification checks → events-bypass check (`check-forbidden-events-bypass.sh`, no raw SNS/SQS SDK calls or hand-built `events.Envelope{}` outside `platform-events`) → outbox-access check (`check-outbox-access.sh`, no hand-rolled SQL against `outbox_events` outside `platform-events`) → `gofmt` check → `go mod tidy` drift check → `go vet` → `golangci-lint` (incl. a `forbidigo` rule banning raw `pgxpool`/`pgx.Connect`/`sql.Open` outside `pgcommon.NewPool`) → `govulncheck`.
 - **`changelog-check.yml`** — fails a PR touching `internal/`, `api/`, `deploy/`, or `cmd/` without a `CHANGELOG.md` update.
 - **`release.yml`** — tag-triggered release pipeline: re-validate → build+cross-compile → Docker build/push/sign → optional deploy-gate → GitHub Release publish.
 - **`schema-registry.yml`** — registers this service's event schemas to the shared Glue registries: PR read-only validate+diff, push-to-`main` full validate→diff→register→changelog.

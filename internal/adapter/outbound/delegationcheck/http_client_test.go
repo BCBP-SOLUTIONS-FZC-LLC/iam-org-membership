@@ -13,7 +13,6 @@ package delegationcheck
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,7 +55,7 @@ func TestDeptDelegate_Happy_Found(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	got, err := c.DeptDelegate(context.Background(), tenantID, userID, deptID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
@@ -73,7 +72,7 @@ func TestDeptDelegate_Happy_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	got, err := c.DeptDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 	assert.Nil(t, got, "nil means no active dept delegation — caller degrades gracefully")
@@ -91,7 +90,7 @@ func TestDeptDelegate_Happy_FoundButNilDelegationID_ReturnsNil(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	got, err := c.DeptDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 	assert.Nil(t, got)
@@ -109,7 +108,7 @@ func TestDeptDelegate_EmptyBaseURL_Errors(t *testing.T) {
 
 func TestDeptDelegate_TransportError_Errors(t *testing.T) {
 	// Port 1 is never open — connection refused gives a transport error.
-	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, slog.Default())
+	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, nil)
 	_, err := c.DeptDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	require.Error(t, err)
 }
@@ -121,7 +120,7 @@ func TestDeptDelegate_Non2xx_ClientError_Errors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.DeptDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
@@ -135,7 +134,7 @@ func TestDeptDelegate_Non2xx_ServerError_Errors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.DeptDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
@@ -144,7 +143,7 @@ func TestDeptDelegate_Non2xx_ServerError_Errors(t *testing.T) {
 // ── Constructor behaviours ─────────────────────────────────────────────────
 
 func TestNewHTTPClient_NilLogger_UsesDefault(t *testing.T) {
-	// nil logger must not panic — falls back to slog.Default().
+	// nil logger must not panic — warn() is a no-op.
 	c := NewHTTPClient("http://delegation.internal", 5*time.Second, nil)
 	assert.NotNil(t, c)
 }
@@ -152,13 +151,13 @@ func TestNewHTTPClient_NilLogger_UsesDefault(t *testing.T) {
 func TestNewHTTPClient_ZeroTimeout_UsesDefaultTimeout(t *testing.T) {
 	// timeout ≤ 0 must be replaced with the 1000 ms default (Gap-8: raised
 	// from 300ms, which was too tight for the DLG-I3 dept-scope lookup).
-	c := NewHTTPClient("http://delegation.internal", 0, slog.Default())
+	c := NewHTTPClient("http://delegation.internal", 0, nil)
 	assert.NotNil(t, c)
 	assert.Equal(t, 1000*time.Millisecond, c.client.Timeout)
 }
 
 func TestNewHTTPClient_ExplicitURL_ReturnsFunctionalClient(t *testing.T) {
-	c := NewHTTPClient("http://delegation.internal", 5*time.Second, slog.Default())
+	c := NewHTTPClient("http://delegation.internal", 5*time.Second, nil)
 	assert.NotNil(t, c)
 }
 
@@ -167,7 +166,7 @@ func TestNewHTTPClient_ExplicitURL_ReturnsFunctionalClient(t *testing.T) {
 func TestSetInternalHeaders_SetsExpectedHeaders(t *testing.T) {
 	tenantID := uuid.New()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", nil)
-	c := NewHTTPClient("http://delegation.internal", 5*time.Second, slog.Default())
+	c := NewHTTPClient("http://delegation.internal", 5*time.Second, nil)
 	c.setInternalHeaders(req, tenantID)
 
 	assert.Equal(t, "iam-system", req.Header.Get("x-user-id"))

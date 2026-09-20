@@ -58,16 +58,17 @@ type GlueCodec struct {
 	registryName string
 	mu           sync.RWMutex
 	versionCache map[string]string // schema name → schema version UUID string
-	log          port.SlogStyleLogger
+	log          port.Logger
 }
 
 var _ events.Codec = (*GlueCodec)(nil)
 
 // WithLogger routes StartRefresher's background refresh-failure warnings
-// through the same gincommon-backed sink as the rest of the service.
-// Optional — the zero value falls back to the top-level slog functions.
+// through the same gincommon Zap sink as the rest of the service.
+// Optional — production always injects logger.NewLogger; tests that omit
+// WithLogger skip the refresh warning (no slog.Default() fallback).
 func (g *GlueCodec) WithLogger(log port.Logger) *GlueCodec {
-	g.log = port.NewSlogStyleLogger(log)
+	g.log = log
 	return g
 }
 
@@ -193,8 +194,8 @@ func (g *GlueCodec) StartRefresher(ctx context.Context, interval time.Duration) 
 						g.mu.Lock()
 						g.versionCache[name] = id
 						g.mu.Unlock()
-					} else {
-						g.log.Warn("glue schema version refresh failed — using cached ID", "schema", name, "error", err.Error())
+					} else if g.log != nil {
+						g.log.Warn("glue schema version refresh failed — using cached ID", map[string]any{"schema": name, "error": err.Error()})
 					}
 				}
 			}

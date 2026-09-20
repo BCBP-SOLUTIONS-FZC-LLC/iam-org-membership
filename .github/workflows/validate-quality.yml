@@ -102,6 +102,13 @@ jobs:
       - name: Events bypass check
         run: bash .github/scripts/check-forbidden-events-bypass.sh
 
+      # Every outbox_events write/read/prune must go through platform-events
+      # (outbox.Enqueue / outbox.Runner.PrunePublished), never hand-rolled
+      # SQL — a real violation (port.ReconcilerStore.PruneOutbox) existed
+      # here until 2026-09-20; this guards against it reappearing.
+      - name: Outbox access check
+        run: bash .github/scripts/check-outbox-access.sh
+
       - name: Format check
         run: |
           unformatted=$(gofmt -l .)

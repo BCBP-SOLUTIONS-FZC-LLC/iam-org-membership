@@ -95,26 +95,6 @@ func (s *ReconcilerStore) HardDeleteExpiredTrials(ctx context.Context, graceDays
 	return n, err
 }
 
-func (s *ReconcilerStore) PruneOutbox(ctx context.Context, retentionDays, limit int) (int, error) {
-	var n int
-	err := withPool(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			DELETE FROM outbox_events
-			WHERE id IN (
-				SELECT id FROM outbox_events
-				WHERE published_at IS NOT NULL
-				  AND published_at < now() - make_interval(days => $1)
-				LIMIT $2
-			)`, retentionDays, limit)
-		if err != nil {
-			return err
-		}
-		n = int(tag.RowsAffected())
-		return nil
-	})
-	return n, err
-}
-
 func (s *ReconcilerStore) PruneProcessedEvents(ctx context.Context, ttlDays, limit int) (int, error) {
 	var n int
 	err := withPool(ctx, s.pool, func(tx pgx.Tx) error {

@@ -13,7 +13,6 @@ package tokenservice
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,7 +47,7 @@ func TestIsServiceAccount_Happy_Found(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	got, err := c.IsServiceAccount(context.Background(), tenantID, userID)
 	require.NoError(t, err)
 	assert.True(t, got)
@@ -64,7 +63,7 @@ func TestIsServiceAccount_Happy_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	got, err := c.IsServiceAccount(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 	assert.False(t, got, "false means not a service account — the common case")
@@ -82,7 +81,7 @@ func TestIsServiceAccount_EmptyBaseURL_Errors(t *testing.T) {
 
 func TestIsServiceAccount_TransportError_Errors(t *testing.T) {
 	// Port 1 is never open — connection refused gives a transport error.
-	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, slog.Default())
+	c := NewHTTPClient("http://127.0.0.1:1", 200*time.Millisecond, nil)
 	_, err := c.IsServiceAccount(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err)
 }
@@ -94,7 +93,7 @@ func TestIsServiceAccount_Non2xx_ClientError_Errors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.IsServiceAccount(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
@@ -108,7 +107,7 @@ func TestIsServiceAccount_Non2xx_ServerError_Errors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.IsServiceAccount(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
@@ -121,7 +120,7 @@ func TestIsServiceAccount_MalformedBody_Errors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.IsServiceAccount(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decode response")
@@ -130,19 +129,19 @@ func TestIsServiceAccount_MalformedBody_Errors(t *testing.T) {
 // ── Constructor behaviours ─────────────────────────────────────────────────
 
 func TestNewHTTPClient_NilLogger_UsesDefault(t *testing.T) {
-	// nil logger must not panic — falls back to slog.Default().
+	// nil logger must not panic — warn() is a no-op.
 	c := NewHTTPClient("http://tokenservice.internal", 5*time.Second, nil)
 	assert.NotNil(t, c)
 }
 
 func TestNewHTTPClient_ZeroTimeout_UsesDefaultTimeout(t *testing.T) {
-	c := NewHTTPClient("http://tokenservice.internal", 0, slog.Default())
+	c := NewHTTPClient("http://tokenservice.internal", 0, nil)
 	assert.NotNil(t, c)
 	assert.Equal(t, 1000*time.Millisecond, c.client.Timeout)
 }
 
 func TestNewHTTPClient_ExplicitURL_ReturnsFunctionalClient(t *testing.T) {
-	c := NewHTTPClient("http://tokenservice.internal", 5*time.Second, slog.Default())
+	c := NewHTTPClient("http://tokenservice.internal", 5*time.Second, nil)
 	assert.NotNil(t, c)
 }
 
@@ -151,7 +150,7 @@ func TestNewHTTPClient_ExplicitURL_ReturnsFunctionalClient(t *testing.T) {
 func TestSetInternalHeaders_SetsExpectedHeaders(t *testing.T) {
 	tenantID := uuid.New()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", nil)
-	c := NewHTTPClient("http://tokenservice.internal", 5*time.Second, slog.Default())
+	c := NewHTTPClient("http://tokenservice.internal", 5*time.Second, nil)
 	c.setInternalHeaders(req, tenantID)
 
 	assert.Equal(t, "iam-system", req.Header.Get("x-user-id"))

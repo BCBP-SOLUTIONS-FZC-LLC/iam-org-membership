@@ -40,9 +40,9 @@ import (
 	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/valkey"
 	workflowclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/workflow"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 
+	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
@@ -253,19 +253,13 @@ func main() {
 	routingPublisher := eventbusadapter.NewRoutingPublisher(membershipPub, tenantPub)
 
 	// ── 7. Outbox runner ─────────────────────────────────────────────────
-	outboxRunner, err := outbox.NewRunner(outbox.Config{
-		Pool:               pool,
-		Publisher:          routingPublisher,
-		Logger:             log,
-		PollInterval:       envDuration("OUTBOX_POLL_INTERVAL", 500*time.Millisecond),
-		BatchSize:          envInt("OUTBOX_BATCH_SIZE", 50),
-		MaxAttempts:        envInt("OUTBOX_MAX_ATTEMPTS", 5),
-		DrainTimeout:       envDuration("OUTBOX_DRAIN_TIMEOUT", 30*time.Second),
-		PublishConcurrency: envInt("OUTBOX_PUBLISH_CONCURRENCY", 4),
-		PublishTimeout:     envDuration("OUTBOX_PUBLISH_TIMEOUT", 10*time.Second),
-		StartupJitter:      envDuration("OUTBOX_STARTUP_JITTER", 2*time.Second),
-		ClaimLeaseDuration: envDuration("OUTBOX_CLAIM_LEASE_DURATION", 10*time.Minute),
-	})
+	// LoadOutbox + RunnerConfigFromEnv is the platform-events composition
+	// contract (same as iam-user-profile). Helm / .env-example keep the
+	// historical 500ms / concurrency-4 / 2s jitter / 10m claim-lease values
+	// via OUTBOX_* env; library defaults apply only when those are unset.
+	outboxEnv := eventcfg.LoadOutbox()
+	eventcfg.LogWarningsTo(log, outboxEnv.Warnings)
+	outboxRunner, err := outbox.NewRunner(eventcfg.RunnerConfigFromEnv(outboxEnv, pool, routingPublisher, log))
 	if err != nil {
 		panic(fmt.Sprintf("create outbox runner: %v", err))
 	}
@@ -295,13 +289,20 @@ func main() {
 	idempotencyStore := pgadapter.NewIdempotencyRepository(pool)
 	membershipConsumer := consumeradapter.NewMembershipEventConsumer(txRunner, pgadapter.NewTenantRepository(pool), idempotencyStore, catalogReader, cache, skew, log)
 
+	// LoadSQS supplies region / endpoint / long-poll / visibility / max-receive
+	// from the library env contract. Per-queue URL + concurrency overlay
+	// SQS_QUEUE_URL / SQS_CONCURRENCY, which this service cannot use as-is
+	// (three inbound queues).
+	sqsEnv := eventcfg.LoadSQS()
+	eventcfg.LogWarningsTo(log, sqsEnv.Warnings)
+
 	var sqsConsumers []events.Consumer
 	if url := os.Getenv("SQS_TENANT_ORGM_QUEUE_URL"); url != "" {
-		cons, err := events.NewSQSConsumerWithClient(
-			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
+		cons, err := buildSQSConsumer(
+			sqsEnvForQueue(sqsEnv, url, envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
 			sqsClient,
 			instrumentedHandler("tenant-orgm-q", membershipConsumer.Handle),
-			events.WithConcurrency(envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
+			log,
 		)
 		if err != nil {
 			panic(fmt.Sprintf("build tenant-orgm-q consumer: %v", err))
@@ -312,11 +313,11 @@ func main() {
 		log.Warn("SQS_TENANT_ORGM_QUEUE_URL unset — tenant lifecycle consumer disabled", nil)
 	}
 	if url := os.Getenv("SQS_BILLING_ORGM_QUEUE_URL"); url != "" {
-		cons, err := events.NewSQSConsumerWithClient(
-			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
+		cons, err := buildSQSConsumer(
+			sqsEnvForQueue(sqsEnv, url, envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
 			sqsClient,
 			instrumentedHandler("billing-orgm-q", membershipConsumer.Handle),
-			events.WithConcurrency(envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
+			log,
 		)
 		if err != nil {
 			panic(fmt.Sprintf("build billing-orgm-q consumer: %v", err))
@@ -332,13 +333,13 @@ func main() {
 	// published by iam-catalog-admin, eliminating the 11-min TTL delay.
 	// Requires Catalog Service to publish DepartmentCatalogChanged events and
 	// infra to provision the catalog-orgm-q SQS queue + SNS subscription.
-	catalogConsumer := consumeradapter.NewCatalogConsumer(cache, idempotencyStore, log)
+	catalogConsumer := consumeradapter.NewCatalogConsumer(cache, idempotencyStore, txRunner, log)
 	if url := os.Getenv("SQS_CATALOG_ORGM_QUEUE_URL"); url != "" {
-		cons, err := events.NewSQSConsumerWithClient(
-			events.SQSConfig{QueueURL: url, Region: envOr("AWS_REGION", "ap-south-1"), Logger: log},
+		cons, err := buildSQSConsumer(
+			sqsEnvForQueue(sqsEnv, url, envInt("SQS_CATALOG_ORGM_CONCURRENCY", 2)),
 			sqsClient,
 			instrumentedHandler("catalog-orgm-q", catalogConsumer.Handle),
-			events.WithConcurrency(envInt("SQS_CATALOG_ORGM_CONCURRENCY", 2)),
+			log,
 		)
 		if err != nil {
 			panic(fmt.Sprintf("build catalog-orgm-q consumer: %v", err))
@@ -366,7 +367,7 @@ func main() {
 	// 5 minutes from the sysPool (BYPASSRLS). Follows the sibling
 	// iam-user-profile2 pattern — exporters live as goroutines, not
 	// CronJobs, so the running server pod is the source of truth.
-	runBusinessExporters(ctx, sysPool, log)
+	runBusinessExporters(ctx, pgadapter.NewGaugeRepository(sysPool), log)
 
 	// ── 8b. Repositories, services, handlers ─────────────────────────────
 	tenantRepo := pgadapter.NewTenantRepository(pool)
@@ -594,59 +595,6 @@ func main() {
 type pingerFunc func(context.Context) error
 
 func (f pingerFunc) Health(ctx context.Context) error { return f(ctx) }
-
-// buildTopicPublisher returns an SNS publisher for topicARN carrying codec
-// (applied transiently at publish time via events.WithCodec — never touches
-// outbox_events), or a noop publisher when the ARN is empty (dev/test).
-func buildTopicPublisher(topicARN string, codec events.Codec, log port.Logger) (events.Publisher, error) {
-	if topicARN == "" {
-		return eventbusadapter.NoopPublisher{}, nil
-	}
-	return events.NewSNSPublisher(events.SNSConfig{
-		TopicARN:    topicARN,
-		Region:      envOr("AWS_REGION", "ap-south-1"),
-		EndpointURL: os.Getenv("AWS_ENDPOINT_URL"),
-		Logger:      log,
-	}, events.WithCodec(codec))
-}
-
-// buildTopicCodec returns a GlueCodec pre-fetching schemaNames from
-// registryName, refreshed every 5 minutes so a new schema version in Glue
-// takes effect without a pod restart — or a NoopCodec (plain JSON) when
-// registryName is empty (dev/test without a Glue registry configured).
-func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName string, schemaNames []string, log port.Logger) (events.Codec, error) {
-	if registryName == "" {
-		// events.NoopCodec (platform-events' own identity Codec), not this
-		// package's local eventbus.Codec/NoopCodec — those are a different,
-		// Encode-only interface used at outbox-enqueue time for schema
-		// validation, not the Encode+Decode events.Codec WithCodec expects.
-		return events.NoopCodec{}, nil
-	}
-	gc, err := eventbusadapter.NewGlueCodec(ctx, glueClient, registryName, schemaNames)
-	if err != nil {
-		return nil, err
-	}
-	gc.WithLogger(log)
-	gc.StartRefresher(ctx, 5*time.Minute)
-	return gc, nil
-}
-
-// instrumentedHandler wraps an SQS handler with the Tier-1
-// platform_messages_{received,processed,failed}_total counters, labelled by
-// queue. Wired here rather than inside MembershipEventConsumer.Handle
-// because the queue identity is only known at the subscription call site —
-// both tenant-orgm-q and billing-orgm-q share the same Handle method.
-func instrumentedHandler(queue string, h events.Handler) events.Handler {
-	return func(ctx context.Context, env events.Envelope[json.RawMessage]) error {
-		metrics.IncMessagesReceived(queue)
-		if err := h(ctx, env); err != nil {
-			metrics.IncMessagesFailed(queue)
-			return err
-		}
-		metrics.IncMessagesProcessed(queue)
-		return nil
-	}
-}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

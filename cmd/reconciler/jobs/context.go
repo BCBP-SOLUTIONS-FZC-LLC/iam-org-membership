@@ -14,6 +14,7 @@ import (
 	"context"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 )
 
 // Metrics is the minimal recorder seam reconciler jobs need for counters
@@ -34,6 +35,7 @@ type Context struct {
 	Tenants          port.TenantRepository       // SEAT-5 occupancy lock + overage_since (app pool)
 	Invitations      port.InvitationRepository   // invitation-expiry / kc-cleanup (sysPool)
 	Reconciler       port.ReconcilerStore        // cross-tenant sweeps (sysPool)
+	OutboxRunner     *outbox.Runner              // platform-events prune (OutboxPrune)
 	RealmProvisioner port.RealmProvisionerClient // PI-9 DeleteUser, T-15 PatchRealmConfig
 	// Logger is the shared gincommon-backed Logger, wrapped for slog-style
 	// call sites (Warn/Info(msg, "key", val, ...)) — every job file calls it

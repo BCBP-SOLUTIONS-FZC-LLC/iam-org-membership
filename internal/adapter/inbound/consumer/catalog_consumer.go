@@ -40,14 +40,19 @@ const (
 type CatalogConsumer struct {
 	cache       port.Cache
 	idempotency port.IdempotencyStore
+	txRunner    port.TxRunner
 	log         port.SlogStyleLogger
 }
 
-// NewCatalogConsumer builds a CatalogConsumer.
-func NewCatalogConsumer(cache port.Cache, idempotency port.IdempotencyStore, log port.Logger) *CatalogConsumer {
+// NewCatalogConsumer builds a CatalogConsumer. txRunner is required so
+// skipDuplicate / ackUnknown / markProcessedInTx write processed_events
+// through the same platform-events consumer pattern as MembershipEventConsumer
+// (Envelope.ID + INSERT ON CONFLICT DO NOTHING; no library processed-events API).
+func NewCatalogConsumer(cache port.Cache, idempotency port.IdempotencyStore, txRunner port.TxRunner, log port.Logger) *CatalogConsumer {
 	return &CatalogConsumer{
 		cache:       cache,
 		idempotency: idempotency,
+		txRunner:    txRunner,
 		log:         port.NewSlogStyleLogger(log),
 	}
 }
@@ -57,18 +62,12 @@ func NewCatalogConsumer(cache port.Cache, idempotency port.IdempotencyStore, log
 // Processing steps:
 //  1. Reject unknown event types (ackUnknown — log, mark processed, return nil).
 //  2. Parse event_id as UUID; invalid → hard error (stays on queue for retry).
-//  3. Dedup check via processed_events (event_id, "catalog").
+//  3. Dedup check via skipDuplicate (processed_events, consumer="catalog").
 //  4. Clear om:departments + om:departments:stale from Valkey.
-//  5. Mark event as processed only after cache clear succeeds.
+//  5. Mark processed via markProcessedInTx after the cache clear attempt.
 func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	if env.Type != eventDepartmentCatalogChanged {
-		// Unknown event type — log and ack so redelivery cannot storm the queue.
-		c.log.WarnContext(ctx, "catalog consumer: unknown event type, acknowledging",
-			"event_type", env.Type, "event_id", env.ID)
-		if err := c.idempotency.MarkProcessed(ctx, env.ID, catalogConsumerName); err != nil {
-			c.log.WarnContext(ctx, "catalog consumer: mark unknown event processed failed", "event_id", env.ID, "error", err)
-		}
-		return nil
+		return ackUnknown(ctx, c.txRunner, c.idempotency, c.log, catalogConsumerName, env)
 	}
 
 	eventID, err := uuid.Parse(env.ID)
@@ -76,8 +75,7 @@ func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.R
 		return fmt.Errorf("catalog consumer: invalid event id %q", env.ID)
 	}
 
-	// Dedup check.
-	already, err := c.idempotency.IsProcessed(ctx, env.ID, catalogConsumerName)
+	already, err := skipDuplicate(ctx, c.idempotency, catalogConsumerName, env.ID)
 	if err != nil {
 		return fmt.Errorf("catalog consumer: idempotency check for %s: %w", env.ID, err)
 	}
@@ -99,7 +97,7 @@ func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.R
 
 	// Mark processed after cache clear — if we crash here the next redelivery
 	// will clear the cache again, which is a safe no-op.
-	if err := c.idempotency.MarkProcessed(ctx, env.ID, catalogConsumerName); err != nil {
+	if err := markProcessedInTx(ctx, c.txRunner, c.idempotency, catalogConsumerName, env.ID); err != nil {
 		return fmt.Errorf("catalog consumer: mark processed for %s: %w", env.ID, err)
 	}
 

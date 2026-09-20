@@ -39,10 +39,9 @@ func NewDeptMembershipService(
 	}
 }
 
-// WithLogger injects the shared gincommon-backed Logger so this service's
+// WithLogger injects the shared gincommon Zap logger so this service's
 // degraded-path warnings flow through the same sink as HTTP/consumer/
-// outbound-client logs instead of slog.Default(). Optional — the zero value
-// falls back to the top-level slog functions.
+// outbound-client logs. Optional — the zero value is a no-op.
 func (s *DeptMembershipService) WithLogger(log port.Logger) *DeptMembershipService {
 	s.log = port.NewSlogStyleLogger(log)
 	return s

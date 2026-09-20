@@ -168,31 +168,9 @@ func TestReconcilerStore_HardDeleteExpiredTrials_ExecErrorPassesThrough(t *testi
 	assert.ErrorIs(t, err, execErr)
 }
 
-// ── PruneOutbox ──────────────────────────────────────────────────────────
-
-func TestReconcilerStore_PruneOutbox_ReturnsRowsAffected(t *testing.T) {
-	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.NewCommandTag("DELETE 7"), nil
-		},
-	}
-	n, err := NewReconcilerStore(nil).
-		PruneOutbox(injectTx(context.Background(), tx), 8, 500)
-	require.NoError(t, err)
-	assert.Equal(t, 7, n)
-}
-
-func TestReconcilerStore_PruneOutbox_ExecErrorPassesThrough(t *testing.T) {
-	execErr := errors.New("delete failed")
-	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, execErr
-		},
-	}
-	_, err := NewReconcilerStore(nil).
-		PruneOutbox(injectTx(context.Background(), tx), 8, 500)
-	assert.ErrorIs(t, err, execErr)
-}
+// PruneOutbox was removed 2026-09-20 — outbox pruning goes entirely through
+// platform-events' outbox.Runner.PrunePublished now (cmd/reconciler/jobs/
+// outbox_prune.go); this hand-rolled DELETE had zero production callers.
 
 // ── PruneProcessedEvents ─────────────────────────────────────────────────
 

@@ -26,7 +26,7 @@ import (
 type Publisher struct {
 	source string
 	codec  Codec
-	log    port.SlogStyleLogger // optional — see WithLogger
+	log    port.Logger
 }
 
 // New creates a Publisher with the given source label (e.g.
@@ -37,13 +37,12 @@ func New(source string, codec Codec) *Publisher {
 	return &Publisher{source: source, codec: codec}
 }
 
-// WithLogger injects the shared gincommon-backed Logger so this Publisher's
-// per-enqueue debug trace flows through the same sink as HTTP/consumer/
-// outbound-client logs instead of an unconditional stdlib log.Printf.
-// Optional — the zero value falls back to the top-level slog functions,
-// which are Debug-level (suppressed by default in production).
+// WithLogger injects the shared gincommon Zap logger so enqueue diagnostics
+// flow through the same sink as HTTP/consumer/outbound-client logs.
+// Optional — production always injects logger.NewLogger; a nil logger
+// skips debug/error lines (no slog.Default() fallback).
 func (p *Publisher) WithLogger(log port.Logger) *Publisher {
-	p.log = port.NewSlogStyleLogger(log)
+	p.log = log
 	return p
 }
 
@@ -83,13 +82,17 @@ func (p *Publisher) Enqueue(ctx context.Context, event *domain.DomainEvent) erro
 	// Store plain JSON payload — Glue encoding happens at publish time.
 	env := events.NewEnvelope(event.Type, p.source, json.RawMessage(raw), opts...)
 	envBytes, _ := json.Marshal(env)
-	p.log.Debug("outbox.Enqueue", "type", event.Type, "envelope", string(envBytes))
+	if p.log != nil {
+		p.log.Debug("outbox.Enqueue", map[string]any{"type": event.Type, "envelope": string(envBytes)})
+	}
 	tx, ok := port.TxFromContext(ctx)
 	if !ok {
 		return errors.New("event enqueue requires an open RunInTx transaction")
 	}
 	if err := outbox.Enqueue(ctx, tx, env); err != nil {
-		p.log.Error("outbox.Enqueue failed", "type", event.Type, "error", err.Error(), "envelope", string(envBytes))
+		if p.log != nil {
+			p.log.Error("outbox.Enqueue failed", map[string]any{"type": event.Type, "error": err.Error(), "envelope": string(envBytes)})
+		}
 		return err
 	}
 	return nil

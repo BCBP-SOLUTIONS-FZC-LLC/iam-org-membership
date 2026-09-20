@@ -20,9 +20,6 @@ type fakeReconcilerStore struct {
 	clearErr   error
 	clearedIDs []uuid.UUID
 	listErr    error
-
-	pruneOutboxN   int
-	pruneOutboxErr error
 }
 
 func (f *fakeReconcilerStore) ListRealmSyncPending(context.Context, int) ([]port.RealmSyncCandidate, error) {
@@ -32,10 +29,6 @@ func (f *fakeReconcilerStore) ListRealmSyncPending(context.Context, int) ([]port
 func (f *fakeReconcilerStore) ClearRealmSyncPending(_ context.Context, tenantID uuid.UUID) error {
 	f.clearedIDs = append(f.clearedIDs, tenantID)
 	return f.clearErr
-}
-
-func (f *fakeReconcilerStore) PruneOutbox(context.Context, int, int) (int, error) {
-	return f.pruneOutboxN, f.pruneOutboxErr
 }
 
 // fakeRealmProvisioner backs only PatchRealmConfig; the rest panic if

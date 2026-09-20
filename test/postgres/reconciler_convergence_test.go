@@ -23,9 +23,11 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
+	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,11 +72,22 @@ func newJobContext(t *testing.T, ctx context.Context) (*jobs.Context, *captureEv
 	// Reconcilers use SysPool (BYPASSRLS) for cross-tenant sweeps AND the
 	// app pool wrapped in a TxRunner for atomic state+event emission.
 	publisher := &captureEventPublisher{}
+	// OutboxPrune's job body no-ops (Succeeded=0, no error) when
+	// OutboxRunner is nil — a real *outbox.Runner, publisher-less like
+	// cmd/reconciler/main.go's own prune-only runner, must be wired here
+	// or every OutboxPrune test silently passes/fails on a skip, not the
+	// actual prune logic.
+	outboxRunner, err := outbox.NewRunner(outbox.Config{
+		Pool:      sysPool,
+		Publisher: eventbusadapter.NoopPublisher{},
+	})
+	require.NoError(t, err)
 	jctx := &jobs.Context{
 		TxRunner:               postgres.NewTxRunner(appPool, publisher),
 		Tenants:                postgres.NewTenantRepository(appPool),
 		Invitations:            postgres.NewInvitationRepository(sysPool),
 		Reconciler:             postgres.NewReconcilerStore(sysPool),
+		OutboxRunner:           outboxRunner,
 		BatchLimit:             100,
 		ProcessedEventsTTLDays: 8,
 	}

@@ -13,7 +13,6 @@ package realmprovisioner
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,7 +43,7 @@ func TestP10RP001_CreateInvitedUserHappy(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": kcID})
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	resp, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: tenantID, Email: "u@e.com", FullName: "U",
 	})
@@ -64,7 +63,7 @@ func TestP10RP001b_CreateInvitedUserSendsRequiredActionsVerbatim(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: tenantID, Email: "u@e.com", FullName: "U",
 		RequiredActions: []string{port.RequiredActionVerifyEmail, port.RequiredActionUpdatePassword, port.RequiredActionConfigureTOTP},
@@ -87,7 +86,7 @@ func TestP10RP001c_CreateInvitedUserOmitsRequiredActionsWhenUnset(t *testing.T) 
 		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: tenantID, Email: "u@e.com", FullName: "U",
 	})
@@ -101,7 +100,7 @@ func TestP10RP001c_CreateInvitedUserOmitsRequiredActionsWhenUnset(t *testing.T) 
 // Scenario:          Positive — returns a random kc user id, no error
 // Priority: P2 · Severity: Minor · Automation Status: Automated
 func TestP10RP002_CreateInvitedUserDevFallback(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	c := NewHTTPClient("", 5*time.Second, nil)
 	resp, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: uuid.New(), Email: "u@e.com", FullName: "U",
 	})
@@ -117,7 +116,7 @@ func TestP10RP003_CreateInvitedUserNon2xx(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: uuid.New(), Email: "u@e.com", FullName: "U",
 	})
@@ -137,7 +136,7 @@ func TestP10RP010_DeleteUser404Idempotent(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err, "PI-9: 404 on DeleteUser is idempotent success")
 }
@@ -152,7 +151,7 @@ func TestP10RP011_DeleteUser204Happy(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 }
@@ -165,7 +164,7 @@ func TestP10RP012_DeleteUser5xx(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err)
 }
@@ -175,7 +174,7 @@ func TestP10RP012_DeleteUser5xx(t *testing.T) {
 // Scenario:          Positive — no-op success
 // Priority: P2 · Severity: Minor · Automation Status: Automated
 func TestP10RP013_DeleteUserDevFallback(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	c := NewHTTPClient("", 5*time.Second, nil)
 	err := c.DeleteUser(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 }
@@ -193,7 +192,7 @@ func TestP10RP020_PatchRealmConfigHappy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	flag := true
 	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag})
 	require.NoError(t, err)
@@ -207,7 +206,7 @@ func TestP10RP021_PatchRealmConfig5xx(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	flag := false
 	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag})
 	require.Error(t, err)
@@ -217,7 +216,7 @@ func TestP10RP021_PatchRealmConfig5xx(t *testing.T) {
 // Feature:           PatchRealmConfig dev fallback (baseURL="")
 // Priority: P2 · Severity: Minor · Automation Status: Automated
 func TestP10RP022_PatchRealmConfigDevFallback(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	c := NewHTTPClient("", 5*time.Second, nil)
 	flag := true
 	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag})
 	require.NoError(t, err)
@@ -236,7 +235,7 @@ func TestP10RP030_RevokeUserSessionsHappy(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 }
@@ -245,7 +244,7 @@ func TestP10RP030_RevokeUserSessionsHappy(t *testing.T) {
 // Feature:           AUTH-8 · RevokeUserSessions dev fallback
 // Priority: P2 · Severity: Minor · Automation Status: Automated
 func TestP10RP031_RevokeUserSessionsDevFallback(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	c := NewHTTPClient("", 5*time.Second, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 }
@@ -258,7 +257,7 @@ func TestP10RP032_RevokeUserSessions5xxPropagates(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	// AUTH-8: 5xx surfaces so caller can increment the fail counter.
 	// Caller MUST NOT abort the primary op; that discipline is at the caller.
@@ -281,7 +280,7 @@ func TestP10RP040_HeadersPropagated(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	tenant := uuid.New()
 	err := c.DeleteUser(context.Background(), tenant, uuid.New())
 	require.NoError(t, err)
@@ -306,7 +305,7 @@ func TestF8_CreateInvitedUser_PathIsVersionedAndTenantNested(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: tenantID, Email: "u@e.com", FullName: "U",
 	})
@@ -323,7 +322,7 @@ func TestF8_DeleteUser_PathIsVersionedAndTenantNested(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	require.NoError(t, c.DeleteUser(context.Background(), tenantID, keycloakUserID))
 	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
 	assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String(), gotPath)
@@ -337,7 +336,7 @@ func TestF8_RevokeUserSessions_PathIsVersionedAndTenantNested(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	require.NoError(t, c.RevokeUserSessions(context.Background(), tenantID, keycloakUserID))
 	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
 	assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/users/"+keycloakUserID.String()+"/revoke-sessions", gotPath)
@@ -351,7 +350,7 @@ func TestF8_PatchRealmConfig_PathIsVersionedAndTenantNested(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	flag := true
 	require.NoError(t, c.PatchRealmConfig(context.Background(), tenantID, port.RealmConfigPatch{LocalAccountsEnabled: &flag}))
 	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
@@ -370,7 +369,7 @@ func TestF8_ResetMFA_PathIsVersionedAndTenantNested(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	require.NoError(t, c.ResetMFA(context.Background(), tenantID, keycloakUserID))
 	assert.Equal(t, http.MethodPost, gotMethod)
 	assert.True(t, strings.HasPrefix(gotPath, "/api/v1/internal/"), "path must be versioned: %s", gotPath)
@@ -382,13 +381,13 @@ func TestF8_ResetMFA_Non2xx_ReturnsError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err)
 }
 
 func TestF8_ResetMFA_DevFallback_NoBaseURL(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, slog.Default())
+	c := NewHTTPClient("", 5*time.Second, nil)
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err, "empty baseURL is dev-fallback, not an error")
 }
@@ -407,7 +406,7 @@ func TestF8_Smoke_CreateInvitedUser_Returns2xx(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
 		TenantID: uuid.New(), Email: "smoke@e.com", FullName: "Smoke Test",
 	})
@@ -419,7 +418,7 @@ func TestF8_Smoke_PatchRealmConfig_Returns2xx(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, slog.Default())
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
 	flag := true
 	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag})
 	require.NoError(t, err)

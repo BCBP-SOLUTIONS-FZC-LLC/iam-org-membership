@@ -232,7 +232,7 @@ func TestSlogStyleLogger_InfoContext_CallsInfoOnLogger(t *testing.T) {
 }
 
 // TestSlogStyleLogger_DebugContext_NilLogger_DoesNotPanic verifies that
-// DebugContext with a nil underlying logger falls back to slog.Default
+// DebugContext with a nil underlying logger is a no-op
 // and does not panic.
 func TestSlogStyleLogger_DebugContext_NilLogger_DoesNotPanic(t *testing.T) {
 	sl := port.NewSlogStyleLogger(nil)
@@ -242,7 +242,7 @@ func TestSlogStyleLogger_DebugContext_NilLogger_DoesNotPanic(t *testing.T) {
 }
 
 // TestSlogStyleLogger_InfoContext_NilLogger_DoesNotPanic verifies that
-// InfoContext with a nil underlying logger falls back to slog.Default
+// InfoContext with a nil underlying logger is a no-op
 // and does not panic.
 func TestSlogStyleLogger_InfoContext_NilLogger_DoesNotPanic(t *testing.T) {
 	sl := port.NewSlogStyleLogger(nil)
