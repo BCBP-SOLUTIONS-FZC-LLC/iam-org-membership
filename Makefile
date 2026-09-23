@@ -478,22 +478,40 @@ schema-verify:
 	echo "OK: all $$count schema definitions registered and AVAILABLE across both registries"
 
 # schema-prune: dry-run scan for orphaned Glue schemas in BOTH registries
-# (exist in Glue, not in repo). Pass EXECUTE=true to archive and delete:
-# make schema-prune EXECUTE=true. Requires GLUE_REGISTRY_MEMBERSHIP_NAME/
-# GLUE_REGISTRY_TENANT_NAME and AWS credentials.
+# (exist in Glue, no matching produced schema here). Compares each registry
+# against its PascalCase staged lane: prune matches FILE STEMS, and against the
+# snake_case committed files every live schema looked orphaned. EXECUTE=true
+# archives + deletes on the membership registry only — the tenant registry is
+# shared with iam-realm-provisioner (its schemas always look orphaned here),
+# so it is always dry-run; use schema-prune.yml's guarded execute for it.
+# Requires GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME and AWS
+# credentials (or AWS_ENDPOINT_URL for floci).
 .PHONY: schema-prune
 schema-prune:
 	@test -n "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" || { echo "GLUE_REGISTRY_MEMBERSHIP_NAME is not set"; exit 1; }
 	@test -n "$(GLUE_REGISTRY_TENANT_NAME)" || { echo "GLUE_REGISTRY_TENANT_NAME is not set"; exit 1; }
-	@for registry in $(GLUE_REGISTRY_MEMBERSHIP_NAME) $(GLUE_REGISTRY_TENANT_NAME); do \
+	@rm -rf .tmp/prune-membership .tmp/prune-tenant
+	@bash .github/scripts/stage-produced-event-schemas.sh .tmp/prune-membership membership >/dev/null
+	@bash .github/scripts/stage-produced-event-schemas.sh .tmp/prune-tenant tenant >/dev/null
+	@for pair in "$(GLUE_REGISTRY_MEMBERSHIP_NAME):.tmp/prune-membership:" "$(GLUE_REGISTRY_TENANT_NAME):.tmp/prune-tenant:shared"; do \
+	  registry=$${pair%%:*}; rest=$${pair#*:}; dir=$${rest%%:*}; shared=$${rest#*:}; \
+	  execute="$(if $(filter true,$(EXECUTE)),--execute,)"; \
+	  if [ -n "$$execute" ] && [ "$$shared" = shared ]; then \
+	    echo "Skipping EXECUTE on $$registry: it is shared with iam-realm-provisioner, whose schemas have no"; \
+	    echo "file here, so prune --execute would delete them. Dry-running it instead; use schema-prune.yml"; \
+	    echo "(its guard step) for a checked execute."; \
+	    execute=""; \
+	  fi; \
 	  echo "Pruning orphaned schemas -> $$registry"; \
 	  docker run --rm --platform "$(SCHEMA_GOV_PLATFORM)" \
 	    -v "$(CURDIR)":/workspace \
 	    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
 	    -e AWS_REGION="$(AWS_REGION)" \
+	    -e AWS_ENDPOINT_URL="$(AWS_ENDPOINT_URL)" \
 	    "$(SCHEMA_GOV_IMAGE)" prune \
 	    --registry "$$registry" \
-	    $(if $(filter true,$(EXECUTE)),--execute,) || exit 1; \
+	    --schema-dir "$$dir" \
+	    $$execute || exit 1; \
 	done
 
 # -----------------------------

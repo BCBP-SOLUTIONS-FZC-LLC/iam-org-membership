@@ -99,6 +99,25 @@ Failure modes and fixes:
 - `aws glue get-schema-by-definition` returns AccessDenied — the caller needs the
   `GlueSchemaRegistryReadOnly` actions below on **both** registry ARNs.
 
+## Pruning orphaned schemas
+
+`schema-gov prune` treats a Glue schema as orphaned when no **file stem** in
+`--schema-dir` matches its name. The committed schema files are snake_case
+(and live outside prune's `internal/eventschema` default), so every prune —
+`make schema-prune`, `schema-registry.yml`'s "Detect orphaned schemas",
+`schema-prune.yml` — compares each registry against its PascalCase staged
+lane instead. Without that, every live schema was reported as an orphan and
+`--execute` would have deleted them.
+
+`iam-tenant-events` is **shared** with iam-realm-provisioner: its 9 schemas
+(`TrialTenantProvisioned`, `TenantRealmReady`, …) have no file here, so they
+always appear as orphans on the tenant leg — expected, never actioned.
+`schema-prune.yml`'s "Guard — exclude realm-provisioner-owned
+shared-registry schemas" step refuses `--execute` on that registry while any
+of them is present (failing closed if the registry can't be listed), and
+`make schema-prune EXECUTE=true` always dry-runs the tenant registry. This
+mirrors realm-provisioner's own guard for `TenantCreated`/`TrialStarted`.
+
 ## What happens if a schema is missing at pod startup
 
 `NewGlueCodec` (per registry) returns an error of the form:

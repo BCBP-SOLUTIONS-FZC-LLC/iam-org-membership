@@ -150,6 +150,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # Staged first: schema-gov takes a schema's name from its FILE STEM in
+      # prune, usage-check, diff and register alike, and the committed files
+      # are snake_case. Against them prune listed every live PascalCase schema
+      # as an orphan and usage-check never matched an asyncapi message (so
+      # lifecycle enforcement silently no-op'd). Staging per lane also scopes
+      # each registry leg to exactly its own produced schemas.
+      - name: Stage produced Glue schemas
+        run: |
+          LANE=membership
+          case "${{ matrix.registry }}" in
+            *tenant*) LANE=tenant ;;
+          esac
+          rm -rf .tmp/glue-schemas
+          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
+
       # Dry-run prune: lists Glue schemas without a local repo file.
       # Never blocks CI — orphan remediation is a manual operator action via schema-prune.yml.
       - name: Detect orphaned schemas
@@ -162,8 +177,12 @@ jobs:
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" prune \
             --registry "${{ matrix.registry }}" \
+            --schema-dir .tmp/glue-schemas \
             --env      staging \
             --output   /tmp/schema-prune-metrics.json
+          case "${{ matrix.registry }}" in
+            *tenant*) echo "::notice title=Shared registry::${{ matrix.registry }} is shared with iam-realm-provisioner — its 9 schemas (TrialTenantProvisioned, TenantRealmReady, ...) appear above as 'orphaned' because they have no file here. They are not orphaned; schema-prune.yml's guard blocks --execute on this registry." ;;
+          esac
 
       # Source selection (v0.4+):
       #   PROMETHEUS_URL set → --source prometheus  (no AWS needed)
@@ -184,7 +203,7 @@ jobs:
             -e AWS_REGION="${{ vars.AWS_REGION }}" \
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" usage-check \
-            --schema-dir  internal/adapter/outbound/eventbus/schemas \
+            --schema-dir  .tmp/glue-schemas \
             ${SOURCE_FLAGS} \
             --metric-name "${{ vars.USAGE_METRIC_NAME || 'EventsPublished' }}" \
             --dimension   "${{ vars.USAGE_METRIC_DIMENSION || 'EventType' }}" \
@@ -201,15 +220,6 @@ jobs:
             "${{ env.SCHEMA_GOV_IMAGE }}" enforce-lifecycle \
             --usage-file /tmp/schema-usage-metrics.json \
             --asyncapi   api/asyncapi.yaml
-
-      - name: Stage produced Glue schemas
-        run: |
-          LANE=membership
-          case "${{ matrix.registry }}" in
-            *tenant*) LANE=tenant ;;
-          esac
-          rm -rf .tmp/glue-schemas
-          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
 
       # Fetches current Glue definition per-schema (aws CLI) then diffs via the
       # container. Runs MAX_PARALLEL diffs concurrently; output is buffered and
@@ -427,6 +437,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # Staged first: schema-gov takes a schema's name from its FILE STEM in
+      # prune, usage-check, diff and register alike, and the committed files
+      # are snake_case. Against them prune listed every live PascalCase schema
+      # as an orphan and usage-check never matched an asyncapi message (so
+      # lifecycle enforcement silently no-op'd). Staging per lane also scopes
+      # each registry leg to exactly its own produced schemas.
+      - name: Stage produced Glue schemas
+        run: |
+          LANE=membership
+          case "${{ matrix.registry }}" in
+            *tenant*) LANE=tenant ;;
+          esac
+          rm -rf .tmp/glue-schemas
+          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
+
       - name: Detect orphaned schemas
         run: |
           docker run --rm \
@@ -437,8 +462,12 @@ jobs:
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" prune \
             --registry "${{ matrix.registry }}" \
+            --schema-dir .tmp/glue-schemas \
             --env      production \
             --output   /tmp/schema-prune-metrics.json
+          case "${{ matrix.registry }}" in
+            *tenant*) echo "::notice title=Shared registry::${{ matrix.registry }} is shared with iam-realm-provisioner — its 9 schemas (TrialTenantProvisioned, TenantRealmReady, ...) appear above as 'orphaned' because they have no file here. They are not orphaned; schema-prune.yml's guard blocks --execute on this registry." ;;
+          esac
 
       # Source selection (v0.4+):
       #   PROMETHEUS_URL set → --source prometheus  (no AWS needed)
@@ -459,7 +488,7 @@ jobs:
             -e AWS_REGION="${{ vars.AWS_REGION }}" \
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" usage-check \
-            --schema-dir  internal/adapter/outbound/eventbus/schemas \
+            --schema-dir  .tmp/glue-schemas \
             ${SOURCE_FLAGS} \
             --metric-name "${{ vars.USAGE_METRIC_NAME || 'EventsPublished' }}" \
             --dimension   "${{ vars.USAGE_METRIC_DIMENSION || 'EventType' }}" \
@@ -476,15 +505,6 @@ jobs:
             "${{ env.SCHEMA_GOV_IMAGE }}" enforce-lifecycle \
             --usage-file /tmp/schema-usage-metrics.json \
             --asyncapi   api/asyncapi.yaml
-
-      - name: Stage produced Glue schemas
-        run: |
-          LANE=membership
-          case "${{ matrix.registry }}" in
-            *tenant*) LANE=tenant ;;
-          esac
-          rm -rf .tmp/glue-schemas
-          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
 
       - name: Diff schemas against registry
         env:
@@ -706,6 +726,12 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # Staged first: schema-gov takes a schema's name from its FILE STEM in
+      # prune, usage-check, diff and register alike, and the committed files
+      # are snake_case. Against them prune listed every live PascalCase schema
+      # as an orphan and usage-check never matched an asyncapi message (so
+      # lifecycle enforcement silently no-op'd). Staging per lane also scopes
+      # each registry leg to exactly its own produced schemas.
       - name: Stage produced Glue schemas
         run: |
           LANE=membership

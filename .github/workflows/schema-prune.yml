@@ -98,6 +98,53 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # prune treats a Glue schema as orphaned when no FILE STEM in --schema-dir
+      # matches its name. The committed schema files are snake_case (and live
+      # outside prune's internal/eventschema default) while every registered
+      # name is PascalCase, so without this prune listed EVERY live schema as
+      # an orphan and --execute would have archived + deleted them. Stage this
+      # registry's lane (PascalCase, produced-only) and prune against it.
+      - name: Stage produced schemas under their Glue names
+        run: |
+          LANE=membership
+          case "${{ matrix.registry }}" in
+            *tenant*) LANE=tenant ;;
+          esac
+          rm -rf .tmp/glue-schemas
+          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
+
+      # iam-tenant-events is SHARED with iam-realm-provisioner, which owns 9
+      # schemas there. They have no file in this repo, so prune ALWAYS lists
+      # them as orphans, and platform-schemagov has no --exclude flag —
+      # --execute deletes every candidate. Hard-stop before any --execute on
+      # the tenant registry while any of RP's names is present (mirrors RP's
+      # own guard for this repo's TenantCreated/TrialStarted). Dry-run is safe.
+      - name: Guard — exclude realm-provisioner-owned shared-registry schemas
+        if: contains(matrix.registry, 'tenant') && github.event_name == 'workflow_dispatch' && inputs.dry_run == false
+        env:
+          REGISTRY_NAME: ${{ matrix.registry }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          EXCLUDED=(DirectPaidSignup TenantConverted TenantOffboarded TenantReactivated TenantRealmReady TenantSuspended TrialExpired TrialReactivated TrialTenantProvisioned)
+          # Fail closed on an AWS API error — a failed list must never read as
+          # "none of RP's schemas are present".
+          if ! NAMES=$(aws glue list-schemas \
+              --registry-id "RegistryName=${REGISTRY_NAME}" \
+              --region "${AWS_REGION}" \
+              --query 'Schemas[].SchemaName' --output text); then
+            echo "::error title=Guard check failed::Could not list schemas in registry '${REGISTRY_NAME}'. Refusing to proceed with --execute."
+            exit 1
+          fi
+          BLOCKED=()
+          for n in "${EXCLUDED[@]}"; do
+            case " ${NAMES} " in *" ${n} "*) BLOCKED+=("${n}") ;; esac
+          done
+          if [ "${#BLOCKED[@]}" -gt 0 ]; then
+            echo "::error title=Shared-registry schema(s) present::${BLOCKED[*]} are owned by iam-realm-provisioner on the shared '${REGISTRY_NAME}' registry and would be deleted by 'prune --execute' (no --exclude flag exists). Refusing to execute."
+            exit 1
+          fi
+          echo "  ✔  no iam-realm-provisioner schemas present in '${REGISTRY_NAME}' — safe to proceed"
+
       # Schedule always runs dry-run (generates a monthly candidate report).
       # workflow_dispatch respects the dry_run input; un-check to execute.
       - name: Prune orphaned schemas
@@ -118,6 +165,7 @@ jobs:
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" prune \
             --registry "${{ matrix.registry }}" \
+            --schema-dir .tmp/glue-schemas \
             --env      staging \
             --output   /tmp/schema-prune-metrics.json \
             ${EXECUTE_FLAG}
@@ -183,6 +231,53 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # prune treats a Glue schema as orphaned when no FILE STEM in --schema-dir
+      # matches its name. The committed schema files are snake_case (and live
+      # outside prune's internal/eventschema default) while every registered
+      # name is PascalCase, so without this prune listed EVERY live schema as
+      # an orphan and --execute would have archived + deleted them. Stage this
+      # registry's lane (PascalCase, produced-only) and prune against it.
+      - name: Stage produced schemas under their Glue names
+        run: |
+          LANE=membership
+          case "${{ matrix.registry }}" in
+            *tenant*) LANE=tenant ;;
+          esac
+          rm -rf .tmp/glue-schemas
+          bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
+
+      # iam-tenant-events is SHARED with iam-realm-provisioner, which owns 9
+      # schemas there. They have no file in this repo, so prune ALWAYS lists
+      # them as orphans, and platform-schemagov has no --exclude flag —
+      # --execute deletes every candidate. Hard-stop before any --execute on
+      # the tenant registry while any of RP's names is present (mirrors RP's
+      # own guard for this repo's TenantCreated/TrialStarted). Dry-run is safe.
+      - name: Guard — exclude realm-provisioner-owned shared-registry schemas
+        if: contains(matrix.registry, 'tenant') && github.event_name == 'workflow_dispatch' && inputs.dry_run == false
+        env:
+          REGISTRY_NAME: ${{ matrix.registry }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          EXCLUDED=(DirectPaidSignup TenantConverted TenantOffboarded TenantReactivated TenantRealmReady TenantSuspended TrialExpired TrialReactivated TrialTenantProvisioned)
+          # Fail closed on an AWS API error — a failed list must never read as
+          # "none of RP's schemas are present".
+          if ! NAMES=$(aws glue list-schemas \
+              --registry-id "RegistryName=${REGISTRY_NAME}" \
+              --region "${AWS_REGION}" \
+              --query 'Schemas[].SchemaName' --output text); then
+            echo "::error title=Guard check failed::Could not list schemas in registry '${REGISTRY_NAME}'. Refusing to proceed with --execute."
+            exit 1
+          fi
+          BLOCKED=()
+          for n in "${EXCLUDED[@]}"; do
+            case " ${NAMES} " in *" ${n} "*) BLOCKED+=("${n}") ;; esac
+          done
+          if [ "${#BLOCKED[@]}" -gt 0 ]; then
+            echo "::error title=Shared-registry schema(s) present::${BLOCKED[*]} are owned by iam-realm-provisioner on the shared '${REGISTRY_NAME}' registry and would be deleted by 'prune --execute' (no --exclude flag exists). Refusing to execute."
+            exit 1
+          fi
+          echo "  ✔  no iam-realm-provisioner schemas present in '${REGISTRY_NAME}' — safe to proceed"
+
       - name: Prune orphaned schemas
         env:
           DRY_RUN_INPUT: ${{ inputs.dry_run }}
@@ -197,6 +292,7 @@ jobs:
             -e GITHUB_ACTIONS \
             "${{ env.SCHEMA_GOV_IMAGE }}" prune \
             --registry "${{ matrix.registry }}" \
+            --schema-dir .tmp/glue-schemas \
             --env      production \
             --output   /tmp/schema-prune-metrics.json \
             ${EXECUTE_FLAG}
