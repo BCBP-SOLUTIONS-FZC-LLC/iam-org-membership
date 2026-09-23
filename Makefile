@@ -33,6 +33,12 @@ TEST_E2E_PKGS      := ./test/e2e/...
 # (e.g. `make test-postgres TEST_POSTGRES_PARALLEL=8`) on a bigger box.
 TEST_POSTGRES_PARALLEL ?= 4
 
+# Every build tag the test/ tree declares (integration: test/postgres +
+# test/integration, e2e: test/e2e). vet and lint run a second pass with all of
+# them — CI's quality gate calls `make vet`/`make lint`, so without it the 42
+# tagged test files were never vetted or linted.
+ALL_TEST_TAGS := integration,e2e
+
 # White-box (package-internal) tests included in unit runs.
 TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/inbound/consumer/... \
@@ -103,8 +109,9 @@ help:
 	@echo "  make tidy            - go mod tidy"
 	@echo "  make fmt             - go fmt ./..."
 	@echo "  make fmt-check       - verify gofmt formatting (mirrors CI)"
-	@echo "  make vet             - go vet all packages"
-	@echo "  make lint            - run golangci-lint (via go tool)"
+	@echo "  make vet             - go vet (default build + every test build tag)"
+	@echo "  make lint            - run golangci-lint (default build + every test build tag)"
+	@echo "  make arch-lint       - run go-arch-lint against .go-arch-lint.yml"
 	@echo "  make test            - unit + postgres + integration tests (requires Docker)"
 	@echo "  make test-ci         - test with race detector + coverage (used in CI)"
 	@echo "  make test-unit       - unit tests only (no Docker required)"
@@ -117,7 +124,7 @@ help:
 	@echo "  make build           - compile both binaries to bin/"
 	@echo "  make cover           - coverage HTML report"
 	@echo "  make cover-func      - coverage summary by function"
-	@echo "  make ci              - tidy + fmt-check + vet + lint + test-ci + build"
+	@echo "  make ci              - tidy + fmt-check + vet + lint + arch-lint + test-ci + build"
 	@echo "  make docker-up       - start local infra incl. floci (SNS/SQS/Glue, always free) + floci-ui web console"
 	@echo "  make docker-down     - stop local containers"
 	@echo "  make mod-verify      - go mod verify"
@@ -135,7 +142,7 @@ help:
 	@echo "  make schema-validate  - validate AsyncAPI + event schemas (no AWS needed)"
 	@echo "  make schema-diff      - diff two schemas: CURRENT=<path> PROPOSED=<path>"
 	@echo "  make schema-register  - register event schemas to Glue (requires AWS)"
-	@echo "  make schema-verify    - pre-deploy check for expected schemas"
+	@echo "  make schema-verify    - pre-deploy check: each schema definition registered + AVAILABLE in both registries (requires AWS)"
 	@echo "  make schema-prune     - dry-run: list orphaned Glue schemas"
 
 # -----------------------------
@@ -153,6 +160,7 @@ fmt:
 .PHONY: vet
 vet:
 	$(GO) vet ./...
+	$(GO) vet -tags=$(ALL_TEST_TAGS) ./...
 
 .PHONY: fmt-check
 fmt-check:
@@ -179,7 +187,14 @@ vuln-check:
 .PHONY: lint
 lint:
 	@echo "Running linter..."
-	$(GO) tool golangci-lint run
+	$(GO) tool golangci-lint run ./...
+	$(GO) tool golangci-lint run --build-tags=$(ALL_TEST_TAGS) ./...
+
+# arch-lint: enforce .go-arch-lint.yml component boundaries — the same script
+# CI's validate-test.yml runs (matches iam-delegation / iam-realm-provisioner).
+.PHONY: arch-lint
+arch-lint:
+	bash .github/scripts/arch-lint.sh
 
 # -----------------------------
 # TESTS
@@ -319,7 +334,7 @@ docker-down:
 # -----------------------------
 
 .PHONY: ci
-ci: tidy fmt-check vet lint test-ci build
+ci: tidy fmt-check vet lint arch-lint test-ci build
 
 # -----------------------------
 # COVERAGE
@@ -419,13 +434,13 @@ schema-register:
 	  --registry   "$(GLUE_REGISTRY_TENANT_NAME)" \
 	  --schema-dir .tmp/glue-tenant
 
-# schema-verify: fail if any of the 13 expected PascalCase schema names is
-# missing from its Glue registry (11 in GLUE_REGISTRY_MEMBERSHIP_NAME, 2 —
-# TenantCreated/TrialStarted — in GLUE_REGISTRY_TENANT_NAME per SCHEMA-7).
-# Names match domain.TopicForEvent's routing + the LLD §7.3.1 registry-layout
-# table. Surfaces a mismatch pre-deploy rather than at first-event publish.
-# Requires GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME and AWS
-# credentials.
+# schema-verify: fail unless every produced schema has an AVAILABLE version
+# whose definition matches this checkout's file, in its own registry — the
+# exact lookup GlueCodec does at startup (GetSchemaByDefinition, compact +
+# ASCII-escaped like schema-gov register uploads it). Surfaces "pod would
+# CrashLoop on NewGlueCodec" pre-deploy, which a name-only get-schema check
+# cannot. Requires GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME,
+# AWS credentials (or AWS_ENDPOINT_URL for floci) and python3.
 .PHONY: schema-verify
 schema-verify:
 	@test -n "$(GLUE_REGISTRY_MEMBERSHIP_NAME)" || { \
@@ -436,27 +451,31 @@ schema-verify:
 	  echo "GLUE_REGISTRY_TENANT_NAME is not set — add it to .env"; \
 	  exit 1; \
 	}
-	@missing=""; \
-	for name in DepartmentMembershipGranted DepartmentMembershipLevelChanged DepartmentMembershipRevoked MembershipRevoked TenantMembershipsPurged TenantRoleGranted TenantRoleRevoked TenantSeatOverageResolved TenantSeatOverageStarted TenantStateChanged TenderAssigneeOverridden MFAReset; do \
-	  if ! aws glue get-schema \
-	      --schema-id "RegistryName=$(GLUE_REGISTRY_MEMBERSHIP_NAME),SchemaName=$$name" \
-	      --region "$(AWS_REGION)" >/dev/null 2>&1; then \
-	    missing="$$missing $(GLUE_REGISTRY_MEMBERSHIP_NAME):$$name"; \
-	  fi; \
+	@rm -rf .tmp/verify-membership .tmp/verify-tenant
+	@bash .github/scripts/stage-produced-event-schemas.sh .tmp/verify-membership membership >/dev/null
+	@bash .github/scripts/stage-produced-event-schemas.sh .tmp/verify-tenant tenant >/dev/null
+	@failed=""; count=0; \
+	for pair in "$(GLUE_REGISTRY_MEMBERSHIP_NAME):.tmp/verify-membership" "$(GLUE_REGISTRY_TENANT_NAME):.tmp/verify-tenant"; do \
+	  registry=$${pair%%:*}; dir=$${pair#*:}; \
+	  for file in $$dir/*.json; do \
+	    name=$$(basename "$$file" .json); count=$$((count + 1)); \
+	    def=$$(python3 -c 'import json,sys; sys.stdout.write(json.dumps(json.load(open(sys.argv[1])), separators=(",", ":")))' "$$file"); \
+	    status=$$(aws glue get-schema-by-definition \
+	        --schema-id "RegistryName=$$registry,SchemaName=$$name" \
+	        --schema-definition "$$def" \
+	        --region "$(AWS_REGION)" --query Status --output text 2>/dev/null); \
+	    if [ "$$status" != "AVAILABLE" ]; then \
+	      failed="$$failed $$registry:$$name($${status:-not-registered})"; \
+	    fi; \
+	  done; \
 	done; \
-	for name in TenantCreated TrialStarted; do \
-	  if ! aws glue get-schema \
-	      --schema-id "RegistryName=$(GLUE_REGISTRY_TENANT_NAME),SchemaName=$$name" \
-	      --region "$(AWS_REGION)" >/dev/null 2>&1; then \
-	    missing="$$missing $(GLUE_REGISTRY_TENANT_NAME):$$name"; \
-	  fi; \
-	done; \
-	if [ -n "$$missing" ]; then \
-	  echo "FAIL: missing Glue schemas:$$missing"; \
-	  echo "     run 'make schema-register' to create them"; \
+	rm -rf .tmp/verify-membership .tmp/verify-tenant; \
+	if [ -n "$$failed" ]; then \
+	  echo "FAIL: this checkout's schema definition is not registered+AVAILABLE:$$failed"; \
+	  echo "     run 'make schema-register' (or wait for schema-registry.yml) to register it"; \
 	  exit 1; \
 	fi; \
-	echo "OK: all 14 schemas present across both registries"
+	echo "OK: all $$count schema definitions registered and AVAILABLE across both registries"
 
 # schema-prune: dry-run scan for orphaned Glue schemas in BOTH registries
 # (exist in Glue, not in repo). Pass EXECUTE=true to archive and delete:

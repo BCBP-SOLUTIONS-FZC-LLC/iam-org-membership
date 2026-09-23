@@ -288,7 +288,7 @@ type flakyPublisher struct {
 
 func (f *flakyPublisher) Publish(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	n := f.calls.Add(1)
-	if n <= int32(f.failFirstN) {
+	if n <= f.failFirstN {
 		return errors.New("simulated transient SNS failure")
 	}
 	return f.inner.Publish(ctx, env)
@@ -296,7 +296,7 @@ func (f *flakyPublisher) Publish(ctx context.Context, env events.Envelope[json.R
 
 func (f *flakyPublisher) PublishBatch(ctx context.Context, envs []events.Envelope[json.RawMessage]) error {
 	n := f.calls.Add(int32(len(envs)))
-	if n <= int32(f.failFirstN) {
+	if n <= f.failFirstN {
 		return errors.New("simulated transient SNS batch failure")
 	}
 	return f.inner.PublishBatch(ctx, envs)

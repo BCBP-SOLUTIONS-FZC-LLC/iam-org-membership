@@ -46,12 +46,6 @@ func (o *noopOutbox) Enqueue(_ context.Context, e *domain.DomainEvent) error {
 	return nil
 }
 
-func (o *noopOutbox) count() int {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return len(o.events)
-}
-
 // startConsumer wires a real events.SQSConsumer against the given queue,
 // dispatching to the handler. Returns a stop func.
 func startConsumer(t *testing.T, e *phase12Env, queueURL string, handler events.Handler, opts ...events.ConsumerOption) func() {

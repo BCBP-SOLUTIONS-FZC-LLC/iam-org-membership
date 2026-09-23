@@ -25,7 +25,7 @@ func TestAPIScenarios_I2_PatchRealm(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+tt.TenantID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 		rvT = rv(resp)
 	})
@@ -37,7 +37,7 @@ func TestAPIScenarios_I2_PatchRealm(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+tt.TenantID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 		rvT = rv(resp)
 	})
@@ -49,7 +49,7 @@ func TestAPIScenarios_I2_PatchRealm(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -59,7 +59,7 @@ func TestAPIScenarios_I2_PatchRealm(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+tt.TenantID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -70,7 +70,7 @@ func TestAPIScenarios_I2_PatchRealm(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+tt.TenantID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -81,7 +81,7 @@ func TestAPIScenarios_I2_PatchRealm(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+freshTenantID(),
 			body, isSys(freshTenantID()))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -92,7 +92,7 @@ func TestAPIScenarios_I2_PatchRealm(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+tt.TenantID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusConflict)
 	})
 }
@@ -109,7 +109,7 @@ func TestAPIScenarios_I3_AddMember(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tt.TenantID+"/members",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusCreated)
 	})
 
@@ -121,7 +121,7 @@ func TestAPIScenarios_I3_AddMember(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tt.TenantID+"/members",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusCreated)
 	})
 
@@ -133,7 +133,7 @@ func TestAPIScenarios_I3_AddMember(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tid+"/members",
 			body, isSys(tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -143,7 +143,7 @@ func TestAPIScenarios_I3_AddMember(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tt.TenantID+"/members",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -153,7 +153,7 @@ func TestAPIScenarios_I3_AddMember(t *testing.T) {
 		})
 		resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tt.TenantID+"/members",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 }
@@ -169,7 +169,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "status", "suspended")
 		memberRV = rv(resp)
@@ -180,7 +180,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "status", "active")
 		memberRV = rv(resp)
@@ -191,7 +191,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 		memberRV = rv(resp)
 	})
@@ -201,7 +201,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -210,7 +210,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+freshID(),
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -219,7 +219,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusConflict)
 	})
 
@@ -228,7 +228,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -237,7 +237,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "status", "left")
 	})
@@ -254,7 +254,7 @@ func TestAPIScenarios_I5_DeleteMember(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+uid,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "removed", true)
 	})
@@ -266,12 +266,12 @@ func TestAPIScenarios_I5_DeleteMember(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+uid,
 			"", isSys(tt.TenantID))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		// Delete again — must be idempotent 200
 		resp2 := e.do(t, http.MethodDelete,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+uid,
 			"", isSys(tt.TenantID))
-		defer resp2.Body.Close()
+		defer func() { _ = resp2.Body.Close() }()
 		assertStatus(t, resp2, http.StatusOK)
 	})
 
@@ -279,7 +279,7 @@ func TestAPIScenarios_I5_DeleteMember(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+freshID(),
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -287,7 +287,7 @@ func TestAPIScenarios_I5_DeleteMember(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/not-a-uuid",
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -295,7 +295,7 @@ func TestAPIScenarios_I5_DeleteMember(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -322,7 +322,7 @@ func TestAPIScenarios_I13_AssigneeOverride(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/tenders/"+tenderID+"/assignee-override",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -337,7 +337,7 @@ func TestAPIScenarios_I13_AssigneeOverride(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/tenders/"+tenderID+"/assignee-override",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -352,7 +352,7 @@ func TestAPIScenarios_I13_AssigneeOverride(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/tenders/"+tenderID+"/assignee-override",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -367,7 +367,7 @@ func TestAPIScenarios_I13_AssigneeOverride(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/tenders/"+tenderID+"/assignee-override",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -381,7 +381,7 @@ func TestAPIScenarios_I13_AssigneeOverride(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/tenders/"+tenderID+"/assignee-override",
 			body, isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -394,7 +394,7 @@ func TestAPIScenarios_I13_AssigneeOverride(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/tenders/"+tenderID+"/assignee-override",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -408,7 +408,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+tt.OwnerID+"/memberships?tenant_id="+tt.TenantID,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		roles, _ := b["roles"].([]any)
 		require.Contains(t, roles, "tenant_owner", "owner must have tenant_owner role")
@@ -419,7 +419,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+tt.OwnerID+"/memberships?tenant_id="+tt.TenantID,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		roles, _ := b["roles"].([]any)
 		assert.Contains(t, roles, "tenant_owner")
@@ -429,7 +429,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+tt.MemberID+"/memberships?tenant_id="+tt.TenantID,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "status", "active")
 	})
@@ -438,7 +438,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+tt.SuspendedID+"/memberships?tenant_id="+tt.TenantID,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "status", "suspended")
 	})
@@ -447,7 +447,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+freshID()+"/memberships?tenant_id="+tt.TenantID,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -457,7 +457,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+tt.OwnerID+"/memberships?tenant_id="+tt.TenantID,
 			"", hdrs)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 
@@ -465,7 +465,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+tt.OwnerID+"/memberships?tenant_id="+tt.TenantID,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -474,7 +474,7 @@ func TestAPIScenarios_IUM_I8_Memberships(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/users/"+tt.MemberID+"/memberships?tenant_id="+tt.TenantID,
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		depts, _ := b["departments"].([]any)
 		assert.Greater(t, len(depts), 0, "departments must be non-empty")
@@ -490,7 +490,7 @@ func TestAPIScenarios_I11_SeatUsage(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/seat-usage",
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		_, hasActive := b["active_users"]
 		_, hasLicensed := b["licensed_seats"]
@@ -500,12 +500,12 @@ func TestAPIScenarios_I11_SeatUsage(t *testing.T) {
 	t.Run("I11-HP-02 response matches P-27 shape", func(t *testing.T) {
 		respI := e.do(t, http.MethodGet,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/seat-usage", "", isSys(tt.TenantID))
-		defer respI.Body.Close()
+		defer func() { _ = respI.Body.Close() }()
 		bI := assertStatus(t, respI, http.StatusOK)
 
 		respP := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/seat-usage", "", isOwner(tt.OwnerID, tt.TenantID))
-		defer respP.Body.Close()
+		defer func() { _ = respP.Body.Close() }()
 		bP := assertStatus(t, respP, http.StatusOK)
 
 		assert.Equal(t, bI["licensed_seats"], bP["licensed_seats"])
@@ -521,7 +521,7 @@ func TestAPIScenarios_GT_GetTenant(t *testing.T) {
 	t.Run("GT-HP-01 tenant_owner reads tenant → 200", func(t *testing.T) {
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+tt.TenantID,
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "plan", "starter")
 		hasField(t, b, "status", "trial")
@@ -530,14 +530,14 @@ func TestAPIScenarios_GT_GetTenant(t *testing.T) {
 	t.Run("GT-HP-02 tenant_admin reads tenant → 200", func(t *testing.T) {
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+tt.TenantID,
 			"", isAdmin(tt.AdminID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
 	t.Run("GT-HP-03 plain member reads tenant → 200", func(t *testing.T) {
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+tt.TenantID,
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -545,7 +545,7 @@ func TestAPIScenarios_GT_GetTenant(t *testing.T) {
 		tid := freshTenantID()
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+tid,
 			"", isOwner(tt.OwnerID, tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -554,7 +554,7 @@ func TestAPIScenarios_GT_GetTenant(t *testing.T) {
 		// parseTenantIDParam in the handler returns 400 for "not-a-uuid".
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/not-a-uuid",
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -566,20 +566,20 @@ func TestAPIScenarios_GT_GetTenant(t *testing.T) {
 			"x-user-id": tt.OwnerID, "x-tenant-id": otherTenantID, "x-tenant-roles": "tenant_owner",
 		}
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+otherTenantID, "", hdrs)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 
 	t.Run("GT-AUTH-01 no auth headers → 401", func(t *testing.T) {
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+tt.TenantID, "", noAuth())
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnauthorized)
 	})
 
 	t.Run("GT-S-03 suspended member blocked by RequireActiveMembership → 403", func(t *testing.T) {
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+tt.TenantID,
 			"", isMember(tt.SuspendedID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -594,7 +594,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"name": "Renamed Corp", "record_version": rvT})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "name", "Renamed Corp")
 		rvT = rv(resp)
@@ -604,7 +604,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"mfa_freshness_seconds": 600, "record_version": rvT})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		assert.Equal(t, float64(600), b["mfa_freshness_seconds"])
 		rvT = rv(resp)
@@ -614,7 +614,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"mfa_freshness_seconds": 59, "record_version": rvT})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -622,7 +622,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"mfa_freshness_seconds": 901, "record_version": rvT})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -630,7 +630,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"name": "X", "record_version": 9999})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusConflict)
 	})
 
@@ -638,7 +638,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"name": "X", "record_version": rvT})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -647,7 +647,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"name": "X", "record_version": 1})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tid,
 			body, isOwner(tt.OwnerID, tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -655,7 +655,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"default_locale": "fr-FR", "record_version": rvT})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "default_locale", "fr-FR")
 		rvT = rv(resp)
@@ -665,7 +665,7 @@ func TestAPIScenarios_P2_PatchTenant(t *testing.T) {
 		body := toJSON(map[string]any{"local_accounts_enabled": true, "record_version": rvT})
 		resp := e.do(t, http.MethodPatch, "/api/v1/tenants/"+tt.TenantID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		// 200 or 202 depending on RP response
 		assert.True(t, resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted,
 			"got %d", resp.StatusCode)
@@ -682,7 +682,7 @@ func TestAPIScenarios_P4_ListMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		items, _ := b["items"].([]any)
 		assert.Greater(t, len(items), 0, "should have at least the owner")
@@ -692,7 +692,7 @@ func TestAPIScenarios_P4_ListMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members",
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -700,7 +700,7 @@ func TestAPIScenarios_P4_ListMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members?limit=-1",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -708,7 +708,7 @@ func TestAPIScenarios_P4_ListMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members?limit=201",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -716,7 +716,7 @@ func TestAPIScenarios_P4_ListMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members?limit=1",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		items, _ := b["items"].([]any)
 		assert.LessOrEqual(t, len(items), 1)
@@ -726,7 +726,7 @@ func TestAPIScenarios_P4_ListMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members",
 			"", isMember(tt.SuspendedID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -736,7 +736,7 @@ func TestAPIScenarios_P4_ListMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tid+"/members",
 			"", isOwner(tt.OwnerID, tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 }
@@ -750,7 +750,7 @@ func TestAPIScenarios_P5_GetMember(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "user_id", tt.MemberID)
 	})
@@ -759,7 +759,7 @@ func TestAPIScenarios_P5_GetMember(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.AdminID,
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -767,7 +767,7 @@ func TestAPIScenarios_P5_GetMember(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+freshID(),
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -775,7 +775,7 @@ func TestAPIScenarios_P5_GetMember(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members/not-a-uuid",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -783,7 +783,7 @@ func TestAPIScenarios_P5_GetMember(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			"", isMember(tt.SuspendedID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -799,7 +799,7 @@ func TestAPIScenarios_P7_PatchMemberStatus(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "status", "suspended")
 		memberRV = rv(resp)
@@ -810,7 +810,7 @@ func TestAPIScenarios_P7_PatchMemberStatus(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		hasField(t, b, "status", "active")
 		memberRV = rv(resp)
@@ -821,7 +821,7 @@ func TestAPIScenarios_P7_PatchMemberStatus(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -830,7 +830,7 @@ func TestAPIScenarios_P7_PatchMemberStatus(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusConflict)
 	})
 
@@ -839,7 +839,7 @@ func TestAPIScenarios_P7_PatchMemberStatus(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+freshID(),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -848,7 +848,7 @@ func TestAPIScenarios_P7_PatchMemberStatus(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		// 0 rv → either optimistic_lock_conflict (409) or treated as no rv (400)
 		assert.True(t, resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusBadRequest,
 			"got %d", resp.StatusCode)
@@ -865,7 +865,7 @@ func TestAPIScenarios_P9_ListDeptMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/departments/"+DeptEngID.String()+"/members",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		items, _ := b["items"].([]any)
 		assert.Greater(t, len(items), 0)
@@ -875,7 +875,7 @@ func TestAPIScenarios_P9_ListDeptMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/departments/"+DeptDesID.String()+"/members",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		items, _ := b["items"].([]any)
 		assert.Equal(t, 0, len(items))
@@ -885,7 +885,7 @@ func TestAPIScenarios_P9_ListDeptMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/departments/"+DeptEngID.String()+"/members",
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -893,7 +893,7 @@ func TestAPIScenarios_P9_ListDeptMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/departments/"+DeptEngID.String()+"/members",
 			"", isMember(tt.SuspendedID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -901,7 +901,7 @@ func TestAPIScenarios_P9_ListDeptMembers(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/departments/not-a-uuid/members",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 }
@@ -917,7 +917,7 @@ func TestAPIScenarios_P10_AssignDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.MemberID),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assert.True(t, resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated,
 			"got %d", resp.StatusCode)
 	})
@@ -927,14 +927,14 @@ func TestAPIScenarios_P10_AssignDeptMember(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members", tt.TenantID, DeptEngID),
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		body := toJSON(map[string]any{"level": "reviewer", "record_version": 2})
 		resp2 := e.do(t, http.MethodPut,
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.MemberID),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp2.Body.Close()
+		defer func() { _ = resp2.Body.Close() }()
 		assert.True(t, resp2.StatusCode == http.StatusOK || resp2.StatusCode == http.StatusCreated,
 			"got %d", resp2.StatusCode)
 	})
@@ -945,7 +945,7 @@ func TestAPIScenarios_P10_AssignDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.MemberID),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -955,7 +955,7 @@ func TestAPIScenarios_P10_AssignDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, freshID()),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -965,7 +965,7 @@ func TestAPIScenarios_P10_AssignDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.SuspendedID),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -975,7 +975,7 @@ func TestAPIScenarios_P10_AssignDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.MemberID),
 			body, isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -992,7 +992,7 @@ func TestAPIScenarios_P11_RemoveDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.MemberID),
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		require.Equal(t, true, b["removed"])
 	})
@@ -1002,7 +1002,7 @@ func TestAPIScenarios_P11_RemoveDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, freshID()),
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -1012,7 +1012,7 @@ func TestAPIScenarios_P11_RemoveDeptMember(t *testing.T) {
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.AdminID),
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -1026,7 +1026,7 @@ func TestAPIScenarios_P12_RoleLabels(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/roles",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		items, _ := b["items"].([]any)
 		assert.Greater(t, len(items), 0, "should have 3 default role labels")
@@ -1036,7 +1036,7 @@ func TestAPIScenarios_P12_RoleLabels(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/roles",
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -1049,13 +1049,13 @@ func TestAPIScenarios_P12_RoleLabels(t *testing.T) {
 		if resp0.StatusCode == http.StatusOK {
 			rvL = rv(resp0)
 		}
-		resp0.Body.Close()
+		_ = resp0.Body.Close()
 
 		body := toJSON(map[string]any{"display_name": "Ops", "record_version": rvL})
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/roles/preparator",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -1064,7 +1064,7 @@ func TestAPIScenarios_P12_RoleLabels(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/roles/preparator",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -1073,7 +1073,7 @@ func TestAPIScenarios_P12_RoleLabels(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/roles/manager_role",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 }
@@ -1089,7 +1089,7 @@ func TestAPIScenarios_P24_P25_Departments(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/tenants/"+tt.TenantID+"/departments",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusCreated)
 	})
 
@@ -1099,7 +1099,7 @@ func TestAPIScenarios_P24_P25_Departments(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/tenants/"+tt.TenantID+"/departments",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusConflict)
 	})
 
@@ -1109,7 +1109,7 @@ func TestAPIScenarios_P24_P25_Departments(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/tenants/"+tt.TenantID+"/departments",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -1120,7 +1120,7 @@ func TestAPIScenarios_P24_P25_Departments(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/departments/"+DeptOpsID.String(),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -1130,7 +1130,7 @@ func TestAPIScenarios_P24_P25_Departments(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/tenants/"+tt.TenantID+"/departments/"+DeptEngID.String(),
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 }
@@ -1144,7 +1144,7 @@ func TestAPIScenarios_P27_SeatUsage(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/seat-usage",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		require.Contains(t, b, "active_users")
 		require.Contains(t, b, "licensed_seats")
@@ -1155,7 +1155,7 @@ func TestAPIScenarios_P27_SeatUsage(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/seat-usage",
 			"", isAdmin(tt.AdminID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -1163,7 +1163,7 @@ func TestAPIScenarios_P27_SeatUsage(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/seat-usage",
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -1172,7 +1172,7 @@ func TestAPIScenarios_P27_SeatUsage(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tid+"/seat-usage",
 			"", isOwner(tt.OwnerID, tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 }
@@ -1188,7 +1188,7 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		// P-28 returns the full post-reconcile elevated role set in "roles" (not a delta).
 		roles, _ := b["roles"].([]any)
@@ -1201,7 +1201,7 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		// After stripping all roles, the "roles" array must be empty.
 		roles, _ := b["roles"].([]any)
@@ -1213,7 +1213,7 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -1222,7 +1222,7 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -1231,7 +1231,7 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+freshID()+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -1241,7 +1241,7 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.OwnerID+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 }
@@ -1255,7 +1255,7 @@ func TestAPIScenarios_P30_ListInvitations(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/invitations",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		require.Contains(t, b, "items")
 	})
@@ -1264,7 +1264,7 @@ func TestAPIScenarios_P30_ListInvitations(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tt.TenantID+"/invitations",
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -1273,7 +1273,7 @@ func TestAPIScenarios_P30_ListInvitations(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tid+"/invitations",
 			"", isOwner(tt.OwnerID, tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 }
@@ -1292,7 +1292,7 @@ func TestAPIScenarios_P31_RevokeInvitation(t *testing.T) {
 		"/api/v1/tenants/"+tt.TenantID+"/members",
 		invBody, isOwner(tt.OwnerID, tt.TenantID))
 	invB := parseBody(t, invResp)
-	invResp.Body.Close()
+	_ = invResp.Body.Close()
 	require.True(t, invResp.StatusCode == http.StatusCreated || invResp.StatusCode == http.StatusAccepted,
 		"invite: got %d body: %v", invResp.StatusCode, invB)
 
@@ -1305,7 +1305,7 @@ func TestAPIScenarios_P31_RevokeInvitation(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/tenants/"+tt.TenantID+"/invitations/"+invID,
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNoContent)
 	})
 
@@ -1313,7 +1313,7 @@ func TestAPIScenarios_P31_RevokeInvitation(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/tenants/"+tt.TenantID+"/invitations/"+freshID(),
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -1321,7 +1321,7 @@ func TestAPIScenarios_P31_RevokeInvitation(t *testing.T) {
 		resp := e.do(t, http.MethodDelete,
 			"/api/v1/tenants/"+tt.TenantID+"/invitations/"+freshID(),
 			"", isMember(tt.MemberID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -1340,7 +1340,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/feature-flags",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		flags, _ := b["feature_flags"].(map[string]any)
 		assert.Equal(t, true, flags["sso_enabled"])
@@ -1355,7 +1355,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/feature-flags",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		flags, _ := b["feature_flags"].(map[string]any)
 		assert.Equal(t, 0, len(flags))
@@ -1370,7 +1370,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/feature-flags",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -1382,7 +1382,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/feature-flags",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
@@ -1394,7 +1394,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/feature-flags",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -1406,7 +1406,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/feature-flags",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusConflict)
 	})
 
@@ -1419,7 +1419,7 @@ func TestAPIScenarios_O4_FeatureFlags(t *testing.T) {
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/operator/tenants/"+tid+"/feature-flags",
 			body, isOperator(tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 }
@@ -1435,7 +1435,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/reassign-owner",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		roles, _ := b["roles"].([]any)
 		require.Contains(t, roles, "tenant_owner", "response roles must include tenant_owner — body: %v", b)
@@ -1447,7 +1447,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/reassign-owner",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 		rvT = e.getTenantRV(t, tt.TenantID, tt.OwnerID)
 	})
@@ -1457,7 +1457,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/reassign-owner",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -1466,7 +1466,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/reassign-owner",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusUnprocessableEntity)
 	})
 
@@ -1475,7 +1475,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/reassign-owner",
 			body, isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
@@ -1486,7 +1486,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/reassign-owner",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -1496,7 +1496,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tid+"/reassign-owner",
 			body, isOperator(tid))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
@@ -1505,7 +1505,7 @@ func TestAPIScenarios_O7_ReassignOwner(t *testing.T) {
 		resp := e.do(t, http.MethodPost,
 			"/api/v1/operator/tenants/"+tt.TenantID+"/reassign-owner",
 			body, isOperator(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		// Deprecated alias still works
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
@@ -1520,7 +1520,7 @@ func TestAPIScenarios_I15_MemberExists(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/exists",
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusOK)
 	})
 
@@ -1529,7 +1529,7 @@ func TestAPIScenarios_I15_MemberExists(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+freshID()+"/exists",
 			"", isSys(tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b := assertStatus(t, resp, http.StatusOK)
 		require.Equal(t, false, b["active"], "non-existent member must return active:false")
 	})
@@ -1538,7 +1538,7 @@ func TestAPIScenarios_I15_MemberExists(t *testing.T) {
 		resp := e.do(t, http.MethodGet,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/exists",
 			"", isOwner(tt.OwnerID, tt.TenantID))
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 }
@@ -1550,7 +1550,7 @@ func (e *apiTestEnv) getDeptRV(t *testing.T, tenantID, callerID, deptID string) 
 	resp := e.do(t, http.MethodGet,
 		"/api/v1/tenants/"+tenantID+"/departments/"+deptID,
 		"", isOwner(callerID, tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 1
 	}

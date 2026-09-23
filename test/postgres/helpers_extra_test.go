@@ -238,6 +238,8 @@ func newFakeCatalogDepartments() *fakeCatalogDepartments {
 
 // add registers a department, generating an ID/RecordVersion if unset, and
 // returns the (possibly generated) ID.
+//
+//nolint:unparam // returns the ID so a test can seed and reference a department in one step
 func (f *fakeCatalogDepartments) add(d domain.Department) uuid.UUID {
 	f.mu.Lock()
 	defer f.mu.Unlock()

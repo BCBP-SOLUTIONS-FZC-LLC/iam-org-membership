@@ -1369,6 +1369,7 @@ func TestCOVMemIns001_Insert_Idempotent_ReturnsExistingRow(t *testing.T) {
 // Returns (tenantID, ownerID, error).
 // ═════════════════════════════════════════════════════════════════════════
 
+//nolint:unparam // returns both IDs for symmetry with ProvisioningService.TrialSignup; callers only need the second today
 func provisionTrialWithOwner(t *testing.T, ctx context.Context, fx *testFixtures, tenantID, ownerID uuid.UUID, slug string) (uuid.UUID, uuid.UUID, error) {
 	t.Helper()
 	svcCtx := withSystemAndTenant(ctx, tenantID)

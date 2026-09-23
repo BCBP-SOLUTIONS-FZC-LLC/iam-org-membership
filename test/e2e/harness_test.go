@@ -283,7 +283,7 @@ func (e *e2eEnv) do(t *testing.T, opts reqOpts) (int, http.Header, []byte) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err, "%s %s", opts.method, opts.path)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	return resp.StatusCode, resp.Header, body
@@ -305,12 +305,6 @@ func gatewayHeaders(userID, tenantID uuid.UUID, roles string) map[string]string 
 // ownerHeaders returns gateway headers for a tenant_owner in the given tenant.
 func ownerHeaders(userID, tenantID uuid.UUID) map[string]string {
 	return gatewayHeaders(userID, tenantID, "tenant_owner")
-}
-
-// operatorHeaders returns gateway headers for a platform_operator. TenantID
-// still must be supplied because RequireAuth requires it.
-func operatorHeaders(userID uuid.UUID) map[string]string {
-	return gatewayHeaders(userID, uuid.New(), "platform_operator")
 }
 
 // systemHeaders returns gateway headers for the iam-system principal used by
@@ -452,17 +446,6 @@ func (f *fakeCatalogDepartments) add(d domain.Department) uuid.UUID {
 	}
 	f.rows[d.ID] = d
 	return d.ID
-}
-
-func (f *fakeCatalogDepartments) byCode(code string) (domain.Department, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, d := range f.rows {
-		if d.Code == code {
-			return d, true
-		}
-	}
-	return domain.Department{}, false
 }
 
 func (f *fakeCatalogDepartments) Departments(_ context.Context) ([]domain.Department, error) {

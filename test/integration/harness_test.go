@@ -350,6 +350,8 @@ func (e *phase12Env) receiveMessages(t *testing.T, queueURL string, want int, ti
 // drainQueue receives (and deletes) every message currently visible on the
 // queue, subject to a short timeout. Used to assert a queue is EMPTY (i.e.
 // filter policy rejected the message).
+//
+//nolint:unparam // test helper — callers pass the timeout explicitly so a slow case can raise it
 func (e *phase12Env) drainQueue(t *testing.T, queueURL string, timeout time.Duration) []sqstypes.Message {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -381,6 +383,8 @@ func (e *phase12Env) drainQueue(t *testing.T, queueURL string, timeout time.Dura
 // publishEnvelope publishes a raw envelope JSON to the given topic. Stamps
 // the "EventType" MessageAttribute so filter policies work (matches the
 // platform-events SNS publisher exactly).
+//
+//nolint:unparam // extraAttrs kept for message-attribute scenarios; every current caller passes nil
 func (e *phase12Env) publishEnvelope(t *testing.T, topicARN string, eventType string, body []byte, extraAttrs map[string]string) {
 	t.Helper()
 	attrs := map[string]snstypes.MessageAttributeValue{

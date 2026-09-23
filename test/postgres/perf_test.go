@@ -48,24 +48,6 @@ import (
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 
-// seedActiveOwner inserts a tenant_memberships row + tenant_owner grant so
-// GetMembership returns a projection. Bypasses RLS via rawPool.
-func seedActiveOwner(t testing.TB, ctx context.Context, fx *testFixtures, tenantID uuid.UUID) uuid.UUID {
-	t.Helper()
-	userID := uuid.New()
-	memID := uuid.New()
-	_, err := fx.rawPool.Exec(ctx, `
-		INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
-		VALUES ($1, $2, $3, 'active')`, memID, tenantID, userID)
-	require.NoError(t, err)
-	_, err = fx.rawPool.Exec(ctx, `
-		INSERT INTO tenant_roles (id, tenant_id, tenant_membership_id, user_id, role_code, granted_by)
-		VALUES ($1, $2, $3, $4, 'tenant_owner', $4)`,
-		uuid.New(), tenantID, memID, userID)
-	require.NoError(t, err)
-	return userID
-}
-
 // percentile returns the pth percentile (0-100) of ds. Assumes ds is
 // non-empty.
 func percentile(ds []time.Duration, p float64) time.Duration {

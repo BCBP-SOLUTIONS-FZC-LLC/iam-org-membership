@@ -66,7 +66,7 @@ func (p *captureEventPublisher) byType(typ string) []*domain.DomainEvent {
 // that need to seed/assert state directly (rawPool is a real
 // *pgcommon.Pool, matching production, and has no .Exec/.Query/.QueryRow of
 // its own — those go through pgcommon.RunInTx/WithConn instead).
-func newJobContext(t *testing.T, ctx context.Context) (*jobs.Context, *captureEventPublisher, *dbseed.Pool) {
+func newJobContext(t *testing.T, _ context.Context) (*jobs.Context, *captureEventPublisher, *dbseed.Pool) {
 	t.Helper()
 	appPool, rawPool, sysPool := setupTestDB(t)
 	// Reconcilers use SysPool (BYPASSRLS) for cross-tenant sweeps AND the

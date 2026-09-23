@@ -385,7 +385,7 @@ func seedTenantWithOwner(t testing.TB, ctx context.Context, fx *testFixtures, sl
 // 4 — LLD §12 step 4); catalog is nil for tests that construct repos
 // directly without a fixture (department_id no longer needs to resolve
 // against anything at the DB level — there's no FK left to satisfy).
-func seedSystemDept(t *testing.T, ctx context.Context, catalog *fakeCatalogDepartments, code, name string) uuid.UUID {
+func seedSystemDept(t *testing.T, _ context.Context, catalog *fakeCatalogDepartments, code, name string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	if catalog != nil {

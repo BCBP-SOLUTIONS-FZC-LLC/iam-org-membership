@@ -71,7 +71,7 @@ export GLUE_REGISTRY_MEMBERSHIP_NAME=iam-membership-events   # or the env-specif
 export GLUE_REGISTRY_TENANT_NAME=iam-tenant-events
 export AWS_REGION=ap-south-1
 make schema-validate   # schema-gov extract + validate (8 passes), no AWS needed
-make schema-verify     # aws glue get-schema for all 14 names across both registries
+make schema-verify     # get-schema-by-definition for all 14 schemas across both registries
 ```
 
 `make schema-validate` runs `platform-schemagov:0.4` against
@@ -81,16 +81,22 @@ strict-mode scan, AsyncAPI↔schema coverage, AsyncAPI structure. It also
 deletes the stray `mfareset.json` `extract` always writes (known schema-gov
 0.4 naming inconsistency; this repo keeps `mfa_reset.json`).
 
-`make schema-verify` checks that every expected schema **name** exists
-(`OK: all 14 schemas present across both registries`). It does not prove the
-exact definition of this build is registered — a pod does that at startup.
+`make schema-verify` runs the exact lookup a pod runs at startup: for every
+produced schema it calls `aws glue get-schema-by-definition` with this
+checkout's file (serialized the way `schema-gov register` uploads it) and
+fails unless the matched version is `AVAILABLE` — so it also catches a schema
+registered from a *different* commit, which a name-only check could not
+(`OK: all 14 schema definitions registered and AVAILABLE across both
+registries`). Needs `aws` and `python3`.
 
 Failure modes and fixes:
 
-- `FAIL: missing Glue schemas: ...` — register them: `make schema-register`
+- `FAIL: this checkout's schema definition is not registered+AVAILABLE: ...`
+  — each entry is `registry:Name(status)`; `not-registered` means no version
+  has this definition. Register them: `make schema-register`
   (stages the produced schemas per lane and registers both registries), then
   re-run `make schema-verify`.
-- `aws glue get-schema` returns AccessDenied — the caller needs the
+- `aws glue get-schema-by-definition` returns AccessDenied — the caller needs the
   `GlueSchemaRegistryReadOnly` actions below on **both** registry ARNs.
 
 ## What happens if a schema is missing at pod startup
@@ -171,8 +177,9 @@ registered; an unregistered definition fails startup).
 2. Add the message under the correct channel in `api/asyncapi.yaml`, then
    `make extract-schemas` (never hand-edit the extracted JSON).
 3. Add the new file to `schemaFileNames` (`glue_codec.go`) and to
-   `.github/scripts/stage-produced-event-schemas.sh`; add the name to
-   `make schema-verify`'s list and to `scripts/init-floci.sh`.
+   `.github/scripts/stage-produced-event-schemas.sh` (`make schema-verify`
+   reads the staged files, so it needs no list of its own); add the name to
+   `scripts/init-floci.sh`.
 4. Run `make schema-validate` and the unit tests (the Python parity test
    checks the new file's registered form).
 5. Merge. `schema-registry.yml` registers it; pods built from that commit

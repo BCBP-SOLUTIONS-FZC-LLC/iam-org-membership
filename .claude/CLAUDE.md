@@ -28,8 +28,9 @@ make setup            # Copy .env-example → .env (run once before anything els
 make tidy              # go mod tidy
 make fmt               # go fmt ./...
 make fmt-check         # Verify gofmt formatting without modifying files (mirrors CI)
-make vet               # go vet ./...
-make lint              # golangci-lint (via go tool golangci-lint)
+make vet               # go vet ./... — default build + a second pass with every test build tag (integration,e2e)
+make lint              # golangci-lint (via go tool) — default build + every test build tag
+make arch-lint         # go-arch-lint against .go-arch-lint.yml (same script CI runs)
 make mod-verify        # go mod verify (check module download integrity)
 make vuln-check        # govulncheck ./internal/...
 make test              # Unit + postgres + integration tests, run in parallel (requires Docker; e2e is separate — make test-e2e)
@@ -44,8 +45,8 @@ make run               # Run server locally (sources .env, kills port 8080 first
 make build             # Compile to bin/iam-org-membership
 make cover             # Coverage HTML report (measures ./internal/...)
 make cover-func        # Coverage summary by function (terminal)
-make ci                # tidy + fmt-check + vet + lint + test-ci + build (full CI pipeline)
-make schema-verify     # Pre-deploy check: all 14 produced schema names exist in both Glue registries (aws glue get-schema; the exact definition is checked by the pod at startup)
+make ci                # tidy + fmt-check + vet + lint + arch-lint + test-ci + build (full CI pipeline)
+make schema-verify     # Pre-deploy check: every produced schema's definition is registered + AVAILABLE in its registry (get-schema-by-definition — the pod's own startup lookup)
 make docker-up         # Start PostgreSQL + PgBouncer + Valkey + floci + floci-ui (web console, http://localhost:4500) — Docker required
 make docker-down       # Stop containers
 make clean             # Remove bin/ artefacts and coverage files

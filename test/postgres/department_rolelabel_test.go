@@ -555,7 +555,7 @@ func TestP7Label015_UnicodeLongDisplayName(t *testing.T) {
 // P-25 deactivation is legal, D-9/D-11 doesn't block). The departments table
 // was dropped (migration-runbook Phase 4 — LLD §12 step 4); catalog is nil
 // for tests that construct repos directly without a fixture.
-func seedNonSystemDept(t *testing.T, ctx context.Context, catalog *fakeCatalogDepartments, code, name string) uuid.UUID {
+func seedNonSystemDept(t *testing.T, _ context.Context, catalog *fakeCatalogDepartments, code, name string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	if catalog != nil {

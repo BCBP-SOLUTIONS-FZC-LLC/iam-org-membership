@@ -316,7 +316,8 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 |---|---|
 | `make setup` | Copy `.env-example` → `.env` |
 | `make tidy` / `make fmt` / `make fmt-check` / `make vet` | Go basics; `fmt-check` mirrors CI, does not modify files |
-| `make lint` | `golangci-lint` via `go tool` |
+| `make lint` | `golangci-lint` via `go tool` — default build plus every test build tag (`integration`, `e2e`) |
+| `make arch-lint` | `go-arch-lint` against `.go-arch-lint.yml` (the same script CI runs) |
 | `make mod-verify` | `go mod verify` |
 | `make vuln-check` | `govulncheck ./internal/...` |
 | `make test` | Unit + postgres + integration in parallel (Docker required; e2e is separate) |
@@ -330,9 +331,9 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 | `make run` | Run the server locally (sources `.env`, kills port 8080 first) |
 | `make build` | Compile both binaries to `bin/` |
 | `make cover` / `make cover-func` | Coverage HTML report / per-function summary |
-| `make ci` | `tidy` + `fmt-check` + `vet` + `lint` + `test-ci` + `build` |
+| `make ci` | `tidy` + `fmt-check` + `vet` + `lint` + `arch-lint` + `test-ci` + `build` |
 | `make docker-up` / `make docker-down` | Start/stop PostgreSQL + PgBouncer + Valkey + floci |
-| `make schema-verify` | Pre-deploy check: Glue registry schema names/versions vs `api/asyncapi.yaml` + embedded JSON schemas |
+| `make schema-verify` | Pre-deploy check: every produced schema's definition is registered and `AVAILABLE` in its Glue registry — the same lookup the pod runs at startup |
 | `make swag` / `make swag-check` | Regenerate / verify freshness of the Swagger REST contract |
 | `make clean` | Remove `bin/` artefacts and coverage files |
 

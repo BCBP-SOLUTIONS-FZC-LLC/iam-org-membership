@@ -83,7 +83,7 @@ func TestEveryUpHasDownSibling(t *testing.T) {
 			continue
 		}
 		name := e.Name()
-		base := name
+		var base string
 		switch {
 		case len(name) > 7 && name[len(name)-7:] == ".up.sql":
 			base = name[:len(name)-7]

@@ -26,7 +26,6 @@ import (
 
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
@@ -420,7 +419,7 @@ func (e *apiTestEnv) provisionTenant(t *testing.T, tenantID, ownerID, slug, name
 		"owner_name":     "Test Owner",
 	})
 	resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants", body, isSys(tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.True(t, resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK,
 		"provisionTenant: got %d", resp.StatusCode)
 }
@@ -434,7 +433,7 @@ func (e *apiTestEnv) addMember(t *testing.T, tenantID, userID, email, fullName s
 		"full_name": fullName,
 	})
 	resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tenantID+"/members", body, isSys(tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.True(t, resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK,
 		"addMember %s: got %d", userID, resp.StatusCode)
 	b := parseBody(t, resp)
@@ -450,7 +449,7 @@ func (e *apiTestEnv) suspendMember(t *testing.T, tenantID, userID string, record
 	body := toJSON(map[string]any{"status": "suspended", "record_version": recordVersion})
 	resp := e.do(t, http.MethodPatch, "/api/v1/internal/tenants/"+tenantID+"/members/"+userID,
 		body, isSys(tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "suspendMember %s", userID)
 }
 
@@ -460,7 +459,7 @@ func (e *apiTestEnv) grantRole(t *testing.T, tenantID, ownerID, userID string, r
 	body := toJSON(map[string]any{"roles": roles, "record_version": recordVersion})
 	resp := e.do(t, http.MethodPut, "/api/v1/tenants/"+tenantID+"/members/"+userID+"/roles",
 		body, isOwner(ownerID, tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "grantRole %v to %s", roles, userID)
 }
 
@@ -471,7 +470,7 @@ func (e *apiTestEnv) assignDept(t *testing.T, tenantID, ownerID, userID, deptID,
 	resp := e.do(t, http.MethodPut,
 		"/api/v1/tenants/"+tenantID+"/departments/"+deptID+"/members/"+userID,
 		body, isOwner(ownerID, tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// 200 = updated, 201 = created — both are fine
 	require.True(t, resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated,
 		"assignDept %s → %s: got %d", userID, deptID, resp.StatusCode)
@@ -482,7 +481,7 @@ func (e *apiTestEnv) getTenantRV(t *testing.T, tenantID, callerID string) int64 
 	t.Helper()
 	resp := e.do(t, http.MethodGet, "/api/v1/tenants/"+tenantID, "",
 		isOwner(callerID, tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 1
 	}
@@ -495,13 +494,13 @@ func (e *apiTestEnv) getMemberRV(t *testing.T, tenantID, callerID, userID string
 	resp := e.do(t, http.MethodGet,
 		"/api/v1/tenants/"+tenantID+"/members/"+userID, "",
 		isOwner(callerID, tenantID))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		// Try iam-system path (bypasses membership check)
 		resp2 := e.do(t, http.MethodGet,
 			"/api/v1/tenants/"+tenantID+"/members/"+userID, "",
 			isSys(tenantID))
-		defer resp2.Body.Close()
+		defer func() { _ = resp2.Body.Close() }()
 		return rv(resp2)
 	}
 	return rv(resp)
@@ -533,13 +532,6 @@ func hasField(t *testing.T, body map[string]any, key string, want any) {
 	got, ok := body[key]
 	require.True(t, ok, "response missing field %q — body: %v", key, body)
 	require.Equal(t, want, got, "field %q mismatch — body: %v", key, body)
-}
-
-// hasCode checks the error code in an error response.
-func hasCode(t *testing.T, body map[string]any, wantCode string) {
-	t.Helper()
-	got, _ := body["code"].(string)
-	require.Equal(t, wantCode, got, "error code mismatch — body: %v", body)
 }
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
@@ -584,6 +576,3 @@ func newTestTenant(t *testing.T, e *apiTestEnv) *testTenant {
 
 	return tt
 }
-
-// domainFromString returns a domain.TenantPlan from its code string.
-func domainPlan(s string) domain.TenantPlan { return domain.TenantPlan(s) }
