@@ -84,11 +84,13 @@ var (
 	DuplicateMessages *prometheus.CounterVec
 
 	// DLQMessages counts events this service actively rejects to DLQ
-	// without recording processed_events. Currently the sole reason is
-	// EVT-15's future-time clamp (§16 A40: event.time > now() + skew,
-	// a poison-pill/producer-clock-skew guard) — reason is still a label,
-	// not baked into the name, so a second DLQ cause can be added later
-	// without a new metric. Any nonzero rate pages (producer clock skew).
+	// without recording processed_events, by reason:
+	//   - future_time_clamp — EVT-15 (§16 A40: event.time > now() + skew,
+	//     a poison-pill/producer-clock-skew guard);
+	//   - schema_violation — a consumed payload failing its embedded JSON
+	//     Schema (cmd/server/inbound_schema.go), i.e. a producer contract
+	//     break.
+	// Any nonzero rate of either pages; alerts filter on reason.
 	DLQMessages *prometheus.CounterVec
 
 	// DependencyRequestSeconds / DependencyErrors time and count the

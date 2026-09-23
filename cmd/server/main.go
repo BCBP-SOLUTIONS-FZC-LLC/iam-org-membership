@@ -234,11 +234,11 @@ func main() {
 			membershipSchemas = append(membershipSchemas, name)
 		}
 	}
-	membershipCodec, err := buildTopicCodec(ctx, glueClient, os.Getenv("GLUE_REGISTRY_MEMBERSHIP_NAME"), membershipSchemas, log)
+	membershipCodec, err := buildTopicCodec(ctx, glueClient, os.Getenv("GLUE_REGISTRY_MEMBERSHIP_NAME"), membershipSchemas)
 	if err != nil {
 		panic(fmt.Sprintf("init membership glue codec: %v", err))
 	}
-	tenantCodec, err := buildTopicCodec(ctx, glueClient, os.Getenv("GLUE_REGISTRY_TENANT_NAME"), tenantSchemas, log)
+	tenantCodec, err := buildTopicCodec(ctx, glueClient, os.Getenv("GLUE_REGISTRY_TENANT_NAME"), tenantSchemas)
 	if err != nil {
 		panic(fmt.Sprintf("init tenant glue codec: %v", err))
 	}
@@ -301,7 +301,7 @@ func main() {
 		cons, err := buildSQSConsumer(
 			sqsEnvForQueue(sqsEnv, url, envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
 			sqsClient,
-			instrumentedHandler("tenant-orgm-q", membershipConsumer.Handle),
+			inboundHandler(ctx, sqsClient, url, "tenant-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
 			log,
 		)
 		if err != nil {
@@ -316,7 +316,7 @@ func main() {
 		cons, err := buildSQSConsumer(
 			sqsEnvForQueue(sqsEnv, url, envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
 			sqsClient,
-			instrumentedHandler("billing-orgm-q", membershipConsumer.Handle),
+			inboundHandler(ctx, sqsClient, url, "billing-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
 			log,
 		)
 		if err != nil {
@@ -338,7 +338,7 @@ func main() {
 		cons, err := buildSQSConsumer(
 			sqsEnvForQueue(sqsEnv, url, envInt("SQS_CATALOG_ORGM_CONCURRENCY", 2)),
 			sqsClient,
-			instrumentedHandler("catalog-orgm-q", catalogConsumer.Handle),
+			inboundHandler(ctx, sqsClient, url, "catalog-orgm-q", catalogConsumer.Handle, enqueueCodec, log),
 			log,
 		)
 		if err != nil {

@@ -242,6 +242,25 @@ spec:
               now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS. Investigate the producing
               service's clock (NTP), then flush its DLQ.
 
+        - alert: IAMConsumedEventSchemaViolation
+          # A consumed payload failed its embedded JSON Schema and was sent
+          # straight to the DLQ (cmd/server/inbound_schema.go) — a producer
+          # contract break or a stale local asyncapi.yaml. Filter to this
+          # alert's own reason.
+          expr: |
+            sum by (event_type) (increase(platform_dlq_messages_total{reason="schema_violation"}[5m])) > 0
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: Consumed {{ "{{ $labels.event_type }}" }} events violate their schema
+            description: >-
+              iam-org-membership is rejecting {{ "{{ $labels.event_type }}" }} events to
+              the DLQ because the payload fails the embedded consumed-event schema.
+              Either the producer broke its contract or this service's
+              api/asyncapi.yaml is stale. Inspect a DLQ message
+              (DLQReason=schema_violation), fix the wrong side, then redrive.
+
     - name: iam_org_membership_compliance
       rules:
         - alert: IAMOrgMembershipRLSCrossTenantAccess

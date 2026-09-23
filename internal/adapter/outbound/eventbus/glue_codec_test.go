@@ -6,14 +6,14 @@
 // Glue registry dependency.
 //
 // Covered functions:
-//   - WithLogger — returns same *GlueCodec
-//   - NewGlueCodec — happy path (pre-fetch ok), fetch error propagation
+//   - NewGlueCodec — resolves by definition (GetSchemaByDefinition), error
+//     propagation, non-AVAILABLE status, missing embedded schema file
 //   - Encode — cache hit, cache miss + re-fetch, unknown schema error
 //   - Decode — correct strip, too-short error, wrong magic byte error
 //   - versionID — cache hit / miss paths
 //   - prependGlueHeader — called via Encode; tested through it
 //   - AllSchemaNames — reads embedded FS
-//   - StartRefresher — goroutine exits on ctx cancel
+//   - registeredDefinition — byte-identical to schema-gov register's upload
 package eventbus
 
 import (
@@ -21,12 +21,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
-	"time"
+	"testing/fstest"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
@@ -37,18 +38,44 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
-// mockGlueServer builds an httptest.Server that returns the given schema
-// version ID for every GetSchemaVersion request.
+// mockGlueServer builds an httptest.Server that answers GetSchemaByDefinition
+// with the given schema version ID (status AVAILABLE).
 func mockGlueServer(t *testing.T, versionID string) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]any{
-			"SchemaVersionId": versionID,
-			"Status":          "AVAILABLE",
+	srv, _ := mockGlueByDefinition(t, versionID, "AVAILABLE")
+	return srv
+}
+
+// mockGlueByDefinition answers GetSchemaByDefinition with versionID/status
+// and records every SchemaDefinition it receives. Any other Glue action
+// (e.g. the retired GetSchemaVersion LatestVersion lookup) fails the test.
+func mockGlueByDefinition(t *testing.T, versionID, status string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	defs := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if target := r.Header.Get("X-Amz-Target"); target != "AWSGlue.GetSchemaByDefinition" {
+			t.Errorf("unexpected Glue action %q — versions must be resolved by definition", target)
 		}
+		var in struct{ SchemaDefinition string }
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		mu.Lock()
+		defs = append(defs, in.SchemaDefinition)
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(map[string]any{"SchemaVersionId": versionID, "Status": status})
 	}))
+	return srv, &defs
+}
+
+// testSchemas is a schema FS covering the arbitrary names these tests use;
+// eventTypeFromSchemaFile falls back to the filename stem for them.
+var testSchemas = fstest.MapFS{}
+
+func init() {
+	for _, n := range []string{"S", "Evt", "SomeSchema", "X", "BadSchema", "ValidSchema", "DynamicSchema", "MissingSchema"} {
+		testSchemas["schemas/"+n+".json"] = &fstest.MapFile{Data: []byte("{\n  \"type\": \"object\"\n}\n")}
+	}
 }
 
 // mockGlueServerError builds an httptest.Server that always returns 400.
@@ -84,32 +111,6 @@ func buildGlueClient(t *testing.T, srv *httptest.Server) *glue.Client {
 // deterministicVersionID returns a valid UUID string for use as a schema version ID.
 var deterministicVersionID = "12345678-1234-1234-1234-1234567890ab"
 
-// ── WithLogger ────────────────────────────────────────────────────────────
-
-type glueTestLogger struct{}
-
-func (l *glueTestLogger) Debug(string, map[string]any) {}
-func (l *glueTestLogger) Info(string, map[string]any)  {}
-func (l *glueTestLogger) Warn(string, map[string]any)  {}
-func (l *glueTestLogger) Error(string, map[string]any) {}
-
-var _ port.Logger = (*glueTestLogger)(nil)
-
-// TestGlueCodec_WithLogger_ReturnsSelf verifies the fluent builder pattern.
-func TestGlueCodec_WithLogger_ReturnsSelf(t *testing.T) {
-	srv := mockGlueServer(t, deterministicVersionID)
-	defer srv.Close()
-
-	client := buildGlueClient(t, srv)
-	codec, err := NewGlueCodec(context.Background(), client, "test-registry", []string{"TestSchema"})
-	require.NoError(t, err)
-
-	got := codec.WithLogger(&glueTestLogger{})
-
-	require.NotNil(t, got, "WithLogger must return non-nil")
-	assert.Same(t, codec, got, "WithLogger must return the same *GlueCodec pointer")
-}
-
 // ── NewGlueCodec — happy path ─────────────────────────────────────────────
 
 // TestNewGlueCodec_PreFetchesVersionID verifies that NewGlueCodec succeeds
@@ -119,7 +120,7 @@ func TestNewGlueCodec_PreFetchesVersionID(t *testing.T) {
 	defer srv.Close()
 
 	client := buildGlueClient(t, srv)
-	codec, err := NewGlueCodec(context.Background(), client, "reg", []string{"SomeSchema"})
+	codec, err := newGlueCodecFromFS(context.Background(), client, "reg", []string{"SomeSchema"}, testSchemas)
 
 	require.NoError(t, err)
 	require.NotNil(t, codec)
@@ -133,7 +134,7 @@ func TestNewGlueCodec_FetchError_Propagates(t *testing.T) {
 	defer srv.Close()
 
 	client := buildGlueClient(t, srv)
-	_, err := NewGlueCodec(context.Background(), client, "reg", []string{"BadSchema"})
+	_, err := newGlueCodecFromFS(context.Background(), client, "reg", []string{"BadSchema"}, testSchemas)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "BadSchema",
@@ -149,7 +150,7 @@ func TestGlueCodec_Decode_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	client := buildGlueClient(t, srv)
-	codec, err := NewGlueCodec(context.Background(), client, "reg", []string{"S"})
+	codec, err := newGlueCodecFromFS(context.Background(), client, "reg", []string{"S"}, testSchemas)
 	require.NoError(t, err)
 
 	payload := json.RawMessage(`{"event":"test"}`)
@@ -168,7 +169,7 @@ func TestGlueCodec_Decode_TooShort_ReturnsError(t *testing.T) {
 	srv := mockGlueServer(t, deterministicVersionID)
 	defer srv.Close()
 
-	codec, err := NewGlueCodec(context.Background(), buildGlueClient(t, srv), "r", []string{"X"})
+	codec, err := newGlueCodecFromFS(context.Background(), buildGlueClient(t, srv), "r", []string{"X"}, testSchemas)
 	require.NoError(t, err)
 
 	_, err = codec.Decode(context.Background(), "any", []byte("short"))
@@ -182,7 +183,7 @@ func TestGlueCodec_Decode_WrongMagicByte_ReturnsError(t *testing.T) {
 	srv := mockGlueServer(t, deterministicVersionID)
 	defer srv.Close()
 
-	codec, err := NewGlueCodec(context.Background(), buildGlueClient(t, srv), "r", []string{"X"})
+	codec, err := newGlueCodecFromFS(context.Background(), buildGlueClient(t, srv), "r", []string{"X"}, testSchemas)
 	require.NoError(t, err)
 
 	bad := make([]byte, glueHeaderSize+1)
@@ -195,15 +196,15 @@ func TestGlueCodec_Decode_WrongMagicByte_ReturnsError(t *testing.T) {
 // ── Encode — cache hit / miss / unknown schema ────────────────────────────
 
 // TestGlueCodec_Encode_CacheMiss_FetchesAndCaches verifies that when a
-// schema name is NOT in the pre-fetched cache, Encode calls fetchVersionID
-// and caches the result for subsequent calls.
+// schema name is NOT in the pre-resolved cache, Encode resolves it by
+// definition and caches the result for subsequent calls.
 func TestGlueCodec_Encode_CacheMiss_FetchesAndCaches(t *testing.T) {
 	srv := mockGlueServer(t, deterministicVersionID)
 	defer srv.Close()
 
 	client := buildGlueClient(t, srv)
 	// Build with no pre-fetched schemas — the first Encode call must fetch.
-	codec, err := NewGlueCodec(context.Background(), client, "reg", []string{})
+	codec, err := newGlueCodecFromFS(context.Background(), client, "reg", []string{}, testSchemas)
 	require.NoError(t, err)
 
 	payload := json.RawMessage(`{"x":1}`)
@@ -219,7 +220,7 @@ func TestGlueCodec_Encode_UnknownSchema_PropagatesError(t *testing.T) {
 	srv := mockGlueServerError(t)
 	defer srv.Close()
 
-	codec, err := NewGlueCodec(context.Background(), buildGlueClient(t, srv), "r", []string{})
+	codec, err := newGlueCodecFromFS(context.Background(), buildGlueClient(t, srv), "r", []string{}, testSchemas)
 	require.NoError(t, err)
 
 	_, _, err = codec.Encode(context.Background(), "MissingSchema", json.RawMessage(`{}`))
@@ -268,88 +269,6 @@ func TestAllSchemaNames_ReturnsNonEmptyList(t *testing.T) {
 	}
 }
 
-// ── StartRefresher — goroutine exits on context cancel ────────────────────
-
-// TestGlueCodec_StartRefresher_ExitsOnCancel verifies that StartRefresher's
-// goroutine exits cleanly when the context is cancelled (no goroutine leak).
-// We use a very short interval to ensure at least one tick fires before
-// cancellation, proving the loop also handles the tick case.
-func TestGlueCodec_StartRefresher_ExitsOnCancel(t *testing.T) {
-	srv := mockGlueServer(t, deterministicVersionID)
-	defer srv.Close()
-
-	client := buildGlueClient(t, srv)
-	codec, err := NewGlueCodec(context.Background(), client, "reg", []string{"Schema1"})
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Start refresher with a very short interval.
-	codec.StartRefresher(ctx, 10*time.Millisecond)
-
-	// Give the goroutine time to tick at least once.
-	time.Sleep(40 * time.Millisecond)
-
-	// Cancel the context — goroutine should exit on next select.
-	cancel()
-
-	// A brief pause ensures the goroutine has time to observe cancellation.
-	time.Sleep(20 * time.Millisecond)
-	// If the goroutine leaked, the test race detector or goroutine count
-	// checks would catch it; this assertion just confirms the test ran.
-	assert.True(t, true, "StartRefresher goroutine exited cleanly after ctx cancel")
-}
-
-// TestGlueCodec_StartRefresher_RefreshError_Logged verifies that when a
-// schema version refresh fails (Glue returns error) the codec continues
-// using the cached version ID — a stale cached ID remains in use until
-// the next successful refresh.
-func TestGlueCodec_StartRefresher_RefreshError_Logged(t *testing.T) {
-	// Start with a working server so NewGlueCodec's pre-fetch succeeds.
-	successSrv := mockGlueServer(t, deterministicVersionID)
-	client := buildGlueClient(t, successSrv)
-	codec, err := NewGlueCodec(context.Background(), client, "reg", []string{"Schema1"})
-	require.NoError(t, err)
-
-	// Wire a logger that captures warnings.
-	warns := make([]string, 0)
-	logSpy := &warnCapturingLogger{warns: &warns}
-	codec.WithLogger(logSpy)
-
-	// Swap the server to one that returns errors — subsequent refreshes fail.
-	errSrv := mockGlueServerError(t)
-	defer errSrv.Close()
-	errEp := errSrv.URL
-
-	// Inject the error endpoint into the codec's existing client by creating
-	// a new client pointing at the error server, then directly call the
-	// internal refresh path via Encode to exercise the stale-cache fallback.
-	// (StartRefresher runs in a goroutine — we test the actual Encode path
-	// which calls versionID → cache hit, so the stale value is returned.)
-	// The codec still has the valid cached version ID from NewGlueCodec.
-	payload := json.RawMessage(`{}`)
-	encoded, vid, encErr := codec.Encode(context.Background(), "Schema1", payload)
-	require.NoError(t, encErr)
-	require.NotEmpty(t, vid)
-	require.Len(t, encoded, glueHeaderSize+len(payload))
-
-	// Suppress unused variable.
-	_ = errEp
-	successSrv.Close()
-}
-
-// warnCapturingLogger captures Warn calls for assertion.
-type warnCapturingLogger struct {
-	warns *[]string
-}
-
-func (l *warnCapturingLogger) Debug(msg string, _ map[string]any) {}
-func (l *warnCapturingLogger) Info(msg string, _ map[string]any)  {}
-func (l *warnCapturingLogger) Warn(msg string, _ map[string]any)  { *l.warns = append(*l.warns, msg) }
-func (l *warnCapturingLogger) Error(msg string, _ map[string]any) {}
-
-var _ port.Logger = (*warnCapturingLogger)(nil)
-
 // ── fetchVersionID — nil SchemaVersionId branch ───────────────────────────
 
 // TestGlueCodec_FetchVersionID_NilSchemaVersionId_ReturnsError verifies that
@@ -370,7 +289,7 @@ func TestGlueCodec_FetchVersionID_NilSchemaVersionId_ReturnsError(t *testing.T) 
 
 	client := buildGlueClient(t, srv)
 	// NewGlueCodec pre-fetches — this will trigger the nil SchemaVersionId branch.
-	_, err := NewGlueCodec(context.Background(), client, "reg", []string{"SomeSchema"})
+	_, err := newGlueCodecFromFS(context.Background(), client, "reg", []string{"SomeSchema"}, testSchemas)
 	require.Error(t, err, "nil SchemaVersionId must cause an error")
 	assert.Contains(t, err.Error(), "nil SchemaVersionId",
 		"error message must identify the nil SchemaVersionId condition")
@@ -387,7 +306,7 @@ func TestGlueCodec_Encode_InvalidCachedUUID_ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	client := buildGlueClient(t, srv)
-	codec, err := NewGlueCodec(context.Background(), client, "reg", []string{"ValidSchema"})
+	codec, err := newGlueCodecFromFS(context.Background(), client, "reg", []string{"ValidSchema"}, testSchemas)
 	require.NoError(t, err)
 
 	// Directly corrupt the cache entry so prependGlueHeader gets a bad UUID.
@@ -436,7 +355,7 @@ func TestGlueCodec_Encode_Decode_RoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	client := buildGlueClient(t, srv)
-	codec, err := NewGlueCodec(context.Background(), client, "r", []string{"Evt"})
+	codec, err := newGlueCodecFromFS(context.Background(), client, "r", []string{"Evt"}, testSchemas)
 	require.NoError(t, err)
 
 	original := json.RawMessage(`{"type":"Evt","data":{"id":1}}`)
@@ -446,4 +365,114 @@ func TestGlueCodec_Encode_Decode_RoundTrip(t *testing.T) {
 	decoded, err := codec.Decode(context.Background(), vid, encoded)
 	require.NoError(t, err)
 	assert.Equal(t, string(original), string(decoded))
+}
+
+// ── GlueDecoder — consumer-side decode-only codec ─────────────────────────
+
+func TestGlueDecoder_Decode_StripsHeader(t *testing.T) {
+	payload := json.RawMessage(`{"event":"upstream"}`)
+	encoded, err := prependGlueHeader(deterministicVersionID, payload)
+	require.NoError(t, err)
+
+	decoded, err := GlueDecoder{}.Decode(context.Background(), deterministicVersionID, encoded)
+	require.NoError(t, err)
+	assert.Equal(t, string(payload), string(decoded))
+}
+
+func TestGlueDecoder_Decode_InvalidFrame_ReturnsError(t *testing.T) {
+	_, err := GlueDecoder{}.Decode(context.Background(), "any", []byte("short"))
+	assert.Error(t, err)
+}
+
+func TestGlueDecoder_Encode_AlwaysFails(t *testing.T) {
+	_, _, err := GlueDecoder{}.Encode(context.Background(), "TenantCreated", json.RawMessage(`{}`))
+	assert.ErrorContains(t, err, "decode-only")
+}
+
+// ── GetSchemaByDefinition resolution ──────────────────────────────────────
+
+// TestNewGlueCodec_SendsRegisteredDefinition verifies that the real embedded
+// schema is sent compacted — the exact string schema-gov register uploads —
+// not the pretty-printed file.
+func TestNewGlueCodec_SendsRegisteredDefinition(t *testing.T) {
+	srv, defs := mockGlueByDefinition(t, deterministicVersionID, "AVAILABLE")
+	defer srv.Close()
+
+	codec, err := NewGlueCodec(context.Background(), buildGlueClient(t, srv), "iam-tenant-events", []string{"TenantCreated"})
+	require.NoError(t, err)
+
+	want, err := registeredDefinition(schemasFS, "TenantCreated")
+	require.NoError(t, err)
+	require.Equal(t, []string{want}, *defs)
+	assert.NotContains(t, want, "\n", "definition must be compact")
+
+	_, vid, err := codec.Encode(context.Background(), "TenantCreated", json.RawMessage(`{}`))
+	require.NoError(t, err)
+	assert.Equal(t, deterministicVersionID, vid)
+	assert.Len(t, *defs, 1, "resolved once at startup — Encode must not call Glue")
+}
+
+// TestNewGlueCodec_NonAvailableVersion_FailsStartup: a version still PENDING
+// Glue's compatibility check (or FAILURE) must not be stamped on events.
+func TestNewGlueCodec_NonAvailableVersion_FailsStartup(t *testing.T) {
+	for _, status := range []string{"PENDING", "FAILURE", "DELETING"} {
+		t.Run(status, func(t *testing.T) {
+			srv, _ := mockGlueByDefinition(t, deterministicVersionID, status)
+			defer srv.Close()
+			_, err := newGlueCodecFromFS(context.Background(), buildGlueClient(t, srv), "reg", []string{"S"}, testSchemas)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not AVAILABLE")
+		})
+	}
+}
+
+// TestNewGlueCodec_NoEmbeddedSchemaFile_FailsWithoutCallingGlue: a name with
+// no schema file can't be looked up by definition.
+func TestNewGlueCodec_NoEmbeddedSchemaFile_FailsWithoutCallingGlue(t *testing.T) {
+	srv, defs := mockGlueByDefinition(t, deterministicVersionID, "AVAILABLE")
+	defer srv.Close()
+	_, err := newGlueCodecFromFS(context.Background(), buildGlueClient(t, srv), "reg", []string{"Unknown"}, testSchemas)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no embedded schema file")
+	assert.Empty(t, *defs)
+}
+
+func TestRegisteredDefinition_BadFS(t *testing.T) {
+	_, err := registeredDefinition(fstest.MapFS{}, "S")
+	assert.Error(t, err, "missing schemas/ dir")
+	_, err = registeredDefinition(fstest.MapFS{"schemas/S.json": {Data: []byte("{not json")}}, "S")
+	assert.Error(t, err, "invalid JSON")
+}
+
+func TestASCIIEscape_MatchesPythonEnsureASCII(t *testing.T) {
+	assert.Equal(t, `{"d":"caf\u00e9 \u2014 \ud83d\ude00"}`, asciiEscape([]byte(`{"d":"café — 😀"}`)))
+	assert.Equal(t, `{"a":1}`, asciiEscape([]byte(`{"a":1}`)))
+}
+
+// TestRegisteredDefinition_MatchesSchemaGov pins registeredDefinition to the
+// exact bytes schema-gov register uploads —
+// json.dumps(json.loads(file), separators=(",", ":")) — for every embedded
+// schema file. If this drifts, GetSchemaByDefinition may stop matching in
+// real AWS Glue and every pod fails startup.
+func TestRegisteredDefinition_MatchesSchemaGov(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	entries, err := schemasFS.ReadDir("schemas")
+	require.NoError(t, err)
+	for _, e := range entries {
+		t.Run(e.Name(), func(t *testing.T) {
+			raw, err := schemasFS.ReadFile("schemas/" + e.Name())
+			require.NoError(t, err)
+			cmd := exec.CommandContext(t.Context(), python, "-c", `import json,sys; sys.stdout.write(json.dumps(json.loads(sys.stdin.read()), separators=(",", ":")))`)
+			cmd.Stdin = strings.NewReader(string(raw))
+			want, err := cmd.Output()
+			require.NoError(t, err)
+
+			got, err := registeredDefinition(schemasFS, eventTypeFromSchemaFile(e.Name()))
+			require.NoError(t, err)
+			assert.Equal(t, string(want), got)
+		})
+	}
 }

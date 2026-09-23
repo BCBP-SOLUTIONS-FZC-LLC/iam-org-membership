@@ -134,3 +134,20 @@ func TestValidationErrorMentionsEventType(t *testing.T) {
 	assert.True(t, strings.Contains(err.Error(), "MembershipRevoked"),
 		"error string must include the event type (got %q)", err.Error())
 }
+
+// ── Validate — shared by Encode and the inbound consumer ─────────────────
+
+func TestValidatingCodec_Validate_UnknownType_WrapsErrNoSchema(t *testing.T) {
+	c, err := NewValidatingCodec(NoopCodec{})
+	require.NoError(t, err)
+	assert.ErrorIs(t, c.Validate("NoSuchEvent", []byte(`{}`)), ErrNoSchema)
+}
+
+func TestValidatingCodec_Validate_ConsumedSchema_Enforced(t *testing.T) {
+	c, err := NewValidatingCodec(NoopCodec{})
+	require.NoError(t, err)
+	require.NoError(t, c.Validate("TenantSeatsChanged", []byte(`{"licensed_seats":10}`)))
+	err = c.Validate("TenantSeatsChanged", []byte(`{}`))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNoSchema, "a violation must be distinguishable from a missing schema")
+}

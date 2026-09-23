@@ -194,3 +194,13 @@ func TestAllSchemaNames_ReturnsNonEmpty(t *testing.T) {
 			"AllSchemaNames must strip the .json suffix from each name")
 	}
 }
+
+// glueTestLogger is a no-op port.Logger test double.
+type glueTestLogger struct{}
+
+func (l *glueTestLogger) Debug(string, map[string]any) {}
+func (l *glueTestLogger) Info(string, map[string]any)  {}
+func (l *glueTestLogger) Warn(string, map[string]any)  {}
+func (l *glueTestLogger) Error(string, map[string]any) {}
+
+var _ port.Logger = (*glueTestLogger)(nil)

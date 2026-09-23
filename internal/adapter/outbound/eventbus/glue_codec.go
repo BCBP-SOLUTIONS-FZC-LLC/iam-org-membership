@@ -1,16 +1,17 @@
 package eventbus
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"path"
 	"strings"
 	"sync"
-	"time"
+	"unicode/utf8"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	gluetypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
@@ -38,6 +39,17 @@ const (
 // outbox_events.payload is never touched — see port.Codec's own doc comment
 // in platform-events for the exact contract this relies on.
 //
+// Version resolution is by content, not by recency: each schema's version
+// UUID is looked up with GetSchemaByDefinition using this binary's own
+// embedded schemas/*.json, so every event is stamped with the version this
+// binary actually produces — never merely the registry's latest, which can
+// run ahead of (registered but not yet deployed) or behind (deploy raced
+// registration, or a rollback) the running code. The UUID is therefore
+// fixed for the life of the process; there is no background refresh. A
+// definition that isn't registered yet fails startup (see NewGlueCodec), so
+// a deploy that outruns schema-registry.yml CrashLoops until registration
+// lands, then starts with the correct version.
+//
 // One GlueCodec instance is scoped to exactly one Glue registry (SCHEMA-7 —
 // this service uses two registries, iam-membership-events and
 // iam-tenant-events, one per SNS topic): construct one per topic with the
@@ -56,38 +68,39 @@ const (
 type GlueCodec struct {
 	client       *glue.Client
 	registryName string
+	schemas      fs.FS // holds schemas/*.json — the definitions looked up in Glue
 	mu           sync.RWMutex
 	versionCache map[string]string // schema name → schema version UUID string
-	log          port.Logger
 }
 
 var _ events.Codec = (*GlueCodec)(nil)
 
-// WithLogger routes StartRefresher's background refresh-failure warnings
-// through the same gincommon Zap sink as the rest of the service.
-// Optional — production always injects logger.NewLogger; tests that omit
-// WithLogger skip the refresh warning (no slog.Default() fallback).
-func (g *GlueCodec) WithLogger(log port.Logger) *GlueCodec {
-	g.log = log
-	return g
+// NewGlueCodec creates a GlueCodec and resolves, for each name in
+// schemaNames, the Glue schema version whose definition matches this
+// binary's embedded schema file (GetSchemaByDefinition). Fails fast at
+// startup if any definition isn't registered (and AVAILABLE) in
+// registryName — the alternative is stamping events with a version that
+// doesn't describe them, or a publish failure on the first event of that
+// type.
+func NewGlueCodec(ctx context.Context, client *glue.Client, registryName string, schemaNames []string) (*GlueCodec, error) {
+	return newGlueCodecFromFS(ctx, client, registryName, schemaNames, schemasFS)
 }
 
-// NewGlueCodec creates a GlueCodec and pre-fetches the latest schema version
-// ID for each name in schemaNames from registryName. Fails fast at startup
-// if any lookup fails — the alternative is a silent publish failure on the
-// first event of that type.
-func NewGlueCodec(ctx context.Context, client *glue.Client, registryName string, schemaNames []string) (*GlueCodec, error) {
+// newGlueCodecFromFS is NewGlueCodec over an injectable schema FS (tests).
+func newGlueCodecFromFS(ctx context.Context, client *glue.Client, registryName string, schemaNames []string, schemas fs.FS) (*GlueCodec, error) {
 	c := &GlueCodec{
 		client:       client,
 		registryName: registryName,
+		schemas:      schemas,
 		versionCache: make(map[string]string, len(schemaNames)),
 	}
 	for _, name := range schemaNames {
 		id, err := c.fetchVersionID(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"prefetch glue schema %q in registry %q: %w — "+
-					"run `make schema-verify` to confirm the expected schemas exist",
+				"resolve glue schema %q in registry %q by definition: %w — "+
+					"this binary's schema version isn't registered yet: wait for "+
+					"schema-registry.yml to register it, or run `make schema-verify`",
 				name, registryName, err,
 			)
 		}
@@ -117,6 +130,29 @@ func (g *GlueCodec) Encode(ctx context.Context, schemaName string, payload json.
 // version UUID is self-contained in the encoded bytes at offset 2:18 — so it
 // isn't cross-checked against anything here.
 func (g *GlueCodec) Decode(_ context.Context, _ string, encoded []byte) (json.RawMessage, error) {
+	return stripGlueHeader(encoded)
+}
+
+// GlueDecoder is the consumer-side events.Codec, injected on every inbound
+// SQS consumer via events.WithConsumerCodec. Upstream producers (Realm
+// Provisioner, Billing, Catalog) encode into their own Glue registries,
+// which this service never prefetches from — and doesn't need to, because
+// Decode only strips the self-describing 18-byte header. So unlike
+// GlueCodec this needs no Glue client or registry name. platform-events
+// only calls Decode when envelope.dataschema is non-empty, so plain-JSON
+// producers (NoopCodec, dev/test) bypass it entirely.
+type GlueDecoder struct{}
+
+var _ events.Codec = GlueDecoder{}
+
+// Encode always fails — GlueDecoder is never wired on a publisher. Use
+// GlueCodec (one per owned registry) for the SNS publish path.
+func (GlueDecoder) Encode(_ context.Context, schemaName string, _ json.RawMessage) ([]byte, string, error) {
+	return nil, "", fmt.Errorf("glue decoder: Encode(%q) called on a decode-only codec — use GlueCodec on publishers", schemaName)
+}
+
+// Decode strips the 18-byte Glue wire-format header, same as GlueCodec.Decode.
+func (GlueDecoder) Decode(_ context.Context, _ string, encoded []byte) (json.RawMessage, error) {
 	return stripGlueHeader(encoded)
 }
 
@@ -151,14 +187,16 @@ func (g *GlueCodec) versionID(ctx context.Context, schemaName string) (string, e
 }
 
 func (g *GlueCodec) fetchVersionID(ctx context.Context, schemaName string) (string, error) {
-	out, err := g.client.GetSchemaVersion(ctx, &glue.GetSchemaVersionInput{
+	definition, err := registeredDefinition(g.schemas, schemaName)
+	if err != nil {
+		return "", err
+	}
+	out, err := g.client.GetSchemaByDefinition(ctx, &glue.GetSchemaByDefinitionInput{
 		SchemaId: &gluetypes.SchemaId{
 			SchemaName:   &schemaName,
 			RegistryName: &g.registryName,
 		},
-		SchemaVersionNumber: &gluetypes.SchemaVersionNumber{
-			LatestVersion: true,
-		},
+		SchemaDefinition: &definition,
 	})
 	if err != nil {
 		return "", err
@@ -166,41 +204,61 @@ func (g *GlueCodec) fetchVersionID(ctx context.Context, schemaName string) (stri
 	if out.SchemaVersionId == nil {
 		return "", fmt.Errorf("nil SchemaVersionId for schema %q in registry %q", schemaName, g.registryName)
 	}
+	if out.Status != gluetypes.SchemaVersionStatusAvailable {
+		return "", fmt.Errorf("schema %q version %s in registry %q is %s, not AVAILABLE", schemaName, *out.SchemaVersionId, g.registryName, out.Status)
+	}
 	return *out.SchemaVersionId, nil
 }
 
-// StartRefresher runs a background goroutine that re-fetches every cached
-// schema version ID at the given interval, so a new schema version
-// registered in Glue is picked up without a pod restart. Exits when ctx is
-// cancelled. Fetch errors are non-fatal — the stale cached ID remains in use
-// until the next successful refresh.
-func (g *GlueCodec) StartRefresher(ctx context.Context, interval time.Duration) {
-	go func() {
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				g.mu.RLock()
-				names := make([]string, 0, len(g.versionCache))
-				for name := range g.versionCache {
-					names = append(names, name)
-				}
-				g.mu.RUnlock()
-				for _, name := range names {
-					if id, err := g.fetchVersionID(ctx, name); err == nil {
-						g.mu.Lock()
-						g.versionCache[name] = id
-						g.mu.Unlock()
-					} else if g.log != nil {
-						g.log.Warn("glue schema version refresh failed — using cached ID", map[string]any{"schema": name, "error": err.Error()})
-					}
-				}
-			}
+// registeredDefinition returns schemaName's embedded schema file in exactly
+// the form schema-gov register uploads it: Python's
+// json.dumps(schema, separators=(",", ":")) — compact, key order preserved,
+// non-ASCII escaped as \uXXXX (ensure_ascii defaults to True). Sending the
+// byte-identical string makes GetSchemaByDefinition match whether or not
+// Glue normalises JSON definitions. TestRegisteredDefinition_MatchesSchemaGov
+// pins this against real Python for every embedded file.
+func registeredDefinition(schemas fs.FS, schemaName string) (string, error) {
+	entries, err := fs.ReadDir(schemas, "schemas")
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || eventTypeFromSchemaFile(e.Name()) != schemaName {
+			continue
 		}
-	}()
+		raw, err := fs.ReadFile(schemas, path.Join("schemas", e.Name()))
+		if err != nil {
+			return "", err
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			return "", fmt.Errorf("compact schema %s: %w", e.Name(), err)
+		}
+		return asciiEscape(compact.Bytes()), nil
+	}
+	return "", fmt.Errorf("no embedded schema file for %q", schemaName)
+}
+
+// asciiEscape rewrites every non-ASCII rune as a JSON \uXXXX escape
+// (UTF-16 surrogate pairs above U+FFFF), matching Python's ensure_ascii.
+// Non-ASCII can only appear inside JSON strings, so this is always safe.
+func asciiEscape(b []byte) string {
+	var out strings.Builder
+	out.Grow(len(b))
+	for len(b) > 0 {
+		r, size := utf8.DecodeRune(b)
+		b = b[size:]
+		switch {
+		case r < utf8.RuneSelf:
+			out.WriteRune(r)
+		case r > 0xFFFF:
+			r -= 0x10000
+			fmt.Fprintf(&out, "\\u%04x\\u%04x", 0xD800+(r>>10), 0xDC00+(r&0x3FF))
+		default:
+			fmt.Fprintf(&out, "\\u%04x", r)
+		}
+	}
+	return out.String()
 }
 
 func prependGlueHeader(schemaVersionID string, payload []byte) ([]byte, error) {

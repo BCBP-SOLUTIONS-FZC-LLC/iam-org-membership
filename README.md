@@ -200,8 +200,8 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 | **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 8 tables, `FORCE ROW LEVEL SECURITY` on all 7 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
 | **Cache** | Valkey (Redis-compatible) via `go-redis/v9` | Advisory-only (CACHE-2/9) — a miss or outage falls through to Postgres, never a hard failure |
 | **Events (outbound)** | AWS SNS + transactional outbox (`platform-events`) | Two topics via `RoutingPublisher`: `iam.membership.events` (12 event types) and `iam.tenant.events` (2 — `TenantCreated`/`TrialStarted`) |
-| **Events (inbound)** | AWS SQS, 2 queues | `tenant-orgm-q`, `billing-orgm-q`, each with its own `-dlq`; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
-| **Schema registry** | AWS Glue, one registry per topic (SCHEMA-7) | `iam-membership-events`, `iam-tenant-events`; governed by `platform-schemagov` |
+| **Events (inbound)** | AWS SQS, 3 queues | `tenant-orgm-q`, `billing-orgm-q` (+ inert `catalog-orgm-q`), each with its own `-dlq`; Glue header stripped by `GlueDecoder`, payload validated against the embedded consumed schema, permanent rejects sent straight to the DLQ; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
+| **Schema registry** | AWS Glue, one registry per topic (SCHEMA-7) | `iam-membership-events`, `iam-tenant-events`; governed by `platform-schemagov`. Version UUIDs resolved once at startup by definition (`GetSchemaByDefinition`) — no per-event Glue call, no refresher |
 
 ### Shared library dependencies
 
@@ -260,6 +260,8 @@ This service publishes to two topics via a transactional outbox — 12 events on
 | `TenantStateChanged` | membership | Relay of a consumed lifecycle event that actually changed `status`/`plan` — lets Workflow subscribe to one topic instead of three |
 | `TenantMembershipsPurged` | membership | Tenant offboarding — Delegation/Tender-ACL/Group-Mapping run their own cascade-deletes |
 | `TenantCreated` / `TrialStarted` | tenant | The only two events this service produces on `iam.tenant.events` |
+
+**Wire format:** when a Glue registry is configured, `data` is a base64 string of `[0x03][0x00][16-byte schema version UUID]` + the JSON payload, and `dataschema` holds that UUID — wire a decoder (`events.WithConsumerCodec`; stripping the 18-byte header suffices, no registry lookup needed). The UUID is the version matching the publishing build's embedded schema, so it changes only when a build with a new schema is deployed.
 
 **Idempotency:** record the envelope `id` (UUID v7) against your own consumer name before committing any side effect — delivery is at-least-once. **Ordering:** SNS does not guarantee delivery order; this service's own consumer handles it via an `EVT-14` recency guard keyed on `tenants.last_event_at` under a row lock.
 
@@ -397,7 +399,9 @@ service layer  ──(same tx)──▶  outbox_events (Postgres)
                     SNS fan-out to downstream SQS queues (local dev only)
 ```
 
-An outbox insert is atomic with the business write — a `2xx` response guarantees an `outbox_events` row exists.
+An outbox insert is atomic with the business write — a `2xx` response guarantees an `outbox_events` row exists. The payload is validated against its embedded schema before the insert (`ValidatingCodec`) and stored as plain JSON; the Glue header is added only at SNS publish time.
+
+Inbound, each of this service's own queues runs: envelope parse → `GlueDecoder` (strip the Glue header) → DLQ router → `platform_messages_*` counters → consumed-schema validation → consumer `Handle`. A payload that fails its consumed schema, or an EVT-15 future-dated event, is sent straight to the queue's `-dlq` with a `DLQReason` message attribute (`schema_violation` / `future_time_clamp`) instead of being retried; transient errors retry and redrive normally.
 
 ### Step 1 — Start infrastructure
 
@@ -505,6 +509,8 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `outbox_events` row never gets `published_at` set | Topic ARN mismatch, or outbox runner not started | Re-check `.env`'s `SNS_TOPIC_*_ARN` against `aws --region ap-south-1 sns list-topics` (or floci-ui at http://localhost:4500) |
 | `outbox_events` empty after a write | Row was published and pruned, or the write never committed | Re-check the HTTP response code — a `2xx` guarantees the row was committed |
 | Messages keep reappearing after `receive-message` | Normal — SQS visibility timeout, not deletion | Use `delete-message` |
+| `make run` panics with `resolve glue schema ... by definition` | This build's schema definition isn't registered in the Glue registry (e.g. a schema changed since floci started) | `make docker-down && make docker-up` to re-run `init-floci.sh`, or unset `GLUE_REGISTRY_*_NAME` for plain JSON |
+| An inbound event lands in `*-orgm-q-dlq` immediately | Permanent reject — check its `DLQReason` attribute (`schema_violation` = payload fails the embedded consumed schema; `future_time_clamp` = EVT-15) | Fix the payload or `api/asyncapi.yaml`; see `docs/runbook-schema-registry.md` |
 
 ---
 
@@ -582,7 +588,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 
 Per the IAM Platform Observability Standard's three-tier hierarchy (`internal/adapter/outbound/metrics/business.go`), with `domain`/`service`/`environment` injected centrally in `metrics.Register(environment)` — never left to a call site:
 
-- **Tier 1 — `platform_*`** (concept common across domains; carries `domain="iam"` + `service` + `environment`): `platform_messages_received_total{queue}` / `platform_messages_processed_total{queue}` / `platform_messages_failed_total{queue}` (SQS consumer lifecycle, all three queues), `platform_duplicate_messages_total{consumer}` (IDEMP-4), `platform_dlq_messages_total{event_type,reason}` (EVT-15 clamp), `platform_dependency_request_seconds{target_service,endpoint}` / `platform_dependency_errors_total{target_service,endpoint,outcome}` (`target_service` = catalog\|group_mapping\|delegation, the downstream peer — distinct from the `service` const label).
+- **Tier 1 — `platform_*`** (concept common across domains; carries `domain="iam"` + `service` + `environment`): `platform_messages_received_total{queue}` / `platform_messages_processed_total{queue}` / `platform_messages_failed_total{queue}` (SQS consumer lifecycle, all three queues), `platform_duplicate_messages_total{consumer}` (IDEMP-4), `platform_dlq_messages_total{event_type,reason}` (messages sent straight to the DLQ — `reason` = `future_time_clamp` (EVT-15) or `schema_violation` (consumed payload fails its embedded schema); both page), `platform_dependency_request_seconds{target_service,endpoint}` / `platform_dependency_errors_total{target_service,endpoint,outcome}` (`target_service` = catalog\|group_mapping\|delegation, the downstream peer — distinct from the `service` const label).
 - **Tier 2 — `iam_*`** (concept shared across IAM-domain services; carries `service` + `environment`, no `domain`): `iam_rls_violations_total{violation_type}`, `iam_auth_session_revoke_failed_total{reason}`, `iam_lifecycle_event_skipped_total{event_type}` (EVT-14), `iam_lifecycle_event_lag_seconds{event_type}`.
 - **Tier 3 — `iam_org_membership_*`** (unique to this service): `unknown_event_acknowledged_total`, `delegate_suspend_impact_total`, `tenant_ownerless_escalated_total`, `seat_overage_started_total`, `seat_limit_reached_total`, `invite_throttled_total{reason}`, `realm_sync_failed_total`, `delegate_removal_blocked_total`, `delegate_reassignment_total`, `membership_exists_check_total` (I-15), plus 4 gauges refreshed by ticker goroutines every 5 minutes against the BYPASSRLS sys pool: `tenant_ownerless`, `realm_sync_pending`, `seat_overage_active`, `pending_invitations_stale`.
 
@@ -750,7 +756,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
 | **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
 | **AWS SQS** | `tenant-orgm-q` and `billing-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`) |
-| **AWS Glue Schema Registry** | `iam-membership-events` and `iam-tenant-events` — wire-format validation at publish and consume time |
+| **AWS Glue Schema Registry** | `iam-membership-events` and `iam-tenant-events` — version UUIDs resolved once at startup by definition (publish); consumers only strip the header, and validate against embedded consumed schemas |
 
 ---
 

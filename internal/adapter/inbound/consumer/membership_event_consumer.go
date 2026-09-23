@@ -59,8 +59,11 @@ import (
 // Both queues share one consumer identity so PE-1 dedup covers both.
 const consumerName = "iam-org-membership"
 
-// ErrPoisonPill signals the SQS runner to move the message to DLQ without
-// recording processed_events. Used for EVT-15 future-time clamp.
+// ErrPoisonPill marks an EVT-15 future-time clamp reject: processed_events
+// is NOT recorded, and the message must go to the DLQ rather than be
+// retried. platform-events treats every handler error as retryable, so the
+// immediate DLQ move is done by the composition root's handler wrapper
+// (cmd/server/dlq.go routePoisonPillsToDLQ), not by the SQS runner itself.
 var ErrPoisonPill = errors.New("event rejected as poison pill (EVT-15 future-time clamp)")
 
 type MembershipEventConsumer struct {

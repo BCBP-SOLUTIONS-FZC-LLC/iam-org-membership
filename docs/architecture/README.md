@@ -11,7 +11,7 @@ Standalone Mermaid source files. `ARCHITECTURE.md` embeds every one of these `.m
 | [`provisioning-flow.mmd`](mermaid/provisioning-flow.mmd) | `TrialTenantProvisioned` → tenant bootstrap (§8.1) | LLD §8.1 |
 | [`ooo-delegate-flow.mmd`](mermaid/ooo-delegate-flow.mmd) | Core's only two remaining delegation-adjacent touchpoints — the §8.8 tenant-wide delegate-impact gate and the §8.8.4 dept-scope precision lookup via `DelegationCheckClient`. Core owns no `delegations` table or OOO-coordination flow any more (ADR-0008) — both moved to the standalone Delegation Service. | LLD §8.8, §8.8.4 |
 | [`cache-strategy.mmd`](mermaid/cache-strategy.mmd) | Valkey key namespace, TTLs, read/write/invalidation paths | LLD §6 |
-| [`event-outbox-flow.mmd`](mermaid/event-outbox-flow.mmd) | Outbox → `RoutingPublisher` → two SNS topics (each with its own GlueCodec) → SQS fan-out | LLD §7 |
+| [`event-outbox-flow.mmd`](mermaid/event-outbox-flow.mmd) | Enqueue validation → plain-JSON outbox → `RoutingPublisher` → two SNS topics (GlueCodec per topic, version resolved by definition) → SQS fan-out; plus this service's own inbound pipeline (`GlueDecoder` → DLQ router → consumed-schema validation → `Handle`, permanent rejects straight to the DLQ) | LLD §7.1, §7.3 |
 | [`observability-stack.mmd`](mermaid/observability-stack.mmd) | OTel + Prometheus + Zap structured logs + in-process exporters | ARCHITECTURE.md § Observability |
 | [`rls-guc-flow.mmd`](mermaid/rls-guc-flow.mmd) | `app.tenant_id` GUC injection per request (RLS-6) | LLD §4.3 |
 

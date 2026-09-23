@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -80,24 +81,42 @@ func newValidatingCodecFromFS(inner Codec, schemas fs.FS) (*ValidatingCodec, err
 	return c, nil
 }
 
+// ErrNoSchema is returned (wrapped) by Validate when no embedded schema
+// exists for the event type. Encode treats it as fatal (fail closed); the
+// inbound consumer treats it as pass-through so an event type this service
+// doesn't model yet still reaches ackUnknown.
+var ErrNoSchema = errors.New("no compiled schema registered for this event type")
+
 // Encode validates payload against the schema registered for eventType, then
 // delegates encoding to the inner codec. Fails closed: an eventType with no
 // compiled schema is an error, not a skipped/soft-passed validation, so a
 // new event type shipped without a matching embedded schema can never reach
 // the outbox unvalidated.
 func (c *ValidatingCodec) Encode(ctx context.Context, eventType string, payload []byte) ([]byte, string, error) {
+	if err := c.Validate(eventType, payload); err != nil {
+		return nil, "", err
+	}
+	return c.inner.Encode(ctx, eventType, payload)
+}
+
+// Validate checks payload against the embedded schema for eventType. It
+// backs both Encode (produced events, before the outbox insert) and the
+// inbound SQS consumer's schema check (consumed events, before Handle).
+// Returns an error wrapping ErrNoSchema when eventType has no schema; any
+// other error means the payload violates its schema or isn't JSON.
+func (c *ValidatingCodec) Validate(eventType string, payload []byte) error {
 	c.mu.RLock()
 	sch, ok := c.schemas[eventType]
 	c.mu.RUnlock()
 	if !ok {
-		return nil, "", fmt.Errorf("validate %s: no compiled schema registered for this event type", eventType)
+		return fmt.Errorf("validate %s: %w", eventType, ErrNoSchema)
 	}
 	var doc any
 	if err := json.Unmarshal(payload, &doc); err != nil {
-		return nil, "", fmt.Errorf("validate %s: payload is not JSON: %w", eventType, err)
+		return fmt.Errorf("validate %s: payload is not JSON: %w", eventType, err)
 	}
 	if err := sch.Validate(doc); err != nil {
-		return nil, "", fmt.Errorf("validate %s: %w", eventType, err)
+		return fmt.Errorf("validate %s: %w", eventType, err)
 	}
-	return c.inner.Encode(ctx, eventType, payload)
+	return nil
 }

@@ -79,7 +79,7 @@ Cardinality-bounded: no `tenant_id`/`user_id`/`email` label anywhere (§16 A48) 
 | `platform_messages_received_total` | Counter | `queue` | Inbound SQS message dequeued, before processing — wired in `cmd/server/main.go`'s `instrumentedHandler`, around both `tenant-orgm-q` and `billing-orgm-q` |
 | `platform_messages_processed_total` | Counter | `queue` | Inbound SQS message whose `Handle` returned nil |
 | `platform_messages_failed_total` | Counter | `queue` | Inbound SQS message whose `Handle` returned an error (includes DLQ rejections) |
-| `platform_dlq_messages_total` | Counter | `event_type`, `reason` | Events actively rejected to DLQ without recording `processed_events`. Currently `reason="future_time_clamp"` only (EVT-15) — **any nonzero rate pages** (producer clock skew). Canonical per the standard's own plain Tier-1 Examples list — no ratification needed |
+| `platform_dlq_messages_total` | Counter | `event_type`, `reason` | Events actively rejected to DLQ without recording `processed_events`. `reason` = `future_time_clamp` (EVT-15) or `schema_violation` (consumed payload fails its embedded schema) — **any nonzero rate of either pages** (producer clock skew). Canonical per the standard's own plain Tier-1 Examples list — no ratification needed |
 | `platform_duplicate_messages_total` | Counter | `consumer` | SQS redelivery filtered by `processed_events` PK (IDEMP-4). **Status: Proposed** (`registry.go` `PlatformRegistry`) — named in the standard's own Registry-Proposed Examples but not yet ratified. Shadow-emitted only; `iam_org_membership_processed_events_duplicates_total` below is the authoritative alerting/SLO source until ratified |
 | `platform_dependency_request_seconds` | Histogram | `target_service` (`catalog`\|`group_mapping`\|`delegation`), `endpoint` | Latency of the three ADR-0007/ADR-0008 synchronous cross-service calls (buckets 5ms–3s). `target_service` is the downstream peer, distinct from the `service` const label (this service's own identity). **Status: Proposed** — shadow-emitted only; `iam_org_membership_dependency_call_duration_seconds` below is authoritative until ratified |
 | `platform_dependency_errors_total` | Counter | `target_service`, `endpoint`, `outcome` (`5xx`\|`timeout`\|`fallback_served`) | Cross-service call failure; `fallback_served` is recorded by the calling `CatalogService`/`GroupMappingService`, not the client. **Status: Proposed** — and unlike the two metrics above, not even one of the standard's own named examples (added by symmetry, see `registry.go`). Shadow-emitted only; `iam_org_membership_dependency_call_failures_total` below is authoritative until ratified |
@@ -134,6 +134,7 @@ Not implemented (do not treat as current): `iam_membership_joins_total`/`_leaves
 - `outbox_dead_letters_total rate > 0` → page
 - `iam_org_membership_tenant_ownerless > 0` → page `platform_operator` (O-7 required)
 - `platform_dlq_messages_total{reason="future_time_clamp"} rate > 0` → page (producer clock skew / bad replay)
+- `platform_dlq_messages_total{reason="schema_violation"} rate > 0` → page (consumed payload fails its embedded schema — producer contract break or stale local `asyncapi.yaml`)
 - Sustained `iam_auth_session_revoke_failed_total` → page (AUTH-8 fast-kill degraded, only TTL-bounded)
 - `iam_lifecycle_event_lag_seconds > 30` for ~2 min → page (SLO-3 breach, primary drift signal)
 - `iam_org_membership_realm_sync_pending > 0` sustained beyond ~10 min → page (T-15)
@@ -176,7 +177,7 @@ Table below is verified directly against the current `.env-example` (not just pr
 | `SQS_CATALOG_ORGM_QUEUE_URL` | — (unset everywhere today) | `catalog-orgm-q` ← `DepartmentCatalogChanged` (Gap 12) — consumer done/tested, queue inert until this is set **and** `iam-catalog-admin` ships a publisher |
 | `SQS_TENANT_ORGM_CONCURRENCY` / `SQS_BILLING_ORGM_CONCURRENCY` / `SQS_CATALOG_ORGM_CONCURRENCY` | `4` / `2` / `2` | Per-queue consumer concurrency, overlaid onto `platform-events`' shared `eventcfg.LoadSQS()` env contract (`cmd/server/wiring.go`'s `sqsEnvForQueue`) |
 | `OUTBOX_RETENTION_DAYS` | `8` | `outbox-prune` CronJob retention, consumed by `outbox.Runner.PrunePublished` |
-| `GLUE_REGISTRY_MEMBERSHIP_NAME` / `_ARN` | — | `iam-membership-events` registry — unset ⇒ `NoopCodec` (plain JSON) on that topic |
+| `GLUE_REGISTRY_MEMBERSHIP_NAME` / `_ARN` | — | `iam-membership-events` registry — unset ⇒ `NoopCodec` (plain JSON) on that topic. When set, each schema version UUID is resolved once at startup via `glue:GetSchemaByDefinition` against this build's embedded schema (no refresher) — a pod whose schema isn't registered yet CrashLoops until `schema-registry.yml` registers it |
 | `GLUE_REGISTRY_TENANT_NAME` / `_ARN` | — | `iam-tenant-events` registry (**shared with Realm Provisioner** — disjoint schema names) — unset ⇒ `NoopCodec` on that topic |
 | `WORKFLOW_SERVICE_BASE_URL` / `WORKFLOW_TIMEOUT_MS` | — / `3000` | §8.8 delegate-impact/reassign/cancel — fail-closed |
 | `REALM_PROVISIONER_BASE_URL` / `REALM_PROVISIONER_TIMEOUT_MS` | — / `3000` | Invited-user create/delete, realm-config patch, session revoke, MFA reset |

@@ -425,7 +425,7 @@ sequenceDiagram
     SQS_T -->>- EC: message
 
     EC ->>+ EC: Check processed_events(event_id, consumer=iam-org-membership) → dedup (EVT-4/IDEMP-2)
-    Note over EC: EVT-15 clamp: event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS (300)<br/>→ NACK to DLQ, platform_dlq_messages_total++<br/>NOT recorded in processed_events (any nonzero pages)
+    Note over EC: EVT-15 clamp: event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS (300)<br/>→ SendMessage straight to DLQ + ack, platform_dlq_messages_total++<br/>NOT recorded in processed_events (any nonzero pages)
 
     EC ->>+ TSVC: TrialSignup(ctx, envelope)
 
@@ -768,84 +768,86 @@ sequenceDiagram
     participant SVC as core/service
     participant TX as pgcommon.RunInTx
     participant DB as PostgreSQL (business table)
+    participant VC as ValidatingCodec (enqueue — validation only)
     participant OB as outbox_events
-    participant Codec as ValidatingCodec wrapping GlueCodec (prod) · NoopCodec (dev)
     participant Runner as Outbox Runner (goroutine, poll 500 ms)
     participant Router as RoutingPublisher (own local type)
-    participant SNS_M as SNS iam.membership.events
-    participant SNS_T as SNS iam.tenant.events
+    participant Pub as SNS publisher + GlueCodec (per topic)
+    participant SNS as SNS iam.membership.events / iam.tenant.events
     participant SQS as SQS subscribers (§7.3.2 fan-out)
-    participant Consumer as Downstream Consumer
+    participant Q as Inbound SQS (tenant-orgm-q / billing-orgm-q / catalog-orgm-q)
+    participant PE as platform-events SQS consumer
+    participant Pipe as inboundHandler (DLQ router → metrics → validateConsumed)
+    participant H as MembershipEventConsumer / CatalogConsumer
+    participant DLQ as queue -dlq (per queue)
 
     Note over SVC,OB: Phase 1 — Atomic write + event enqueue (same transaction, EVT-10 / CONS-1)
 
     SVC ->>+ TX: RunInTx(ctx, func(txCtx))
-    TX ->>+ DB: UPDATE / INSERT business row (with record_version optimistic lock, TRG-1)
-    DB -->>- TX: row affected
-
-    TX ->>+ SVC: pub.EnqueueCtx(txCtx, domainEvent)
-    SVC ->> Codec: Encode(ctx, event.Type, jsonPayload)
-    Note over Codec: ValidatingCodec runs schema-gov Draft-07 validation<br/>against embedded schemas/*.json — fail-closed:<br/>invalid payload or unregistered type → error → whole TX rolls back<br/>(no orphan business write, no orphan outbox row).
+    TX ->> DB: UPDATE / INSERT business row (record_version optimistic lock, TRG-1)
+    TX ->> VC: Encode(event.Type, jsonPayload)
+    Note over VC: Validates against embedded schemas/*.json — fail-closed:<br/>invalid payload or type with no schema → error → whole TX rolls back.<br/>Wraps NoopCodec: no wire encoding here, bytes discarded.
     alt schema validation fails
-        Codec -->> SVC: error
-        SVC -->>- TX: error
-        TX ->> DB: ROLLBACK (business row change discarded)
+        VC -->> TX: error
+        TX ->> DB: ROLLBACK (no orphan business write, no orphan outbox row)
     else validation passes
-        Note over Codec: GlueCodec prepends 18-byte header {0x03, 0x00, schema_version_UUID}<br/>Version IDs prefetched from two Glue registries at startup:<br/>  GLUE_REGISTRY_MEMBERSHIP_NAME (iam-membership-events)<br/>  GLUE_REGISTRY_TENANT_NAME     (iam-tenant-events)<br/>NoopCodec pass-through in dev (registry env vars unset).
-        Codec -->> SVC: (encoded bytes, schemaVersionID)
-        SVC ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type,<br/>  payload JSONB envelope, tenant_id, trace_id,<br/>  created_at NOW(), scheduled_at NOW(),<br/>  attempts=0, published_at=NULL<br/>)<br/>No source/topic column — platform-events' outbox_events schema has none —<br/>event_type alone is what RoutingPublisher routes on at publish time.
-        OB -->>- SVC: inserted
-
-        TX ->>+ DB: COMMIT
-        DB -->>- TX: committed — business row + outbox row durable together
-        TX -->>- SVC: nil
+        VC -->> TX: ok
+        TX ->> OB: INSERT outbox_events (id UUID v7, event_type,<br/>PLAIN-JSON envelope, tenant_id, trace_id, published_at=NULL)
+        TX ->> DB: COMMIT — business row + outbox row durable together
     end
+    TX -->>- SVC: result
 
-    Note over Runner,Consumer: Phase 2 — Outbox polling + routed SNS publish (at-least-once, FAIL-3)
+    Note over Runner,SQS: Phase 2 — Outbox polling + routed SNS publish (at-least-once, FAIL-3)
 
-    loop every OUTBOX_POLL_INTERVAL (500 ms, Go duration string)
-        Runner ->>+ OB: SELECT * FROM outbox_events<br/>WHERE published_at IS NULL<br/>ORDER BY created_at<br/>LIMIT OUTBOX_BATCH_SIZE (50) FOR UPDATE SKIP LOCKED
-        OB -->>- Runner: unpublished batch
-
-        loop for each envelope
-            Runner ->>+ Router: Route(envelope)
-            Note over Router: Routing key = domain.TopicForEvent(env.Type) — event **type**, not Envelope.Source.<br/>EventTenantCreated/EventTrialStarted → tenant publisher field, every other type defaults to membership.
-
-            alt domain.TopicForEvent(env.Type) == TopicMembership
-                Router ->>+ SNS_M: Publish(TopicArn=SNS_TOPIC_ARN_MEMBERSHIP,<br/>MessageAttributes{EventType, TenantID, Source, EventID, Subject})
-                Note over SNS_M: 12 event types produced (§7.3):<br/>DepartmentMembershipGranted/Revoked/LevelChanged<br/>TenantRoleGranted · TenantRoleRevoked (§16 A14)<br/>MembershipRevoked (shared cascade signal — Delegation + Tender ACL)<br/>TenderAssigneeOverridden (I-13 validate-and-emit)<br/>MFAReset (P-34, sole audit signal for the reset)<br/>TenantSeatOverageStarted/Resolved (SEAT-5)<br/>TenantStateChanged (§16 A61, EVT-16 relay)<br/>TenantMembershipsPurged (tenant-offboard cascade — Delegation/Tender ACL/Group Mapping)<br/>(DelegationStarted/DelegationEnded moved to the Delegation Service's own topic, ADR-0008)
-                SNS_M -->>- Router: MessageID
-            else domain.TopicForEvent(env.Type) == TopicTenant
-                Router ->>+ SNS_T: Publish(TopicArn=SNS_TOPIC_ARN_TENANT, ...)
-                Note over SNS_T: O&M produces ONLY:<br/>  TenantCreated · TrialStarted (§7.3)<br/>All other iam.tenant.events messages are Realm-Provisioner-produced<br/>(consumed by O&M via tenant-orgm-q — produce/consume disjoint, HLD §9.1.1)
-                SNS_T -->>- Router: MessageID
-            end
-            Router -->>- Runner: published
-
-            Runner ->>+ OB: UPDATE outbox_events SET published_at = now() WHERE id = $1
-            OB -->>- Runner: marked published
-
-            alt publish fails (network / SNS unavailable)
-                Runner ->> OB: increment attempts, retry up to OUTBOX_MAX_ATTEMPTS (5)
-                Note over Runner: Exponential backoff with jitter.<br/>Beyond 5 attempts → dead letter (outbox_dead_letters_total pages).<br/>Selective replay via platform-events v1.4.0 ReprocessDeadLettersWith.
-            end
+    loop every OUTBOX_POLL_INTERVAL
+        Runner ->> OB: claim unpublished batch (FOR UPDATE SKIP LOCKED + lease)
+        Runner ->>+ Router: PublishBatch(envelopes)
+        Note over Router: domain.TopicForEvent(env.Type) — event TYPE, not Envelope.Source.<br/>TenantCreated / TrialStarted → tenant lane, all 12 others → membership lane.
+        Router ->>+ Pub: PublishBatch(lane envelopes)
+        Note over Pub: GlueCodec.Encode — version UUID from an in-memory cache,<br/>resolved ONCE at startup via glue:GetSchemaByDefinition with this<br/>build's embedded schema (never "latest", no refresher, no per-event Glue call).<br/>Payload → [0x03][0x00][16-byte UUID] + JSON, base64 into data, dataschema = UUID.<br/>NoopCodec (plain JSON) when GLUE_REGISTRY_*_NAME is unset.
+        Pub ->> SNS: Publish (MessageAttributes EventType, traceparent, …)
+        Pub -->>- Router: ok
+        Router -->>- Runner: published
+        Runner ->> OB: mark published_at
+        alt publish fails
+            Runner ->> OB: attempts++ — retry up to OUTBOX_MAX_ATTEMPTS, then dead letter<br/>(outbox_dead_letters_total pages)
         end
     end
+    SNS ->> SQS: fan-out filtered by EventType (6 membership subscribers, 2 tenant)
 
-    SNS_M ->>+ SQS: fan-out (§7.3.2) — subscribers filtered by EventType<br/>membership-audit-q · membership-authz-q · membership-realm-q<br/>membership-notification-q · membership-workflow-q · membership-billing-q
-    SNS_T ->>+ SQS: fan-out — tenant-audit-q · tenant-notification-q<br/>(O&M's own tenant-orgm-q listens to RP-produced events on the same topic, not O&M's own)
-    SQS -->>- Consumer: SQS message
+    Note over Q,DLQ: Phase 3 — This service's own inbound pipeline (per queue, outermost first)
 
-    Consumer ->>+ DB: INSERT processed_events(event_id, consumer, processed_at)<br/>ON CONFLICT DO NOTHING (EVT-4 canonical dedup)
-    Note over Consumer: 8-day retention (PE-1) — strictly > 7-day SQS lifetime<br/>Beyond-window duplicates backstopped by EVT-14 recency guard / PI-10 / IDEMP-3
-    DB -->>- Consumer: idempotency checked
-
-    Consumer ->>+ SQS: DeleteMessage (ACK)
-    SQS -->>- Consumer: deleted
-    Note over Consumer,SQS: DLQ maxReceiveCount = 5 → outbox_dead_letters_total{event_type} pages (EVT-5)
+    Q ->>+ PE: ReceiveMessage (long poll)
+    PE ->> PE: unmarshal envelope — malformed → deleted
+    opt dataschema set (producer used a Glue codec)
+        PE ->> PE: GlueDecoder.Decode — strip 18-byte header, no registry lookup
+    end
+    PE ->>+ Pipe: handler(env)
+    Pipe ->> Pipe: validateConsumed — embedded consumed schema for env.Type<br/>(no schema → pass through to ackUnknown)
+    alt schema violation
+        Pipe ->> DLQ: SendMessage (dataschema cleared,<br/>EventType + DLQReason=schema_violation)
+        Note over Pipe: platform_dlq_messages_total{reason="schema_violation"}++<br/>IAMConsumedEventSchemaViolation pages
+    else valid
+        Pipe ->>+ H: Handle(env) — dedup, EVT-14 recency, EVT-15 clamp, EVT-16 relay
+        alt EVT-15 future-time clamp (ErrPoisonPill)
+            H -->> Pipe: ErrPoisonPill (processed_events NOT recorded)
+            Pipe ->> DLQ: SendMessage (DLQReason=future_time_clamp)
+        else projected / stale-skipped / unknown type
+            H -->> Pipe: nil (processed_events recorded in the same tx)
+        else transient error
+            H -->>- Pipe: error
+        end
+    end
+    Pipe -->>- PE: nil (acked) or error (left visible)
+    alt nil
+        PE ->> Q: DeleteMessage
+    else error — normal retry
+        Note over PE,DLQ: redelivered — after maxReceiveCount = 5 SQS redrives to -dlq (EVT-5).<br/>Same fallback if the DLQ URL can't be read from RedrivePolicy or SendMessage fails.
+    end
+    deactivate PE
 ```
 
-`GlueCodec` is scoped one-per-topic (`internal/adapter/outbound/eventbus/glue_codec.go`) — `cmd/server/main.go` splits the embedded `schemas/*.json` file set into the membership/tenant lists via `domain.TopicForEvent`, so the two Glue registries (`GLUE_REGISTRY_MEMBERSHIP_NAME`/`GLUE_REGISTRY_TENANT_NAME`) can never end up requesting a schema name from the wrong registry. Unlike some sibling services, this repo's event `Type` strings (e.g. `DepartmentMembershipGranted`) already are the exact PascalCase Glue schema name — no dot-notation translation step exists. `GlueCodec.StartRefresher` re-fetches every cached schema version ID on a 5-minute ticker so a new Glue schema version takes effect without a pod restart; a refresh failure keeps the stale cached ID rather than failing the next publish.
+`GlueCodec` is scoped one-per-topic (`internal/adapter/outbound/eventbus/glue_codec.go`) — `cmd/server/main.go` splits the embedded `schemas/*.json` file set into the membership/tenant lists via `domain.TopicForEvent`, so the two Glue registries (`GLUE_REGISTRY_MEMBERSHIP_NAME`/`GLUE_REGISTRY_TENANT_NAME`) can never end up requesting a schema name from the wrong registry. Unlike some sibling services, this repo's event `Type` strings (e.g. `DepartmentMembershipGranted`) already are the exact PascalCase Glue schema name — no dot-notation translation step exists. Version UUIDs are resolved once at startup **by definition** (`glue:GetSchemaByDefinition` with the binary's own embedded schema, sent in the exact compact form `schema-gov register` uploads), not as the registry's latest — so each build stamps the version that actually describes its payloads, correctly through deploy/registration races and rollbacks. There is no refresher: the UUID is fixed per process. A definition not yet registered fails startup (CrashLoop until `schema-registry.yml` lands it).
 
 ---
 
@@ -871,7 +873,7 @@ graph LR
         p_rls["iam_rls_violations_total{violation_type}\n(Layer 3, scraped from rls_violation_log)"]
         p_wf["Delegate-impact (§8.8):\niam_org_membership_delegate_removal_blocked_total{scope}\niam_org_membership_delegate_reassignment_total{action=replace_delegate|stop_workflows}\niam_org_membership_delegate_suspend_impact_total{checked} (§8.8.5 advisory)"]
         p_seat["Seat / invite:\niam_org_membership_seat_limit_reached_total{plan}  (SEAT-1, product signal not incident)\niam_org_membership_seat_overage_started_total{cause}\niam_org_membership_invite_throttled_total{reason=cooldown|rate_limit}"]
-        p_lifecycle["Consumer / lifecycle:\nplatform_messages_received/processed/failed_total{queue}\niam_lifecycle_event_lag_seconds{event_type}  (histogram, SLO-3 primary drift signal)\niam_lifecycle_event_skipped_total{event_type}  (EVT-14)\nplatform_dlq_messages_total{event_type}  (EVT-15, ANY nonzero pages)\nplatform_duplicate_messages_total{consumer}\niam_org_membership_unknown_event_acknowledged_total{topic,event_type}"]
+        p_lifecycle["Consumer / lifecycle:\nplatform_messages_received/processed/failed_total{queue}\niam_lifecycle_event_lag_seconds{event_type}  (histogram, SLO-3 primary drift signal)\niam_lifecycle_event_skipped_total{event_type}  (EVT-14)\nplatform_dlq_messages_total{event_type,reason}  (sent straight to DLQ — reason=future_time_clamp (EVT-15) | schema_violation (EVT-17), ANY nonzero pages)\nplatform_duplicate_messages_total{consumer}\niam_org_membership_unknown_event_acknowledged_total{topic,event_type}"]
         p_xsvc["Cross-service clients (Catalog/GroupMapping/Delegation):\nplatform_dependency_request_seconds{target_service,endpoint}\nplatform_dependency_errors_total{target_service,endpoint,outcome}\niam_org_membership_membership_exists_check_total{caller,result}  (I-15)"]
         p_gauges["In-process exporter gauges (ticker, every 5 min):\niam_org_membership_tenant_ownerless  (TM-12 — nonzero pages platform_operator)\niam_org_membership_realm_sync_pending  (T-15 backlog)\niam_org_membership_seat_overage_active  (SEAT-5)\niam_org_membership_pending_invitations_stale"]
         p_auth["Session / realm:\niam_auth_session_revoke_failed_total{reason}  (AUTH-8 fail-open, sustained pages)\niam_org_membership_realm_sync_failed_total{stage}  (T-15 reconciler)\niam_org_membership_tenant_ownerless_escalated_total{reason}"]
@@ -922,7 +924,7 @@ graph LR
     db2 --> ot1
 
     subgraph alerts["Alert routing (§11.2)"]
-        a1["Page:\n· outbox_dead_letters_total rate > 0\n· iam_org_membership_tenant_ownerless > 0 (platform_operator)\n· platform_dlq_messages_total rate > 0 (clock skew)\n· iam_lifecycle_event_lag_seconds > 30 for ~2 min (SLO-3)\n· iam_org_membership_realm_sync_pending > 0 sustained > 10 min (T-15)\n· sustained iam_auth_session_revoke_failed_total (AUTH-8)"]
+        a1["Page:\n· outbox_dead_letters_total rate > 0\n· iam_org_membership_tenant_ownerless > 0 (platform_operator)\n· platform_dlq_messages_total{reason=future_time_clamp} > 0 (clock skew)\n· platform_dlq_messages_total{reason=schema_violation} > 0 (consumed contract break)\n· iam_lifecycle_event_lag_seconds > 30 for ~2 min (SLO-3)\n· iam_org_membership_realm_sync_pending > 0 sustained > 10 min (T-15)\n· sustained iam_auth_session_revoke_failed_total (AUTH-8)"]
         a2["Warn:\n· sustained platform_dependency_errors_total{target_service=catalog|group_mapping|delegation}\n· sustained iam_org_membership_delegate_removal_blocked_total w/o matching\n  reassignment/cancel (admins hitting block, not resolving)\n· sustained iam_org_membership_invite_throttled_total for one tenant"]
         a3["Informational (not on-call):\n· iam_org_membership_seat_limit_reached_total spike → CSM/Billing (buy more seats)\n· overage_since older than SEAT_OVERAGE_GRACE_DAYS (30 d) → Billing"]
     end
@@ -1009,7 +1011,8 @@ if tag.RowsAffected() == 0 {
 
 **Idempotency (IDEMP-1..4, EVT-14/15/16).**
 - **EVT-14** — a `SELECT ... FOR UPDATE` on the `tenants` row compares the incoming event's `time` against `tenants.last_event_at`; a stale (out-of-order-redelivered) event is skipped but still recorded in `processed_events` (last-writer-wins, §16 A33).
-- **EVT-15** — an event whose `time` is more than `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` (300 s) in the future is routed to the DLQ, not recorded in `processed_events` at all — a poison-pill / clock-skew guard, not a normal dedup path.
+- **EVT-15** — an event whose `time` is more than `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` (300 s) in the future is sent straight to the DLQ (`cmd/server/dlq.go`, `DLQReason=future_time_clamp`), not recorded in `processed_events` at all — a poison-pill / clock-skew guard, not a normal dedup path. Straight, not via retries: the clamp is re-evaluated per delivery, so retrying could let a skewed event through once wall-clock caught up.
+- **EVT-17** — before `Handle`, every inbound payload (already Glue-decoded by `GlueDecoder`) is validated against the **embedded** consumed schema for its type (`cmd/server/inbound_schema.go`, no Glue call); a violation never reaches the projection and goes straight to the DLQ (`DLQReason=schema_violation`, `IAMConsumedEventSchemaViolation` pages). Unknown types pass through to `ackUnknown`.
 - **EVT-16** — when a consumed event changes `tenants.status`/`plan`, the consumer re-emits `TenantStateChanged` on `iam.membership.events` in the **same transaction**, so Workflow can subscribe to one topic instead of directly watching `iam.tenant.events`/`billing.events`.
 - **`processed_events`** composite PK `(event_id, consumer)`, `ON CONFLICT DO NOTHING` — the canonical bus-event dedup, 8-day retention (PE-1) deliberately longer than SQS's 7-day maximum message lifetime; beyond-window duplicates are backstopped by EVT-14 and by the invite-flow's own `kc_cleanup_pending` durable compensation (PI-10).
 
@@ -1100,7 +1103,7 @@ Since this service has never been deployed, the schema is one consolidated `0000
 
 - **Postgres / RLS** (`test/postgres/`, testcontainers-go, real PG, full migration suite): `rls_test.go`'s **Case 5** (critical, RLS-6) — no cross-tenant leak across a pooled backend, `MaxConns=1`, tenant A tx → return connection → tenant B tx on the same backend → assert B sees 0 of A's rows; `subscription_lapse_test.go` (I-16's BYPASSRLS cross-tenant read, and its self-idempotence once a lapsed tenant is suspended); `consumer_evt_test.go` (EVT-14/15/16); `concurrency_extra_test.go` (SEAT-1/TM-13 races); `reconciler_convergence_test.go`/`reconcilers_test.go` (each of the 7 CronJobs' idempotent re-run behavior). CI additionally greps for the forbidden non-`LOCAL` `SET app.tenant_id`.
 
-- **Integration** (`test/integration/`, testcontainers, capped at `TEST_INTEGRATION_PARALLEL`) — real Postgres + Valkey + floci SNS/SQS: `relay_test.go` (EVT-16's wire path — a consumed event's `TenantStateChanged` relay actually reaching the second topic); `dlq_idemp_test.go` (DLQ + `processed_events` dedup under redelivery); `wire_test.go` (the full `RoutingPublisher`/two-Glue-registry publish path).
+- **Integration** (`test/integration/`, testcontainers, capped at `TEST_INTEGRATION_PARALLEL`) — real Postgres + Valkey + floci SNS/SQS: `relay_test.go` (EVT-16's wire path — a consumed event's `TenantStateChanged` relay actually reaching the second topic); `dlq_idemp_test.go` (DLQ + `processed_events` dedup under redelivery); `wire_test.go` (the full `RoutingPublisher`/two-Glue-registry publish path); `glue_codec_test.go` (floci Glue — version resolved by definition: a build keeps stamping its own version after a newer one is registered, every produced schema resolves, an unregistered definition fails startup). Unit tests in `cmd/server` cover the inbound pipeline (`dlq_test.go`, `inbound_schema_test.go` — including a real Glue-framed message decoded by the actual consumer), and `eventbus/glue_codec_test.go` pins `registeredDefinition` byte-for-byte against Python for all 28 embedded schemas.
 
 - **E2E** (`test/e2e/`, `-tags=e2e`) — `harness_test.go` wires the real `httpadapter.NewRouter` (the same function `cmd/server/main.go` calls), so the e2e suite and production share one route table by construction rather than a hand-copied duplicate that could drift.
 
@@ -1115,7 +1118,8 @@ Coverage is measured over `./internal/...` via `make cover-func`/`make cover`. `
 Before a downstream service subscribes to `iam.membership.events` or `iam.tenant.events`, verify the following. Every sibling IAM service in this platform is a Go module, so this guidance is Go-only rather than a fabricated multi-language table.
 
 **Decoding**
-- [ ] Strip the 18-byte Glue header (`[0x03][0x00][16-byte schema version UUID]`) before deserialising the envelope JSON, when the relevant `GLUE_REGISTRY_*_NAME` is set (`GlueCodec`); with `NoopCodec` (dev, unset) the message is plain JSON with no header.
+- [ ] Strip the 18-byte Glue header (`[0x03][0x00][16-byte schema version UUID]`) before deserialising the envelope JSON, when the relevant `GLUE_REGISTRY_*_NAME` is set (`GlueCodec`); with `NoopCodec` (dev, unset) the message is plain JSON with no header. With platform-events, wire `events.WithConsumerCodec` with a header-stripping decoder (this repo's `eventbus.GlueDecoder` needs no registry) — without one, every Glue-encoded message fails decode and ends in your DLQ.
+- [ ] Treat `dataschema` as the version matching the **publishing build's** embedded schema (resolved by definition at its startup), not the registry's latest — it changes only when a build with a changed schema is deployed.
 - [ ] Handle an unrecognised `event_type` gracefully (log + skip, not error) — new event types can be added to either topic without warning every existing consumer.
 - [ ] Ignore unknown JSON fields in the payload — a Go `encoding/json` decoder does this by default; do not wrap it in a `DisallowUnknownFields()` decoder for this contract.
 

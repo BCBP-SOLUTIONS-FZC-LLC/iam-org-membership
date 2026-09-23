@@ -182,6 +182,26 @@ groups:
             the producing service's clock (NTP), then flush its DLQ.
           runbook: "iam-org-membership/evt15-future-time-clamp"
 
+      - alert: IAMConsumedEventSchemaViolation
+        # A consumed payload failed its embedded JSON Schema and was sent
+        # straight to the DLQ (cmd/server/inbound_schema.go). Every event of
+        # that type from that producer is being dropped, so the tenant
+        # projection is drifting — page. Filtered to this alert's own reason.
+        expr: sum by (event_type) (rate(platform_dlq_messages_total{reason="schema_violation"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: page
+          service: iam-org-membership
+        annotations:
+          summary: "Consumed {{ $labels.event_type }} events violate their schema"
+          description: |
+            iam-org-membership is rejecting {{ $labels.event_type }} events to
+            the DLQ because the payload fails the embedded consumed-event
+            schema. Either the producer broke its contract, or this service's
+            api/asyncapi.yaml is stale. Inspect a DLQ message (DLQReason=
+            schema_violation), fix the side that is wrong, then redrive.
+          runbook: "iam-org-membership/consumed-schema-violation"
+
       - alert: IAMCrossTenantRLSViolation
         expr: rate(iam_rls_violations_total{violation_type="cross_tenant_access"}[5m]) > 0
         for: 1m

@@ -40,23 +40,32 @@ info:
     UUID in the Glue wire-format header (bytes 2–17). The same UUID is echoed into
     the envelope JSON as dataschema so consumers that work with the decoded body
     can inspect or log it without re-parsing the binary header. The UUID is resolved
-    from the appropriate Glue registry at startup and cached; it changes automatically
-    whenever a new schema version is registered in Glue. In dev/test (NoopCodec) there
+    once at startup by content — glue:GetSchemaByDefinition with the binary's own
+    embedded schema — so every event carries the version that actually describes
+    it, and the UUID is fixed for the life of the pod. Registering a newer version
+    in Glue does NOT change what running pods stamp; the new UUID appears only once
+    pods built with the new schema are deployed (and an older build, e.g. after a
+    rollback, keeps stamping its own older version). In dev/test (NoopCodec) there
     is no Glue header and dataschema is absent from the envelope.
 
-    Failure mode: the ValidatingCodec loads every schema in
-    internal/adapter/outbound/eventbus/schemas/ at startup (embedded via
-    //go:embed schemas/*.json) and resolves the corresponding Glue schema version
-    UUIDs from BOTH registries in a single startup pass. If any lookup fails,
-    cmd/server/main.go panics — the pod crashes and Kubernetes restarts it
-    (CrashLoopBackoff). This is intentional: a pod that cannot reach a Glue
-    registry would silently produce malformed events rather than failing visibly.
+    Failure mode: GlueCodec takes every produced schema in
+    internal/adapter/outbound/eventbus/schemas/ (embedded via
+    //go:embed schemas/*.json) and resolves its Glue schema version UUID by
+    definition from BOTH registries in a single startup pass. If any lookup fails
+    — registry unreachable, or this binary's schema definition not registered yet
+    (a deploy that outran schema-registry.yml) — cmd/server/main.go panics and the
+    pod CrashLoops. This is intentional: stamping events with a version that
+    doesn't describe them is worse than not starting, and the race self-heals —
+    the pod starts cleanly on the first restart after registration lands.
 
     Resolution path:
       1. Verify GLUE_REGISTRY_MEMBERSHIP_NAME and GLUE_REGISTRY_TENANT_NAME are
-         both correct and both registries + their schemas exist.
-      2. Verify the pod IAM role has glue:GetSchemaVersion on BOTH registry ARNs.
-      3. Fix the root cause — the pod will recover automatically on the next restart.
+         both correct and both registries exist.
+      2. Confirm schema-registry.yml registered THIS commit's schemas (the error
+         names the schema; `make schema-verify` lists what exists). A definition
+         that differs from every registered version won't resolve.
+      3. Verify the pod IAM role has glue:GetSchemaByDefinition on BOTH registry ARNs.
+      4. Fix the root cause — the pod will recover automatically on the next restart.
     Alert on outbox_dead_letters_total (per source topic) for events that fail
     after a successful startup.
 
@@ -117,9 +126,9 @@ info:
       breaking changes are blocked entirely.
     schema-shape: OPEN
     rollout-sequence:
-      - "1. Register new schema in the appropriate Glue registry (membership or tenant); the UUID rotates and envelope.dataschema changes accordingly."
+      - "1. Register new schema in the appropriate Glue registry (membership or tenant). Running producer pods keep stamping their own (old) version UUID — resolution is by definition, not latest."
       - "2. Deploy all consumers with forward-compatible deserialization settings (required-settings below) in place."
-      - "3. Deploy the producer (starts emitting the new field / wider enum)."
+      - "3. Deploy the producer (starts emitting the new field / wider enum). Its pods resolve the new version by definition, so envelope.dataschema switches to the new UUID exactly when the new payload shape starts flowing."
     required-settings:
       go-encoding-json: "Do NOT call json.Decoder.DisallowUnknownFields(). Unknown fields are silently ignored by default."
       go-sonic: "Do NOT use sonic.ConfigStrict. Use sonic.ConfigDefault or sonic.ConfigFastest."
@@ -323,7 +332,8 @@ servers:
         Source == "iam-org-membership.tenant"     → tenant topic
       Pod IAM role requires, on BOTH Glue registry ARNs
       (GLUE_REGISTRY_MEMBERSHIP_ARN, GLUE_REGISTRY_TENANT_ARN):
-        glue:GetRegistry, glue:GetSchema, glue:GetSchemaVersion, glue:QuerySchemaVersionMetadata
+        glue:GetRegistry, glue:GetSchema, glue:GetSchemaVersion, glue:GetSchemaByDefinition,
+        glue:QuerySchemaVersionMetadata
       Schema registration (glue:CreateSchema, glue:RegisterSchemaVersion) is CD-only.
     security:
       - $ref: '#/components/securitySchemes/iamRole'
@@ -3912,16 +3922,26 @@ components:
     TenantRealmReadyPayload:
       type: object
       additionalProperties: true
+      description: |
+        Matches iam-realm-provisioner's producer schema
+        (internal/eventschema/tenant_realm_ready.json), which also requires
+        both fields below. RP sends no realm type — it only emits this event
+        for dedicated realms (RP-2/RP-3, never trial), so the consumer
+        hardcodes tenants.realm_type = 'dedicated'. RP's other fields
+        (tenant_id, oidc_clients) aren't read here and pass through as open
+        schema.
+      required:
+        - realm
+        - keycloak_shard
       properties:
-        realm_id:
+        realm:
           type: string
-          description: Keycloak realm identifier assigned to the tenant.
-        realm_type:
-          type: string
-          description: e.g. "dedicated" — set together with realm_id and keycloak_shard in one UPDATE.
+          minLength: 1
+          description: Keycloak realm name assigned to the tenant — written to tenants.realm_id.
         keycloak_shard:
           type: string
-          description: Identifies which Keycloak shard hosts this tenant's realm.
+          minLength: 1
+          description: Identifies which Keycloak shard hosts this tenant's realm — written to tenants.keycloak_shard.
 
     TenantConvertedPayload:
       type: object

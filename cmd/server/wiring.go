@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 
@@ -45,21 +44,24 @@ func sqsEnvForQueue(base eventcfg.SQSConfigEnv, queueURL string, concurrency int
 
 // buildSQSConsumer constructs a platform-events SQS consumer from a
 // LoadSQS-derived env (after sqsEnvForQueue) plus SQSConsumerOptions
-// (concurrency, visibility timeout, optional max-receive-count).
+// (concurrency, visibility timeout, optional max-receive-count) and the
+// consumer-side GlueDecoder. Without a consumer codec, any upstream
+// envelope carrying a dataschema (i.e. Glue-encoded by its producer) fails
+// decode on every delivery and ends up in the DLQ.
 func buildSQSConsumer(env eventcfg.SQSConfigEnv, client events.SQSClientLike, handler events.Handler, log port.Logger) (events.Consumer, error) {
 	return events.NewSQSConsumerWithClient(
 		eventcfg.SQSConfigFromEnv(env, log),
 		client,
 		handler,
-		eventcfg.SQSConsumerOptions(env)...,
+		append(eventcfg.SQSConsumerOptions(env), events.WithConsumerCodec(eventbusadapter.GlueDecoder{}))...,
 	)
 }
 
-// buildTopicCodec returns a GlueCodec pre-fetching schemaNames from
-// registryName, refreshed every 5 minutes so a new schema version in Glue
-// takes effect without a pod restart — or a NoopCodec (plain JSON) when
+// buildTopicCodec returns a GlueCodec whose schema version UUIDs are
+// resolved once, by definition, from registryName — fixed for the life of
+// the process, so no refresher — or a NoopCodec (plain JSON) when
 // registryName is empty (dev/test without a Glue registry configured).
-func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName string, schemaNames []string, log port.Logger) (events.Codec, error) {
+func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName string, schemaNames []string) (events.Codec, error) {
 	if registryName == "" {
 		// events.NoopCodec (platform-events' own identity Codec), not this
 		// package's local eventbus.Codec/NoopCodec — those are a different,
@@ -67,13 +69,7 @@ func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName 
 		// validation, not the Encode+Decode events.Codec WithCodec expects.
 		return events.NoopCodec{}, nil
 	}
-	gc, err := eventbusadapter.NewGlueCodec(ctx, glueClient, registryName, schemaNames)
-	if err != nil {
-		return nil, err
-	}
-	gc.WithLogger(log)
-	gc.StartRefresher(ctx, 5*time.Minute)
-	return gc, nil
+	return eventbusadapter.NewGlueCodec(ctx, glueClient, registryName, schemaNames)
 }
 
 // instrumentedHandler wraps an SQS handler with the Tier-1

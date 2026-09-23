@@ -2,261 +2,232 @@
 
 ## The contract
 
-`iam-org-membership` reads its event schemas from **two** AWS Glue Schema
-Registries at startup (`eventbus.NewGlueCodec` per registry pre-fetches every
-version ID). Startup fails fast if any expected schema is missing — the pod
-will not accept traffic. This is intentional; publishing an event whose header
-points at a non-existent Glue schema version silently poisons every consumer
-downstream.
+`iam-org-membership` publishes to two SNS topics, each backed by its own AWS
+Glue Schema Registry (SCHEMA-7, LLD §7.3). At startup,
+`eventbus.NewGlueCodec` (one per registry, `internal/adapter/outbound/eventbus/glue_codec.go`)
+resolves each produced schema's version UUID **by definition**:
+`glue:GetSchemaByDefinition` with this binary's own embedded
+`schemas/*.json` file, sent in exactly the compact form `schema-gov register`
+uploads (`registeredDefinition`). The version must be `AVAILABLE`.
 
-The two-registry split mirrors the two SNS topics owned by `RoutingPublisher`
-(LLD §7.3.1). Every event's registered Glue schema name is **PascalCase** and
-matches the file name in `internal/adapter/outbound/eventbus/schemas/`. There
-is no snake_case translation — `//go:embed schemas/*.json` uses the same
-identifiers used by `schema-gov register`.
+- Each build therefore stamps the version that actually describes its
+  payloads — never merely the registry's latest, which runs ahead of the
+  running code when a schema is registered before deploy (or after a
+  rollback) and behind it when a deploy races `schema-registry.yml`.
+- The UUID is fixed for the life of the pod. There is **no refresher**, and
+  publishing makes no Glue call.
+- Startup fails fast if any produced schema's definition isn't registered —
+  the pod will not accept traffic. Stamping events with a version that doesn't
+  describe them is worse than not starting.
 
-### Registry: `iam-membership-events` (env `GLUE_REGISTRY_NAME_MEMBERSHIP`)
+On the consume side no Glue call is made at all: every inbound queue carries
+`eventbus.GlueDecoder` (`events.WithConsumerCodec`), which strips the
+self-describing 18-byte header (`[0x03][0x00][16-byte version UUID]`) without
+a registry. Consumed payloads are then validated against this service's own
+**embedded** consumed schemas (`cmd/server/inbound_schema.go`), not the
+producer's Glue schema — see "Consumed-schema violations" below.
 
-Backs SNS topic `iam.membership.events`. Twelve schemas — all events O&M
-produces on the membership topic (§7.3):
+### Schema files and names
 
-| Domain event type | Registered Glue schema name |
-|---|---|
-| `department.membership.granted` | `DepartmentMembershipGranted` |
-| `department.membership.revoked` | `DepartmentMembershipRevoked` |
-| `department.membership.level_changed` | `DepartmentMembershipLevelChanged` |
-| `tenant.role.granted` | `TenantRoleGranted` |
-| `tenant.role.revoked` | `TenantRoleRevoked` (§16 A14) |
-| `delegation.started` | `DelegationStarted` |
-| `delegation.ended` | `DelegationEnded` (extended `ended_reason` incl. `delegate_removed`, DEL-7) |
-| `tender.assignee.overridden` | `TenderAssigneeOverridden` (I-13) |
-| `mfa.reset` | `MFAReset` (P-34, §16 OQ-8/F6) |
-| `tenant.seat.overage.started` | `TenantSeatOverageStarted` (SEAT-5) |
-| `tenant.seat.overage.resolved` | `TenantSeatOverageResolved` |
-| `tenant.state.changed` | `TenantStateChanged` (§16 A61, EVT-16 relay) |
+`schema-gov extract` writes snake_case files into
+`internal/adapter/outbound/eventbus/schemas/` (e.g. `tenant_role_granted.json`)
+— 28 files: the 14 this service **produces** plus 14 **consumed**,
+other-service-owned extracts kept for schema-gov coverage and consumer-side
+validation. The registered Glue schema name (= `envelope.type`) is PascalCase.
+The filename → name mapping is hand-maintained in two places, one line per
+event:
 
-### Registry: `iam-tenant-events` (env `GLUE_REGISTRY_NAME_TENANT`)
+- `schemaFileNames` in `glue_codec.go` (runtime: embedding, validation, Glue
+  lookup), and
+- `.github/scripts/stage-produced-event-schemas.sh` (CI/`make schema-register`:
+  stages only the produced subset, renamed to PascalCase, per registry lane).
 
-Backs SNS topic `iam.tenant.events`. Two schemas — the only tenant-lifecycle
-events O&M **produces** (all other messages on that topic are Realm-Provisioner
-produced and O&M **consumes** them via `tenant-orgm-q`; produce/consume sets
-are disjoint per HLD §9.1.1):
+Consumed schemas are never registered from this repo.
 
-| Domain event type | Registered Glue schema name |
-|---|---|
-| `tenant.created` | `TenantCreated` |
-| `trial.started` | `TrialStarted` |
+### Registry: `iam-membership-events` (env `GLUE_REGISTRY_MEMBERSHIP_NAME`)
 
-Total: **14 schemas across two registries**. The event-type ↔ schema-name
-mapping lives in `domain.GlueSchemaName` (`internal/core/domain/events.go`) —
-an explicit switch, not a mechanical transform, so a new event type will not
-silently register under a wrong name.
+Backs SNS topic `iam.membership.events`. Twelve schemas:
 
-## Pre-deploy checklist
+`DepartmentMembershipGranted`, `DepartmentMembershipRevoked`,
+`DepartmentMembershipLevelChanged`, `TenantRoleGranted`, `TenantRoleRevoked`,
+`MembershipRevoked`, `TenantMembershipsPurged`, `TenderAssigneeOverridden`
+(I-13), `MFAReset` (P-34), `TenantSeatOverageStarted`,
+`TenantSeatOverageResolved`, `TenantStateChanged` (EVT-16 relay).
 
-Run once in the target AWS account before every promotion. Fails loudly if any
-schema is missing.
+### Registry: `iam-tenant-events` (env `GLUE_REGISTRY_TENANT_NAME`)
+
+Backs SNS topic `iam.tenant.events` (shared with Realm Provisioner — disjoint
+schema names). Two schemas — the only tenant-lifecycle events O&M
+**produces**: `TenantCreated`, `TrialStarted`. Everything else on that topic is
+Realm-Provisioner-produced and consumed here via `tenant-orgm-q`.
+
+Total: **14 produced schemas across two registries.** Topic routing is keyed
+on event type via `domain.TopicForEvent`, not `Envelope.Source`.
+
+## Pre-deploy checks
 
 ```bash
-export GLUE_REGISTRY_NAME_MEMBERSHIP=iam-membership-events   # or the env-specific name
-export GLUE_REGISTRY_NAME_TENANT=iam-tenant-events
+export GLUE_REGISTRY_MEMBERSHIP_NAME=iam-membership-events   # or the env-specific name
+export GLUE_REGISTRY_TENANT_NAME=iam-tenant-events
 export AWS_REGION=ap-south-1
-make schema-verify
+make schema-validate   # schema-gov extract + validate (8 passes), no AWS needed
+make schema-verify     # aws glue get-schema for all 14 names across both registries
 ```
 
-`make schema-verify` wraps
-`docker run ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4` and runs
-schema-gov against `api/asyncapi.yaml` + `internal/adapter/outbound/eventbus/schemas/*.json`.
-The eight validation passes are:
+`make schema-validate` runs `platform-schemagov:0.4` against
+`api/asyncapi.yaml` + `schemas/*.json`: JSON structure, Draft-07 meta-schema,
+enum semantic drift, lifecycle annotations, open-schema guard, consumer
+strict-mode scan, AsyncAPI↔schema coverage, AsyncAPI structure. It also
+deletes the stray `mfareset.json` `extract` always writes (known schema-gov
+0.4 naming inconsistency; this repo keeps `mfa_reset.json`).
 
-1. Envelope well-formedness (CloudEvents 1.0.2).
-2. Draft-07 JSON Schema validity on each `schemas/*.json`.
-3. Coverage — every event type declared in `api/asyncapi.yaml` has a matching
-   `schemas/*.json` file.
-4. Reverse-coverage — every `schemas/*.json` corresponds to an event type in
-   the AsyncAPI channels.
-5. Registry-name resolution — `domain.GlueSchemaName` returns the same
-   PascalCase identifier as the file stem.
-6. Topic-partition — every event maps to exactly one of the two topics; no
-   event straddles topics (routing keyed on event type via
-   `domain.TopicForEvent`, not `Envelope.Source`).
-7. Lifecycle enforcement (`enforce-lifecycle` sub-command) — no backward-
-   incompatible changes without an accompanying `additive-then-destructive`
-   migration entry.
-8. Registry drift — every registered schema in Glue (per registry) has a live
-   `schemas/*.json`; no orphan Glue schemas.
-
-Expected output:
-
-```
-OK: 12 schemas present in registry 'iam-membership-events'
-OK:  2 schemas present in registry 'iam-tenant-events'
-OK: no orphan Glue schemas
-OK: no orphan schemas/*.json
-```
+`make schema-verify` checks that every expected schema **name** exists
+(`OK: all 14 schemas present across both registries`). It does not prove the
+exact definition of this build is registered — a pod does that at startup.
 
 Failure modes and fixes:
 
-- `missing Glue schemas ... DepartmentMembershipGranted ...`
-  The registry does not yet have the schemas. Register them per registry:
-
-  ```bash
-  make schema-register REGISTRY=iam-membership-events
-  make schema-register REGISTRY=iam-tenant-events
-  make schema-verify
-  ```
-
-  If `schema-gov register` names schemas after the filename stem (already
-  PascalCase in this repo — no override needed unlike the older User Profile
-  runbook), the outputs should match without translation.
-
-- The IAM role running `aws glue get-schema` returns AccessDenied.
-  Ensure the caller can `glue:GetSchemaVersion` on **both** registry ARNs (see
-  `deploy/iam/policy.json` sid `GlueSchemaRegistryReadOnly`).
-
-- **Orphan detected in registry** (schema exists in Glue but no file in
-  `schemas/`): use `schema-gov prune --mode archive` on the affected registry
-  to move the schema into `docs/schema-archive/` and de-register from Glue.
-  Never hard-delete without an archive — retention is required for
-  event-payload replay from S3 archives.
+- `FAIL: missing Glue schemas: ...` — register them: `make schema-register`
+  (stages the produced schemas per lane and registers both registries), then
+  re-run `make schema-verify`.
+- `aws glue get-schema` returns AccessDenied — the caller needs the
+  `GlueSchemaRegistryReadOnly` actions below on **both** registry ARNs.
 
 ## What happens if a schema is missing at pod startup
 
 `NewGlueCodec` (per registry) returns an error of the form:
 
 ```
-prefetch glue schema "DepartmentMembershipGranted" (event type
-"department.membership.granted") in registry "iam-membership-events":
-<underlying AWS error> — run `make schema-verify` to confirm the expected
-schemas exist in both registries
+resolve glue schema "DepartmentMembershipGranted" in registry
+"iam-membership-events" by definition: <underlying AWS error> — this
+binary's schema version isn't registered yet: wait for schema-registry.yml
+to register it, or run `make schema-verify`
 ```
 
-The pod exits before opening the HTTP port. Kubernetes restart-loops it
-(CrashLoopBackOff). Nothing publishes to SNS during this state; the outbox
-runner is not started because pool wiring fails first in `cmd/server/main.go`.
+`cmd/server/main.go` panics before opening the HTTP port and Kubernetes
+restart-loops the pod (CrashLoopBackOff). Nothing publishes to SNS in this
+state; the outbox keeps accumulating rows.
 
-**Mitigation:** roll back the Helm release with `helm rollback`, register the
-missing schema, then re-deploy. Do NOT set the registry env vars to empty
-strings to fall through to `NoopCodec` — that publishes unversioned JSON and
-permanently corrupts the audit trail for the duration.
+Common causes:
+
+- **The deploy outran `schema-registry.yml`** for a release that changed a
+  schema. The pod recovers on its own on the first restart after
+  registration lands — no action needed beyond letting the workflow finish.
+- **The embedded definition differs from every registered version** — e.g. a
+  `schemas/*.json` file edited without `make extract-schemas`, or a
+  registration that failed Glue's BACKWARD check. Fix the schema and let
+  `schema-registry.yml` register it.
+- The version exists but is `PENDING`/`FAILURE` in Glue (compatibility check
+  still running or failed).
+
+Do NOT set the registry env vars to empty strings to fall through to
+`NoopCodec` in a real environment — that publishes unversioned JSON.
+
+## Consumed-schema violations and the DLQ
+
+Each inbound queue runs, outermost first: DLQ router (`cmd/server/dlq.go`) →
+`platform_messages_*` counters → consumed-schema validation → `Handle`.
+Permanent rejects are `SendMessage`'d straight to the queue's DLQ (DLQ URL
+read from the queue's own `RedrivePolicy`) with message attributes
+`EventType` and `DLQReason`, then acked:
+
+| `DLQReason` | Cause | Alert |
+|---|---|---|
+| `future_time_clamp` | EVT-15: `event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `IAMFutureLifecycleEventRejected` |
+| `schema_violation` | Decoded payload fails its embedded consumed schema (EVT-17) | `IAMConsumedEventSchemaViolation` |
+
+Both increment `platform_dlq_messages_total{event_type,reason}`. If the DLQ
+can't be resolved at startup (logged as `DLQ routing disabled`) or a send
+fails, the message falls back to normal SQS retry + redrive after
+`maxReceiveCount=5`. `catalog-orgm-q` is inert today and has no
+`deploy/iam/policy.json` grant, so it always takes the fallback.
+
+On a `schema_violation` page: inspect a DLQ message, decide which side is
+wrong — the producer broke its contract, or this repo's `api/asyncapi.yaml`
+is stale/stricter than what the producer sends — fix it (for the latter:
+edit `api/asyncapi.yaml`, `make extract-schemas`, `make schema-validate`),
+then redrive. A redriven message is decoded as plain JSON (the router clears
+`dataschema`) and re-validated.
 
 ## Local development
 
-`scripts/init-floci.sh` registers all 14 schemas into floci's real Glue
-Schema Registry implementation across the two registries under the same
-PascalCase names, reading the schema definitions straight from
-`internal/adapter/outbound/eventbus/schemas/` (mounted read-only into the
-container). Unlike LocalStack Community, floci includes Glue Schema Registry
-in its free tier — no Pro token, no NoopCodec fallback needed for local dev.
+`scripts/init-floci.sh` registers all 14 produced schemas into floci's Glue
+Schema Registry across the two registries, reading the definitions straight
+from `internal/adapter/outbound/eventbus/schemas/` (mounted read-only into
+the container). floci matches `GetSchemaByDefinition` by JSON content, so the
+pretty-printed files it registers resolve the same as CI's compact uploads.
 `GLUE_REGISTRY_*_NAME` is set by default in `.env-example`, so `make
-docker-up` runs the real Glue wire-format codec end-to-end out of the box.
+docker-up` runs the real Glue wire-format codec end to end.
+`test/integration/glue_codec_test.go` exercises the by-definition lookup
+against floci (a build keeps stamping its own version after a newer one is
+registered; an unregistered definition fails startup).
 
-## Adding a new event type
+## Adding a new produced event type
 
-1. Add the payload struct and event-type constant to
-   `internal/core/domain/events.go`.
-2. Extend the `GlueSchemaName` switch with the new dot-notation → PascalCase
-   mapping.
-3. Decide the topic: `iam.membership.events` (default for org/dept/delegation)
-   or `iam.tenant.events` (reserved; only added by explicit RFC — O&M is not
-   the primary producer of tenant lifecycle beyond `TenantCreated` /
-   `TrialStarted`).
-4. Add the JSON schema file to
-   `internal/adapter/outbound/eventbus/schemas/<PascalCase>.json` (matches file
-   stem, no snake_case translation).
-5. Update `api/asyncapi.yaml` — add the message under the correct channel.
-6. Update `defaultSchemaEntries` in
-   `internal/adapter/outbound/eventbus/validating_codec.go` (the ValidatingCodec
-   registry table).
-7. Update `RoutingPublisher` config in `cmd/server/main.go` if the new event
-   requires a topic O&M does not already publish to (rare).
-8. Update `scripts/init-floci.sh` with the new `register_schema` call in
-   the correct registry.
-9. Run `make schema-validate` locally (or `make schema-verify` against a dev
-   AWS account).
-10. Merge, then run `make schema-register` in every environment before the
-    first pod that would publish the new event starts.
+1. Add the event-type constant and payload to `internal/core/domain`, and to
+   `domain.IsProducedEvent` / `domain.TopicForEvent` (topic choice:
+   `iam.membership.events` by default; `iam.tenant.events` only by explicit
+   decision).
+2. Add the message under the correct channel in `api/asyncapi.yaml`, then
+   `make extract-schemas` (never hand-edit the extracted JSON).
+3. Add the new file to `schemaFileNames` (`glue_codec.go`) and to
+   `.github/scripts/stage-produced-event-schemas.sh`; add the name to
+   `make schema-verify`'s list and to `scripts/init-floci.sh`.
+4. Run `make schema-validate` and the unit tests (the Python parity test
+   checks the new file's registered form).
+5. Merge. `schema-registry.yml` registers it; pods built from that commit
+   start once registration lands.
 
-The CI workflow `.github/workflows/schema-registry.yml` runs:
+The CI workflow `.github/workflows/schema-registry.yml` runs, per registry
+(matrix): on PRs — validate + diff against the staging registry (read-only);
+on push to `main` / release — validate, freeze check, orphan detection,
+usage→lifecycle enforcement, diff, `register`, changelog, metrics.
 
-- On PRs: `extract --check` (detects `asyncapi.yaml` ↔ `schemas/` drift) +
-  `validate` (all 8 passes) + `enforce-lifecycle` + `diff` against the target
-  registries (both, per PR).
-- On merges to `main`: `register` + `changelog --append` (writes
-  `docs/schema-changelog.md`) + `metrics --push` (per registry).
+Alerting for registry health lives in
+`deploy/monitoring/schema-registry-alerts.yml` (`SchemaBreakingChangeBlocked`,
+`SchemaOrphanCountHigh`, `SchemaRegistrationSpike`, `SchemaVersionChurn`, …).
 
-Alerting for schema drift and registry health lives in
-`deploy/monitoring/schema-registry-alerts.yml` (out-of-band):
+## IAM policy — required statements
 
-- `schema_gov_orphan_registrations_total > 0` per registry (page).
-- `schema_gov_missing_schemas_total > 0` per registry (page).
-- Failed CI run on `main` (Slack warn only — no runtime impact).
+The pod's IAM role (`deploy/iam/policy.json`):
 
-## IAM policy — required SIDs
-
-The pod's IAM role must include the following SIDs (see
-`deploy/iam/policy.json`). Missing any of these produces `AccessDenied` at
-startup.
-
-**Glue Schema Registry (read, both registries):**
-
-- `GlueSchemaRegistryReadOnly` — `glue:GetRegistry`, `glue:GetSchema`,
-  `glue:GetSchemaVersion`, `glue:GetSchemaByDefinition`, `glue:ListSchemas`,
-  `glue:QuerySchemaVersionMetadata` on both
-  `${glue_registry_arn_membership}` + `/*` and
-  `${glue_registry_arn_tenant}` + `/*`.
-
-**SNS (publish, both topics):**
-
-- `PublishMembershipEvents` — `sns:Publish` on `${sns_topic_arn_membership}`.
-- `PublishTenantEvents` — `sns:Publish` on `${sns_topic_arn_tenant}`.
-
-**SQS (consume, both queues + DLQs):**
-
-- `ConsumeTenantLifecycleEvents` — `sqs:ReceiveMessage`, `sqs:DeleteMessage`,
-  `sqs:GetQueueAttributes`, `sqs:ChangeMessageVisibility` on
-  `${sqs_queue_arn_tenant_events}` (`tenant-orgm-q`) and its DLQ.
-- `ConsumeBillingEvents` — same actions on
-  `${sqs_queue_arn_billing_events}` (`billing-orgm-q`) and its DLQ.
-
-**KMS:** `KMSForSNSAndSQSEncryption` — `kms:Encrypt` / `kms:Decrypt` /
-`kms:GenerateDataKey` on the CMKs used by SNS and SQS. Exact action lists in
-`policy.json`.
+- **`GlueSchemaRegistryReadOnly`** — `glue:GetRegistry`, `glue:GetSchema`,
+  `glue:GetSchemaVersion`, `glue:GetSchemaByDefinition` (the startup lookup),
+  `glue:ListSchemas`, `glue:QuerySchemaVersionMetadata` on both registry ARNs
+  and their schemas.
+- **`PublishMembershipEvents`** — `sns:Publish`, `sns:GetTopicAttributes` on
+  both topics.
+- **`ConsumeTenantAndBillingQueues`** — `sqs:ReceiveMessage`,
+  `sqs:DeleteMessage`, `sqs:GetQueueAttributes` (also used to read each
+  queue's `RedrivePolicy`), `sqs:ChangeMessageVisibility`, `sqs:SendMessage`
+  (straight-to-DLQ rejects) on `tenant-orgm-q`, `billing-orgm-q` and their
+  DLQs.
 
 ## Required env vars
 
-Set in `deploy/helm/values.yaml` (per environment) or `.env-example` (dev):
-
 | Variable | Purpose | Notes |
 |---|---|---|
-| `DATABASE_URL` | App pool DSN, RLS-enforced | Points at PgBouncer in prod/staging |
-| `MIGRATION_DATABASE_URL` | Direct-Postgres DSN | Migrations require `pg_advisory_lock` (session-scoped) — must bypass PgBouncer |
-| `GLUE_REGISTRY_NAME_MEMBERSHIP` | Membership-events registry | Set to `iam-membership-events` in production. Leave empty in dev (NoopCodec). |
-| `GLUE_REGISTRY_NAME_TENANT` | Tenant-events registry | Set to `iam-tenant-events` in production. Leave empty in dev. |
-| `SNS_TOPIC_ARN_MEMBERSHIP` | `iam.membership.events` topic ARN | Required. `RoutingPublisher` sends here for every event type except `TenantCreated`/`TrialStarted` (`domain.TopicForEvent`, keyed on event type — not `Envelope.Source`) |
-| `SNS_TOPIC_ARN_TENANT` | `iam.tenant.events` topic ARN | Required. Only `TenantCreated` / `TrialStarted` published by O&M |
-| `SQS_QUEUE_URL_TENANT_EVENTS` | `tenant-orgm-q` URL | RP tenant-lifecycle events (`TrialTenantProvisioned`, `TenantRealmReady`, ...) |
-| `SQS_QUEUE_URL_BILLING_EVENTS` | `billing-orgm-q` URL | Billing events (`TenantPlanChanged`, `TenantSeatsChanged`, ...) |
-| `AWS_REGION` | Primary region | `ap-south-1` in production |
+| `GLUE_REGISTRY_MEMBERSHIP_NAME` / `_ARN` | `iam-membership-events` registry | Unset ⇒ `NoopCodec` (plain JSON) on that topic |
+| `GLUE_REGISTRY_TENANT_NAME` / `_ARN` | `iam-tenant-events` registry | Unset ⇒ `NoopCodec` on that topic |
+| `SNS_TOPIC_MEMBERSHIP_ARN` | `iam.membership.events` | Unset ⇒ noop publisher (dev) |
+| `SNS_TOPIC_TENANT_ARN` | `iam.tenant.events` | Only `TenantCreated` / `TrialStarted` |
+| `SQS_TENANT_ORGM_QUEUE_URL` | `tenant-orgm-q` | RP tenant-lifecycle events |
+| `SQS_BILLING_ORGM_QUEUE_URL` | `billing-orgm-q` | Billing events |
+| `SQS_CATALOG_ORGM_QUEUE_URL` | `catalog-orgm-q` | Unset everywhere today (inert) |
+| `AWS_REGION` | Region | `ap-south-1` |
+
+No env var configures DLQs — they come from each queue's `RedrivePolicy`.
 
 ## Runtime interaction with EVT-14 / EVT-15 / EVT-16
 
-The schema-registry contract is enforced at publish time (ValidatingCodec) and
-at consume time (schema-gov diff CI). It does **not** affect the runtime
-recency / clock / relay guards, but a redriven DLQ event still needs a live
-schema-version reference:
-
-- **EVT-14** stale-skip does not de-register the schema; consumer still resolves
-  the header schema version before comparing `event.time` vs
-  `tenants.last_event_at`.
-- **EVT-15** future-time reject NACKs to DLQ **without** ever validating the
-  payload against the schema — clock-skewed events are refused before entering
-  the projection.
+- **EVT-14** stale-skip runs inside `Handle`, after decode and validation; a
+  stale event still passes schema validation and is recorded in
+  `processed_events`.
+- **EVT-15** future-time reject happens inside `Handle` too; the payload has
+  already passed consumed-schema validation, and the DLQ router moves the
+  message straight to the DLQ (`DLQReason=future_time_clamp`) without
+  recording `processed_events`.
 - **EVT-16** `TenantStateChanged` relay writes go through the same
-  ValidatingCodec path — the schema for `TenantStateChanged` in
-  `iam-membership-events` must be present or the outbox insert fails and the
-  consumer transaction rolls back (correct — no state without event).
-
-If a runtime page implicates one of these guards, verify Glue reachability
-first (`aws glue get-schema-version`) before treating it as a producer /
-consumer logic bug.
+  `ValidatingCodec` enqueue path — a relay payload that fails its produced
+  schema fails the outbox insert and rolls back the consumer transaction
+  (correct — no state without event).
