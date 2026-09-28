@@ -33,7 +33,7 @@ RUN CGO_ENABLED=0 GOOS=linux \
     -ldflags="-s -w -X main.buildVersion=${BUILD_VERSION}" \
     -o bin/reconciler ./cmd/reconciler
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 ARG BUILD_VERSION=dev
 ENV BUILD_VERSION=${BUILD_VERSION}
