@@ -210,7 +210,11 @@ func TestRequireActiveTenant_NoIdentity_PassesThrough(t *testing.T) {
 
 // ─── tenant lookup error → fall through to handler (which produces 404) ─
 
-func TestRequireActiveTenant_LookupError_FallsThrough(t *testing.T) {
+func TestRequireActiveTenant_LookupError_FailsClosed(t *testing.T) {
+	// SECURITY-7: unexpected DB error must now abort with 503 db_unavailable
+	// (fail-closed) rather than calling c.Next() (fail-open). This prevents
+	// a transient connection error from letting a cancelled/suspended tenant
+	// through to write handlers.
 	repo := &stubTenantRepo{err: assertRepoErr}
 	mw := RequireActiveTenant(repo)
 
@@ -221,12 +225,9 @@ func TestRequireActiveTenant_LookupError_FallsThrough(t *testing.T) {
 	req = req.WithContext(requestctx.WithContext(req.Context(), rc))
 	c.Request = req
 
-	called := false
 	mw(c)
-	if !c.IsAborted() {
-		called = true
-	}
-	assert.True(t, called, "repo error → gate must not abort; downstream produces the 404")
+	assert.True(t, c.IsAborted(), "unexpected DB error → gate must abort (fail-closed, SECURITY-7)")
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "unexpected DB error → 503 db_unavailable")
 }
 
 // sentinel used by the lookup-error test

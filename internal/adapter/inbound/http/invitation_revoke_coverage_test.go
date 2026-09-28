@@ -70,6 +70,10 @@ func (r *p31InviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) er
 func (r *p31InviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
 	return nil, nil
 }
+func (r *p31InviteRepo) CountCreatedInWindowByActor(context.Context, uuid.UUID, uuid.UUID, time.Time) (int, error) {
+	return 0, nil
+}
+func (r *p31InviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
 // buildRevokeHandler wires an InvitationHandler for P-31 tests.
 func buildRevokeHandler(repo *p31InviteRepo) *InvitationHandler {

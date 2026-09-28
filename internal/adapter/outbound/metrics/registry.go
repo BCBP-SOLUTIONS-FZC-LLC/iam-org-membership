@@ -124,10 +124,10 @@ var PlatformRegistry = []RegistryEntry{
 		RequiredLabels:     []string{"domain", "service", "environment"},
 		ApprovedLabels:     []string{"target_service", "endpoint"},
 		LabelValues: map[string][]string{
-			"target_service": {"catalog", "group_mapping", "delegation"}, // the three ADR-0007/ADR-0008 synchronous outbound peers this service calls
-			"endpoint":       {"open — the catalogadmin/groupmappingclient/delegationcheck client method names this service already uses as its `endpoint` label today, e.g. GET /internal/plans, GET /internal/departments, POST /internal/tenants/{id}/group-resolution, GET /internal/delegations/dept-delegate"},
+			"target_service": {"catalog", "group_mapping", "delegation", "realm_provisioner", "workflow", "token_service"}, // all six synchronous outbound peers
+			"endpoint":       {"open — client method names used as endpoint label: departments/plans (catalog); group-resolution (group_mapping); dept-delegate (delegation); create_invited_user/delete_user/patch_realm_config/revoke_user_sessions/reset_mfa (realm_provisioner); get_delegate_impact/reassign_delegate/cancel_by_delegate (workflow); service-accounts (token_service)"},
 		},
-		Cardinality:      "Bounded — target_service × endpoint is a small, enumerable set (3 peers × a handful of endpoints each); no request/session/tenant identifier is ever a label value.",
+		Cardinality:      "Bounded — target_service × endpoint is a small, enumerable set (6 peers × a handful of endpoints each); no request/session/tenant identifier is ever a label value.",
 		AggregationNotes: "Per-dependency failure rate: sum(rate(platform_dependency_request_seconds_count{target_service=\"X\"}[w])) joined against platform_dependency_errors_total. Cross-domain dependency-health board: sum by (domain, target_service) rate(..._count[w]). p99 latency per dependency: histogram_quantile(0.99, sum by (le, target_service) (rate(..._bucket[w]))).",
 		SupersedesTier3:  []string{"iam_org_membership_dependency_call_duration_seconds"},
 	},
@@ -153,7 +153,7 @@ var PlatformRegistry = []RegistryEntry{
 		RequiredLabels:     []string{"domain", "service", "environment"},
 		ApprovedLabels:     []string{"target_service", "endpoint", "outcome"},
 		LabelValues: map[string][]string{
-			"target_service": {"catalog", "group_mapping", "delegation"},
+			"target_service": {"catalog", "group_mapping", "delegation", "realm_provisioner", "workflow", "token_service"},
 			"endpoint":       {"open — see platform_dependency_request_seconds's endpoint entry"},
 			"outcome":        {"5xx", "timeout", "fallback_served"},
 		},

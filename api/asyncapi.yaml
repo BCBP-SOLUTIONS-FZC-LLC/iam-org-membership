@@ -201,13 +201,18 @@ info:
 
   x-consumer-sdk:
     summary: >-
-      Consumer SDKs are RECOMMENDED to be configured for lenient JSON decoding
-      at the SDK layer even though this service publishes closed-schema payloads.
-      Lenient SDK decoding protects consumers against a rolling deploy window
-      where the schema in Glue has advanced past the schema pinned in the
-      consumer binary. Strict validation of the closed contract is the job of
-      JSON-schema validation against the pinned schema version, not SDK strict
-      mode.
+      Consumer SDKs MUST be configured for lenient JSON decoding at the SDK
+      layer — see x-forward-compatibility.required-settings for the correct
+      per-language setting. This service publishes open-schema payloads
+      (additionalProperties: true, as of 2026-09-21 LLD rev 2.11); new
+      optional fields may appear in any future Glue schema version without a
+      consumer migration cycle. Lenient SDK decoding also protects against the
+      rolling deploy window where a new field appears in an already-registered
+      Glue schema version before the consumer binary is updated. Strict
+      unknown-field rejection at the SDK layer defeats the open-schema contract
+      entirely. Structural validation of the schema invariants is the job of
+      JSON-schema validation against the pinned embedded schema version, not
+      SDK strict mode.
     in-repo-enforcement: >-
       This service embeds all 14 schemas at compile time via //go:embed
       schemas/*.json in internal/adapter/outbound/eventbus/codec.go. The
@@ -351,7 +356,7 @@ servers:
       SQS queue for the Audit Log consumer.
       Queue: membership-audit-q  |  DLQ: membership-audit-q-dlq  (maxReceiveCount=5)
       Owned and managed by: Audit Log Service
-      SNS subscription filter: no filter (subscribes to all 11 membership event types)
+      SNS subscription filter: no filter (subscribes to all 12 membership event types)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 

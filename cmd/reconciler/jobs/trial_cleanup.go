@@ -14,7 +14,7 @@ import (
 // retained (TRIAL-2 one-lifetime-trial).
 func TrialCleanup(ctx context.Context, jctx *Context) (Result, error) {
 	var res Result
-	n, err := jctx.Reconciler.HardDeleteExpiredTrials(ctx, jctx.TrialGraceDays)
+	n, err := jctx.Reconciler.HardDeleteExpiredTrials(ctx, jctx.TrialGraceDays, jctx.BatchLimit)
 	if err != nil {
 		return res, err
 	}

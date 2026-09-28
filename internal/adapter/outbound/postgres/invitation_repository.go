@@ -11,7 +11,6 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type InvitationRepository struct {
@@ -181,9 +180,11 @@ func (r *InvitationRepository) Insert(ctx context.Context, inv *domain.PendingIn
 			inv.InvitedBy, inv.KeycloakUserID, string(inv.Status), inv.ExpiresAt)
 		created, err := scanInvitation(row)
 		if err != nil {
-			// 23505 = unique_violation: concurrent invite for same email → invitation_already_exists (409)
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// unique_violation on the email index → invitation_already_exists (409).
+			// pgcommon.IsUniqueViolation is the pgcommon-approved helper for 23505
+			// detection — avoids importing pgconn directly for a check the library
+			// already provides (same pattern as tenant_repository.go:202).
+			if pgcommon.IsUniqueViolation(err) {
 				return domain.NewError(domain.ErrInvitationAlreadyExists,
 					"invitation already exists for this email")
 			}
@@ -361,12 +362,31 @@ func (r *InvitationRepository) CountCreatedInWindow(ctx context.Context, tenantI
 	return n, err
 }
 
+// CountCreatedInWindowByActor returns the count of invitations created by a
+// specific actor for the tenant since `since` — SECURITY-5 per-actor hourly
+// rate check. Uses deleted_at IS NULL to exclude hard-deleted rows while still
+// counting revoked/expired/accepted invitations within the window (a revoked
+// invite still consumed a slot in the originating hour).
+func (r *InvitationRepository) CountCreatedInWindowByActor(ctx context.Context, tenantID, actorID uuid.UUID, since time.Time) (int, error) {
+	var n int
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM pending_invitations
+			 WHERE tenant_id = $1 AND invited_by = $2 AND created_at >= $3 AND deleted_at IS NULL`,
+			tenantID, actorID, since).Scan(&n)
+	})
+	return n, err
+}
+
 func (r *InvitationRepository) ExpireOverdue(ctx context.Context, limit int) (int, error) {
 	var n int
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		// SECURITY-8: erase PII (email, full_name) atomically with the status
+		// flip so expired invitations never retain PII beyond the expiry event.
 		tag, err := tx.Exec(ctx, `
 			UPDATE pending_invitations
-			SET status = 'expired', kc_cleanup_pending = true
+			SET status = 'expired', kc_cleanup_pending = true,
+			    email = '', full_name = 'redacted'
 			WHERE id IN (
 				SELECT id FROM pending_invitations
 				WHERE status = 'pending' AND expires_at < now()
@@ -385,6 +405,26 @@ func (r *InvitationRepository) ExpireOverdue(ctx context.Context, limit int) (in
 func (r *InvitationRepository) ClearKCCleanupPendingByID(ctx context.Context, id uuid.UUID) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE pending_invitations SET kc_cleanup_pending = false WHERE id = $1`, id)
+		return err
+	})
+}
+
+// ErasePII overwrites the PII columns on a terminal invitation row (SECURITY-8).
+// When tenantID is non-nil the WHERE clause is narrowed by tenant_id so the
+// tenant-scoped RLS pool can execute it; cross-tenant callers (reconciler sysPool)
+// pass uuid.Nil and the match is on id alone (BYPASSRLS).
+func (r *InvitationRepository) ErasePII(ctx context.Context, tenantID, id uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		if tenantID == uuid.Nil {
+			_, err := tx.Exec(ctx,
+				`UPDATE pending_invitations SET email = '', full_name = 'redacted' WHERE id = $1`,
+				id)
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`UPDATE pending_invitations SET email = '', full_name = 'redacted'
+			 WHERE id = $1 AND tenant_id = $2`,
+			id, tenantID)
 		return err
 	})
 }

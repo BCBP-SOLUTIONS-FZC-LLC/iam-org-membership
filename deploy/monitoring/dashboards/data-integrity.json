@@ -1,0 +1,8 @@
+{
+  "title": "iam-org-membership — Data Integrity",
+  "description": "Data integrity signals: RLS violations by type, DLQ rate by reason, outbox dead-letter count, lifecycle event lag.",
+  "schemaVersion": 36,
+  "version": 1,
+  "tags": ["iam", "iam-org-membership", "integrity", "rls"],
+  "panels": []
+}

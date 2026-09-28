@@ -550,14 +550,25 @@ func (h *InternalHandler) GetSeatUsage(c *gin.Context) {
 // would collapse into the same generic-error handling as a genuine
 // dependency failure on the caller's side.
 //
-// @Summary      Membership existence/active-status check (iam-tender-acl grant-time dependency)
-// @Description  Returns `{active, tenant_membership_id}` — tenant_membership_id is populated only when active is true. Never 404.
+// Auth contract (GAP-TAC-OM-15): callers MUST send:
+//
+//	x-user-id:     00000000-0000-0000-0000-0000000000a1  (iam-system UUID)
+//	x-tenant-id:   <target tenant UUID>
+//	x-tenant-roles: iam-system
+//
+// The RequireSystemRole middleware enforces x-tenant-roles = "iam-system".
+// This exact string is the cross-repo contract between this endpoint and
+// iam-tender-acl's setInternalHeaders() and iam-delegation's propagate.go.
+//
+// @Summary      Membership existence/active-status check (I-15, mesh-only)
+// @Description  Returns `{active, tenant_membership_id}` — tenant_membership_id is populated only when active is true. Never 404. Callers must send x-tenant-roles: iam-system (RequireSystemRole gate).
 // @Tags         internal
 // @Produce      json
 // @Param        id       path      string  true  "Tenant UUID"  format(uuid)
 // @Param        user_id  path      string  true  "User UUID"    format(uuid)
 // @Success      200      {object}  MemberExistsResponse
 // @Failure      400      {object}  ErrorResponse
+// @Failure      403      {object}  ErrorResponse  "insufficient_role — x-tenant-roles must be iam-system"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles

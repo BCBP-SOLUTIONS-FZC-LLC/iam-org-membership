@@ -18,17 +18,17 @@ import (
 // then short-circuits. platform-events has no processed-events API —
 // Envelope.ID + INSERT ON CONFLICT DO NOTHING is the library's documented
 // consumer pattern (same as iam-realm-provisioner).
-func skipDuplicate(ctx context.Context, dedup port.IdempotencyStore, consumer, eventID string) (bool, error) {
-	processed, err := dedup.IsProcessed(ctx, consumer, eventID)
+func skipDuplicate(ctx context.Context, dedup port.IdempotencyStore, eventID string) (bool, error) {
+	processed, err := dedup.IsProcessed(ctx, consumerName, eventID)
 	if err != nil {
 		return false, err
 	}
 	if processed {
 		if metrics.ProcessedEventsDuplicatesTotal != nil {
-			metrics.ProcessedEventsDuplicatesTotal.WithLabelValues(consumer).Inc()
+			metrics.ProcessedEventsDuplicatesTotal.WithLabelValues(consumerName).Inc()
 		}
 		if metrics.DuplicateMessages != nil {
-			metrics.DuplicateMessages.WithLabelValues(consumer).Inc()
+			metrics.DuplicateMessages.WithLabelValues(consumerName).Inc()
 		}
 		return true, nil
 	}

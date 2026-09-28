@@ -5,7 +5,7 @@
 //
 // One read-only, mesh-only call:
 //
-//   - IsServiceAccount — GET /internal/tenants/:id/service-accounts?principal_sub=<uuid> (TS-5)
+//   - IsServiceAccount — GET /api/v1/internal/tenants/:id/service-accounts?principal_sub=<uuid> (TS-5)
 //
 // TS-5 is AUTH-9's defense-in-depth check on the membership-create (P-6/I-3)
 // and role-grant (P-10/P-28) paths (iam-lld-org-membership-service.md §10,
@@ -72,9 +72,14 @@ func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("TOKEN_SERVICE_BASE_URL", "")
 	timeout := envDurationMs("TOKEN_SERVICE_TIMEOUT_MS", 1000*time.Millisecond)
 	if baseURL == "" {
-		// Warn at construction time so a missing TOKEN_SERVICE_BASE_URL is
-		// visible in startup logs, not silently discovered on first call.
-		warn(log, "tokenservice: TOKEN_SERVICE_BASE_URL is not set — AUTH-9 service-account check will be unavailable; every Invite/Assign/ReconcileRoles call degrades to allowing the operation (the structural composite-FK bar still holds)")
+		// Warn at construction time. auth9_status="degraded" is a stable key
+		// that log-based alerts can match; every Invite/ReconcileRoles call will
+		// fail-open until TOKEN_SERVICE_BASE_URL is set in the deployment config.
+		warn(log, "tokenservice: TOKEN_SERVICE_BASE_URL is not set — AUTH-9 service-account check degraded",
+			"auth9_status", "degraded",
+			"impact", "IsServiceAccount fails open; service accounts can be invited/granted roles via business-logic path",
+			"action", "set TOKEN_SERVICE_BASE_URL in Helm values or env before deploying to production",
+		)
 	}
 	return NewHTTPClient(baseURL, timeout, log)
 }
@@ -103,7 +108,7 @@ func (c *HTTPClient) IsServiceAccount(ctx context.Context, tenantID, userID uuid
 	}
 	q := url.Values{}
 	q.Set("principal_sub", userID.String())
-	reqURL := c.baseURL + "/internal/tenants/" + tenantID.String() + "/service-accounts?" + q.Encode()
+	reqURL := c.baseURL + "/api/v1/internal/tenants/" + tenantID.String() + "/service-accounts?" + q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -140,12 +145,12 @@ func (c *HTTPClient) IsServiceAccount(ctx context.Context, tenantID, userID uuid
 	return true, nil
 }
 
-// setInternalHeaders authenticates as the reserved iam-system principal —
-// the same "/internal/*" trust-boundary convention every other IAM internal
-// route in this stack uses (mesh-only/mTLS; RequireSystemRole is
-// defense-in-depth on Token Service's side too).
+// setInternalHeaders authenticates as the reserved iam-system principal.
+// Token Service's GUCBridgeMiddleware requires x-user-id to be the system
+// principal UUID (domain.SystemPrincipalID = "00000000-0000-0000-0000-0000000000a1").
+// Sending the literal string "iam-system" causes a 401 — it fails UUID parsing.
 func (c *HTTPClient) setInternalHeaders(req *http.Request, tenantID uuid.UUID) {
-	req.Header.Set("x-user-id", "iam-system")
+	req.Header.Set("x-user-id", "00000000-0000-0000-0000-0000000000a1") // domain.SystemPrincipalID
 	req.Header.Set("x-tenant-id", tenantID.String())
 	req.Header.Set("x-tenant-roles", "iam-system")
 }

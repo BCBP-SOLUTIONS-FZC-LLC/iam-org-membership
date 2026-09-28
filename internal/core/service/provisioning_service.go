@@ -229,32 +229,38 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 		// via RoutingPublisher).
 		pub, _ := port.EventPublisherFromContext(txCtx)
 		if pub != nil {
-			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTenantCreated, TenantID: req.TenantID,
 				Subject: req.TenantID.String(), Actor: "iam-system",
 				Data: domain.TenantCreatedPayload{
 					TenantID: req.TenantID, Slug: req.Slug, Plan: req.Plan, Status: domain.StatusTrial,
 				},
-			})
-			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+			}); err != nil {
+				return err
+			}
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTrialStarted, TenantID: req.TenantID,
 				Subject: req.TenantID.String(), Actor: "iam-system",
 				Data: domain.TrialStartedPayload{
 					TenantID: req.TenantID, Plan: req.Plan, TrialEndsAt: trialEnds,
 				},
-			})
+			}); err != nil {
+				return err
+			}
 			// Also emit TenantRoleGranted for the owner (§16 A14).
 			// LLD I-1: granted_by = owner_user_id itself, since no other
 			// admin exists yet — mirror that in the event payload so the
 			// ActorID matches tenant_roles.granted_by written above.
-			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTenantRoleGranted, TenantID: req.TenantID,
 				Subject: req.OwnerUserID.String(), Actor: "iam-system",
 				Data: domain.TenantRoleGrantedPayload{
 					UserID: req.OwnerUserID, TenantID: req.TenantID,
 					RoleCode: domain.RoleTenantOwner, ActorID: req.OwnerUserID,
 				},
-			})
+			}); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -366,13 +372,15 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		}
 		for _, r := range revokedRoles {
 			if pub != nil {
-				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventTenantRoleRevoked, TenantID: tenantID,
 					Subject: userID.String(), Actor: "iam-system",
 					Data: domain.TenantRoleRevokedPayload{
 						UserID: userID, TenantID: tenantID, RoleCode: r.RoleCode, ActorID: uuid.Nil,
 					},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -383,13 +391,15 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		}
 		for _, d := range revokedDepts {
 			if pub != nil {
-				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventDepartmentMembershipRevoked, TenantID: tenantID,
 					Subject: userID.String(), Actor: "iam-system",
 					Data: domain.DepartmentMembershipRevokedPayload{
 						UserID: userID, TenantID: tenantID, DepartmentID: d.DepartmentID,
 					},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -402,13 +412,15 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		// mirroring MembershipService.RemoveUser's identical emission) and
 		// run their own cascades.
 		if pub != nil {
-			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventMembershipRevoked, TenantID: tenantID,
 				Subject: userID.String(), Actor: "iam-system",
 				Data: domain.MembershipRevokedPayload{
 					TenantID: tenantID, UserID: userID, ActorID: domain.SystemActorID,
 				},
-			})
+			}); err != nil {
+				return err
+			}
 		}
 
 		// Membership itself.

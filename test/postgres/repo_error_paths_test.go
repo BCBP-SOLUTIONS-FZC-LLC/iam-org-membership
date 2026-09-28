@@ -1131,7 +1131,7 @@ func TestErrPaths_ReconcilerStore(t *testing.T) {
 		cancelCtx, cancel := context.WithCancel(ctx)
 		cancel()
 		store := pgadapter.NewReconcilerStore(sysPool)
-		_, err := store.HardDeleteExpiredTrials(cancelCtx, 30)
+		_, err := store.HardDeleteExpiredTrials(cancelCtx, 30, 500)
 		assert.Error(t, err)
 	})
 

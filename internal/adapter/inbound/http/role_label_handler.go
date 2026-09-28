@@ -80,6 +80,15 @@ func (h *RoleLabelHandler) Patch(c *gin.Context) {
 		return
 	}
 	roleCode := c.Param("role_code")
+	allowedRoleCodes := map[string]bool{"preparator": true, "reviewer": true, "approver": true}
+	if !allowedRoleCodes[roleCode] {
+		// Path-param validation: return 400 (ErrValidation cause) with the
+		// semantic "invalid_role" code so callers distinguish a bad path param
+		// from a malformed body (VAL02/VAL03). ErrInvalidRole itself is a
+		// domain-rule sentinel (422) used by the service layer.
+		HandleError(c, &domain.DomainError{Code: "invalid_role", Message: "invalid role_code", Cause: domain.ErrValidation})
+		return
+	}
 	if err := requireTenantAdmin(c, tenantID); err != nil {
 		HandleError(c, err)
 		return

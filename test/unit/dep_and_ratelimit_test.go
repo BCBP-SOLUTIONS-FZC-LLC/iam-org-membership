@@ -70,11 +70,15 @@ func (r *depInviteRepo) MostRecentCreatedAt(context.Context, uuid.UUID, string) 
 func (r *depInviteRepo) CountCreatedInWindow(_ context.Context, _ uuid.UUID, _ time.Time) (int, error) {
 	return r.countInWindowResult, r.countInWindowErr
 }
+func (r *depInviteRepo) CountCreatedInWindowByActor(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ time.Time) (int, error) {
+	return 0, nil // actor rate limit not triggered in these dependency tests
+}
 func (r *depInviteRepo) ExpireOverdue(context.Context, int) (int, error)            { return 0, nil }
 func (r *depInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error { return nil }
 func (r *depInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
 	return nil, nil
 }
+func (r *depInviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
 var _ port.InvitationRepository = (*depInviteRepo)(nil)
 

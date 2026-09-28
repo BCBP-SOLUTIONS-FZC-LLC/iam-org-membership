@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -12,10 +13,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// authzHeaderRow matches the first QueryRow's Scan order: mStatus, tStatus,
-// tPlan, tLocale, mfaFresh, localAccountsEnabled, tenantFeatureFlagsJSON.
-func authzHeaderRow(featureFlagsJSON []byte) []any {
-	return []any{"active", "active", "pro", "en-US", 300, true, featureFlagsJSON}
+// authzSingleRow returns the 9-column row that FindMembershipProjection now
+// scans in a single LEFT JOIN query (PERF-1 refactor). Column order matches
+// the Scan call in authz_repository.go:
+//
+//	mStatus, tStatus, tPlan, tLocale, mfaFresh, localAccountsEnabled,
+//	tenantFeatureFlagsJSON, rolesJSON, deptsJSON
+func authzSingleRow(featureFlagsJSON []byte, rolesJSON []byte, deptsJSON []byte) []any {
+	if featureFlagsJSON == nil {
+		featureFlagsJSON = []byte("null")
+	}
+	if rolesJSON == nil {
+		rolesJSON = []byte("[]")
+	}
+	if deptsJSON == nil {
+		deptsJSON = []byte("[]")
+	}
+	return []any{
+		"active",         // mStatus
+		"active",         // tStatus
+		"pro",            // tPlan
+		"en-US",          // tLocale
+		300,              // mfaFresh
+		true,             // localAccountsEnabled
+		featureFlagsJSON, // tenantFeatureFlagsJSON
+		rolesJSON,        // roles as JSON array e.g. ["tenant_admin"]
+		deptsJSON,        // depts as JSON array e.g. [{"department_id":"...","role_level":"reviewer"}]
+	}
 }
 
 func TestAuthZRepo_FindMembershipProjection_NoMembershipRowReturnsNilNil(t *testing.T) {
@@ -30,7 +54,7 @@ func TestAuthZRepo_FindMembershipProjection_NoMembershipRowReturnsNilNil(t *test
 	assert.Nil(t, got, "caller (AuthZService) maps a nil result to 404")
 }
 
-func TestAuthZRepo_FindMembershipProjection_HeaderQueryErrorPassesThrough(t *testing.T) {
+func TestAuthZRepo_FindMembershipProjection_QueryErrorPassesThrough(t *testing.T) {
 	queryErr := errors.New("dial tcp: connection refused")
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
@@ -42,148 +66,49 @@ func TestAuthZRepo_FindMembershipProjection_HeaderQueryErrorPassesThrough(t *tes
 	assert.ErrorIs(t, err, queryErr)
 }
 
-func TestAuthZRepo_FindMembershipProjection_RolesQueryErrorPassesThrough(t *testing.T) {
-	queryErr := errors.New("roles query failed")
+func TestAuthZRepo_FindMembershipProjection_InvalidRolesJSONReturnsError(t *testing.T) {
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow(nil)}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			return nil, queryErr
+			return &fakeRow{values: authzSingleRow(nil, []byte("{not-json-array"), nil)}
 		},
 	}
 	_, err := NewAuthZRepository(nil).
 		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
-	assert.ErrorIs(t, err, queryErr)
+	assert.Error(t, err, "malformed roles JSON must propagate as error")
 }
 
-func TestAuthZRepo_FindMembershipProjection_RolesScanErrorPassesThrough(t *testing.T) {
+func TestAuthZRepo_FindMembershipProjection_InvalidDeptsJSONReturnsError(t *testing.T) {
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow(nil)}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			// Wrong arity forces scanInto to error inside rows.Scan.
-			return &fakeRows{scripted: [][]any{{uuid.New(), "extra"}}}, nil
+			return &fakeRow{values: authzSingleRow(nil, nil, []byte("{not-json-array"))}
 		},
 	}
 	_, err := NewAuthZRepository(nil).
 		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
-	assert.Error(t, err)
-}
-
-func TestAuthZRepo_FindMembershipProjection_RolesIterationErrorPassesThrough(t *testing.T) {
-	iterErr := errors.New("mid-stream reset")
-	callCount := 0
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow(nil)}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			callCount++
-			if callCount == 1 {
-				return &fakeRows{iterErr: iterErr}, nil
-			}
-			return &fakeRows{}, nil
-		},
-	}
-	_, err := NewAuthZRepository(nil).
-		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
-	assert.ErrorIs(t, err, iterErr)
-}
-
-func TestAuthZRepo_FindMembershipProjection_DeptQueryErrorPassesThrough(t *testing.T) {
-	deptErr := errors.New("dept query failed")
-	callCount := 0
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow(nil)}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			callCount++
-			if callCount == 1 {
-				// roles query — succeeds with no rows.
-				return &fakeRows{}, nil
-			}
-			return nil, deptErr
-		},
-	}
-	_, err := NewAuthZRepository(nil).
-		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
-	assert.ErrorIs(t, err, deptErr)
-}
-
-func TestAuthZRepo_FindMembershipProjection_DeptScanErrorPassesThrough(t *testing.T) {
-	callCount := 0
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow(nil)}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			callCount++
-			if callCount == 1 {
-				return &fakeRows{}, nil
-			}
-			// Wrong arity forces scanInto to error.
-			return &fakeRows{scripted: [][]any{{uuid.New()}}}, nil
-		},
-	}
-	_, err := NewAuthZRepository(nil).
-		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
-	assert.Error(t, err)
-}
-
-func TestAuthZRepo_FindMembershipProjection_DeptIterationErrorPassesThrough(t *testing.T) {
-	iterErr := errors.New("dept stream reset")
-	callCount := 0
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow(nil)}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			callCount++
-			if callCount == 1 {
-				return &fakeRows{}, nil
-			}
-			return &fakeRows{iterErr: iterErr}, nil
-		},
-	}
-	_, err := NewAuthZRepository(nil).
-		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
-	assert.ErrorIs(t, err, iterErr)
+	assert.Error(t, err, "malformed depts JSON must propagate as error")
 }
 
 func TestAuthZRepo_FindMembershipProjection_InvalidFeatureFlagsJSONReturnsError(t *testing.T) {
-	callCount := 0
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow([]byte("{not-json"))}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			callCount++
-			return &fakeRows{}, nil
+			return &fakeRow{values: authzSingleRow([]byte("{not-json"), nil, nil)}
 		},
 	}
 	_, err := NewAuthZRepository(nil).
 		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
 	assert.Error(t, err)
-	assert.Equal(t, 2, callCount, "both roles and dept queries run before the flags unmarshal")
 }
 
 func TestAuthZRepo_FindMembershipProjection_HappyPathFullProjection(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
 	deptID := uuid.New()
-	callCount := 0
+
+	rolesJSON := []byte(`["tenant_admin"]`)
+	deptsJSON := []byte(fmt.Sprintf(`[{"department_id":%q,"role_level":"reviewer"}]`, deptID))
+
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow([]byte(`{"beta":true}`))}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			callCount++
-			if callCount == 1 {
-				return &fakeRows{scripted: [][]any{{"tenant_admin"}}}, nil
-			}
-			return &fakeRows{scripted: [][]any{{deptID, "reviewer"}}}, nil
+			return &fakeRow{values: authzSingleRow([]byte(`{"beta":true}`), rolesJSON, deptsJSON)}
 		},
 	}
 	got, err := NewAuthZRepository(nil).
@@ -205,14 +130,10 @@ func TestAuthZRepo_FindMembershipProjection_HappyPathFullProjection(t *testing.T
 }
 
 func TestAuthZRepo_FindMembershipProjection_NoFeatureFlagsDefaultsToEmptyMap(t *testing.T) {
-	callCount := 0
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: authzHeaderRow(nil)}
-		},
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			callCount++
-			return &fakeRows{}, nil
+			// null featureFlags, empty roles and depts arrays
+			return &fakeRow{values: authzSingleRow(nil, nil, nil)}
 		},
 	}
 	got, err := NewAuthZRepository(nil).
@@ -221,4 +142,27 @@ func TestAuthZRepo_FindMembershipProjection_NoFeatureFlagsDefaultsToEmptyMap(t *
 	require.NotNil(t, got)
 	assert.Empty(t, got.TenantFeatureFlags)
 	assert.Empty(t, got.Departments, "no dept rows -> empty (non-nil) slice")
+	assert.Empty(t, got.Roles, "no role rows -> empty (non-nil) slice")
+}
+
+func TestAuthZRepo_FindMembershipProjection_MultipleRolesAndDepts(t *testing.T) {
+	dept1, dept2 := uuid.New(), uuid.New()
+	rolesJSON := []byte(`["tender_admin","tenant_owner"]`)
+	deptsJSON := []byte(fmt.Sprintf(
+		`[{"department_id":%q,"role_level":"preparator"},{"department_id":%q,"role_level":"approver"}]`,
+		dept1, dept2,
+	))
+
+	tx := &fakeTx{
+		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+			return &fakeRow{values: authzSingleRow(nil, rolesJSON, deptsJSON)}
+		},
+	}
+	got, err := NewAuthZRepository(nil).
+		FindMembershipProjection(injectTx(context.Background(), tx), uuid.New(), uuid.New())
+	require.NoError(t, err)
+	require.Len(t, got.Roles, 2)
+	require.Len(t, got.Departments, 2)
+	assert.Equal(t, domain.DeptRole("preparator"), got.Departments[0].RoleLevel)
+	assert.Equal(t, domain.DeptRole("approver"), got.Departments[1].RoleLevel)
 }

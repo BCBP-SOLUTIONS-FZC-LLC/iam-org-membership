@@ -314,6 +314,15 @@ type Recorder struct{}
 // IncRealmSyncFailed satisfies jobs.Metrics.
 func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
 
+// ObserveLifecycleEventLag records the seconds between event.time and the
+// moment this consumer applied the projection — the SLO-3 primary drift
+// signal. Nil-safe, see ObserveDependencyLatency.
+func ObserveLifecycleEventLag(eventType string, seconds float64) {
+	if LifecycleEventLagSeconds != nil {
+		LifecycleEventLagSeconds.WithLabelValues(eventType).Observe(seconds)
+	}
+}
+
 // DependencyOutcome classifies a cross-service client transport error into
 // one of platform_dependency_errors_total's two client-observable outcomes
 // ("timeout" | "5xx"). The third outcome, "fallback_served", is recorded by
@@ -575,4 +584,51 @@ func registerMetrics(environment string) {
 	AuthSessionRevokeFailed.WithLabelValues("transport")
 	RealmSyncFailed.WithLabelValues("patch_realm_config")
 	RealmSyncFailed.WithLabelValues("clear_marker")
+
+	// OBS-8: pre-initialise bounded label combinations so counters appear at
+	// 0 immediately on startup rather than only after the first event arrives.
+
+	// MessagesReceived/Processed/Failed — the two queues this service subscribes to.
+	for _, q := range []string{"tenant-orgm-q", "billing-orgm-q"} {
+		MessagesReceived.WithLabelValues(q)
+		MessagesProcessed.WithLabelValues(q)
+		MessagesFailed.WithLabelValues(q)
+	}
+
+	// DLQMessages — all handled event types cross both known reject reasons.
+	// event_type is the envelope type at the point of rejection (EVT-15 fires
+	// before the handler runs, schema_violation fires for any consumed type);
+	// we pre-warm every type known to this consumer so the cardinality is
+	// bounded and dashboards show 0 for quiet queues.
+	for _, et := range []string{
+		"TrialTenantProvisioned", "TenantRealmReady", "TenantConverted",
+		"DirectPaidSignup", "TrialExpired", "TrialReactivated",
+		"TenantSuspended", "TenantOffboarded",
+		"TenantPlanChanged", "TenantPaymentPastDue",
+		"TenantSubscriptionCancelled", "TenantReactivated", "TenantSeatsChanged",
+		"DepartmentCatalogChanged",
+	} {
+		DLQMessages.WithLabelValues(et, "future_time_clamp")
+		DLQMessages.WithLabelValues(et, "schema_violation")
+	}
+
+	// LifecycleEventSkipped — EVT-14 recency guard fires for any applied
+	// event type; pre-warm the same set of known handled types.
+	for _, et := range []string{
+		"TrialTenantProvisioned", "TenantRealmReady", "TenantConverted",
+		"DirectPaidSignup", "TrialExpired", "TrialReactivated",
+		"TenantSuspended", "TenantOffboarded",
+		"TenantPlanChanged", "TenantPaymentPastDue",
+		"TenantSubscriptionCancelled", "TenantReactivated", "TenantSeatsChanged",
+	} {
+		LifecycleEventSkipped.WithLabelValues(et)
+	}
+
+	// MembershipExistsCheck — I-15 result can only be "active" or "inactive".
+	// caller is open-ended (any downstream service), so only the result axis
+	// is pre-warmed; caller labels warm on first call from each peer.
+	MembershipExistsCheck.WithLabelValues("tender-acl", "active")
+	MembershipExistsCheck.WithLabelValues("tender-acl", "inactive")
+	MembershipExistsCheck.WithLabelValues("delegation", "active")
+	MembershipExistsCheck.WithLabelValues("delegation", "inactive")
 }

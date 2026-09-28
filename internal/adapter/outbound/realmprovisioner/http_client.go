@@ -52,6 +52,10 @@ import (
 // method) only ever touches one place.
 const internalAPIBase = "/api/v1/internal"
 
+// xsvcService is this client's platform_dependency_* target_service label
+// value — the downstream peer being called.
+const xsvcService = "realm_provisioner"
+
 // url builds a fully-qualified RP request URL: baseURL + internalAPIBase +
 // path. path must start with "/" (e.g. "/tenants/"+tenantID.String()+"/users").
 func (c *HTTPClient) url(path string) string {
@@ -125,13 +129,17 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 	// instead of risking a second Keycloak user create.
 	httpReq.Header.Set("Idempotency-Key", createInvitedUserIdempotencyKey(req.TenantID, req.Email))
 
+	start := time.Now()
 	resp, err := c.client.Do(httpReq)
+	metrics.ObserveDependencyLatency(xsvcService, "create_invited_user", time.Since(start).Seconds())
 	if err != nil {
-		c.warn("rp: CreateInvitedUser transport error", "email", req.Email, "error", err.Error())
+		metrics.IncDependencyError(xsvcService, "create_invited_user", metrics.DependencyOutcome(err))
+		c.warn("rp: CreateInvitedUser transport error", "email_present", req.Email != "", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		metrics.IncDependencyError(xsvcService, "create_invited_user", "5xx")
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("rp: CreateInvitedUser returned %d: %s", resp.StatusCode, string(msg))
 	}
@@ -156,8 +164,11 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 	}
 	c.setInternalHeaders(req, tenantID)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveDependencyLatency(xsvcService, "delete_user", time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncDependencyError(xsvcService, "delete_user", metrics.DependencyOutcome(err))
 		c.warn("rp: DeleteUser transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
 		return err
 	}
@@ -169,6 +180,7 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
+	metrics.IncDependencyError(xsvcService, "delete_user", "5xx")
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("rp: DeleteUser returned %d: %s", resp.StatusCode, string(msg))
 }
@@ -195,13 +207,29 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 	req.Header.Set("Content-Type", "application/json")
 	c.setInternalHeaders(req, tenantID)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveDependencyLatency(xsvcService, "patch_realm_config", time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncDependencyError(xsvcService, "patch_realm_config", metrics.DependencyOutcome(err))
 		c.warn("rp: PatchRealmConfig transport error", "tenant_id", tenantID, "error", err.Error())
 		return err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// RP returns 202 when the Keycloak call is transiently unavailable and
+		// the change is queued for reconciliation (applied:false, reconciling:true).
+		// Callers already set realm_sync_pending=true on 202 (T-15 Option A), so
+		// no action is needed here — but logging the reconciling flag makes the
+		// RP-queued path observable during incident investigation.
+		var result struct {
+			Applied     bool `json:"applied"`
+			Reconciling bool `json:"reconciling"`
+		}
+		if decErr := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&result); decErr == nil && result.Reconciling {
+			c.warn("rp: PatchRealmConfig accepted but queued for reconciliation — realm_sync_pending will self-heal",
+				"tenant_id", tenantID, "applied", result.Applied)
+		}
 		return nil
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -224,8 +252,11 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 	}
 	c.setInternalHeaders(req, tenantID)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveDependencyLatency(xsvcService, "revoke_user_sessions", time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncDependencyError(xsvcService, "revoke_user_sessions", metrics.DependencyOutcome(err))
 		if metrics.AuthSessionRevokeFailed != nil {
 			metrics.AuthSessionRevokeFailed.WithLabelValues("transport").Inc()
 		}
@@ -237,6 +268,7 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
+	metrics.IncDependencyError(xsvcService, "revoke_user_sessions", "5xx")
 	if metrics.AuthSessionRevokeFailed != nil {
 		metrics.AuthSessionRevokeFailed.WithLabelValues(fmt.Sprintf("%d", resp.StatusCode)).Inc()
 	}
@@ -264,8 +296,11 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 	}
 	c.setInternalHeaders(req, tenantID)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveDependencyLatency(xsvcService, "reset_mfa", time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncDependencyError(xsvcService, "reset_mfa", metrics.DependencyOutcome(err))
 		c.warn("rp: ResetMFA transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
 		return err
 	}
@@ -273,6 +308,7 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
+	metrics.IncDependencyError(xsvcService, "reset_mfa", "5xx")
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("rp: ResetMFA returned %d: %s", resp.StatusCode, string(msg))
 }

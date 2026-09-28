@@ -6,7 +6,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -98,24 +97,24 @@ func TestValidateConsumed_HandlerErrorPropagatesUnchanged(t *testing.T) {
 // TestInboundHandler_SchemaViolation_EndsUpInDLQ exercises the full
 // composed pipeline: violation → DLQ with DLQReason=schema_violation → ack.
 func TestInboundHandler_SchemaViolation_EndsUpInDLQ(t *testing.T) {
-	client := &fakeDLQClient{attrs: redriveAttrs(flociDLQARN)}
+	transport := &fakeDLQTransport{dlqURL: flociDLQURL}
 	inner := &recordingHandler{}
-	h := inboundHandler(context.Background(), client, flociQueueURL, "tenant-orgm-q", inner.handle, realValidator(t), &fakeLogger{})
+	h := inboundHandler(context.Background(), transport, flociQueueURL, "tenant-orgm-q", inner.handle, realValidator(t), &fakeLogger{})
 
 	require.NoError(t, h(context.Background(), envelopeOf("TenantSuspended", `{"source":"hacker"}`)))
 	assert.Zero(t, inner.calls)
-	require.Len(t, client.sent, 1)
-	assert.Equal(t, schemaViolationReason, aws.ToString(client.sent[0].MessageAttributes["DLQReason"].StringValue))
+	require.Len(t, transport.sent, 1)
+	assert.Equal(t, schemaViolationReason, transport.sent[0].Reason)
 }
 
 func TestInboundHandler_ValidEvent_NoDLQ(t *testing.T) {
-	client := &fakeDLQClient{attrs: redriveAttrs(flociDLQARN)}
+	transport := &fakeDLQTransport{dlqURL: flociDLQURL}
 	inner := &recordingHandler{}
-	h := inboundHandler(context.Background(), client, flociQueueURL, "tenant-orgm-q", inner.handle, realValidator(t), &fakeLogger{})
+	h := inboundHandler(context.Background(), transport, flociQueueURL, "tenant-orgm-q", inner.handle, realValidator(t), &fakeLogger{})
 
 	require.NoError(t, h(context.Background(), envelopeOf("TenantSeatsChanged", `{"licensed_seats":3}`)))
 	assert.Equal(t, 1, inner.calls)
-	assert.Empty(t, client.sent)
+	assert.Empty(t, transport.sent)
 }
 
 // TestValidateConsumed_TenantRealmReady_MatchesRealmProvisionerShape pins

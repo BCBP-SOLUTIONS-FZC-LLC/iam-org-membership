@@ -131,6 +131,12 @@ create_queue_with_dlq billing-orgm-q
 # tenant-orgm-q ← iam-tenant-events (no filter — consumes all RP-produced
 # lifecycle events on this topic; produce/consume sets are disjoint so O&M
 # never receives its own TenantCreated/TrialStarted, EVT-3).
+# Events consumed: TrialTenantProvisioned, TenantRealmReady, TenantConverted,
+# DirectPaidSignup, TrialExpired, TrialReactivated, TenantSuspended,
+# TenantOffboarded, TenantReactivated.
+# NOTE (RP-OM-14): TenantReactivated(source=operator) arrives here from RP
+# (RP-10 undoing RP-14, T-16) — this is an implicit dependency; OM handles
+# it in the same applyProjection case as the billing-orgm-q TenantReactivated.
 subscribe_queue iam-tenant-events tenant-orgm-q
 
 # billing-orgm-q ← billing-events (no filter — consumes all Billing events).

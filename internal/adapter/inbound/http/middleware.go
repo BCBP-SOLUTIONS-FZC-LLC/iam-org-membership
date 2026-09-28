@@ -202,7 +202,9 @@ func RequireActiveTenant(tenants port.TenantRepository) gin.HandlerFunc {
 				HandleError(c, domain.NewError(domain.ErrTenantNotFound, "tenant not found"))
 				return
 			}
-			c.Next() // real DB error — let downstream surface it
+			// SECURITY-7: fail closed on unexpected DB error — a transient
+			// connection error must not let a cancelled/suspended tenant through.
+			HandleError(c, domain.NewError(domain.ErrDBUnavailable, "database unavailable — please retry"))
 			return
 		}
 		method := c.Request.Method

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with the **Org & Membership (Core) Service** (`iam-org-membership`), a Go microservice in the IAM subsystem (Tender Management SaaS platform). Refines **IAM HLD v1.41 §5.6**; LLD v2.3 ("Org & Membership (Core) Service — Low-Level Design"), owner database `org_membership` on shared RDS PostgreSQL. Where LLD and HLD disagree, HLD is authoritative.
+This file provides guidance to Claude Code when working with the **Org & Membership (Core) Service** (`iam-org-membership`), a Go microservice in the IAM subsystem (Tender Management SaaS platform). Refines **IAM HLD v1.41 §5.6**; LLD v2.12 ("Org & Membership (Core) Service — Low-Level Design"), owner database `org_membership` on shared RDS PostgreSQL. Where LLD and HLD disagree, HLD is authoritative.
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to **Catalog / Admin Config Service** (`iam-catalog-admin`), SAML group→dept/role mapping moved to **Group Mapping / JIT Config Service** (`iam-group-mapping`), tender ACL overlays moved to **Tender ACL Service** (`iam-tender-acl`), and delegation grants + OOO coordination moved to **Delegation Service** (`iam-delegation`). This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -116,7 +116,7 @@ Detailed reference docs in `.claude/`:
 - [`request-flows.md`](request-flows.md) — provisioning, delegation, delegate-impact resolution (§8.8), invite→accept (§8.10), concurrency, GDPR
 - [`operations.md`](operations.md) — security, observability, configuration, CI/CD, integration points, dependency degradation matrix
 
-Full LLD (v2.3, "Org & Membership (Core) Service — Low-Level Design", reflects the post-decomposition end-state in this file), checked into this repo: [`docs/lld/iam-lld-org-membership-service.md`](../docs/lld/iam-lld-org-membership-service.md) — §16 open-question register, §17 error taxonomy, §19 migration strategy.
+Full LLD (v2.12, "Org & Membership (Core) Service — Low-Level Design", reflects the post-decomposition end-state in this file), checked into this repo: [`docs/lld/iam-lld-org-membership-service.md`](../docs/lld/iam-lld-org-membership-service.md) — §16 open-question register, §17 error taxonomy, §19 migration strategy.
 
 Supplementary docs in the repo root:
 - **`README.md`** — onboarding, prerequisites, quick-start, local dev setup

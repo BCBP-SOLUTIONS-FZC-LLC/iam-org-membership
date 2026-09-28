@@ -136,3 +136,27 @@ func TestP19RPEdges_RevokeUserSessions_BadBaseURL_RequestBuildError(t *testing.T
 	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
 	assert.Error(t, err)
 }
+
+// Test Case ID:      P19-RP-OM5
+// Feature:           RP · RevokeUserSessions 404 absorption (RP-OM-5)
+// Scenario:          RP returns 404 realm_not_found or user_not_found — client
+//
+//	returns an error, caller is AUTH-8 fail-open and absorbs it.
+//
+// Priority: P2 · Severity: Normal · Automation Status: Automated
+func TestP19RPEdges_RevokeUserSessions_404_RealmOrUserNotFound_ReturnsError(t *testing.T) {
+	// RP returns 404 when the realm or the user does not exist in Keycloak.
+	// RevokeUserSessions itself returns an error on any non-2xx — the fail-open
+	// posture lives in the AUTH-8 caller (membership_service.go), not here.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"realm_not_found","status":404}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, 0, nil)
+	err := c.RevokeUserSessions(context.Background(), uuid.New(), uuid.New())
+	assert.Error(t, err, "non-2xx must return error so caller's fail-open handler can observe and log it")
+	assert.Contains(t, err.Error(), "404")
+}

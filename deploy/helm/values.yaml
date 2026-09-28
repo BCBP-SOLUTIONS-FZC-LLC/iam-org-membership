@@ -1,6 +1,6 @@
 # Default values for iam-org-membership.
-# LLD v1.61 §13 deployment topology (HPA 2-8, 8 CronJobs dispatched by
-# cmd/reconciler --job=<name>, 4 metric-exporter goroutines in cmd/server).
+# LLD v2.3 §13 deployment topology (HPA 2-8, 7 CronJobs dispatched by
+# cmd/reconciler --job=<name>, 5 metric-exporter goroutines in cmd/server).
 
 replicaCount: 2
 

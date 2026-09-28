@@ -118,7 +118,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	// Cheap dedup probe outside the tx to save a lock acquisition on replay.
-	seen, err := skipDuplicate(ctx, c.idempotency, consumerName, env.ID)
+	seen, err := skipDuplicate(ctx, c.idempotency, env.ID)
 	if err != nil {
 		return err
 	}
@@ -194,6 +194,12 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		// Bump last_event_at only when projection actually ran.
 		if err := c.tenants.SetLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
 			return err
+		}
+
+		// SLO-3: record the lag between event.time and apply time so
+		// iam_lifecycle_event_lag_seconds tracks consumer processing drift.
+		if !env.Timestamp.IsZero() {
+			metrics.ObserveLifecycleEventLag(env.Type, time.Since(env.Timestamp).Seconds())
 		}
 
 		pub, _ := port.EventPublisherFromContext(txCtx)

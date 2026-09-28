@@ -88,6 +88,7 @@ func TestInvitationRepositoryNoop_AllMethods(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.NoError(t, n.ClearKCCleanupPendingByID(ctx, uuid.New()))
+	assert.NoError(t, n.ErasePII(ctx, uuid.New(), uuid.New()))
 }
 
 // TestEventPublisher_ContextRoundTrip verifies WithEventPublisher stores and

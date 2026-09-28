@@ -24,9 +24,14 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/httpx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
 )
+
+// xsvcService is this client's platform_dependency_* target_service label
+// value — the downstream peer being called.
+const xsvcService = "workflow"
 
 type HTTPClient struct {
 	baseURL string
@@ -92,13 +97,17 @@ func (c *HTTPClient) GetDelegateImpact(ctx context.Context, tenantID, userID uui
 	}
 	c.setInternalHeaders(req, tenantID)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveDependencyLatency(xsvcService, "get_delegate_impact", time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncDependencyError(xsvcService, "get_delegate_impact", metrics.DependencyOutcome(err))
 		c.warn("workflow: GetDelegateImpact transport error", "user_id", userID, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
+		metrics.IncDependencyError(xsvcService, "get_delegate_impact", "5xx")
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("workflow: GetDelegateImpact returned %d: %s", resp.StatusCode, string(msg))
 	}
@@ -129,7 +138,7 @@ func (c *HTTPClient) ReassignDelegate(ctx context.Context, tenantID, oldUserID, 
 	if delegationID != nil {
 		body["delegation_id"] = *delegationID
 	}
-	return c.postInternal(ctx, tenantID, "/api/v1/internal/workflows/reassign-delegate", body)
+	return c.postInternal(ctx, tenantID, "reassign_delegate", "/api/v1/internal/workflows/reassign-delegate", body)
 }
 
 func (c *HTTPClient) CancelByDelegate(ctx context.Context, tenantID, userID uuid.UUID, delegationID *uuid.UUID) error {
@@ -145,10 +154,10 @@ func (c *HTTPClient) CancelByDelegate(ctx context.Context, tenantID, userID uuid
 	if delegationID != nil {
 		body["delegation_id"] = *delegationID
 	}
-	return c.postInternal(ctx, tenantID, "/api/v1/internal/workflows/cancel-by-delegate", body)
+	return c.postInternal(ctx, tenantID, "cancel_by_delegate", "/api/v1/internal/workflows/cancel-by-delegate", body)
 }
 
-func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, path string, body any) error {
+func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, endpoint, path string, body any) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("marshal workflow request: %w", err)
@@ -160,8 +169,11 @@ func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, path 
 	req.Header.Set("Content-Type", "application/json")
 	c.setInternalHeaders(req, tenantID)
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
 	if err != nil {
+		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.warn("workflow: transport error", "path", path, "error", err.Error())
 		return err
 	}
@@ -169,6 +181,7 @@ func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, path 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
+	metrics.IncDependencyError(xsvcService, endpoint, "5xx")
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("workflow: %s returned %d: %s", path, resp.StatusCode, string(msg))
 }

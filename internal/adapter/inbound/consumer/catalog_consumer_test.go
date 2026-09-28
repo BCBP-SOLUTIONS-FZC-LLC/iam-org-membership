@@ -74,7 +74,10 @@ func catalogEnv(eventType, id string) events.Envelope[json.RawMessage] {
 	return events.Envelope[json.RawMessage]{ID: id, Type: eventType}
 }
 
-func TestCatalogConsumer_Handle_MarksProcessedWithConsumerThenEventID(t *testing.T) {
+func TestCatalogConsumer_Handle_ClearsCache_NoDedup(t *testing.T) {
+	// GAP-L: DepartmentCatalogChanged no longer writes processed_events.
+	// Clearing the cache twice is always safe; the DB round-trip is unnecessary
+	// overhead for a cache-invalidation-only event.
 	dedup := &recordingDedup{}
 	cache := &stubCatalogCache{}
 	c := NewCatalogConsumer(cache, dedup, stubTx{}, nil)
@@ -82,27 +85,24 @@ func TestCatalogConsumer_Handle_MarksProcessedWithConsumerThenEventID(t *testing
 	env := catalogEnv(eventDepartmentCatalogChanged, "")
 	require.NoError(t, c.Handle(context.Background(), env))
 
-	require.Len(t, dedup.isCalls, 1)
-	assert.Equal(t, [2]string{catalogConsumerName, env.ID}, dedup.isCalls[0],
-		"IsProcessed must be (consumer, eventID) — the processed_events PK order")
-	require.Len(t, dedup.markCalls, 1)
-	assert.Equal(t, [2]string{catalogConsumerName, env.ID}, dedup.markCalls[0],
-		"MarkProcessed must be (consumer, eventID)")
+	assert.Empty(t, dedup.isCalls, "no IsProcessed call for DepartmentCatalogChanged")
+	assert.Empty(t, dedup.markCalls, "no MarkProcessed call for DepartmentCatalogChanged")
 	require.Len(t, cache.deleted, 1)
 	assert.Equal(t, []string{omDepartmentsKey, omDepartmentsStaleKey}, cache.deleted[0])
 }
 
-func TestCatalogConsumer_Handle_SkipDuplicate_DoesNotClearCache(t *testing.T) {
-	env := catalogEnv(eventDepartmentCatalogChanged, uuid.New().String())
-	dedup := &recordingDedup{processed: map[string]bool{
-		catalogConsumerName + "\x00" + env.ID: true,
-	}}
+func TestCatalogConsumer_Handle_Redelivery_ClearsCacheAgain(t *testing.T) {
+	// Redelivery of the same event must still clear the cache — no dedup gate.
+	dedup := &recordingDedup{}
 	cache := &stubCatalogCache{}
 	c := NewCatalogConsumer(cache, dedup, stubTx{}, nil)
 
+	env := catalogEnv(eventDepartmentCatalogChanged, uuid.New().String())
 	require.NoError(t, c.Handle(context.Background(), env))
-	assert.Empty(t, cache.deleted, "already-processed events must not hit Valkey")
-	assert.Empty(t, dedup.markCalls, "skipDuplicate short-circuits before mark")
+	require.NoError(t, c.Handle(context.Background(), env)) // simulate redelivery
+
+	assert.Len(t, cache.deleted, 2, "both deliveries must clear the cache")
+	assert.Empty(t, dedup.markCalls, "redelivery path must not touch processed_events")
 }
 
 func TestCatalogConsumer_Handle_UnknownType_AckUnknownMarksProcessed(t *testing.T) {
@@ -124,13 +124,14 @@ func TestCatalogConsumer_Handle_InvalidEventID_ErrorsWithoutMark(t *testing.T) {
 	assert.Empty(t, dedup.markCalls)
 }
 
-func TestCatalogConsumer_Handle_CacheDeleteError_StillMarksProcessed(t *testing.T) {
+func TestCatalogConsumer_Handle_CacheDeleteError_ReturnsNil(t *testing.T) {
+	// Cache DELETE failure is best-effort — Handle still returns nil so the SQS
+	// message is acked and the 600s TTL self-heals. No processed_events write.
 	dedup := &recordingDedup{}
 	cache := &stubCatalogCache{err: errors.New("valkey down")}
 	c := NewCatalogConsumer(cache, dedup, stubTx{}, nil)
 
 	env := catalogEnv(eventDepartmentCatalogChanged, "")
 	require.NoError(t, c.Handle(context.Background(), env))
-	require.Len(t, dedup.markCalls, 1)
-	assert.Equal(t, [2]string{catalogConsumerName, env.ID}, dedup.markCalls[0])
+	assert.Empty(t, dedup.markCalls, "cache error must not trigger a processed_events write")
 }

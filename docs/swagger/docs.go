@@ -606,14 +606,14 @@ const docTemplate = `{
         },
         "/internal/tenants/{id}/members/{user_id}/exists": {
             "get": {
-                "description": "Returns ` + "`" + `{active, tenant_membership_id}` + "`" + ` — tenant_membership_id is populated only when active is true. Never 404.",
+                "description": "Returns ` + "`" + `{active, tenant_membership_id}` + "`" + ` — tenant_membership_id is populated only when active is true. Never 404. Callers must send x-tenant-roles: iam-system (RequireSystemRole gate).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "internal"
                 ],
-                "summary": "Membership existence/active-status check (iam-tender-acl grant-time dependency)",
+                "summary": "Membership existence/active-status check (I-15, mesh-only)",
                 "parameters": [
                     {
                         "type": "string",
@@ -641,6 +641,12 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "insufficient_role — x-tenant-roles must be iam-system",
                         "schema": {
                             "$ref": "#/definitions/http.ErrorResponse"
                         }
@@ -1062,7 +1068,7 @@ const docTemplate = `{
         },
         "/readyz": {
             "get": {
-                "description": "Checks Postgres, Valkey, and the outbox runner. Returns 503 if any dependency is not ready.",
+                "description": "Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines. Returns 503 if any dependency is not ready.",
                 "produces": [
                     "application/json"
                 ],

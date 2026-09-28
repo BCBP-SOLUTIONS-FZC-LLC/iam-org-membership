@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"unicode/utf8"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -31,6 +32,9 @@ func (s *RoleLabelService) Update(ctx context.Context, tenantID uuid.UUID, roleC
 	}
 	if displayName == "" {
 		return nil, domain.NewError(domain.ErrValidation, "display_name must not be empty")
+	}
+	if utf8.RuneCountInString(displayName) > 255 {
+		return nil, domain.NewError(domain.ErrValidation, "display_name must not exceed 255 characters")
 	}
 	l, err := s.labels.Update(ctx, tenantID, code, displayName, expectedVersion)
 	if err != nil {

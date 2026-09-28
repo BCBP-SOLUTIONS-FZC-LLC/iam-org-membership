@@ -226,6 +226,10 @@ func (r *svcgap2FullInviteRepo) CountCreatedInWindow(ctx context.Context, tid uu
 	}
 	return 0, nil
 }
+func (r *svcgap2FullInviteRepo) CountCreatedInWindowByActor(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ time.Time) (int, error) {
+	return 0, nil // actor rate limit not triggered by default
+}
+func (r *svcgap2FullInviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
 var _ port.InvitationRepository = (*svcgap2FullInviteRepo)(nil)
 

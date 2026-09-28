@@ -44,16 +44,13 @@ func TestG8_ReadOnlyForStatus_OnlyCancelled(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestMembershipProjection_FieldsPresent(t *testing.T) {
-	// Populate the projection and read back both the deprecated alias and
-	// the LLD-canonical field. Both must be present and reflect the same
-	// underlying subscription state; ReadOnly must be derived, not stored.
+	// subscription_status is the authoritative field; ReadOnly must be derived,
+	// not stored. tenant_status alias has been removed (GAP-14).
 	proj := &MembershipProjection{
-		TenantStatus:       domain.StatusCancelled,
 		SubscriptionStatus: domain.StatusCancelled,
 		ReadOnly:           readOnlyForStatus(domain.StatusCancelled),
 	}
 	assert.Equal(t, domain.StatusCancelled, proj.SubscriptionStatus)
-	assert.Equal(t, domain.StatusCancelled, proj.TenantStatus, "deprecated alias still populated")
 	assert.True(t, proj.ReadOnly)
 }
 

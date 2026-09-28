@@ -144,3 +144,44 @@ groups:
               - realm-config-sync (T-15)
               - invitation-expiry
               - operator O-7 reassign-owner (T-13)
+
+# ── OBS-4: 15ms cache-hit SLI recording rules ────────────────────────────────
+- name: iam_org_membership_i8_hit_sli
+  rules:
+    # 5m ratio of I-8 requests served within 15ms cache-hit SLO target.
+    - record: iam:i8_latency_hit_sli:ratio_rate_5m
+      expr: |
+        sum(rate(http_request_duration_seconds_bucket{service="iam-org-membership",handler="I-8",le="0.015"}[5m]))
+        /
+        sum(rate(http_request_duration_seconds_count{service="iam-org-membership",handler="I-8"}[5m]))
+
+    - record: iam:i8_latency_hit_sli:ratio_rate_1h
+      expr: |
+        sum(rate(http_request_duration_seconds_bucket{service="iam-org-membership",handler="I-8",le="0.015"}[1h]))
+        /
+        sum(rate(http_request_duration_seconds_count{service="iam-org-membership",handler="I-8"}[1h]))
+
+    # SLO-1b slow-burn: cache-hit rate below 90% for 1h signals Valkey degradation.
+    - alert: IAMSLO1b_CacheHitRateLow
+      expr: iam:i8_latency_hit_sli:ratio_rate_1h < 0.90
+      for: 5m
+      labels:
+        severity: warning
+        slo: SLO-1b
+        service: iam-org-membership
+      annotations:
+        summary: "SLO-1b: I-8 cache-hit rate below 90% (Valkey degraded?)"
+        description: |
+          I-8 requests served within 15ms = {{ $value | humanizePercentage }}.
+          Check Valkey connectivity, eviction rate, and om:memberships TTL.
+        runbook: "iam-org-membership/i8-latency"
+
+# ── OBS-5: SLO-3 composite gauge fix (remove 5x weighting, add seat_overage) ─
+- name: iam_org_membership_slo3_fixed
+  rules:
+    - record: iam:reconciler_markers:sum
+      expr: |
+        iam_org_membership_tenant_ownerless
+        + iam_org_membership_realm_sync_pending
+        + iam_org_membership_seat_overage_active
+        + iam_org_membership_pending_invitations_stale

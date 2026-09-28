@@ -29,7 +29,6 @@ func (s *ReconcilerStore) ListSeatOverageCandidates(ctx context.Context, limit i
 		rows, err := tx.Query(ctx, `
 			SELECT id FROM tenants
 			WHERE deleted_at IS NULL
-			  AND (overage_since IS NOT NULL OR licensed_seats > 0)
 			LIMIT $1`, limit)
 		if err != nil {
 			return err
@@ -78,14 +77,22 @@ func (s *ReconcilerStore) ClearRealmSyncPending(ctx context.Context, tenantID uu
 	})
 }
 
-func (s *ReconcilerStore) HardDeleteExpiredTrials(ctx context.Context, graceDays int) (int, error) {
+// HardDeleteExpiredTrials hard-deletes at most limit trial_expired tenants
+// whose trial_ends_at is older than graceDays. The LIMIT is applied via a
+// subquery because PostgreSQL's DELETE does not support a LIMIT clause
+// directly; the CTE approach avoids a full table scan (PERF-8).
+func (s *ReconcilerStore) HardDeleteExpiredTrials(ctx context.Context, graceDays, limit int) (int, error) {
 	var n int
 	err := withPool(ctx, s.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
 			DELETE FROM tenants
-			WHERE status = 'trial_expired'
-			  AND trial_ends_at < now() - make_interval(days => $1)
-			  AND deleted_at IS NULL`, graceDays)
+			WHERE id IN (
+				SELECT id FROM tenants
+				WHERE status = 'trial_expired'
+				  AND trial_ends_at < now() - make_interval(days => $1)
+				  AND deleted_at IS NULL
+				LIMIT $2
+			)`, graceDays, limit)
 		if err != nil {
 			return err
 		}

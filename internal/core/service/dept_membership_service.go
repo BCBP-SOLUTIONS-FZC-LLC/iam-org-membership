@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
@@ -184,7 +185,8 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 				impact, err := s.workflow.GetDelegateImpact(txCtx, tenantID, userID, delegationID)
 				if err != nil {
 					// WFI-9 fail-open: workflow unavailable → allow level decrease
-					_ = err
+					s.log.WarnContext(ctx, "WFI-9: workflow delegate-impact check failed — degrading to allow (fail-open)", "user_id", userID, "error", err.Error())
+					metrics.IncDependencyError("workflow", "get_delegate_impact", "fallback_served")
 				} else if impact.ActiveWorkflows > 0 {
 					return domain.NewError(domain.ErrWorkflowResolutionRequired,
 						"active workflows depend on this delegate at the current level").

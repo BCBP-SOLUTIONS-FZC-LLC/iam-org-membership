@@ -61,7 +61,7 @@ func TestTrialSignup_ThenI8ReturnsOwnerProjection(t *testing.T) {
 	assert.Equal(t, domain.MembershipActive, proj.Status)
 	assert.Equal(t, domain.PlanStarter, proj.Plan)
 	assert.Equal(t, domain.StatusTrial, proj.SubscriptionStatus)
-	assert.Equal(t, domain.StatusTrial, proj.TenantStatus, "legacy alias still populated")
+	assert.Equal(t, domain.StatusTrial, proj.SubscriptionStatus, "subscription_status is the authoritative field")
 	assert.False(t, proj.ReadOnly, "trial tenants are writable")
 	assert.Contains(t, proj.Roles, domain.RoleTenantOwner, "I-8 must project owner grant")
 	assert.Contains(t, proj.Roles, domain.RoleMember, "TR-7 derived 'member' present")

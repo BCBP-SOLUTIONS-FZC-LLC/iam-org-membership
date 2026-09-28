@@ -152,7 +152,7 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 			case previous == nil:
 				// New (or reactivated after soft-delete) → Granted.
 				if pub != nil {
-					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+					if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventDepartmentMembershipGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: "iam-system",
 						Data: domain.DepartmentMembershipGrantedPayload{
@@ -160,12 +160,14 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 							DepartmentID: assigned.DepartmentID, Level: assigned.RoleLevel,
 							ActorID: uuid.Nil,
 						},
-					})
+					}); err != nil {
+						return err
+					}
 				}
 			case previous.RoleLevel != assigned.RoleLevel:
 				// Active membership at a different level → LevelChanged.
 				if pub != nil {
-					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+					if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventDepartmentMembershipLevelChanged, TenantID: tenantID,
 						Subject: userID.String(), Actor: "iam-system",
 						Data: domain.DepartmentMembershipLevelChangedPayload{
@@ -175,7 +177,9 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 							NewLevel:      assigned.RoleLevel,
 							ActorID:       uuid.Nil,
 						},
-					})
+					}); err != nil {
+						return err
+					}
 				}
 			default:
 				// Unchanged — TRG-3 no-op, emit nothing.
@@ -203,13 +207,15 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 			}
 			res.GrantedTenantRoles = append(res.GrantedTenantRoles, granted.RoleCode)
 			if pub != nil {
-				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventTenantRoleGranted, TenantID: tenantID,
 					Subject: userID.String(), Actor: "iam-system",
 					Data: domain.TenantRoleGrantedPayload{
 						UserID: userID, TenantID: tenantID, RoleCode: granted.RoleCode, ActorID: uuid.Nil,
 					},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
