@@ -25,12 +25,12 @@ graph TD
     end
 
     subgraph adapters_in["Inbound Adapters  —  internal/adapter/inbound/"]
-        http_h["http/\nTenantHandler · DepartmentHandler · DeptMembershipHandler\nMembershipHandler (DELETE pre-check; P-26 removal-resolution;\n  P-6/P-30/P-31 invite lifecycle; P-27 seat-usage)\nRoleLabelHandler · InvitationHandler · OperatorHandler · InternalHandler\nrouter.go · dto.go · docs.go / asyncapi.go (serves embedded api/asyncapi.yaml)"]
+        http_h["http/\nTenantHandler · DepartmentHandler · DeptMembershipHandler\nMembershipHandler (DELETE pre-check; P-26 removal-resolution;\n  P-6/P-30/P-31 invite lifecycle; P-27 seat-usage)\nRoleLabelHandler · InvitationHandler · OperatorHandler · InternalHandler\nPublicHandler (PUB-1, no auth — registerPublicRoutes, outside the protected group)\nrouter.go · dto.go · docs.go / asyncapi.go (serves embedded api/asyncapi.yaml)"]
         consumer["consumer/\nMembershipEventConsumer + CatalogConsumer\ntenant-orgm-q ← iam.tenant.events (RP lifecycle)\nbilling-orgm-q ← billing.events (Billing lifecycle)\ncatalog-orgm-q ← iam-catalog-admin (DepartmentCatalogChanged — Gap 12, inert)\nEVT-14 recency guard · EVT-15 future-time clamp\nEVT-16 TenantStateChanged relay (§16 A61)\nport.IdempotencyStore — MarkProcessedInTx joins the same tx as EVT-14"]
     end
 
     subgraph adapters_out["Outbound Adapters  —  internal/adapter/outbound/"]
-        postgres["postgres/\nTenantRepository · TenantDepartmentRepository\nMembershipRepository · TenantRoleRepository\nDeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · IdempotencyRepository · AuthZRepository · ReconcilerStore\nTxRunner · OTelTracer\nOptimistic locking (record_version) on 7 of 8 domain tables (TRG-1)\nmigrations/ — single consolidated 000000_initial_schema"]
+        postgres["postgres/\nTenantRepository · TenantDepartmentRepository\nMembershipRepository · TenantRoleRepository\nDeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · IdempotencyRepository · AuthZRepository · ReconcilerStore\nTenantRepository on the BYPASSRLS sysPool: I-16 ListSubscriptionLapses + PUB-1 ResolveByIdentifier\nTxRunner · OTelTracer\nOptimistic locking (record_version) on 7 of 8 domain tables (TRG-1)\nmigrations/ — consolidated 000000_initial_schema + additive 000001/000002"]
         valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only (CACHE-2/CACHE-9)\n50ms read/write timeout hardcoded, no env var\nWorking caches: om:memberships · om:tenant · om:plans/departments (+:stale)\nom:grm/gdm/gtrm (+:stale)\nDeclared, not populated: om:members · om:roles · om:locale · om:dept_members · om:seat_usage"]
         eventbus["eventbus/\nRoutingPublisher (own local type, not platform-events)\n  routes by domain.TopicForEvent(env.Type) →\n    iam.membership.events (12 events)\n    iam.tenant.events (2 events: TenantCreated, TrialStarted)\nOutbox runner · ValidatingCodec (enqueue-time) · GlueCodec ×2 (publish-time, v1.4.0 events.WithCodec)\nschemas/*.json embedded via //go:embed"]
         workflow["workflow/\nport.WorkflowClient impl (HTTP, §8.8 — talks to Workflow Service,\n  unrelated to the delegation-domain extraction)\nGetDelegateImpact · ReassignDelegate · CancelByDelegate\nWORKFLOW_TIMEOUT_MS=3000"]
@@ -47,8 +47,8 @@ graph TD
     end
 
     subgraph core["Core  —  internal/core/"]
-        service["service/\nTenantService · DepartmentService · RoleLabelService\nMembershipService (§8.8 RemoveUser + delegate-impact pre-check;\n  §8.10 Invite / AcceptInvitation; SEAT-1; TM-8/TM-12/TM-13)\nDeptMembershipService (§8.8.4 dept-scope gating)\nProvisioningService (§8.1 trial signup) · OperatorService (O-4/O-7)\nAuthZService (I-8, depends on port.AuthZRepository, not *pgcommon.Pool)\nSubscriptionLapseService (I-16, RP-C3 — MUST be sysPool-bound)\nCatalogService — CLIENT-SIDE read-through, NOT a table owner\nGroupMappingService — CLIENT-SIDE resolve, NOT a table owner"]
-        port["port/\nTenantRepository · TenantDepartmentRepository · MembershipRepository\nTenantRoleRepository · DeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · AuthZRepository · ReconcilerStore\nCache · EventPublisher · TxRunner · IdempotencyStore · Logger\nWorkflowClient · RealmProvisionerClient · CatalogAdminClient\nDepartmentCatalogReader · PlanCatalogReader · GroupMappingClient · DelegationCheckClient\n(no UserProfileClient — removed as dead code, §16 OQ-5)"]
+        service["service/\nTenantService · DepartmentService · RoleLabelService\nMembershipService (§8.8 RemoveUser + delegate-impact pre-check;\n  §8.10 Invite / AcceptInvitation; SEAT-1; TM-8/TM-12/TM-13)\nDeptMembershipService (§8.8.4 dept-scope gating)\nProvisioningService (§8.1 trial signup) · OperatorService (O-4/O-7)\nAuthZService (I-8, depends on port.AuthZRepository, not *pgcommon.Pool)\nSubscriptionLapseService (I-16, RP-C3 — MUST be sysPool-bound)\nCatalogService — CLIENT-SIDE read-through, NOT a table owner\nGroupMappingService — CLIENT-SIDE resolve, NOT a table owner\nSubscriptionLapseService (I-16) · TenantResolutionService (PUB-1) — both sysPool-bound"]
+        port["port/\nTenantRepository (incl. ResolveByIdentifier, PUB-1) · TenantDepartmentRepository · MembershipRepository\nTenantRoleRepository · DeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · AuthZRepository · ReconcilerStore\nCache · EventPublisher · TxRunner · IdempotencyStore · Logger\nWorkflowClient · RealmProvisionerClient · CatalogAdminClient\nDepartmentCatalogReader · PlanCatalogReader · GroupMappingClient · DelegationCheckClient\n(no UserProfileClient — removed as dead code, §16 OQ-5)"]
         domain["domain/\nTenant · Department · Plan · TenantMembership · DeptMembership\nTenantRoleCode · DeptRole · GroupDeptMapping/GroupDeptRoleMapping/GroupTenantRoleMapping\n  (read-through cache result types, not local tables)\nPendingInvitation · DomainEvent payload types\nDomainError catalogue (sentinels grouped by §17 status family)\n(no Delegation, no TenderACLEntry — tables moved to sibling services)"]
     end
 
@@ -317,6 +317,46 @@ sequenceDiagram
 ```
 
 `/healthz` and `/readyz` (`registerInfraRoutes`) and the docs surface (`registerDocsRoutes`, gated by `DocsConfig.active()`) are registered **before** this chain, so a load-balancer probe with no headers still gets `200`. `/healthz` is pure liveness — it never inspects a dependency; `/readyz` checks the app Postgres pool, the `sysPool` (BYPASSRLS, a separate physical connection so a credential rotation on that role alone is caught), Valkey, and the outbox runner (`select` on its `Ready()` channel), returning `503` on any failure. `RequireActiveTenant`/`RequireActiveMembership` bypass `iam-system` and `platform_operator` principals — those internal/operator control paths must be able to reach a `trial_expired`/`suspended` tenant to restore it.
+
+---
+
+## Pre-login tenant/realm resolution (PUB-1)
+
+`GET /api/v1/public/tenants/resolve?identifier=` answers one question for an anonymous browser that has no tenant or realm context yet: which Keycloak realm should the sign-in redirect go to (IAM HLD §8.2.7, LLD §5.4/§8.11). It's the only route in this service with no authentication.
+
+- **No auth, no headers.** `registerPublicRoutes` registers it directly on the gin engine, outside the protected `/api/v1` group. It still gets the engine-level body cap, timeout and observability middleware, but never `RequireAuth`, `GUCBridgeMiddleware` or a role gate (PUBRES-1). Envoy routes it past `ext_authz`, which is still platform config to land (LLD §16 OQ-10).
+- **No GUC, so `sysPool`.** With no `app.tenant_id` bound, the RLS-scoped app pool would fail closed and return no rows for every lookup. `TenantResolutionService` therefore sits on the BYPASSRLS `sysPool` repository, the same one I-16 uses.
+- **What resolves.** A company slug (any live tenant), or the email of a still-pending, unexpired invitation. An already-active member's email doesn't resolve, because this service stores no email for active members (LLD §16 OQ-11, option A). A slug match wins over an email match. It's one SQL statement over `uq_tenants_slug` and `idx_pi_email_pending`.
+- **Constant shape (PUBRES-2).** Always `200`: `{found, realm, strategy}` for a dedicated tenant, plus `tenant_id` for a shared (trial) tenant (PUBRES-4), and exactly `{found:false}` for no match. Never `404`.
+- **No cache, no event, no write.** Every call reaches Postgres (§6.1), which keeps the anti-enumeration property easy to reason about. The metric is `iam_org_membership_public_tenant_resolve_total{result=found|not_found}`.
+
+> Source: [`docs/architecture/mermaid/public-tenant-resolve-flow.mmd`](docs/architecture/mermaid/public-tenant-resolve-flow.mmd)
+
+```mermaid
+sequenceDiagram
+    %% PUB-1 cold-start path (LLD §8.11, IAM HLD §8.2.7). Mirrors the LLD's diagram.
+    participant Browser
+    participant Envoy
+    participant OrgMembership as Org & Membership (PUB-1)
+    participant DB as org_membership DB (sysPool, BYPASSRLS)
+
+    Browser->>Envoy: GET /api/v1/public/tenants/resolve?identifier=acme
+    Note over Envoy: no jwt_authn/ext_authz - routed straight through, same carve-out as Keycloak's own /auth, /token (HLD §4.2). Gateway rate-limit/CAPTCHA, PUBRES-3
+    Envoy->>OrgMembership: GET /api/v1/public/tenants/resolve?identifier=acme (no x-user-id / x-tenant-id / x-tenant-roles)
+    Note over OrgMembership: registerPublicRoutes - outside the protected /api/v1 group: no RequireAuth, no GUCBridge, no app.tenant_id
+    OrgMembership->>DB: one statement - tenants WHERE slug = identifier UNION ALL pending_invitations (pending, unexpired) WHERE email = identifier
+    alt match - dedicated realm
+        DB-->>OrgMembership: tenant-acme, dedicated
+        OrgMembership-->>Browser: 200 {found:true, realm:"tenant-acme", strategy:"dedicated"}
+    else match - shared (trial) realm
+        DB-->>OrgMembership: trial, shared, tenant_id
+        OrgMembership-->>Browser: 200 {found:true, realm:"trial", strategy:"shared", tenant_id} (PUBRES-4)
+    else no match (incl. an active member's email - LLD §16 OQ-11)
+        DB-->>OrgMembership: (no row)
+        OrgMembership-->>Browser: 200 {found:false} - identical shape and latency class to a match (PUBRES-2)
+    end
+    Browser->>Browser: build the HLD §8.2.3/§8.2.4 Keycloak authorization-endpoint redirect from the response
+```
 
 ---
 
@@ -937,6 +977,8 @@ graph LR
 
 Every SQL query on the request path runs with `app.tenant_id` bound **transaction-locally**. PostgreSQL RLS policies use this GUC to enforce tenant isolation at the database layer — a missing or wrong GUC fails closed (empty result / `WITH CHECK` rejection, never an error that could be swallowed).
 
+**PUB-1 is the one route that never enters this flow.** `/api/v1/public/tenants/resolve` is registered outside the protected group, so `GUCBridgeMiddleware` never runs and no `app.tenant_id` is ever bound. That's safe because it never reads through the RLS-scoped app pool: its only query runs on the BYPASSRLS `sysPool`. On the app pool the same query would silently return nothing, and `TestPUB1_ResolveByIdentifier_UsesBypassRLSPool` pins that. Only `tenants` and `pending_invitations` are read, and the response carries at most a realm name, a realm type and (for a trial tenant) a tenant id.
+
 > Source: [`docs/architecture/mermaid/rls-guc-flow.mmd`](docs/architecture/mermaid/rls-guc-flow.mmd)
 
 ```mermaid
@@ -947,6 +989,8 @@ sequenceDiagram
     participant Pool as pgx Pool (platform-pgcommon)
     participant PGB as PgBouncer (tx pooling)
     participant DB as PostgreSQL (RLS)
+
+    Note over MW,DB: PUB-1 (GET /api/v1/public/tenants/resolve) never enters this flow: it is registered outside the protected group,<br/>so GUCBridgeMiddleware never runs and no app.tenant_id is bound. Its one query runs on the BYPASSRLS sysPool —<br/>on this RLS-scoped pool it would fail closed and return no rows (see public-tenant-resolve-flow.mmd).
 
     Note over MW,GUC: On every protected request — runs after ContextMiddleware<br/>gincommon.ProtectedMiddlewares chain: ... → RequireAuth → ContextMiddleware → GUCBridge
 
@@ -1072,6 +1116,10 @@ if tag.RowsAffected() == 0 {
 | Delegate-impact gate never silently skips a blocked removal (WFI-3) | `active_workflows > 0` returns `409` with no DB write and no event — resolved only via explicit P-26 |
 | Every DB connection/pool goes through `pgcommon.NewPool`, never a raw `pgxpool`/`pgx.Connect`/`database/sql` | `golangci-lint`'s `forbidigo` rule (`.golangci.yml`), added 2026-09-20 — bans the construction functions repo-wide, production and test |
 | Every `outbox_events` mutation goes through `platform-events` (`outbox.Enqueue`/`outbox.Runner.PrunePublished`), never hand-rolled SQL | `.github/scripts/check-outbox-access.sh` (wired into `validate-quality.yml`), added 2026-09-21 — scans Go raw-string literals for SQL against `outbox_events` outside `internal/adapter/outbound/eventbus/` |
+| PUB-1 needs no headers and trusts nothing client-supplied beyond the `identifier` query parameter (PUBRES-1) | `registerPublicRoutes` registers it on the engine, outside the protected group; `TestPUB1_Router_EveryOtherAPIRouteStill401sWithoutHeaders` sweeps every other `/api/v1` route for a 401 |
+| PUB-1 is anti-enumeration by construction: always `200`, constant shape, one statement for match and no-match (PUBRES-2) | `PublicTenantResolveResponse` (all fields but `found` are `omitempty`) + `ResolveByIdentifier`'s single `UNION ALL` query; `TestContract_PUB1_AntiEnumeration_ShapeAndTiming` |
+| PUB-1 rate-limit/CAPTCHA live at the gateway, not in this service (PUBRES-3) | Platform/gateway config (LLD §16 OQ-10); the handler applies no throttle of its own |
+| Only a shared-realm (trial) match exposes `tenant_id` pre-login (PUBRES-4) | `PublicHandler.ResolveTenant` sets it only for `realm_type = shared`, even if the repository returned one |
 | Every SNS publish / SQS consume goes through `platform-events`, never a raw `aws-sdk-go-v2` SNS/SQS call or a hand-built `events.Envelope{}` | `.github/scripts/check-forbidden-events-bypass.sh` (wired into `validate-quality.yml`), added 2026-09-21 |
 
 ---
@@ -1104,6 +1152,8 @@ Since this service has never been deployed, the schema is one consolidated `0000
 - **Postgres / RLS** (`test/postgres/`, testcontainers-go, real PG, full migration suite): `rls_test.go`'s **Case 5** (critical, RLS-6) — no cross-tenant leak across a pooled backend, `MaxConns=1`, tenant A tx → return connection → tenant B tx on the same backend → assert B sees 0 of A's rows; `subscription_lapse_test.go` (I-16's BYPASSRLS cross-tenant read, and its self-idempotence once a lapsed tenant is suspended); `consumer_evt_test.go` (EVT-14/15/16); `concurrency_extra_test.go` (SEAT-1/TM-13 races); `reconciler_convergence_test.go`/`reconcilers_test.go` (each of the 7 CronJobs' idempotent re-run behavior). CI additionally greps for the forbidden non-`LOCAL` `SET app.tenant_id`.
 
 - **Integration** (`test/integration/`, testcontainers, capped at `TEST_INTEGRATION_PARALLEL`) — real Postgres + Valkey + floci SNS/SQS: `relay_test.go` (EVT-16's wire path — a consumed event's `TenantStateChanged` relay actually reaching the second topic); `dlq_idemp_test.go` (DLQ + `processed_events` dedup under redelivery); `wire_test.go` (the full `RoutingPublisher`/two-Glue-registry publish path); `glue_codec_test.go` (floci Glue — version resolved by definition: a build keeps stamping its own version after a newer one is registered, every produced schema resolves, an unregistered definition fails startup). Unit tests in `cmd/server` cover the inbound pipeline (`dlq_test.go`, `inbound_schema_test.go` — including a real Glue-framed message decoded by the actual consumer), and `eventbus/glue_codec_test.go` pins `registeredDefinition` byte-for-byte against Python for all 28 embedded schemas.
+
+- **PUB-1 anti-enumeration contract (PUBRES-2)** (`test/postgres/contract_test.go`, `TestContract_PUB1_AntiEnumeration_ShapeAndTiming`). This is a load-bearing security test, not a formality. It sends 200 interleaved match and no-match requests through the real router and Postgres. It asserts the two paths always return `200` with constant key sets, and that their medians are within max(250µs, 25%) and their p95s within max(5ms, 100%). It was checked to fail when the match path makes a single extra query. The rest of PUB-1's coverage runs through every tier: router sweep (`public_handler_test.go`), unit, Postgres (`public_tenant_resolve_test.go`), integration (`public_route_wiring_test.go`) and e2e (`flows_test.go`, `error_shape_test.go`, `security_test.go`).
 
 - **E2E** (`test/e2e/`, `-tags=e2e`) — `harness_test.go` wires the real `httpadapter.NewRouter` (the same function `cmd/server/main.go` calls), so the e2e suite and production share one route table by construction rather than a hand-copied duplicate that could drift.
 
@@ -1166,6 +1216,8 @@ STRIDE analysis of `iam-org-membership`. Every row is grounded in a real mechani
 | **Information Disclosure** | Cross-tenant row read via a missing or malformed GUC | PostgreSQL | `rls_check_tenant`/`app_tenant_id` fail closed (`NULL` on any error) rather than open; RLS Case 5 in `test/postgres/rls_test.go` covers the pooled-backend leakage case specifically (RLS-6) |
 | **Information Disclosure** | `pending_invitations`' PII exception (email + full name) leaks beyond acceptance | `pending_invitations` / GDPR erasure | This is the **one** deliberate non-`user_id`-keyed PII path in the schema (erasure-by-email); every other table is `user_id`-scoped and covered by the standard soft-delete + `ON DELETE CASCADE` on tenant offboarding |
 | **Information Disclosure** | I-15's membership-existence check leaks more than existence to a caller that shouldn't see it | `internal_handler.go` / `CheckMemberExists` | The endpoint returns only `{active, tenant_membership_id}` — never role, department, or PII — by construction, even though the caller (Tender ACL, Delegation) is itself a trusted internal service |
+| **Information Disclosure** | An anonymous caller uses PUB-1 to enumerate which companies or pending invitees exist | `PublicHandler` / `ResolveByIdentifier` | PUBRES-2: always `200`, an identical envelope for every no-match, and one SQL statement for both outcomes, so neither status, shape nor timing tells a hit from a miss (pinned by the timing/shape contract test). A hit reveals only a realm name, plus a `tenant_id` for a trial tenant (PUBRES-4); dedicated tenants' ids are never exposed pre-login |
+| **Denial of Service** | A caller floods PUB-1, the one unauthenticated route, to probe identifiers or load Postgres | Gateway + `PublicHandler` | PUBRES-3: 20 requests/IP/hour at the gateway, escalating to CAPTCHA after repeated no-matches (platform config, LLD §16 OQ-10). The query is a single indexed statement bounded by `PG_STATEMENT_TIMEOUT`, and the identifier is capped at 254 characters |
 | **Denial of Service** | A caller floods P-6 invites for one tenant | `InvitationService`'s PI-11/PI-12 throttles | Per-email cooldown (`INVITE_REINVITE_COOLDOWN_MINUTES`) + per-tenant hourly ceiling (`INVITE_MAX_PER_TENANT_PER_HOUR`), both checked pre-flight before any Realm Provisioner call — `429`, never a Realm Provisioner call burst |
 | **Denial of Service** | A slow/hung query holds a pool connection for the full HTTP deadline | `PG_STATEMENT_TIMEOUT` / `Config.SlowQueryThreshold` | Server-side `statement_timeout` releases the connection regardless of client behavior; `SlowQueryThreshold` (200 ms) surfaces the pattern at WARN before it becomes an incident |
 | **Denial of Service** | The in-process outbox runner starves the SQS consumer goroutines or vice versa under load | Outbox runner + SQS consumers (both in-process, share CPU with the server) | `OUTBOX_BATCH_SIZE` (50, `FOR UPDATE SKIP LOCKED`) bounds per-cycle work; `outbox_events` is durable regardless of runner availability — a starved runner delays publish, it never loses an event |

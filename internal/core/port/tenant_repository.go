@@ -62,6 +62,22 @@ type TenantRepository interface {
 	// jobs and business-metric exporters already do.
 	ListSubscriptionLapses(ctx context.Context, graceDays int) ([]domain.Tenant, error)
 
+	// ResolveByIdentifier is PUB-1 (LLD §5.4, IAM HLD §8.2.7): the
+	// pre-login, identifier-first tenant/realm lookup. identifier matches
+	// tenants.slug (any live tenant) or, failing that, the email of a
+	// still-pending, unexpired invitation (pending_invitations.email; the
+	// most recent one if several tenants invited the same address). An
+	// already-active member's email is NOT resolvable: O&M stores no email
+	// for active members (LLD §16 OQ-11, scope option A). Returns
+	// Found=false, never an error, for no match; one indexed query with no
+	// branch on which half matched (PUBRES-2).
+	//
+	// Callers MUST construct this repository against a BYPASSRLS pool
+	// (sysPool), exactly like ListSubscriptionLapses/I-16. This is an
+	// anonymous, pre-tenant route with no app.tenant_id GUC ever bound, so
+	// the RLS-scoped app pool would silently return zero rows for every call.
+	ResolveByIdentifier(ctx context.Context, identifier string) (domain.TenantResolution, error)
+
 	// LockByID takes TM-13 SELECT … FOR UPDATE on the tenants row so
 	// last-owner / seat-cap mutations serialize. No-op (no error) when the
 	// row is missing — callers discover that via the subsequent membership
@@ -172,6 +188,9 @@ func (TenantRepositoryNoop) Update(context.Context, uuid.UUID, *domain.TenantPat
 func (TenantRepositoryNoop) SetRealmSyncPending(context.Context, uuid.UUID) error { return nil }
 func (TenantRepositoryNoop) Insert(context.Context, *domain.Tenant) (*domain.Tenant, bool, error) {
 	return nil, false, nil
+}
+func (TenantRepositoryNoop) ResolveByIdentifier(context.Context, string) (domain.TenantResolution, error) {
+	return domain.TenantResolution{}, nil
 }
 func (TenantRepositoryNoop) ListSubscriptionLapses(context.Context, int) ([]domain.Tenant, error) {
 	return nil, nil

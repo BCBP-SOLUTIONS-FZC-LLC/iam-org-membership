@@ -424,6 +424,17 @@ type MemberExistsResponse struct {
 	TenantMembershipID *uuid.UUID `json:"tenant_membership_id,omitempty" format:"uuid"`
 }
 
+// PublicTenantResolveResponse is PUB-1's 200 body (LLD §5.4). A no-match is
+// exactly {"found":false}: every other field is omitempty, so the two
+// shapes never differ by a null placeholder (PUBRES-2). tenant_id appears
+// only for a shared-realm (trial) tenant (PUBRES-4).
+type PublicTenantResolveResponse struct {
+	Found    bool       `json:"found" example:"true"`
+	Realm    string     `json:"realm,omitempty" example:"tenant-acme"`
+	Strategy string     `json:"strategy,omitempty" enums:"shared,dedicated" example:"dedicated"`
+	TenantID *uuid.UUID `json:"tenant_id,omitempty" format:"uuid"`
+}
+
 // SubscriptionLapseItem is one row of the I-16 (§16 RP-C3) response —
 // enough for RP to know which realm to suspend without a second lookup.
 type SubscriptionLapseItem struct {

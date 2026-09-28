@@ -257,6 +257,54 @@ func (r *TenantRepository) ListSubscriptionLapses(ctx context.Context, graceDays
 	return out, nil
 }
 
+// ResolveByIdentifier implements PUB-1 (LLD §5.4). One statement for both
+// halves: a slug match (priority 0) wins over a pending-invitation email
+// match (priority 1), and among several invitations for one address the
+// most recent wins. Both halves are always planned and run as one query,
+// with no early return on which one matched (PUBRES-2). Must run on the
+// BYPASSRLS sysPool (see the port doc comment).
+func (r *TenantRepository) ResolveByIdentifier(ctx context.Context, identifier string) (domain.TenantResolution, error) {
+	var out domain.TenantResolution
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		var (
+			id        uuid.UUID
+			realm     string
+			realmType domain.RealmType
+		)
+		scanErr := tx.QueryRow(ctx, `
+			SELECT id, realm_id, realm_type FROM (
+				SELECT 0 AS priority, t.created_at AS ord, t.id, t.realm_id, t.realm_type
+				FROM tenants t
+				WHERE t.slug = $1 AND t.deleted_at IS NULL
+				UNION ALL
+				SELECT 1, pi.created_at, t.id, t.realm_id, t.realm_type
+				FROM pending_invitations pi
+				JOIN tenants t ON t.id = pi.tenant_id
+				WHERE pi.email = $1::citext
+				  AND pi.status = 'pending'
+				  AND pi.expires_at > now()
+				  AND t.deleted_at IS NULL
+			) m
+			ORDER BY priority, ord DESC
+			LIMIT 1`, identifier).Scan(&id, &realm, &realmType)
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			return nil
+		}
+		if scanErr != nil {
+			return scanErr
+		}
+		out = domain.TenantResolution{Found: true, Realm: realm, RealmType: realmType}
+		if realmType == domain.RealmShared {
+			out.TenantID = &id
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.TenantResolution{}, err
+	}
+	return out, nil
+}
+
 func (r *TenantRepository) LockByID(ctx context.Context, id uuid.UUID) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id)

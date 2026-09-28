@@ -574,3 +574,32 @@ func withGUCTenant(ctx context.Context, tenantID uuid.UUID) context.Context {
 
 // Silence unused-var warning if a helper is trimmed later.
 var _ = strings.Contains
+
+// ── PUB-1 is the one deliberately unauthenticated route ───────────────────
+
+// TestPublicResolveIsTheOnlyUnauthenticatedRoute: with no headers at all,
+// PUB-1 answers 200 and a representative route from every other /api/v1
+// class (public-tenant, invitation, internal, operator) still 401s. The
+// package-level router test sweeps every registered route; this pins the
+// same property through the real HTTP server and Postgres. It fails if
+// PUB-1 is "fixed" into requiring auth, or if a new route slips out of the
+// protected group.
+func TestPublicResolveIsTheOnlyUnauthenticatedRoute(t *testing.T) {
+	e := newE2EEnv(t)
+	tenantID := e.seedTenant(t, "pub1-sec")
+
+	code, _, body := e.do(t, reqOpts{method: http.MethodGet, path: "/api/v1/public/tenants/resolve?identifier=pub1-sec"})
+	require.Equal(t, http.StatusOK, code, "PUB-1 must need no headers (PUBRES-1): %s", body)
+
+	for _, r := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/tenants/" + tenantID.String()},
+		{http.MethodGet, "/api/v1/tenants/" + tenantID.String() + "/members"},
+		{http.MethodGet, "/api/v1/tenants/" + tenantID.String() + "/invitations"},
+		{http.MethodGet, "/api/v1/internal/users/" + uuid.NewString() + "/memberships"},
+		{http.MethodGet, "/api/v1/internal/tenants/" + tenantID.String() + "/members/" + uuid.NewString() + "/exists"},
+		{http.MethodPost, "/api/v1/operator/tenants/" + tenantID.String() + "/reassign-owner"},
+	} {
+		code, _, body := e.do(t, reqOpts{method: r.method, path: r.path})
+		assert.Equal(t, http.StatusUnauthorized, code, "%s %s must 401 with no headers (got %d %s)", r.method, r.path, code, body)
+	}
+}

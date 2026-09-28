@@ -375,7 +375,8 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		provisioningSvc, authzSvc, membershipSvc, invitationSvc, gmSvc, tenantSvc, subscriptionLapseSvc,
 	)
 
-	_ = sysPool // available for future system-level ops in tests
+	// PUB-1: bound to sysPool (BYPASSRLS), exactly as cmd/server/main.go does.
+	publicH := httpadapter.NewPublicHandler(service.NewTenantResolutionService(pgadapter.NewTenantRepository(sysPool)))
 
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
 		GinConfig:             gincommon.Config{ServiceName: "iam-org-membership-test", BuildVersion: "test"},
@@ -389,6 +390,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		InvitationHandler:     inviteH,
 		OperatorHandler:       operatorH,
 		InternalHandler:       internalH,
+		PublicHandler:         publicH,
 	})
 
 	srv := httptest.NewServer(router.Handler())

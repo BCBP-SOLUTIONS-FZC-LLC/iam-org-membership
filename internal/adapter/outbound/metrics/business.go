@@ -220,6 +220,10 @@ var (
 	// membership data, so only it can serve this check — not domain-shared.
 	MembershipExistsCheck *prometheus.CounterVec
 
+	// PublicTenantResolve counts PUB-1 pre-login tenant/realm lookups by
+	// result, found|not_found (§11.2).
+	PublicTenantResolve *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -290,6 +294,14 @@ func IncDependencyError(targetService, endpoint, outcome string) {
 func IncMembershipExistsCheck(caller, result string) {
 	if MembershipExistsCheck != nil {
 		MembershipExistsCheck.WithLabelValues(caller, result).Inc()
+	}
+}
+
+// IncPublicTenantResolve records one PUB-1 lookup outcome ("found" or
+// "not_found"). Nil-safe, see ObserveDependencyLatency.
+func IncPublicTenantResolve(result string) {
+	if PublicTenantResolve != nil {
+		PublicTenantResolve.WithLabelValues(result).Inc()
 	}
 }
 
@@ -526,6 +538,12 @@ func registerMetrics(environment string) {
 		ConstLabels: sLabels,
 	}, []string{"caller", "result"})
 
+	PublicTenantResolve = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name:        "iam_org_membership_public_tenant_resolve_total",
+		Help:        "PUB-1 pre-login tenant/realm resolution lookups served, by result.",
+		ConstLabels: sLabels,
+	}, []string{"result"})
+
 	TenantOwnerless = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name:        "iam_org_membership_tenant_ownerless",
 		Help:        "Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages.",
@@ -572,6 +590,7 @@ func registerMetrics(environment string) {
 		DelegateRemovalBlocked,
 		DelegateReassignment,
 		MembershipExistsCheck,
+		PublicTenantResolve,
 		TenantOwnerless,
 		RealmSyncPending,
 		SeatOverageActive,
@@ -631,4 +650,8 @@ func registerMetrics(environment string) {
 	MembershipExistsCheck.WithLabelValues("tender-acl", "inactive")
 	MembershipExistsCheck.WithLabelValues("delegation", "active")
 	MembershipExistsCheck.WithLabelValues("delegation", "inactive")
+
+	// PublicTenantResolve — PUB-1's result is bounded to two values.
+	PublicTenantResolve.WithLabelValues("found")
+	PublicTenantResolve.WithLabelValues("not_found")
 }

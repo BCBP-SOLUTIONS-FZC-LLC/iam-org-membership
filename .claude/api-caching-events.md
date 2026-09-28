@@ -4,13 +4,14 @@
 
 - All routes under `/api/v1`. Breaking changes ship under `/api/v2`. Endpoint catalogue below writes paths **in full** (`/api/v1/...`).
 - Middleware: `gincommon.DefaultMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → RequireAuth → ContextMiddleware`) + GUC-bridge.
-- **Three route prefixes with distinct auth models:**
+- **Four route prefixes with distinct auth models:**
 
 | Prefix | Callers | Auth | Ingress |
 |--------|---------|------|---------|
 | `/api/v1/*` | Authenticated tenant users | Gateway-injected `x-user-id`, `x-tenant-id`, `x-tenant-roles` from validated JWT | Public Envoy |
 | `/api/v1/internal/*` | In-mesh services (Realm Provisioner, Event Consumer, LLM, Signup BFF, Workflow, Billing, AuthZ) | Mesh mTLS + NetworkPolicy; **no JWT**; `x-tenant-id` = target tenant | Internal Envoy only; external blocked |
 | `/api/v1/operator/*` | Human operators / operator tooling | Gateway validates JWT, asserts `platform_operator` Keycloak role | **Separate operator ingress** — unreachable from public tenant Envoy (§16 C1 defense-in-depth) |
+| `/api/v1/public/*` (PUB-1 only) | Anonymous, pre-login browser | **None** — no JWT, no gateway headers; registered on the engine outside the protected group (no `RequireAuth`, no GUC-bridge, PUBRES-1) | Public Envoy, `ext_authz` bypass (platform config pending, LLD §16 OQ-10) |
 
 - Content type `application/json`. Timestamps RFC 3339 UTC. Errors via `gincommon.ErrorResponse`.
 - Mutation responses echo `record_version` + `updated_at` for optimistic-lock round-tripping.
@@ -98,6 +99,14 @@
 | O-4 | `PATCH /tenants/:id/feature-flags` | Full-replacement of override delta (§16 A18). Allow-list validated; scalars only |
 | O-7 | `POST /tenants/:id/reassign-owner` | Recover ownerless tenant — grant `tenant_owner` to existing active member; clear `ownerless_since` (§16 A39, TM-12/T-13). Only path to resolve TM-12 escalation |
 
+### Public, unauthenticated routes (`/api/v1/public/*`)
+
+| # | Method & Path | Purpose |
+|---|---|---|
+| PUB-1 | `GET /public/tenants/resolve?identifier=` | Pre-login tenant/realm resolution (IAM HLD §8.2.7, LLD §5.4/§8.11). `identifier` is a company slug or a still-pending, unexpired invitation's email; an active member's email isn't resolvable (§16 OQ-11, option A). Returns `{found, realm, strategy}`, plus `tenant_id` for a shared/trial tenant only (PUBRES-4), or exactly `{found:false}`. Always `200`, never `404` (PUBRES-2). One `UNION ALL` statement on the BYPASSRLS `sysPool`. **No cache key** (§6.1), no event, no write. Metric `iam_org_membership_public_tenant_resolve_total{result}` |
+
+**PUBRES-1..4:** query-string `identifier` only, nothing client-supplied trusted (1); constant shape and one statement for hit/miss, pinned by `TestContract_PUB1_AntiEnumeration_ShapeAndTiming` (2); rate-limit/CAPTCHA at the gateway, not here (3); `tenant_id` only for a shared-realm match (4).
+
 **Operator invariants (OP-1..7):** Only `platform_operator` writes feature_flags/reassign-owner in O&M (catalog/plans writes now live in the Catalog Service). Departments never physically deleted (OP-3, enforced by the Catalog Service now). Retirement affects future assignments only, existing rows untouched (OP-5).
 
 ## 5.5 Status Codes
@@ -107,7 +116,7 @@ Per `gincommon.ErrorResponse` `{code, message, request_id, trace_id, details}`. 
 | Code | Meaning | Triggers |
 |---|---|---|
 | 200 / 201 / 202 / 204 | Success | 202 = P-6 invite staged |
-| 400 | Validation | `invalid_uuid`, `invalid_locale`, `invalid_slug`, `invalid_role_level`, `invalid_role` (incl. `member`, TR-7), `invalid_limit`, `invalid_cursor`, `unknown_feature_flag` (O-4 allow-list), `invalid_feature_value` (non-scalar, PLAN-6(d)), `invalid_mfa_freshness_seconds` (T-10) |
+| 400 | Validation | `invalid_uuid`, `invalid_locale`, `invalid_slug`, `invalid_role_level`, `invalid_role` (incl. `member`, TR-7), `invalid_limit`, `invalid_cursor`, `invalid_identifier` (PUB-1 — empty or > 254 chars), `unknown_feature_flag` (O-4 allow-list), `invalid_feature_value` (non-scalar, PLAN-6(d)), `invalid_mfa_freshness_seconds` (T-10) |
 | 401 | `missing_identity_headers` |
 | 403 | `insufficient_role`, `cannot_remove_owner`, `service_account_not_grantable` (AUTH-9 — P-6/I-3 invite/register, P-10/P-28 role-grant target resolves to a service-account principal) |
 | 404 | `tenant_not_found`, `member_not_found`, `department_not_found`, `invitation_not_found` (revoke on non-pending) |
