@@ -31,10 +31,12 @@ func TestIsServiceAccount_Happy_Found(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
-		assert.Equal(t, "/internal/tenants/"+tenantID.String()+"/service-accounts", r.URL.Path)
+		assert.Equal(t, "/api/v1/internal/tenants/"+tenantID.String()+"/service-accounts", r.URL.Path)
 
-		// Internal headers must be set (mesh trust boundary)
-		assert.Equal(t, "iam-system", r.Header.Get("x-user-id"))
+		// Internal headers must be set (mesh trust boundary).
+		// x-user-id must be the system principal UUID, not the string "iam-system" —
+		// Token Service's GUCBridgeMiddleware calls uuid.Parse on this value.
+		assert.Equal(t, "00000000-0000-0000-0000-0000000000a1", r.Header.Get("x-user-id"))
 		assert.Equal(t, "iam-system", r.Header.Get("x-tenant-roles"))
 		assert.Equal(t, tenantID.String(), r.Header.Get("x-tenant-id"))
 
@@ -153,7 +155,7 @@ func TestSetInternalHeaders_SetsExpectedHeaders(t *testing.T) {
 	c := NewHTTPClient("http://tokenservice.internal", 5*time.Second, nil)
 	c.setInternalHeaders(req, tenantID)
 
-	assert.Equal(t, "iam-system", req.Header.Get("x-user-id"))
+	assert.Equal(t, "00000000-0000-0000-0000-0000000000a1", req.Header.Get("x-user-id")) // domain.SystemPrincipalID
 	assert.Equal(t, tenantID.String(), req.Header.Get("x-tenant-id"))
 	assert.Equal(t, "iam-system", req.Header.Get("x-tenant-roles"))
 }

@@ -4,7 +4,7 @@ The Org & Membership (Core) Service — the **organizational/business system of 
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`
 **Module:** Go 1.26.6 · private module · deployed as two binaries from one image (`cmd/server`, `cmd/reconciler`)
-**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.3** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
+**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.12** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
 
 ---
 
@@ -170,7 +170,7 @@ iam-org-membership/
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.3 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.12 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   └── runbook-schema-registry.md     # Schema-governance operator runbook
 ├── deploy/                            # Helm chart, monitoring alerts, IAM policy
@@ -186,8 +186,8 @@ iam-org-membership/
 | `port` | `domain` only |
 | `service` | `domain`, `port`, `requestctx`, `observability` (a documented cross-cutting leaf) |
 | `adapters_inbound` (http/consumer) | `service`, `port`, `domain`, `requestctx`, `observability`, `apispec` |
-| `adapters_outbound` (postgres/valkey/eventbus/workflow/realmprovisioner/catalogadmin/groupmappingclient/delegationcheck) | `port`, `domain`, `eventschema`, `observability`, `httptransport` |
-| `httptransport` (`internal/adapter/outbound/httpx` — scaffolded, not yet imported by any outbound client) | Nothing internal |
+| `adapters_outbound` (postgres/valkey/eventbus/workflow/realmprovisioner/catalogadmin/groupmappingclient/delegationcheck/tokenservice) | `port`, `domain`, `eventschema`, `observability`, `httptransport` |
+| `httptransport` (`internal/adapter/outbound/httpx` — adopted; all 6 outbound HTTP clients build via `httpx.NewClient(timeout)`) | Nothing internal |
 | `reconciler_jobs` (`cmd/reconciler/jobs`) | `domain`, `port`, `observability`, `requestctx` |
 | `cmd` (server/reconciler) | Everything above |
 
@@ -666,7 +666,7 @@ docker build -t iam-org-membership:local --secret id=go_private_token,src=<(echo
 | Endpoint | Returns | Checks |
 |---|---|---|
 | `GET /healthz` | `200 {"status":"ok"}` | Pure liveness — never inspects a dependency |
-| `GET /readyz` | `200`/`503` | App Postgres pool, sys (BYPASSRLS) Postgres pool, Valkey, and the outbox runner, each via its own `Health(ctx)` |
+| `GET /readyz` | `200`/`503` | App Postgres pool, sys (BYPASSRLS) Postgres pool, Valkey, outbox runner, and SQS consumer goroutines (OBS-1), each via its own `Health(ctx)` |
 
 ### Minimum required environment variables
 
@@ -733,7 +733,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | Queue | Producer | Events |
 |---|---|---|
-| `tenant-orgm-q` | Realm Provisioner | `TenantRealmReady`, `TenantConverted`, `TenantSuspended`, `TenantOffboarded`, `TrialExpired`, `TrialReactivated`, `TenantReactivated` |
+| `tenant-orgm-q` | Realm Provisioner | `TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated` |
 | `billing-orgm-q` | Billing | `TenantSeatsChanged`, `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated` |
 | `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (Gap 12) — **inert today**: consumer is done/tested, but `iam-catalog-admin` has no publisher side yet and `SQS_CATALOG_ORGM_QUEUE_URL` is unset everywhere |
 
@@ -792,7 +792,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.3 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.12 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 
 ---

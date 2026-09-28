@@ -84,10 +84,36 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  schema-verify:
+    name: Schema verify
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            go.mod
+
+      # Verify every produced schema's definition is registered + AVAILABLE
+      # in its Glue registry before the Docker image is built. An unregistered
+      # definition would cause the pod to fail startup (GlueCodec resolves by
+      # definition once at init — make schema-verify mirrors that exact lookup).
+      - name: Verify event schemas registered in Glue registry
+        run: make schema-verify
+
   docker:
     name: Docker image → GHCR
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, schema-verify]
     outputs:
       digest: ${{ steps.pushed.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
@@ -299,8 +325,8 @@ jobs:
         run: |
           PROM_URL="${{ vars.PROMETHEUS_URL }}"
           if [ -z "$PROM_URL" ]; then
-            echo "PROMETHEUS_URL not set — skipping error-rate check"
-            exit 0
+            echo "::error::PROMETHEUS_URL is not configured — error-rate gate cannot run. Set the PROMETHEUS_URL variable in the production environment before tagging releases."
+            exit 1
           fi
           # status_class="5xx" matches the label emitted by platform-gincommon.
           QUERY='sum(rate(http_requests_total{job=~".*iam-org-membership.*",status_class="5xx"}[2m]))/sum(rate(http_requests_total{job=~".*iam-org-membership.*"}[2m]))'

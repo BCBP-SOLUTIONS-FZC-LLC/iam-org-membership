@@ -37,12 +37,7 @@ func NewAuthZService(repo port.AuthZRepository, plans port.PlanCatalogReader, de
 
 // MembershipProjection is the I-8 response envelope.
 //
-// LLD rev 1.50 (§16 A53): field `subscription_status` is the authoritative
-// name (matches billing/subscription vocabulary). Legacy `tenant_status`
-// alias kept for one release so downstream consumers can migrate without
-// a lock-step deploy; it will be removed once AuthZ Enrichment ships
-// rev 1.50-compat.
-//
+// `subscription_status` is the authoritative name (LLD §16 A53, billing vocabulary).
 // `read_only` is DERIVED at read time from subscription_status so AuthZ
 // Enrichment can rebuild the `x-feature-flags` `read_only` claim on a
 // cold cache-miss without additional round-trips (§16 A53 CACHE-9).
@@ -51,7 +46,6 @@ type MembershipProjection struct {
 	TenantID             uuid.UUID                   `json:"tenant_id"`
 	Status               domain.MembershipStatus     `json:"status"`
 	Plan                 domain.TenantPlan           `json:"plan"`
-	TenantStatus         domain.SubscriptionStatus   `json:"tenant_status"` // deprecated alias — see subscription_status
 	SubscriptionStatus   domain.SubscriptionStatus   `json:"subscription_status"`
 	ReadOnly             bool                        `json:"read_only"`
 	Locale               string                      `json:"default_locale"`
@@ -172,7 +166,6 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 		TenantID:             tenantID,
 		Status:               row.MembershipStatus,
 		Plan:                 row.TenantPlan,
-		TenantStatus:         row.SubscriptionStatus, // deprecated alias
 		SubscriptionStatus:   row.SubscriptionStatus,
 		ReadOnly:             readOnlyForStatus(row.SubscriptionStatus),
 		Locale:               row.Locale,

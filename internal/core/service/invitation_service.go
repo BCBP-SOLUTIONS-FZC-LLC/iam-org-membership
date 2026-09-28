@@ -21,19 +21,20 @@ func normalizeEmail(s string) string { return strings.ToLower(strings.TrimSpace(
 // §8.10 two-step invite→accept with SEAT-1 cap enforcement (TM-13 locking
 // discipline: FOR UPDATE on tenants inside RunInTx).
 type InvitationService struct {
-	invites          port.InvitationRepository
-	memberships      port.MembershipRepository
-	roles            port.TenantRoleRepository
-	deptMems         port.DeptMembershipRepository
-	tenants          port.TenantRepository
-	rp               port.RealmProvisionerClient
-	tokenService     port.TokenServiceClient // AUTH-9 defense-in-depth — optional, see WithTokenServiceClient
-	cache            port.Cache
-	txRunner         port.TxRunner
-	logger           port.SlogStyleLogger
-	expiryDays       int
-	reinviteCooldown time.Duration // PI-11: 0 = disabled
-	maxPerHour       int           // PI-12: 0 = disabled
+	invites            port.InvitationRepository
+	memberships        port.MembershipRepository
+	roles              port.TenantRoleRepository
+	deptMems           port.DeptMembershipRepository
+	tenants            port.TenantRepository
+	rp                 port.RealmProvisionerClient
+	tokenService       port.TokenServiceClient // AUTH-9 defense-in-depth — optional, see WithTokenServiceClient
+	cache              port.Cache
+	txRunner           port.TxRunner
+	logger             port.SlogStyleLogger
+	expiryDays         int
+	reinviteCooldown   time.Duration // PI-11: 0 = disabled
+	maxPerHour         int           // PI-12: 0 = disabled
+	maxPerActorPerHour int           // SECURITY-5: 0 = disabled
 }
 
 // NewInvitationService builds an InvitationService. logger may be nil — see
@@ -99,6 +100,14 @@ func (s *InvitationService) WithMaxInvitesPerHour(n int) *InvitationService {
 	return s
 }
 
+// WithMaxInvitesPerActorPerHour sets the SECURITY-5 per-actor hourly ceiling.
+// 0 disables. Should be lower than the per-tenant ceiling so a single actor
+// cannot starve other admins from sending invitations.
+func (s *InvitationService) WithMaxInvitesPerActorPerHour(n int) *InvitationService {
+	s.maxPerActorPerHour = n
+	return s
+}
+
 func (s *InvitationService) List(ctx context.Context, tenantID uuid.UUID) ([]domain.PendingInvitation, error) {
 	return s.invites.List(ctx, tenantID)
 }
@@ -118,6 +127,9 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 	}
 	if req.FullName == "" {
 		return nil, domain.NewError(domain.ErrValidation, "full_name is required")
+	}
+	if len(req.FullName) > 512 {
+		return nil, domain.NewError(domain.ErrValidation, "full_name must not exceed 512 characters")
 	}
 	for _, r := range req.InitialTenantRoles {
 		if !r.IsElevated() {
@@ -163,6 +175,23 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 		}
 		if count >= s.maxPerHour {
 			return nil, domain.NewError(domain.ErrInviteRateLimited, "invite rate limit reached").
+				WithDetails(map[string]any{
+					"retry_after_seconds": 3600,
+				})
+		}
+	}
+
+	// SECURITY-5: per-actor hourly invite ceiling. Checked after the per-tenant
+	// ceiling so a rogue admin cannot exhaust the full tenant quota and block
+	// all other admins from sending invitations.
+	if s.maxPerActorPerHour > 0 {
+		since := time.Now().UTC().Add(-time.Hour)
+		actorCount, err := s.invites.CountCreatedInWindowByActor(ctx, tenantID, actorID, since)
+		if err != nil {
+			return nil, err
+		}
+		if actorCount >= s.maxPerActorPerHour {
+			return nil, domain.NewError(domain.ErrInviteRateLimited, "actor invite rate limit reached").
 				WithDetails(map[string]any{
 					"retry_after_seconds": 3600,
 				})
@@ -481,13 +510,15 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 					return gerr
 				}
 				if pub != nil {
-					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+					if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventTenantRoleGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: pending.InvitedBy.String(),
 						Data: domain.TenantRoleGrantedPayload{
 							UserID: userID, TenantID: tenantID, RoleCode: tr.RoleCode, ActorID: pending.InvitedBy,
 						},
-					})
+					}); err != nil {
+						return err
+					}
 				}
 			}
 			// Apply queued initial dept mappings.
@@ -497,7 +528,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 					return aerr
 				}
 				if pub != nil {
-					_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+					if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 						Type: domain.EventDepartmentMembershipGranted, TenantID: tenantID,
 						Subject: userID.String(), Actor: pending.InvitedBy.String(),
 						Data: domain.DepartmentMembershipGrantedPayload{
@@ -505,7 +536,9 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 							DepartmentID: assigned.DepartmentID, Level: assigned.RoleLevel,
 							ActorID: pending.InvitedBy,
 						},
-					})
+					}); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -513,6 +546,15 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 	})
 	if err != nil {
 		return nil, err
+	}
+	// SECURITY-8: best-effort PII erasure for the invitation that was just
+	// accepted. Runs outside the transaction so a failure here cannot roll
+	// back the acceptance. Only attempted when an invitation was matched.
+	if pending != nil {
+		if err := s.invites.ErasePII(ctx, tenantID, pending.ID); err != nil {
+			s.logger.WarnContext(ctx, "AddFromRegister: ErasePII failed (best-effort, non-fatal)",
+				"tenant_id", tenantID, "invitation_id", pending.ID, "error", err.Error())
+		}
 	}
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID))
@@ -533,6 +575,14 @@ func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, 
 	// Mark for KC cleanup — reconciler in Phase 5 sweeps and calls RP DeleteUser.
 	if err := s.invites.SetKCCleanupPending(ctx, tenantID, id, true, inv.RecordVersion); err != nil {
 		return nil, err
+	}
+	// SECURITY-8: best-effort PII erasure now that the invitation is terminal.
+	// Fail-open: a warning is logged but the caller still receives a success
+	// response so the revoke itself is not rolled back over a non-critical
+	// cleanup step.
+	if err := s.invites.ErasePII(ctx, tenantID, id); err != nil {
+		s.logger.WarnContext(ctx, "Revoke: ErasePII failed (best-effort, non-fatal)",
+			"tenant_id", tenantID, "invitation_id", id, "error", err.Error())
 	}
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID))

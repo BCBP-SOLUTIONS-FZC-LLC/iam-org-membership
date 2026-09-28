@@ -53,6 +53,7 @@ groups:
             Fewer than 2 replicas are healthy. HPA minReplicas is 2 (LLD §13.1);
             a further disruption will block node drains.
             Current healthy count: {{ $value }}.
+          runbook: "iam-org-membership/service-down"
 
   # ── HTTP error rate ─────────────────────────────────────────────────────────
   - name: iam_org_membership_errors
@@ -74,6 +75,7 @@ groups:
             {{ $value | humanizePercentage }} of requests are returning 5xx errors
             over the last 5 minutes. Investigate recent deployments, dependency
             health (Postgres, Valkey, SNS/SQS, Workflow/UP/RP), and application logs.
+          runbook: "iam-org-membership/high-error-rate"
 
       - alert: IAMOrgMembershipCriticalErrorRate
         expr: |
@@ -87,6 +89,7 @@ groups:
           team: platform
         annotations:
           summary: iam-org-membership 5xx error rate above 20%
+          runbook: "iam-org-membership/critical-error-rate"
           description: >-
             {{ $value | humanizePercentage }} of requests are returning 5xx errors.
             This exceeds the critical threshold. Escalate immediately — the service
@@ -354,3 +357,24 @@ groups:
             producer has added a type we should be handling. Add a case in
             membership_event_consumer.go / classify().
           runbook: "iam-org-membership/unknown-event-type"
+
+  # ── SQS consumer health (OBS-2) ─────────────────────────────────────────────
+  - name: iam_org_membership_consumer_health
+    rules:
+
+      - alert: IAMOrgMembershipConsumerDead
+        expr: |
+          rate(platform_messages_received_total{service="iam-org-membership"}[10m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          service: iam-org-membership
+        annotations:
+          summary: "iam-org-membership SQS consumer has stopped receiving messages"
+          description: |
+            No messages have been received in the last 10 minutes. The SQS consumer
+            goroutine may have panicked or stopped. lifecycle events (tenant status
+            changes, billing events) are not being processed — tenants.status will
+            drift. Restart the pod if the consumer does not recover.
+          runbook: "iam-org-membership/consumer-dead"

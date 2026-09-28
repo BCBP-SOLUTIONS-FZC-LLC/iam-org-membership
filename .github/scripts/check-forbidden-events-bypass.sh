@@ -32,9 +32,16 @@
 # that this service does not own.
 set -euo pipefail
 
-# ── 1. aws-sdk-go-v2 SNS/SQS packages may only be imported where the raw
-#      client is constructed to hand off to platform-events. ─────────────
-ALLOWED_SDK_IMPORT_FILES="cmd/server/main.go"
+# ── 1. aws-sdk-go-v2 SNS/SQS packages may only be imported in:
+#      • cmd/server/main.go    — constructs the raw *sqs.Client and hands it
+#                                to events.NewSQSConsumerWithClient and to
+#                                sqsDLQAdapter (dlq_adapter.go).
+#      • cmd/server/dlq_adapter.go — the ONE place that calls SendMessage and
+#                                GetQueueAttributes directly. platform-events
+#                                has no DLQ-routing primitive, so a thin
+#                                adapter over the raw SQS SDK is required.
+#                                See the Rule-2 exemption below.
+ALLOWED_SDK_IMPORT_FILES="cmd/server/main.go cmd/server/dlq_adapter.go"
 
 sdk_import_hits=$(grep -RIl -E '"github\.com/aws/aws-sdk-go-v2/service/(sns|sqs)"' \
   --include='*.go' cmd/ internal/ 2>/dev/null | grep -v '_test\.go$' || true)
@@ -53,13 +60,22 @@ for f in $sdk_import_hits; do
   fi
 done
 
-# ── 2. Even in an allowed file, the SNS/SQS transport methods themselves
-#      must never be called directly — only used to build the client.
-#      internal/adapter/outbound/eventbus/ is exempt — see header comment. ─
+# ── 2. Direct SNS/SQS transport method calls are forbidden everywhere except:
+#      • internal/adapter/outbound/eventbus/ — RoutingPublisher wraps
+#        platform-events' own Publisher interface (same method names, not a
+#        bypass — see header comment).
+#      • cmd/server/dlq_adapter.go — sqsDLQAdapter.RedriveTargetURL calls
+#        GetQueueAttributes and sqsDLQAdapter.SendToDLQ calls SendMessage.
+#        This is the ONLY sanctioned direct transport call: platform-events
+#        has no DLQ-routing primitive (handler errors only trigger SQS redrive
+#        after maxReceiveCount), so immediate DLQ routing for poison pills
+#        (EVT-15) and schema violations requires the raw SQS SDK here. No
+#        other file may call these methods. ──────────────────────────────────
 method_hits=$(grep -REn '\.(SendMessage|ReceiveMessage|DeleteMessage|ChangeMessageVisibility|Publish|Subscribe)\(' \
   --include='*.go' cmd/ internal/ 2>/dev/null \
   | grep -v '_test\.go' \
-  | grep -v '^internal/adapter/outbound/eventbus/' || true)
+  | grep -v '^internal/adapter/outbound/eventbus/' \
+  | grep -v '^cmd/server/dlq_adapter\.go' || true)
 
 if [ -n "$method_hits" ]; then
   echo "::error::Direct SNS/SQS transport method call detected outside platform-events. Publish via eventbus.Publisher.Enqueue (outbox.Enqueue); consume via events.NewSQSConsumerWithClient's registered handler — never call the AWS SDK client's own methods."

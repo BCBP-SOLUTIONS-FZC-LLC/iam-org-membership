@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -10,6 +11,11 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/google/uuid"
 )
+
+// jsonMarshal / jsonUnmarshal are thin aliases used by SeatUsage cache
+// read/write so callers stay readable without repeating json.Marshal/Unmarshal.
+var jsonMarshal = json.Marshal
+var jsonUnmarshal = json.Unmarshal
 
 // MembershipService owns P-4/P-5/P-7/P-8/P-26/P-27/P-28/P-34. P-6 (invite) lives
 // in InvitationService; P-11 (dept remove) in DeptMembershipService.
@@ -376,7 +382,7 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 			}
 			granted = append(granted, *tr)
 			if pub != nil {
-				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type:      domain.EventTenantRoleGranted,
 					TenantID:  tenantID,
 					Subject:   userID.String(),
@@ -386,7 +392,9 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 					Data: domain.TenantRoleGrantedPayload{
 						UserID: userID, TenantID: tenantID, RoleCode: code, ActorID: actorID,
 					},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		for code := range currentSet {
@@ -399,7 +407,7 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 			}
 			revoked = append(revoked, *tr)
 			if pub != nil {
-				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type:      domain.EventTenantRoleRevoked,
 					TenantID:  tenantID,
 					Subject:   userID.String(),
@@ -409,7 +417,9 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 					Data: domain.TenantRoleRevokedPayload{
 						UserID: userID, TenantID: tenantID, RoleCode: code, ActorID: actorID,
 					},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -755,7 +765,19 @@ func (s *MembershipService) ResetUserMFA(ctx context.Context, tenantID, userID, 
 
 // SeatUsage is P-27/I-11. Reads active_users + pending_invitations vs
 // licensed_seats. over_cap = active + pending >= licensed_seats (SEAT-3: at-cap is overage).
+// PERF-4: cache read before Postgres; cache write after — 30s TTL (CACHE-5).
+// SEAT-1 mutators already evict cacheKeySeatUsage on every membership/invite change.
 func (s *MembershipService) SeatUsage(ctx context.Context, tenantID uuid.UUID) (*domain.SeatUsage, error) {
+	const seatTTL = 30 * time.Second
+	cacheKey := cacheKeySeatUsage(tenantID)
+	if s.cache != nil {
+		if raw, err := s.cache.Get(ctx, cacheKey); err == nil && raw != nil {
+			var cached domain.SeatUsage
+			if jsonErr := jsonUnmarshal(raw, &cached); jsonErr == nil {
+				return &cached, nil
+			}
+		}
+	}
 	t, err := s.tenants.FindByIDIncludingDeleted(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -779,6 +801,11 @@ func (s *MembershipService) SeatUsage(ctx context.Context, tenantID uuid.UUID) (
 	if t.OverageSince != nil && s.seatOverageDays > 0 {
 		end := t.OverageSince.Add(time.Duration(s.seatOverageDays) * 24 * time.Hour)
 		usage.GraceEndsAt = &end
+	}
+	if s.cache != nil {
+		if raw, err := jsonMarshal(usage); err == nil {
+			_ = s.cache.Set(ctx, cacheKey, raw, seatTTL)
+		}
 	}
 	return usage, nil
 }

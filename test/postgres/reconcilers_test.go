@@ -138,6 +138,7 @@ func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 	res, err := jobs.TrialCleanup(ctx, &jobs.Context{
 		Reconciler:     pgadapter.NewReconcilerStore(sysPool),
 		TrialGraceDays: 15,
+		BatchLimit:     100,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.Succeeded, "only the past-grace trial_expired tenant must delete")

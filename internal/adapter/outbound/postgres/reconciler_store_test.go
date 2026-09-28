@@ -151,7 +151,7 @@ func TestReconcilerStore_HardDeleteExpiredTrials_ReturnsRowsAffected(t *testing.
 		},
 	}
 	n, err := NewReconcilerStore(nil).
-		HardDeleteExpiredTrials(injectTx(context.Background(), tx), 30)
+		HardDeleteExpiredTrials(injectTx(context.Background(), tx), 30, 500)
 	require.NoError(t, err)
 	assert.Equal(t, 3, n)
 }
@@ -164,7 +164,7 @@ func TestReconcilerStore_HardDeleteExpiredTrials_ExecErrorPassesThrough(t *testi
 		},
 	}
 	_, err := NewReconcilerStore(nil).
-		HardDeleteExpiredTrials(injectTx(context.Background(), tx), 30)
+		HardDeleteExpiredTrials(injectTx(context.Background(), tx), 30, 500)
 	assert.ErrorIs(t, err, execErr)
 }
 

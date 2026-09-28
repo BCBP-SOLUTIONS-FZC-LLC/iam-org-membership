@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 
 	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -74,13 +76,60 @@ func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName 
 
 // instrumentedHandler wraps an SQS handler with the Tier-1
 // platform_messages_{received,processed,failed}_total counters, labelled by
-// queue. Wired here rather than inside MembershipEventConsumer.Handle
-// because the queue identity is only known at the subscription call site —
-// both tenant-orgm-q and billing-orgm-q share the same Handle method.
+// queue, and a linked OTel consumer span (OBS-7/OBS-9).
+//
+// Distributed trace linkage: published envelopes carry the producer's
+// trace_id (TraceID hex) and correlation_id (parent SpanID hex) set by
+// publisher.go via events.WithTraceID/WithCorrelationID. Propagating them as
+// a span Link (not a parent) is the correct W3C model for async messaging —
+// the consumer span belongs to its own trace while remaining navigable from
+// Jaeger/Tempo via the link. The span is named "consumer.<event_type>" so
+// every event type appears as a distinct operation in the service graph.
+//
+// Wired here rather than inside MembershipEventConsumer.Handle because the
+// queue identity is only known at the subscription call site — both
+// tenant-orgm-q and billing-orgm-q share the same Handle method.
 func instrumentedHandler(queue string, h events.Handler) events.Handler {
+	tracer := otel.Tracer("iam-org-membership")
 	return func(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 		metrics.IncMessagesReceived(queue)
+
+		// OBS-7/OBS-9: link this consumer span to the producer's trace so the
+		// async boundary is navigable in Jaeger/Tempo without breaking the
+		// producer's own trace continuity.
+		spanOpts := []trace.SpanStartOption{
+			trace.WithSpanKind(trace.SpanKindConsumer),
+		}
+		if env.TraceID != "" {
+			if tid, err := trace.TraceIDFromHex(env.TraceID); err == nil {
+				// CorrelationID carries the producer's SpanID (set by publisher.go).
+				// Build a valid SpanID if present; fall back to a zero SpanID
+				// (still a valid remote SpanContext — TraceID alone is enough to
+				// navigate to the producer trace in Jaeger).
+				var sid trace.SpanID
+				if env.CorrelationID != "" {
+					if parsed, err2 := trace.SpanIDFromHex(env.CorrelationID); err2 == nil {
+						sid = parsed
+					}
+				}
+				remoteSpanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+					TraceID:    tid,
+					SpanID:     sid,
+					Remote:     true,
+					TraceFlags: trace.FlagsSampled,
+				})
+				if remoteSpanCtx.IsValid() {
+					spanOpts = append(spanOpts, trace.WithLinks(trace.Link{SpanContext: remoteSpanCtx}))
+				}
+			}
+		}
+
+		spanName := "consumer." + env.Type
+		ctx, span := tracer.Start(ctx, spanName, spanOpts...)
+		defer span.End()
+
 		if err := h(ctx, env); err != nil {
+			span.RecordError(err)
 			metrics.IncMessagesFailed(queue)
 			return err
 		}

@@ -301,6 +301,51 @@ func TestRLS_Case3_CrossTenantInsertRejectedByWithCheck(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Case 4: sysPool (BYPASSRLS superuser) sees all rows regardless of GUC;
+// appPool bound to a different tenant sees 0 rows for the seeded tenant.
+// Validates that the BYPASSRLS role used by reconciler jobs (sysPool in
+// production) correctly bypasses the tenant_isolation policy, and that the
+// same rows are invisible to an RLS-scoped appPool set to a different tenant.
+// ─────────────────────────────────────────────────────────────────────────
+func TestRLS_Case4_SysPoolBypassesRLS(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, sysPool := setupTestDB(t)
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, ctx, rawPool, "syspooltest-a")
+	tenantB := seedTenant(t, ctx, rawPool, "syspooltest-b")
+
+	// Seed a member for tenantA via the superuser rawPool (bypasses RLS).
+	userID := uuid.New()
+	membershipID := uuid.New()
+	_, err := rawPool.Exec(ctx,
+		`INSERT INTO tenant_memberships (id, tenant_id, user_id) VALUES ($1, $2, $3)`,
+		membershipID, tenantA, userID)
+	require.NoError(t, err)
+
+	// sysPool is a superuser pool with no GUCProvider — it holds BYPASSRLS
+	// and therefore sees all tenant_memberships rows unconditionally.
+	var sysCount int
+	err = pgcommon.RunInTx(ctx, sysPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx,
+			`SELECT count(*) FROM tenant_memberships WHERE tenant_id = $1`, tenantA).Scan(&sysCount)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, sysCount, "Case 4: sysPool (BYPASSRLS) must see the seeded tenant_memberships row")
+
+	// appPool bound to tenantB sees 0 rows for tenantA — RLS filters by
+	// app.tenant_id, which is set to tenantB, not tenantA.
+	ctxB := withTenant(ctx, tenantB)
+	var appCount int
+	err = pgcommon.RunInTx(ctxB, appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx,
+			`SELECT count(*) FROM tenant_memberships WHERE tenant_id = $1`, tenantA).Scan(&appCount)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, appCount, "Case 4: appPool bound to tenantB must see 0 rows for tenantA")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Case 5 (RLS-6): no cross-tenant leak across a pooled connection.
 // Canonical PgBouncer safety test — tenant A executes a tx, its
 // connection returns to the pool, tenant B executes on (potentially) the

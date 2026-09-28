@@ -60,6 +60,11 @@ func (h *MembershipHandler) List(c *gin.Context) {
 	}
 	var cursor *domain.MembershipListCursor
 	if raw := c.Query("cursor"); raw != "" {
+		if len(raw) > 512 {
+			HandleError(c, domain.NewError(domain.ErrValidation, "invalid cursor").
+				WithDetails(map[string]any{"code": "invalid_cursor"}))
+			return
+		}
 		decoded, err := base64.URLEncoding.DecodeString(raw)
 		if err != nil {
 			HandleError(c, domain.NewError(domain.ErrValidation, "invalid cursor").

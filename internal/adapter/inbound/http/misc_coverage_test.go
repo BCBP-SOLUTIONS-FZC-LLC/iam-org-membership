@@ -336,6 +336,9 @@ func (r *miscInviteRepo) MostRecentCreatedAt(context.Context, uuid.UUID, string)
 func (r *miscInviteRepo) CountCreatedInWindow(context.Context, uuid.UUID, time.Time) (int, error) {
 	return 0, nil
 }
+func (r *miscInviteRepo) CountCreatedInWindowByActor(context.Context, uuid.UUID, uuid.UUID, time.Time) (int, error) {
+	return 0, nil // actor rate limit not triggered in these handler tests
+}
 func (r *miscInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error {
 	return nil
 }
@@ -343,6 +346,7 @@ func (r *miscInviteRepo) ExpireOverdue(context.Context, int) (int, error) { retu
 func (r *miscInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
 	return nil, nil
 }
+func (r *miscInviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
 var _ port.InvitationRepository = (*miscInviteRepo)(nil)
 

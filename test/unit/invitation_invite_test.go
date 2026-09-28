@@ -117,6 +117,9 @@ func (r *invInviteRepo) CountCreatedInWindow(ctx context.Context, tenantID uuid.
 	}
 	return 0, nil
 }
+func (r *invInviteRepo) CountCreatedInWindowByActor(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ time.Time) (int, error) {
+	return 0, nil // actor rate limit not triggered by default
+}
 
 var _ port.InvitationRepository = (*invInviteRepo)(nil)
 

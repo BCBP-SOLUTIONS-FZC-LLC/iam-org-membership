@@ -48,6 +48,12 @@ type InvitationRepository interface {
 	// tenant within the rolling window — used by PI-12 rate limit.
 	CountCreatedInWindow(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error)
 
+	// CountCreatedInWindowByActor returns the number of invitations created by a
+	// specific actor within the rolling window — used by SECURITY-5 per-actor
+	// rate limit to prevent a single tenant_admin from exhausting the full
+	// per-tenant quota.
+	CountCreatedInWindowByActor(ctx context.Context, tenantID, actorID uuid.UUID, since time.Time) (int, error)
+
 	// ListExpiring is the invitation-expiry cron query.
 	ListExpiring(ctx context.Context, before time.Time, limit int) ([]domain.PendingInvitation, error)
 
@@ -67,6 +73,15 @@ type InvitationRepository interface {
 	// ClearKCCleanupPendingByID clears PI-9's durable marker after RP
 	// DeleteUser succeeds (or when there is no Keycloak user to delete).
 	ClearKCCleanupPendingByID(ctx context.Context, id uuid.UUID) error
+
+	// ErasePII overwrites the PII columns (email → '', full_name → 'redacted')
+	// on a terminal invitation row (accepted / expired / revoked). Called
+	// best-effort after every status transition that moves an invitation out of
+	// the 'pending' state (SECURITY-8). Scoped by (tenantID, id) so RLS
+	// invariants are preserved for the tenant-scoped pool; cross-tenant callers
+	// (reconciler via sysPool) may pass uuid.Nil for tenantID — the
+	// implementation then matches on id alone.
+	ErasePII(ctx context.Context, tenantID, id uuid.UUID) error
 }
 
 // InvitationRepositoryNoop supplies LockByID (and can be embedded so new
@@ -80,3 +95,7 @@ func (InvitationRepositoryNoop) ExpireOverdue(context.Context, int) (int, error)
 func (InvitationRepositoryNoop) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error {
 	return nil
 }
+func (InvitationRepositoryNoop) CountCreatedInWindowByActor(context.Context, uuid.UUID, uuid.UUID, time.Time) (int, error) {
+	return 0, nil
+}
+func (InvitationRepositoryNoop) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }

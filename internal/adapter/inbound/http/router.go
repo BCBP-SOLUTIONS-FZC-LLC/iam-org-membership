@@ -12,6 +12,7 @@ package http
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -79,6 +80,13 @@ type RouterConfig struct {
 	SysPostgres Pinger
 	Cache       Pinger
 	Outbox      Pinger
+	// Consumers are per-queue heartbeat pingers (OBS-1). Each entry
+	// corresponds to one SQS consumer goroutine; /readyz returns 503 and
+	// removes the pod from rotation when any consumer goroutine exits
+	// (panicked or returned a terminal error). Nil entries are skipped.
+	// Left empty, no consumer checks are performed (e.g. when all queue
+	// URLs are unset in a dev environment).
+	Consumers []Pinger
 }
 
 // Router owns the Gin engine for this service.
@@ -132,10 +140,17 @@ type healthHandlers struct {
 	sysPostgres Pinger // optional — see RouterConfig.SysPostgres
 	cache       Pinger
 	outbox      Pinger
+	consumers   []Pinger // per-queue heartbeats (OBS-1); nil entries skipped
 }
 
 func registerInfraRoutes(r *gin.Engine, cfg RouterConfig) {
-	h := &healthHandlers{postgres: cfg.Postgres, sysPostgres: cfg.SysPostgres, cache: cfg.Cache, outbox: cfg.Outbox}
+	h := &healthHandlers{
+		postgres:    cfg.Postgres,
+		sysPostgres: cfg.SysPostgres,
+		cache:       cfg.Cache,
+		outbox:      cfg.Outbox,
+		consumers:   cfg.Consumers,
+	}
 	r.GET("/healthz", h.healthz)
 	r.GET("/readyz", h.readyz)
 	// /metrics is served on its own dedicated port (METRICS_PORT, see
@@ -157,11 +172,11 @@ func (h *healthHandlers) healthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// readyz checks Postgres, Valkey, and the outbox runner, and reports 503
-// if any of them is not ready.
+// readyz checks Postgres, Valkey, the outbox runner, and SQS consumer
+// goroutines (OBS-1), and reports 503 if any of them is not ready.
 //
 // @Summary      Readiness probe
-// @Description  Checks Postgres, Valkey, and the outbox runner. Returns 503 if any dependency is not ready.
+// @Description  Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines. Returns 503 if any dependency is not ready.
 // @Tags         infra
 // @Produce      json
 // @Success      200  {object}  map[string]interface{}
@@ -205,6 +220,24 @@ func (h *healthHandlers) readyz(c *gin.Context) {
 		healthy = false
 	} else {
 		checks["outbox"] = "ok"
+	}
+	// OBS-1: SQS consumer goroutine liveness. A dead consumer passes no
+	// visible signal other than rising SQS ApproximateAgeOfOldestMessage —
+	// failing /readyz here removes the pod from rotation immediately so the
+	// operator alert fires and traffic is drained to healthy pods instead.
+	// Each entry is one queue heartbeat; nil entries are skipped (e.g. when
+	// a queue URL is unset in a dev environment).
+	for i, cp := range h.consumers {
+		if cp == nil {
+			continue
+		}
+		key := fmt.Sprintf("consumer_%d", i)
+		if err := cp.Health(ctx); err != nil {
+			checks[key] = err.Error()
+			healthy = false
+		} else {
+			checks[key] = "ok"
+		}
 	}
 
 	status := http.StatusOK

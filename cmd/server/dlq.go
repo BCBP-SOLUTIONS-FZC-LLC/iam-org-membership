@@ -9,11 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
-	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
-
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
 )
@@ -38,30 +35,39 @@ func dlqReason(err error) (string, bool) {
 	}
 }
 
-// dlqSQSClient is the subset of *sqs.Client the DLQ router needs.
-// Both calls are already granted by deploy/iam/policy.json
-// (ConsumeTenantAndBillingQueues: GetQueueAttributes, SendMessage on DLQs).
-type dlqSQSClient interface {
-	GetQueueAttributes(ctx context.Context, params *sqs.GetQueueAttributesInput, optFns ...func(*sqs.Options)) (*sqs.GetQueueAttributesOutput, error)
-	SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
+// dlqTransport is the minimal interface the DLQ router needs from the
+// underlying SQS transport. The concrete implementation — sqsDLQAdapter —
+// lives in main.go, the only file allowed to hold the raw *sqs.Client.
+// Keeping the interface here means dlq.go has zero AWS SDK imports while
+// the composition root retains full visibility of what the adapter does.
+//
+// platform-events has no DLQ-routing primitive (any handler error simply
+// leaves the message visible for SQS redrive), so a thin adapter over the
+// raw SQS SDK is the only option. The check-forbidden-events-bypass.sh
+// Rule-2 exemption for cmd/server/main.go documents this exception.
+type dlqTransport interface {
+	// RedriveTargetURL resolves queueURL's RedrivePolicy deadLetterTargetArn
+	// and returns it as a sibling SQS queue URL.
+	RedriveTargetURL(ctx context.Context, queueURL string) (string, error)
+	// SendToDLQ sends body to dlqURL with EventType and DLQReason message attributes.
+	SendToDLQ(ctx context.Context, dlqURL, body, eventType, reason string) error
 }
 
 // withDLQRouting wraps h with routeRejectsToDLQ, resolving the DLQ from
-// queueURL's own RedrivePolicy so it can never drift from the redrive
-// target infra configured. If resolution fails the handler is returned
-// unwrapped: permanent rejects then still reach the DLQ, just via SQS
-// redrive after maxReceiveCount deliveries instead of immediately.
-func withDLQRouting(ctx context.Context, client dlqSQSClient, queueURL string, h events.Handler, log port.Logger) events.Handler {
+// queueURL's own RedrivePolicy so it can never drift from the infra-configured
+// redrive target. If resolution fails the handler is returned unwrapped:
+// permanent rejects still reach the DLQ via SQS redrive after maxReceiveCount.
+func withDLQRouting(ctx context.Context, transport dlqTransport, queueURL string, h events.Handler, log port.Logger) events.Handler {
 	resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	dlqURL, err := resolveDLQURL(resolveCtx, client, queueURL)
+	dlqURL, err := transport.RedriveTargetURL(resolveCtx, queueURL)
 	if err != nil {
 		log.Warn("DLQ routing disabled — permanent rejects fall back to SQS redrive after maxReceiveCount",
 			map[string]any{"queue_url": queueURL, "error": err.Error()})
 		return h
 	}
 	log.Info("DLQ routing wired", map[string]any{"queue_url": queueURL, "dlq_url": dlqURL})
-	return routeRejectsToDLQ(h, client, dlqURL, log)
+	return routeRejectsToDLQ(h, transport, dlqURL, log)
 }
 
 // routeRejectsToDLQ sends an envelope whose handler returned a permanent
@@ -76,7 +82,7 @@ func withDLQRouting(ctx context.Context, client dlqSQSClient, queueURL string, h
 //
 // If the DLQ send fails the original error is returned, so the message
 // falls back to normal retry + redrive.
-func routeRejectsToDLQ(h events.Handler, client dlqSQSClient, dlqURL string, log port.Logger) events.Handler {
+func routeRejectsToDLQ(h events.Handler, transport dlqTransport, dlqURL string, log port.Logger) events.Handler {
 	return func(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 		err := h(ctx, env)
 		reason, ok := dlqReason(err)
@@ -90,18 +96,14 @@ func routeRejectsToDLQ(h events.Handler, client dlqSQSClient, dlqURL string, log
 		if mErr != nil {
 			return errors.Join(err, fmt.Errorf("marshal envelope for DLQ: %w", mErr))
 		}
-		_, sErr := client.SendMessage(ctx, &sqs.SendMessageInput{
-			QueueUrl:    aws.String(dlqURL),
-			MessageBody: aws.String(string(body)),
-			MessageAttributes: map[string]sqstypes.MessageAttributeValue{
-				"EventType": {DataType: aws.String("String"), StringValue: aws.String(env.Type)},
-				"DLQReason": {DataType: aws.String("String"), StringValue: aws.String(reason)},
-			},
-		})
+		sErr := transport.SendToDLQ(ctx, dlqURL, string(body), env.Type, reason)
 		if sErr != nil {
 			if log != nil {
 				log.Warn("DLQ send failed — falling back to SQS redrive",
 					map[string]any{"event_id": env.ID, "event_type": env.Type, "reason": reason, "dlq_url": dlqURL, "error": sErr.Error()})
+			}
+			if metrics.DLQMessages != nil {
+				metrics.DLQMessages.WithLabelValues(env.Type, reason).Inc()
 			}
 			return err
 		}
@@ -109,24 +111,17 @@ func routeRejectsToDLQ(h events.Handler, client dlqSQSClient, dlqURL string, log
 	}
 }
 
-// resolveDLQURL returns the URL of queueURL's RedrivePolicy
-// deadLetterTargetArn.
-func resolveDLQURL(ctx context.Context, client dlqSQSClient, queueURL string) (string, error) {
-	out, err := client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
-		QueueUrl:       aws.String(queueURL),
-		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameRedrivePolicy},
-	})
-	if err != nil {
-		return "", fmt.Errorf("get RedrivePolicy: %w", err)
-	}
-	policy := out.Attributes[string(sqstypes.QueueAttributeNameRedrivePolicy)]
-	if policy == "" {
+// redriveURL parses a RedrivePolicy JSON string and returns the sibling DLQ URL.
+// This is the pure-logic half of DLQ resolution; the SQS GetQueueAttributes call
+// that fetches the policy string lives in sqsDLQAdapter.RedriveTargetURL (main.go).
+func redriveURL(queueURL, policyJSON string) (string, error) {
+	if policyJSON == "" {
 		return "", errors.New("queue has no RedrivePolicy")
 	}
 	var rp struct {
 		DeadLetterTargetArn string `json:"deadLetterTargetArn"`
 	}
-	if err := json.Unmarshal([]byte(policy), &rp); err != nil {
+	if err := json.Unmarshal([]byte(policyJSON), &rp); err != nil {
 		return "", fmt.Errorf("parse RedrivePolicy: %w", err)
 	}
 	return siblingQueueURL(queueURL, rp.DeadLetterTargetArn)

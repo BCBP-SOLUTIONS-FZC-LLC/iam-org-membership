@@ -19,7 +19,7 @@ type ReconcilerStore interface {
 	ListSeatOverageCandidates(ctx context.Context, limit int) ([]uuid.UUID, error)
 	ListRealmSyncPending(ctx context.Context, limit int) ([]RealmSyncCandidate, error)
 	ClearRealmSyncPending(ctx context.Context, tenantID uuid.UUID) error
-	HardDeleteExpiredTrials(ctx context.Context, graceDays int) (int, error)
+	HardDeleteExpiredTrials(ctx context.Context, graceDays, limit int) (int, error)
 	PruneProcessedEvents(ctx context.Context, ttlDays, limit int) (int, error)
 }
 

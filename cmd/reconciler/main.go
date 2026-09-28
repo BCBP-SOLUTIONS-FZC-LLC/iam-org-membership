@@ -54,26 +54,30 @@ func run() int {
 	flag.StringVar(&jobName, "job", os.Getenv("RECONCILER_JOB"), "reconciler job code")
 	flag.Parse()
 
-	if jobName == "" {
-		fmt.Fprintln(os.Stderr, "no job specified — pass --job=<name> or set RECONCILER_JOB")
-		return 1
-	}
-	fn, ok := registry[jobName]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown job %q — valid: %v\n", jobName, registryNames())
-		return 1
-	}
-
 	appEnv := envOr("APP_ENV", "dev")
 
-	// Same Zap-backed Logger as cmd/server/main.go — every reconciler job's
-	// logs flow through the identical gincommon sink instead of slog.Default().
+	// Build the gincommon-backed Zap logger first so ALL log output —
+	// including pre-dispatch usage errors — routes through platform-gincommon,
+	// never through fmt.Fprintf(os.Stderr). The one remaining fmt.Fprintln
+	// below is the bootstrapping exception: if the logger itself fails to
+	// initialize there is literally no platform sink to write to.
 	rawLog, err := logger.NewLogger(appEnv)
 	if err != nil {
+		// Bootstrapping: logger unavailable — no alternative to stderr here.
 		fmt.Fprintln(os.Stderr, "init logger: "+err.Error())
 		return 1
 	}
 	log := port.NewSlogStyleLogger(rawLog)
+
+	if jobName == "" {
+		log.Error("no job specified — pass --job=<name> or set RECONCILER_JOB", "valid_jobs", registryNames())
+		return 1
+	}
+	fn, ok := registry[jobName]
+	if !ok {
+		log.Error("unknown reconciler job", "job", jobName, "valid_jobs", registryNames())
+		return 1
+	}
 
 	// SYSTEM_DATABASE_URL unset means the sysPool built below silently
 	// reuses the RLS-scoped app DSN, so every cross-tenant sweep this

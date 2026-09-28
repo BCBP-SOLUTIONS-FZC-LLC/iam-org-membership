@@ -107,7 +107,7 @@ func TestAuthZ_GetMembership_ReadOnlyDerivedFromCancelledStatus(t *testing.T) {
 	proj, err := svc.GetMembership(context.Background(), uuid.New(), uuid.New())
 	require.NoError(t, err)
 	assert.True(t, proj.ReadOnly, "§16 A53: cancelled subscription_status must project read_only=true")
-	assert.Equal(t, domain.StatusCancelled, proj.TenantStatus, "deprecated alias mirrors subscription_status")
+	assert.Equal(t, domain.StatusCancelled, proj.SubscriptionStatus, "§16 A53: subscription_status is the authoritative field")
 }
 
 func TestAuthZ_GetMembership_EffectiveFeatureFlagsMergePlanAndTenantOverride(t *testing.T) {

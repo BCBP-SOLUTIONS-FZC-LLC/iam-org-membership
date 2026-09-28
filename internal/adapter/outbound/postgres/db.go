@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,11 +35,10 @@ import (
 // pgcommon builds the DSN via net/url, which already produces this format.
 func DSNFromEnv() string {
 	cfg, _ := pgcommon.ConfigFromEnv()
-	if os.Getenv("DATABASE_URL") != "" {
-		// DATABASE_URL is returned verbatim by pgcommon.ConfigFromEnv — set
-		// statement_timeout via its own query string, not appended here.
-		return cfg.DSN
-	}
+	// Always apply PG_STATEMENT_TIMEOUT regardless of whether DATABASE_URL
+	// was set. pgcommon returns DATABASE_URL verbatim without a
+	// statement_timeout option, so we must append it here unconditionally
+	// (PERF-7).
 	return ApplyStatementTimeout(cfg.DSN)
 }
 
@@ -249,11 +249,5 @@ func itoa(n int) string {
 	if n <= 0 {
 		return "100"
 	}
-	// Simple positive-int formatter.
-	digits := []byte{}
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	return string(digits)
+	return strconv.Itoa(n)
 }

@@ -56,6 +56,6 @@ func validateConsumed(h events.Handler, v payloadValidator, log port.Logger) eve
 // outermost first: DLQ routing (permanent rejects → DLQ + ack) →
 // platform_messages_* counters (so rejects still count as failed) →
 // consumed-schema validation → the consumer's own Handle.
-func inboundHandler(ctx context.Context, client dlqSQSClient, queueURL, queue string, h events.Handler, v payloadValidator, log port.Logger) events.Handler {
+func inboundHandler(ctx context.Context, client dlqTransport, queueURL, queue string, h events.Handler, v payloadValidator, log port.Logger) events.Handler {
 	return withDLQRouting(ctx, client, queueURL, instrumentedHandler(queue, validateConsumed(h, v, log)), log)
 }

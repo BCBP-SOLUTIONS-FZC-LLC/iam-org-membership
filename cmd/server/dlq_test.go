@@ -26,33 +26,6 @@ const (
 	flociDLQARN   = "arn:aws:sqs:ap-south-1:000000000000:tenant-orgm-q-dlq"
 )
 
-// fakeDLQClient is a dlqSQSClient test double.
-type fakeDLQClient struct {
-	attrs   map[string]string
-	getErr  error
-	sendErr error
-	sent    []*sqs.SendMessageInput
-}
-
-func (f *fakeDLQClient) GetQueueAttributes(_ context.Context, _ *sqs.GetQueueAttributesInput, _ ...func(*sqs.Options)) (*sqs.GetQueueAttributesOutput, error) {
-	if f.getErr != nil {
-		return nil, f.getErr
-	}
-	return &sqs.GetQueueAttributesOutput{Attributes: f.attrs}, nil
-}
-
-func (f *fakeDLQClient) SendMessage(_ context.Context, in *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
-	f.sent = append(f.sent, in)
-	if f.sendErr != nil {
-		return nil, f.sendErr
-	}
-	return &sqs.SendMessageOutput{}, nil
-}
-
-func redriveAttrs(arn string) map[string]string {
-	return map[string]string{"RedrivePolicy": `{"deadLetterTargetArn":"` + arn + `","maxReceiveCount":"5"}`}
-}
-
 func handlerReturning(err error) events.Handler {
 	return func(context.Context, events.Envelope[json.RawMessage]) error { return err }
 }
@@ -68,37 +41,37 @@ func testEnvelope() events.Envelope[json.RawMessage] {
 // ── routeRejectsToDLQ ──────────────────────────────────────────────────
 
 func TestRoutePoisonPills_PoisonPill_SentToDLQAndAcked(t *testing.T) {
-	client := &fakeDLQClient{}
-	h := routeRejectsToDLQ(handlerReturning(consumeradapter.ErrPoisonPill), client, flociDLQURL, nil)
+	transport := &fakeDLQTransport{dlqURL: flociDLQURL}
+	h := routeRejectsToDLQ(handlerReturning(consumeradapter.ErrPoisonPill), transport, flociDLQURL, nil)
 
 	env := testEnvelope()
 	require.NoError(t, h(context.Background(), env), "a DLQ'd poison pill must ack the source message")
 
-	require.Len(t, client.sent, 1)
-	in := client.sent[0]
-	assert.Equal(t, flociDLQURL, aws.ToString(in.QueueUrl))
-	assert.Equal(t, env.Type, aws.ToString(in.MessageAttributes["EventType"].StringValue))
-	assert.Equal(t, poisonPillReason, aws.ToString(in.MessageAttributes["DLQReason"].StringValue))
+	require.Len(t, transport.sent, 1)
+	msg := transport.sent[0]
+	assert.Equal(t, flociDLQURL, msg.DLQUrl)
+	assert.Equal(t, env.Type, msg.EventType)
+	assert.Equal(t, poisonPillReason, msg.Reason)
 
 	var got events.Envelope[json.RawMessage]
-	require.NoError(t, json.Unmarshal([]byte(aws.ToString(in.MessageBody)), &got))
+	require.NoError(t, json.Unmarshal([]byte(msg.Body), &got))
 	assert.Equal(t, env.ID, got.ID)
 	assert.JSONEq(t, string(env.Payload), string(got.Payload), "DLQ body carries the already-decoded plain payload")
 	assert.Empty(t, got.SchemaID, "dataschema must be cleared so a redrive isn't Glue-decoded twice")
 }
 
 func TestRoutePoisonPills_WrappedPoisonPill_StillRouted(t *testing.T) {
-	client := &fakeDLQClient{}
+	transport := &fakeDLQTransport{dlqURL: flociDLQURL}
 	wrapped := errors.Join(errors.New("context"), consumeradapter.ErrPoisonPill)
-	h := routeRejectsToDLQ(handlerReturning(wrapped), client, flociDLQURL, nil)
+	h := routeRejectsToDLQ(handlerReturning(wrapped), transport, flociDLQURL, nil)
 	require.NoError(t, h(context.Background(), testEnvelope()))
-	assert.Len(t, client.sent, 1)
+	assert.Len(t, transport.sent, 1)
 }
 
 func TestRoutePoisonPills_SendFails_ReturnsOriginalErrorForRedrive(t *testing.T) {
-	client := &fakeDLQClient{sendErr: errors.New("throttled")}
+	transport := &fakeDLQTransport{dlqURL: flociDLQURL, sendErr: errors.New("throttled")}
 	log := &fakeLogger{}
-	h := routeRejectsToDLQ(handlerReturning(consumeradapter.ErrPoisonPill), client, flociDLQURL, log)
+	h := routeRejectsToDLQ(handlerReturning(consumeradapter.ErrPoisonPill), transport, flociDLQURL, log)
 
 	err := h(context.Background(), testEnvelope())
 	assert.ErrorIs(t, err, consumeradapter.ErrPoisonPill, "send failure must leave the message visible")
@@ -106,8 +79,8 @@ func TestRoutePoisonPills_SendFails_ReturnsOriginalErrorForRedrive(t *testing.T)
 }
 
 func TestRoutePoisonPills_SendFails_NilLogger_NoPanic(t *testing.T) {
-	client := &fakeDLQClient{sendErr: errors.New("throttled")}
-	h := routeRejectsToDLQ(handlerReturning(consumeradapter.ErrPoisonPill), client, flociDLQURL, nil)
+	transport := &fakeDLQTransport{dlqURL: flociDLQURL, sendErr: errors.New("throttled")}
+	h := routeRejectsToDLQ(handlerReturning(consumeradapter.ErrPoisonPill), transport, flociDLQURL, nil)
 	assert.ErrorIs(t, h(context.Background(), testEnvelope()), consumeradapter.ErrPoisonPill)
 }
 
@@ -115,33 +88,35 @@ func TestRoutePoisonPills_OtherOutcomes_PassThroughUntouched(t *testing.T) {
 	transient := errors.New("db down")
 	for name, want := range map[string]error{"success": nil, "transient error": transient} {
 		t.Run(name, func(t *testing.T) {
-			client := &fakeDLQClient{}
-			h := routeRejectsToDLQ(handlerReturning(want), client, flociDLQURL, nil)
+			transport := &fakeDLQTransport{dlqURL: flociDLQURL}
+			h := routeRejectsToDLQ(handlerReturning(want), transport, flociDLQURL, nil)
 			assert.Equal(t, want, h(context.Background(), testEnvelope()))
-			assert.Empty(t, client.sent, "only ErrPoisonPill is sent to the DLQ")
+			assert.Empty(t, transport.sent, "only ErrPoisonPill is sent to the DLQ")
 		})
 	}
 }
 
-// ── resolveDLQURL / siblingQueueURL ────────────────────────────────────────
+// ── redriveURL / siblingQueueURL ───────────────────────────────────────────
+// redriveURL is the pure-logic helper; sqsDLQAdapter.RedriveTargetURL
+// (dlq_adapter.go) wraps it with the actual SQS GetQueueAttributes call.
 
-func TestResolveDLQURL_FromRedrivePolicy(t *testing.T) {
-	got, err := resolveDLQURL(context.Background(), &fakeDLQClient{attrs: redriveAttrs(flociDLQARN)}, flociQueueURL)
+func TestRedriveURL_FromRedrivePolicy(t *testing.T) {
+	policy := `{"deadLetterTargetArn":"` + flociDLQARN + `","maxReceiveCount":"5"}`
+	got, err := redriveURL(flociQueueURL, policy)
 	require.NoError(t, err)
 	assert.Equal(t, flociDLQURL, got)
 }
 
-func TestResolveDLQURL_Errors(t *testing.T) {
-	cases := map[string]*fakeDLQClient{
-		"get error":        {getErr: errors.New("access denied")},
-		"no redrive":       {attrs: map[string]string{}},
-		"bad policy json":  {attrs: map[string]string{"RedrivePolicy": "{"}},
-		"non-sqs dlq arn":  {attrs: redriveAttrs("arn:aws:sns:ap-south-1:000000000000:topic")},
-		"empty target arn": {attrs: map[string]string{"RedrivePolicy": `{}`}},
+func TestRedriveURL_Errors(t *testing.T) {
+	cases := map[string]string{
+		"no redrive":       "",
+		"bad policy json":  "{",
+		"non-sqs dlq arn":  `{"deadLetterTargetArn":"arn:aws:sns:ap-south-1:000000000000:topic"}`,
+		"empty target arn": `{}`,
 	}
-	for name, client := range cases {
+	for name, policy := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := resolveDLQURL(context.Background(), client, flociQueueURL)
+			_, err := redriveURL(flociQueueURL, policy)
 			assert.Error(t, err)
 		})
 	}
@@ -166,24 +141,26 @@ func TestSiblingQueueURL_Errors(t *testing.T) {
 // ── withDLQRouting ──────────────────────────────────────────────────────
 
 func TestWithPoisonPillDLQ_Resolved_WrapsHandler(t *testing.T) {
-	client := &fakeDLQClient{attrs: redriveAttrs(flociDLQARN)}
-	h := withDLQRouting(context.Background(), client, flociQueueURL, handlerReturning(consumeradapter.ErrPoisonPill), &fakeLogger{})
+	transport := &fakeDLQTransport{dlqURL: flociDLQURL}
+	h := withDLQRouting(context.Background(), transport, flociQueueURL, handlerReturning(consumeradapter.ErrPoisonPill), &fakeLogger{})
 	require.NoError(t, h(context.Background(), testEnvelope()))
-	assert.Len(t, client.sent, 1)
+	assert.Len(t, transport.sent, 1)
 }
 
 func TestWithPoisonPillDLQ_Unresolvable_FallsBackToRedrive(t *testing.T) {
-	client := &fakeDLQClient{getErr: errors.New("access denied")}
+	transport := &fakeDLQTransport{getErr: errors.New("access denied")}
 	log := &fakeLogger{}
-	h := withDLQRouting(context.Background(), client, flociQueueURL, handlerReturning(consumeradapter.ErrPoisonPill), log)
+	h := withDLQRouting(context.Background(), transport, flociQueueURL, handlerReturning(consumeradapter.ErrPoisonPill), log)
 	assert.ErrorIs(t, h(context.Background(), testEnvelope()), consumeradapter.ErrPoisonPill)
-	assert.Empty(t, client.sent)
+	assert.Empty(t, transport.sent)
 	assert.Equal(t, int32(1), log.warnCalls)
 }
 
 // ── buildSQSConsumer — consumer-side Glue decode ───────────────────────────
 
 // oneShotSQS delivers one message on the first ReceiveMessage, then idles.
+// It implements the platform-events SQS client interface directly (raw SDK
+// types are legitimate in test files — they simulate external actors).
 type oneShotSQS struct {
 	mu      sync.Mutex
 	msg     *sqstypes.Message

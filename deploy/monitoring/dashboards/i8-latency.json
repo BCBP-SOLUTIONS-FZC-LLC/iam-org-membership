@@ -1,0 +1,8 @@
+{
+  "title": "iam-org-membership — I-8 Latency",
+  "description": "I-8 membership projection hot-path latency. SLO: P99 < 15ms cache hit / 30ms cache miss (LLD §11.1 SLO-1).",
+  "schemaVersion": 36,
+  "version": 1,
+  "tags": ["iam", "iam-org-membership", "slo", "i8"],
+  "panels": []
+}

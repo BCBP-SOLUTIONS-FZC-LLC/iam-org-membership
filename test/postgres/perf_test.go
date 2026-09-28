@@ -89,12 +89,19 @@ func TestSLO_I8_P99UnderBudget(t *testing.T) {
 	t.Logf("P16-SLO-I8: p50=%v p99=%v max=%v (iterations=%d)", p50, p99, max, iterations)
 
 	// SLO-1 miss target: P99 < 30 ms. Testcontainers + GitHub Actions runners
-	// (2 CPUs shared with parallel tests, race detector overhead) add significant
-	// per-query latency. The 2 s ceiling catches catastrophic regressions
-	// (O(n²) scans, missing index) while tolerating CI scheduling noise.
-	const budget = 2000 * time.Millisecond
-	assert.Less(t, p99, budget,
-		"P16-SLO-I8: P99 %v must stay under %v (LLD §11.1 SLO-1 hot-path budget)", p99, budget)
+	// (2 CPUs shared with parallel tests, race detector overhead) add latency,
+	// so we apply a tiered assertion:
+	//   - Hard fail at 200 ms: a result this slow is a genuine regression
+	//     (missing index, O(n²) scan, accidental full-table read).
+	//   - Warning at 30 ms: logs a drift signal without blocking CI so
+	//     infrastructure noise does not cause flaky failures.
+	const hardBudget = 200 * time.Millisecond
+	const sloBudget = 30 * time.Millisecond
+	if p99 > sloBudget {
+		t.Logf("P16-SLO-I8: WARNING — P99 %v exceeds SLO target %v (LLD §11.1 SLO-1)", p99, sloBudget)
+	}
+	assert.Less(t, p99, hardBudget,
+		"P16-SLO-I8: P99 %v must stay under hard ceiling %v (catastrophic regression gate)", p99, hardBudget)
 }
 
 // ── P16-SLO-SEAT-PREFLIGHT ──────────────────────────────────────────────────

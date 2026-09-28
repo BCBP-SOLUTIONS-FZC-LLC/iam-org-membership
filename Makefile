@@ -48,6 +48,8 @@ TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/outbound/realmprovisioner/... \
                       ./internal/adapter/outbound/catalogadmin/... \
                       ./internal/adapter/outbound/groupmappingclient/... \
+                      ./internal/adapter/outbound/delegationcheck/... \
+                      ./internal/adapter/outbound/tokenservice/... \
                       ./internal/adapter/outbound/httpx/... \
                       ./internal/adapter/outbound/metrics/... \
                       ./internal/adapter/outbound/valkey/... \

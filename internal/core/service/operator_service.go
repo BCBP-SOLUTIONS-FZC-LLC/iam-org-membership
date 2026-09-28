@@ -139,14 +139,16 @@ func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerU
 		}
 		pub, _ := port.EventPublisherFromContext(txCtx)
 		if pub != nil {
-			_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 				Type: domain.EventTenantRoleGranted, TenantID: tenantID,
 				Subject: newOwnerUserID.String(), Actor: actorID.String(),
 				Data: domain.TenantRoleGrantedPayload{
 					UserID: newOwnerUserID, TenantID: tenantID,
 					RoleCode: domain.RoleTenantOwner, ActorID: actorID,
 				},
-			})
+			}); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

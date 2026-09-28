@@ -196,6 +196,11 @@ func main() {
 	// EndpointURL) nor NewRoutingPublisher needs an SNS client constructed
 	// here — there is deliberately no sns.NewFromConfig call in this file.
 	sqsClient := sqs.NewFromConfig(awsCfg, sqsOpts...)
+	// sqsDLQAdapter adapts *sqs.Client to the dlqTransport interface (dlq.go)
+	// so dlq.go can stay AWS-SDK-free. This is the only sanctioned direct
+	// SQS transport call in this binary — platform-events has no DLQ-routing
+	// primitive (check-forbidden-events-bypass.sh Rule-2 exempts this file).
+	dlqAdapter := &sqsDLQAdapter{client: sqsClient}
 	glueClient := glue.NewFromConfig(awsCfg, glueOpts...)
 
 	// ── 6. Event codec + outbox publisher ─────────────────────────────────
@@ -296,18 +301,24 @@ func main() {
 	sqsEnv := eventcfg.LoadSQS()
 	eventcfg.LogWarningsTo(log, sqsEnv.Warnings)
 
-	var sqsConsumers []events.Consumer
+	// OBS-1: each wired consumer gets a heartbeat pinger so /readyz can
+	// detect a dead goroutine and pull the pod from rotation immediately.
+	type wiredConsumer struct {
+		cons      events.Consumer
+		heartbeat *ConsumerHeartbeat
+	}
+	var sqsConsumers []wiredConsumer
 	if url := os.Getenv("SQS_TENANT_ORGM_QUEUE_URL"); url != "" {
 		cons, err := buildSQSConsumer(
 			sqsEnvForQueue(sqsEnv, url, envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
 			sqsClient,
-			inboundHandler(ctx, sqsClient, url, "tenant-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
+			inboundHandler(ctx, dlqAdapter, url, "tenant-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
 			log,
 		)
 		if err != nil {
 			panic(fmt.Sprintf("build tenant-orgm-q consumer: %v", err))
 		}
-		sqsConsumers = append(sqsConsumers, cons)
+		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("tenant-orgm-q")})
 		log.Info("tenant-orgm-q consumer wired", map[string]interface{}{"queue_url": url})
 	} else {
 		log.Warn("SQS_TENANT_ORGM_QUEUE_URL unset — tenant lifecycle consumer disabled", nil)
@@ -316,13 +327,13 @@ func main() {
 		cons, err := buildSQSConsumer(
 			sqsEnvForQueue(sqsEnv, url, envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
 			sqsClient,
-			inboundHandler(ctx, sqsClient, url, "billing-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
+			inboundHandler(ctx, dlqAdapter, url, "billing-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
 			log,
 		)
 		if err != nil {
 			panic(fmt.Sprintf("build billing-orgm-q consumer: %v", err))
 		}
-		sqsConsumers = append(sqsConsumers, cons)
+		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("billing-orgm-q")})
 		log.Info("billing-orgm-q consumer wired", map[string]interface{}{"queue_url": url})
 	} else {
 		log.Warn("SQS_BILLING_ORGM_QUEUE_URL unset — billing consumer disabled", nil)
@@ -338,22 +349,36 @@ func main() {
 		cons, err := buildSQSConsumer(
 			sqsEnvForQueue(sqsEnv, url, envInt("SQS_CATALOG_ORGM_CONCURRENCY", 2)),
 			sqsClient,
-			inboundHandler(ctx, sqsClient, url, "catalog-orgm-q", catalogConsumer.Handle, enqueueCodec, log),
+			inboundHandler(ctx, dlqAdapter, url, "catalog-orgm-q", catalogConsumer.Handle, enqueueCodec, log),
 			log,
 		)
 		if err != nil {
 			panic(fmt.Sprintf("build catalog-orgm-q consumer: %v", err))
 		}
-		sqsConsumers = append(sqsConsumers, cons)
+		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("catalog-orgm-q")})
 		log.Info("catalog-orgm-q consumer wired", map[string]interface{}{"queue_url": url})
 	} else {
 		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments cache TTL-only)", nil)
 	}
 
-	for _, cons := range sqsConsumers {
-		cons := cons
+	for _, wc := range sqsConsumers {
+		wc := wc
 		go func() {
-			if err := cons.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			// RELIABILITY-3: recover() so a consumer panic does not crash the
+			// entire pod. Log the panic and let the pod continue serving HTTP;
+			// the consumer will need a pod restart to resume — this is observable
+			// via the iam_org_membership_* consumer-dead alert (OBS-2).
+			// OBS-1: MarkDead() runs on every exit path (panic or normal
+			// return) so /readyz detects the dead goroutine within one probe
+			// interval and removes the pod from rotation.
+			defer wc.heartbeat.MarkDead()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("SQS consumer panic — consumer stopped, pod restart required",
+						map[string]interface{}{"panic": fmt.Sprintf("%v", r)})
+				}
+			}()
+			if err := wc.cons.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Error("SQS consumer stopped", map[string]interface{}{"error": err.Error()})
 			}
 		}()
@@ -414,8 +439,9 @@ func main() {
 	subscriptionGraceDays := envInt("SUBSCRIPTION_GRACE_DAYS", 30)
 	sysTenantRepo := pgadapter.NewTenantRepository(sysPool)
 	invitationExpiryDays := envInt("INVITATION_EXPIRY_DAYS", 7)
-	reinviteCooldownMin := envInt("INVITE_REINVITE_COOLDOWN_MINUTES", 60) // PI-11
-	inviteMaxPerHour := envInt("INVITE_MAX_PER_TENANT_PER_HOUR", 200)     // PI-12
+	reinviteCooldownMin := envInt("INVITE_REINVITE_COOLDOWN_MINUTES", 60)   // PI-11
+	inviteMaxPerHour := envInt("INVITE_MAX_PER_TENANT_PER_HOUR", 200)       // PI-12
+	inviteMaxPerActorPerHour := envInt("INVITE_MAX_PER_ACTOR_PER_HOUR", 10) // SECURITY-5
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
@@ -431,6 +457,7 @@ func main() {
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, log, invitationExpiryDays).
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour).
+		WithMaxInvitesPerActorPerHour(inviteMaxPerActorPerHour).
 		WithTokenServiceClient(tokenServiceClient)
 	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(sysTenantRepo, subscriptionGraceDays)
@@ -453,12 +480,21 @@ func main() {
 	// ── Router — all routing/middleware wiring lives in the inbound HTTP
 	// adapter (internal/adapter/inbound/http/router.go), not here. main.go's
 	// job is to construct dependencies and hand them to NewRouter.
+	docsEnabled := envOr("DOCS_ENABLED", "false") == "true"
+	docsAuthToken := os.Getenv("DOCS_AUTH_TOKEN")
+	// SECURITY-10: DOCS_ENABLED=true without DOCS_AUTH_TOKEN in production/
+	// staging exposes the Swagger UI to unauthenticated callers. Hard-fail at
+	// startup so the misconfiguration is caught before any traffic is served.
+	if docsEnabled && docsAuthToken == "" && (appEnv == "production" || appEnv == "staging") {
+		panic("startup aborted — DOCS_ENABLED requires DOCS_AUTH_TOKEN in production/staging (SECURITY-10)")
+	}
+
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
 		GinConfig: cfg,
 		Docs: httpadapter.DocsConfig{
 			Environment: appEnv,
-			Enabled:     envOr("DOCS_ENABLED", "false") == "true",
-			AuthToken:   os.Getenv("DOCS_AUTH_TOKEN"),
+			Enabled:     docsEnabled,
+			AuthToken:   docsAuthToken,
 		},
 
 		TenantRepo:     tenantRepo,
@@ -495,15 +531,26 @@ func main() {
 				return fmt.Errorf("outbox initialising")
 			}
 		}),
+		// OBS-1: per-queue consumer liveness checks. Built from sqsConsumers
+		// after the consumer goroutines are launched above — each heartbeat
+		// starts alive and MarkDead() is deferred inside the goroutine.
+		Consumers: func() []httpadapter.Pinger {
+			out := make([]httpadapter.Pinger, len(sqsConsumers))
+			for i, wc := range sqsConsumers {
+				out[i] = wc.heartbeat
+			}
+			return out
+		}(),
 	})
 
 	// ── 9. Graceful shutdown ─────────────────────────────────────────────
 	srv := &http.Server{
-		Addr:         ":" + envOr("APP_PORT", "8080"),
-		Handler:      router.Handler(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 35 * time.Second, // 30s app timeout + 5s buffer
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + envOr("APP_PORT", "8080"),
+		Handler:           router.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      35 * time.Second, // 30s app timeout + 5s buffer
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Metrics on a dedicated port/listener, separate from the API server
@@ -561,14 +608,18 @@ func main() {
 	// it up. Stopping new work first, then draining what's already queued,
 	// is the safer order (not a data-loss fix — the outbox is durable and
 	// self-healing either way, just tidier under a rolling deploy).
-	for _, cons := range sqsConsumers {
-		if err := cons.Stop(); err != nil {
+	for _, wc := range sqsConsumers {
+		if err := wc.cons.Stop(); err != nil {
 			log.Error("SQS consumer stop error", map[string]interface{}{"error": err.Error()})
 		}
 	}
 	if err := outboxRunner.Stop(); err != nil {
 		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
 	}
+	// RELIABILITY-6: cancelBackground AFTER outboxRunner.Stop() so the exporter
+	// goroutines that tick on the background context complete their in-flight
+	// Postgres queries cleanly before we cancel. Cancelling first caused those
+	// goroutines to log context.Canceled at ERROR level during normal shutdown.
 	cancelBackground()
 	// DrainAndClose waits for in-flight WithConn/RunInTx callbacks then
 	// force-closes — pgcommon's documented graceful path. defer Close()
@@ -626,39 +677,58 @@ func envDuration(key string, def time.Duration) time.Duration {
 // checks so local setups without SNS/Valkey still start (with warnings).
 func validateRequiredEnv(appEnv string) {
 	type req struct {
-		key    string
-		devOK  bool
-		reason string
+		key         string
+		devOK       bool // skip silently in dev/development/local/test
+		stagingWarn bool // warn to stderr in staging instead of panicking (CONFIG-2 Option C)
+		reason      string
 	}
+	isDevLike := appEnv == "dev" || appEnv == "development" || appEnv == "local" || appEnv == "test"
+	isStaging := appEnv == "staging"
+
 	reqs := []req{
-		{"VALKEY_URL", false, "Valkey address is required for caching"},
-		{"SNS_TOPIC_MEMBERSHIP_ARN", true, "iam.membership.events topic ARN; events queue in outbox but never publish without it"},
-		{"SNS_TOPIC_TENANT_ARN", true, "iam.tenant.events topic ARN; TenantCreated/TrialStarted queue but never publish without it"},
-		{"GLUE_REGISTRY_MEMBERSHIP_NAME", true, "iam-membership-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
-		{"GLUE_REGISTRY_TENANT_NAME", true, "iam-tenant-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
-		// Unset baseURL makes these two clients fail OPEN, not closed: RP
-		// fabricates a random Keycloak user ID on CreateInvitedUser and
-		// silently no-ops PatchRealmConfig/DeleteUser/RevokeUserSessions/
-		// ResetMFA; Workflow silently no-ops ReassignDelegate/CancelByDelegate
-		// and reports zero active workflows on GetDelegateImpact — the exact
-		// opposite of §20.7's documented fail-CLOSED contract for P-6/P-8.
-		// devOK because both clients' own "dev fallback" comments describe
-		// this as an intentional local-dev convenience.
-		{"REALM_PROVISIONER_BASE_URL", true, "Realm Provisioner base URL; unset makes RP calls fail OPEN (fabricated success) instead of the documented fail-closed 503"},
-		{"WORKFLOW_SERVICE_BASE_URL", true, "Workflow Service base URL; unset makes delegate-impact/removal calls fail OPEN instead of the documented fail-closed 503"},
+		{"VALKEY_URL", false, false, "Valkey address is required for caching"},
+		{"SNS_TOPIC_MEMBERSHIP_ARN", true, false, "iam.membership.events topic ARN; events queue in outbox but never publish without it"},
+		{"SNS_TOPIC_TENANT_ARN", true, false, "iam.tenant.events topic ARN; TenantCreated/TrialStarted queue but never publish without it"},
+		{"GLUE_REGISTRY_MEMBERSHIP_NAME", true, false, "iam-membership-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
+		{"GLUE_REGISTRY_TENANT_NAME", true, false, "iam-tenant-events Glue registry name; NoopCodec (plain JSON) used on that topic without it"},
+		// CONFIG-2 Option C: stagingWarn=true — panic in production only, warn to
+		// stderr in staging, skip in dev/local/test. Unset base URL makes these
+		// two clients fail OPEN (not closed): RP fabricates a random Keycloak user
+		// ID on CreateInvitedUser and silently no-ops all other RP calls; Workflow
+		// silently reports zero active workflows — the opposite of the documented
+		// fail-CLOSED contract (§20.7, P-6/P-8). Safe in local dev (intentional
+		// fallback); dangerous in staging (silent wrong behaviour); fatal in prod.
+		{"REALM_PROVISIONER_BASE_URL", true, true, "Realm Provisioner base URL; unset makes RP calls fail OPEN (fabricated KC UUIDs, silent no-ops) instead of the documented fail-closed 503 — wrong in staging, fatal in production"},
+		{"WORKFLOW_SERVICE_BASE_URL", true, true, "Workflow Service base URL; unset makes delegate-impact report zero workflows (fail-open, opposite of WFI-13 intent) — wrong in staging, fatal in production"},
+		// CatalogAdminClient is NOT fail-open (§20.7): an absent base URL
+		// causes catalog_unavailable 503 on every write path that touches
+		// department or plan resolution (ProvisioningService.TrialSignup,
+		// MembershipService.Invite, DeptMembershipService.Assign, etc.).
+		// devOK: false — there is no safe local fallback; developers must run
+		// iam-catalog-admin or set CATALOG_ADMIN_BASE_URL to a stub.
+		{"CATALOG_ADMIN_BASE_URL", false, false, "CatalogAdminClient is NOT fail-open — absent value causes catalog_unavailable 503 on every write path that touches department/plan resolution (§20.7)"},
 		// Unset falls back to the RLS-scoped app DSN (see sysDSN below) —
 		// every cross-tenant query (I-16, gauge exporters, reconciler
 		// sweeps) then RLS-filters to zero rows instead of erroring, so no
 		// alert fires. devOK because local/dev commonly runs single-role
 		// Postgres with no separate migrator role.
-		{"SYSTEM_DATABASE_URL", true, "BYPASSRLS org_membership_migrator DSN; without it cross-tenant queries silently RLS-filter to zero rows with no alert"},
+		{"SYSTEM_DATABASE_URL", true, false, "BYPASSRLS org_membership_migrator DSN; without it cross-tenant queries silently RLS-filter to zero rows with no alert"},
 	}
 	var missing []string
 	for _, r := range reqs {
 		if os.Getenv(r.key) != "" {
 			continue
 		}
-		if r.devOK && (appEnv == "dev" || appEnv == "development" || appEnv == "local" || appEnv == "test") {
+		if r.devOK && isDevLike {
+			continue // intentional local-dev convenience — skip silently
+		}
+		if r.stagingWarn && isStaging {
+			// CONFIG-2 Option C: warn to stderr in staging rather than panicking.
+			// Logger is not yet initialised at this point, so fmt.Fprintf is the
+			// only available sink. This makes the misconfiguration observable in
+			// staging logs without blocking a deployment that can still function
+			// partially.
+			fmt.Fprintf(os.Stderr, "WARNING: %s is not set in staging — %s\n", r.key, r.reason)
 			continue
 		}
 		missing = append(missing, r.key+": "+r.reason)
