@@ -228,7 +228,7 @@ Every subscribing queue: `-dlq`, `maxReceiveCount=5`, `processed_events` dedup.
 
 ### 7.4 CloudEvents Envelope
 
-`{id (UUID v7), source, tenant_id, trace_id, specversion, time, subject, actor, dataschema, data}`. Governed by `platform-schemagov` — `api/asyncapi.yaml` is design-time source of truth; `schema-gov extract` writes the Draft-07 files directly into `internal/adapter/outbound/eventbus/schemas/*.json` (there is no separate `internal/eventschema/` workspace — this one directory is both the schema-gov output and the `//go:embed`-ed runtime copy); Glue Schema Registry runtime enforcement (ap-south-1). CI: `docker run ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov:0.4` for extract → validate → enforce-lifecycle → diff (PR) / register (main).
+`{id (UUID v7), source, tenant_id, trace_id, specversion, time, subject, actor, dataschema, data}`. Governed by `platform-schemagov` — `api/asyncapi.yaml` is design-time source of truth; `schema-gov extract` writes the Draft-07 files directly into `internal/adapter/outbound/eventbus/schemas/*.json` (there is no separate `internal/eventschema/` workspace — this one directory is both the schema-gov output and the `//go:embed`-ed runtime copy); Glue Schema Registry runtime enforcement (ap-south-1). CI: `schema-gov` pip-installed from source (v0.4.0; the GHCR image pull is denied for this repo) for extract → validate → enforce-lifecycle → diff (PR) / register (main).
 
 ### 7.5 Event Invariants
 

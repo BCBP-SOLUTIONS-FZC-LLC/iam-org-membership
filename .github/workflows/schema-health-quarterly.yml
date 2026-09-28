@@ -58,15 +58,27 @@ jobs:
         with:
           token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
 
+      - name: Set up Python (schema-gov)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      # platform-schemagov is installed from source, not pulled from GHCR: the
+      # ghcr.io/bcbp-solutions-fzc-llc/platform-schemagov package's Actions-access
+      # allow-list doesn't include this repo, so `docker pull` returns "denied"
+      # even after docker/login-action succeeds. The package's own Dockerfile is
+      # just `pip install .` of this same source; GO_PRIVATE_TOKEN (already used
+      # for private Go modules) authorizes the git clone. Same as iam-token-service.
+      - name: Install schema-gov (platform-schemagov v0.4.0)
+        run: |
+          pip install --no-cache-dir "git+https://x-access-token:${{ secrets.GO_PRIVATE_TOKEN }}@github.com/BCBP-SOLUTIONS-FZC-LLC/platform-schemagov.git@v0.4.0"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Pull schema-gov image
-        run: docker pull "${{ env.SCHEMA_GOV_IMAGE }}"
 
       # ── 1. Lifecycle lint ────────────────────────────────────────────────────
       # Runs schema-gov validate (all 8 passes, including Pass 4 lifecycle) via
@@ -80,10 +92,7 @@ jobs:
         id: lifecycle
         run: |
           LIFECYCLE_EXIT=0
-          docker run --rm \
-            -v "${{ github.workspace }}":/workspace \
-            -e GITHUB_ACTIONS \
-            "${{ env.SCHEMA_GOV_IMAGE }}" validate \
+          schema-gov validate \
             --asyncapi   api/asyncapi.yaml \
             --schema-dir internal/adapter/outbound/eventbus/schemas \
             --warn-days  30 \
