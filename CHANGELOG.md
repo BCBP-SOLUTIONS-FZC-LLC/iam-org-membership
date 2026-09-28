@@ -22,7 +22,7 @@ This service has never been deployed to any environment — there is no released
 
 ### Fixed
 
-- **Trivy: bump `gcr.io/distroless/static-debian12:nonroot` base image** (`Dockerfile`): the previously pinned SHA (`d093aa3e…`) carried `DLA-4792-1` (UNKNOWN severity, fixable) in `tzdata 2026b-0+deb12u1` — a new timezone database release. The CI Trivy gate catches UNKNOWN + fixable, so this caused an exit-code 1 failure. Updated to `afa5c872…` (latest as of 2026-09-28), which ships `tzdata 2026c-0+deb12u1` and resolves the finding. Go binaries remain clean (0 findings).
+- **Trivy: suppress `DLA-4792-1` in `.trivyignore`**: `gcr.io/distroless/static-debian12:nonroot` carries `DLA-4792-1` (UNKNOWN severity, fixable) in `tzdata 2026b-0+deb12u1` — a timezone database update, not a security vulnerability. The CI Trivy gate fails on UNKNOWN+fixable (`ignore-unfixed: true`), causing exit-code 1. The fixed package (`tzdata 2026c-0+deb12u1`) is not yet available in any published distroless image, so a SHA bump cannot resolve this. Added `.trivyignore` suppressing `DLA-4792-1` with an inline comment explaining the rationale and a removal reminder for when distroless ships tzdata 2026c. Go binaries remain clean (0 findings).
 
 - **OBS-5: SLO-3 composite gauge recording rule corrected** (`deploy/monitoring/slo-rules.yml`): `iam:reconciler_markers:sum` previously used a weighted expression that over-counted some markers by 5×; replaced with a plain sum of all four gauge metrics (`iam_org_membership_tenant_ownerless + iam_org_membership_realm_sync_pending + iam_org_membership_seat_overage_active + iam_org_membership_pending_invitations_stale`). `seat_overage_active` was also missing from the prior rule.
 

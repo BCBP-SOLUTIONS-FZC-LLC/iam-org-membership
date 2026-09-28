@@ -1,0 +1,6 @@
+# DLA-4792-1: tzdata new timezone database (2026b → 2026c).
+# This is a timezone data update, not a security vulnerability.
+# gcr.io/distroless/static-debian12:nonroot does not yet ship the fixed
+# package version (tzdata 2026c-0+deb12u1); no patched distroless image is
+# available upstream. Remove this entry once distroless ships tzdata 2026c.
+DLA-4792-1
