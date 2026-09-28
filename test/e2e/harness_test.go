@@ -88,7 +88,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	}
 	ctx := context.Background()
 
-	appPool, rawPool := setupE2EDB(t, ctx)
+	appPool, rawPool, sysPool := setupE2EDB(t, ctx)
 
 	// Repositories.
 	tenantRepo := pgadapter.NewTenantRepository(appPool)
@@ -144,7 +144,9 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	// to iam-tender-acl's TAC-1/2/3/4; IDs never reused).
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, nil) // I-16 untested here — no sysPool in this harness
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, nil) // I-16 untested here
+	// PUB-1: bound to sysPool, exactly as cmd/server/main.go does.
+	publicH := httpadapter.NewPublicHandler(service.NewTenantResolutionService(pgadapter.NewTenantRepository(sysPool)))
 
 	// Router — the exact same constructor cmd/server/main.go calls, so this
 	// harness can never drift from production routing again (it used to be
@@ -166,6 +168,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 		InvitationHandler:     invitationH,
 		OperatorHandler:       operatorH,
 		InternalHandler:       internalH,
+		PublicHandler:         publicH,
 
 		Postgres: noopPinger{},
 		Cache:    noopPinger{},
@@ -184,7 +187,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 
 // ── Postgres setup (mirrors sibling test/postgres pattern) ────────────────
 
-func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *dbseed.Pool) {
+func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
 	t.Helper()
 	pgContainer, err := tcpostgres.Run(ctx,
 		"postgres:17-alpine",
@@ -243,7 +246,14 @@ func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *dbseed.Pool
 	require.NoError(t, err)
 	t.Cleanup(appPool.Close)
 
-	return appPool, rawPool
+	// sysPool mirrors production's BYPASSRLS pool (superuser here, as in
+	// test/integration): PUB-1 runs with no app.tenant_id GUC bound and so
+	// must never touch the RLS-scoped appPool.
+	sysPool, err := pgcommon.NewPool(ctx, pgcommon.Config{DSN: superDSN})
+	require.NoError(t, err)
+	t.Cleanup(sysPool.Close)
+
+	return appPool, rawPool, sysPool
 }
 
 // ── HTTP client helpers ───────────────────────────────────────────────────

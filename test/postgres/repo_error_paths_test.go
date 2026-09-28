@@ -801,6 +801,18 @@ func TestErrPaths_TenantRepo(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+	// ERRPATH-TENANT-013b — ResolveByIdentifier (PUB-1) ctx cancelled: a DB
+	// error surfaces as an error, never as a fabricated Found=false.
+	t.Run("ResolveByIdentifier_CtxCancelled", func(t *testing.T) {
+		t.Parallel()
+		cancelCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		repo := pgadapter.NewTenantRepository(sysPool)
+		res, err := repo.ResolveByIdentifier(cancelCtx, "acme")
+		assert.Error(t, err)
+		assert.False(t, res.Found)
+	})
+
 	// ERRPATH-TENANT-014 — LockByID not found (lines 263,266,267)
 	t.Run("LockByID_NotFound", func(t *testing.T) {
 		t.Parallel()

@@ -68,6 +68,9 @@ type RouterConfig struct {
 	InvitationHandler     *InvitationHandler
 	OperatorHandler       *OperatorHandler
 	InternalHandler       *InternalHandler
+	// PublicHandler serves /api/v1/public/* (PUB-1). Optional: left nil,
+	// no public route is registered.
+	PublicHandler *PublicHandler
 
 	Postgres Pinger
 	// SysPostgres is optional — the BYPASSRLS *pgcommon.Pool used by
@@ -126,6 +129,7 @@ func NewRouter(cfg RouterConfig) *Router {
 	registerInfraRoutes(r, cfg)
 	registerDocsRoutes(r, cfg)
 	registerAPIRoutes(r, cfg)
+	registerPublicRoutes(r, cfg)
 
 	RegisterValidators()
 
@@ -312,6 +316,24 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 }
 
 // ── Business API routes ──────────────────────────────────────────────────
+
+// ── Public, unauthenticated routes (/api/v1/public/*, PUB-1) ─────────────
+//
+// Registered directly on the engine, NOT under registerAPIRoutes' protected
+// /api/v1 group: that group's gincommon.ProtectedMiddlewares 401s on a
+// missing x-tenant-id/x-user-id, and PUB-1 serves an anonymous pre-login
+// browser that has neither (PUBRES-1). These routes still get the
+// engine-level stack (body cap, timeout, request-id/tracing/metrics/logging)
+// but never GUCBridgeMiddleware, RequireAuth or any role gate. With no
+// app.tenant_id GUC bound, the handler's repository runs on the BYPASSRLS
+// sysPool (see port.TenantRepository.ResolveByIdentifier).
+func registerPublicRoutes(r *gin.Engine, cfg RouterConfig) {
+	if cfg.PublicHandler == nil {
+		return
+	}
+	pub := r.Group("/api/v1/public")
+	pub.GET("/tenants/resolve", cfg.PublicHandler.ResolveTenant) // PUB-1
+}
 
 func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	tenantH := cfg.TenantHandler

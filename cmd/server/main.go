@@ -461,6 +461,10 @@ func main() {
 		WithTokenServiceClient(tokenServiceClient)
 	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(sysTenantRepo, subscriptionGraceDays)
+	// PUB-1 (LLD §5.4/§8.11): sysTenantRepo, NOT tenantRepo — the route is
+	// anonymous and never binds an app.tenant_id GUC, so the RLS-scoped app
+	// pool would fail closed and return zero rows for every lookup.
+	tenantResolutionSvc := service.NewTenantResolutionService(sysTenantRepo)
 
 	tenantH := httpadapter.NewTenantHandler(tenantSvc)
 	deptH := httpadapter.NewDepartmentHandler(deptSvc)
@@ -475,6 +479,7 @@ func main() {
 	// IDs never reused.
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
+	publicH := httpadapter.NewPublicHandler(tenantResolutionSvc)
 	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc)
 
 	// ── Router — all routing/middleware wiring lives in the inbound HTTP
@@ -508,6 +513,7 @@ func main() {
 		InvitationHandler:     invitationH,
 		OperatorHandler:       operatorH,
 		InternalHandler:       internalH,
+		PublicHandler:         publicH,
 
 		Postgres: pingerFunc(func(ctx context.Context) error {
 			if hs := pool.Health(ctx); !hs.Healthy {

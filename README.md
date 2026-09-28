@@ -45,7 +45,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 ## API overview
 
-**36 active endpoints** across three route prefixes. Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
+**37 active endpoints** across four route prefixes (`/api/v1/*`, `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
 
 **Middleware chain:** `gincommon.DefaultMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → RequireAuth → ContextMiddleware`) plus a GUC-bridge middleware that binds `app.tenant_id` transaction-locally (RLS-6). The service trusts gateway-injected headers (`x-user-id`, `x-tenant-id`, `x-tenant-roles`) under mesh mTLS — no JWT parsing.
 
@@ -105,6 +105,14 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | O-7 | `POST /operator/tenants/:id/reassign-owner` | Recover an ownerless tenant; grants `tenant_owner` to an existing active member |
 
 *Retired, never reused:* O-1/2/3/5/6 (department/plan catalog admin → Catalog Service).
+
+### Public, unauthenticated routes (1) — `/api/v1/public/*`
+
+| # | Method & Path | Purpose |
+|---|---|---|
+| PUB-1 | `GET /public/tenants/resolve?identifier=` | Pre-login tenant/realm resolution for the identifier-first login flow (IAM HLD §8.2.7). There's no auth and no gateway headers, and it bypasses `ext_authz`. Resolves a company slug or a pending invitation's email (an active member's email isn't resolvable, LLD §16 OQ-11). It's always `200` (`{found:false}` on no match, never `404`, PUBRES-2), runs on the BYPASSRLS `sysPool`, and is uncached. |
+
+The only route in this service with no authentication. It's registered directly on the gin engine by `registerPublicRoutes`, outside the protected `/api/v1` group, so it never runs `RequireAuth`, `GUCBridgeMiddleware` or any role gate. Gateway rate-limit/CAPTCHA (PUBRES-3) and the Envoy `ext_authz` bypass route are platform config still to land (LLD §16 OQ-10).
 
 ---
 
@@ -607,7 +615,7 @@ A CI script (`.github/scripts/check-metric-naming.sh`) enforces naming/suffix/la
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs |
 
 Two-stage `Dockerfile`: `golang:1.26.6-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the two compiled binaries are copied in. `EXPOSE 8080 9090`.

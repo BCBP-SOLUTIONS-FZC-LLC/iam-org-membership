@@ -27,7 +27,7 @@ iam-org-membership/
 │   │   │   └── errors.go               # ErrNotFound, ErrConflict, ErrWorkflowResolutionRequired, ErrSeatLimitReached, ErrInvitationAlreadyExists, ErrInvalidReplacement
 │   │   │                               # NO delegation.go, NO acl.go — moved to Delegation Service / Tender ACL Service
 │   │   ├── port/                       # interfaces required by the core
-│   │   │   ├── tenant_repository.go
+│   │   │   ├── tenant_repository.go    # incl. ListSubscriptionLapses (I-16) and ResolveByIdentifier (PUB-1) — both sysPool-only (BYPASSRLS)
 │   │   │   ├── authz_repository.go     # NEW. AuthZRepository — the I-8 four-table join, moved out of authz_service.go so core/service depends on a port, not *pgcommon.Pool directly
 │   │   │   ├── department_repository.go # TenantDepartmentRepository — per-tenant activation junction only; the global catalog itself is external
 │   │   │   ├── membership_repository.go # MembershipRepository, TenantRoleRepository, DeptMembershipRepository, DeptRoleLabelRepository
@@ -51,7 +51,8 @@ iam-org-membership/
 │   │       ├── authz_service.go        # I-8 hot path; depends on port.AuthZRepository (NEW), not *pgcommon.Pool — the four-table join itself lives in the postgres adapter, this owns TR-7/PLAN-6 composition
 │   │       ├── catalog_service.go      # NEW (ADR-0007). Read-through + stale-if-error cache over CatalogAdminClient — NOT a table owner
 │   │       ├── group_mapping_service.go # client-side resolve over GroupMappingClient — NOT a table owner, fails open
-│   │       └── subscription_lapse_service.go # NEW (I-16, §16 OQ-9/RP-C3). Cross-tenant read; its TenantRepository MUST be sysPool-bound (BYPASSRLS), not the RLS-scoped app pool
+│   │       ├── subscription_lapse_service.go # NEW (I-16, §16 OQ-9/RP-C3). Cross-tenant read; its TenantRepository MUST be sysPool-bound (BYPASSRLS), not the RLS-scoped app pool
+│   │       └── tenant_resolution_service.go # NEW (PUB-1, LLD §5.4/§8.11). Pre-login slug/pending-invite-email → realm lookup; sysPool-bound like I-16 (no GUC on this route); no cache, no event
 │   │                                   # NO delegation_service.go, NO acl_service.go, NO role_service.go (renamed role_label_service.go — tenant_roles grants now live in membership_service.go)
 │   └── adapter/
 │       ├── inbound/
@@ -65,6 +66,7 @@ iam-org-membership/
 │       │   │   ├── invitation_handler.go
 │       │   │   ├── operator_handler.go
 │       │   │   ├── internal_handler.go # I-1..I-16, incl. I-15 GET .../members/:user_id/exists (grant-time check for Delegation/Tender-ACL services) and NEW I-16 GET /subscription-lapses (RP-C3 bulk read)
+│       │   │   ├── public_handler.go   # NEW. PUB-1 GET /api/v1/public/tenants/resolve — the one unauthenticated route; registered by registerPublicRoutes on the engine, outside the protected group (PUBRES-1)
 │       │   │   ├── middleware.go
 │       │   │   └── dto.go
 │       │   │                           # NO delegation_handler.go, NO acl_handler.go, NO group_mapping_handler.go (admin group-mapping CRUD moved to Group Mapping Service)
@@ -73,7 +75,7 @@ iam-org-membership/
 │       │       ├── dedup.go            # skipDuplicate/ackUnknown/markProcessedInTx — shared IDEMP-1..4 helpers, used by both consumers below
 │       │       └── catalog_consumer.go # SQS handler: catalog-orgm-q ← DepartmentCatalogChanged (Gap 12 org-membership half) — clears om:departments/om:departments:stale; now unit-tested and uses the shared dedup.go helpers (previously ad hoc); still inert until iam-catalog-admin's publisher side + SQS_CATALOG_ORGM_QUEUE_URL exist
 │       └── outbound/
-│           ├── postgres/               # repository impls + migrations/ (single consolidated 000000_initial_schema — never deployed, so the incremental decomposition history was squashed)
+│           ├── postgres/               # repository impls + migrations/ (consolidated 000000_initial_schema — never deployed, so the decomposition history was squashed — plus additive 000001 checks and 000002 idx_pi_email_pending for PUB-1); tenant_repository.go's ResolveByIdentifier is PUB-1's single UNION ALL lookup
 │           ├── valkey/                 # cache impl (go-redis/v9)
 │           ├── eventbus/               # RoutingPublisher (2 topics); GlueCodec (publish, version by definition) + GlueDecoder (consume); ValidatingCodec over embedded schemas/*.json
 │           ├── metrics/                # cross-cutting Prometheus counters/histograms (business.go) — the "observability" component in .go-arch-lint.yml

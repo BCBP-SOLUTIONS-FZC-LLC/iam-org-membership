@@ -6,6 +6,8 @@ sequenceDiagram
     participant PGB as PgBouncer (tx pooling)
     participant DB as PostgreSQL (RLS)
 
+    Note over MW,DB: PUB-1 (GET /api/v1/public/tenants/resolve) never enters this flow: it is registered outside the protected group,<br/>so GUCBridgeMiddleware never runs and no app.tenant_id is bound. Its one query runs on the BYPASSRLS sysPool —<br/>on this RLS-scoped pool it would fail closed and return no rows (see public-tenant-resolve-flow.mmd).
+
     Note over MW,GUC: On every protected request — runs after ContextMiddleware<br/>gincommon.DefaultMiddlewares chain: ... → RequireAuth → ContextMiddleware → GUCBridge
 
     MW ->>+ RC: requestctx.FromContext(ctx)
