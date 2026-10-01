@@ -1,9 +1,16 @@
 # Prometheus alerting rules for the iam-org-membership application.
 #
-# HTTP request metrics (http_request_duration_seconds, http_requests_total) are
-# emitted by platform-gincommon. Business event counters/gauges (iam_*) are
-# registered in internal/adapter/outbound/metrics/business.go and by the four
-# in-process exporter goroutines started in cmd/server/main.go (LLD §11.2).
+# HTTP request metrics (platform_http_request_duration_seconds,
+# platform_http_requests_total) are emitted by platform-gincommon; the
+# consumer/outbox platform_* metrics by platform-events. Business event
+# counters/gauges (iam_*) are registered in
+# internal/adapter/outbound/metrics/business.go and by the four in-process
+# exporter goroutines started in cmd/server/main.go (LLD §11.2).
+#
+# metric_status: proposed — the platform_http_* successors of the removed
+# http_* names are still Proposed in the Platform Observability Registry
+# (awaiting governance); every alert that queries them carries the label
+# metric_status: proposed so routing can treat them accordingly.
 #
 # Deploy via PrometheusRule CRD (kube-prometheus-stack) or include in a
 # Prometheus --rule-files directory. The Helm chart renders an equivalent
@@ -11,10 +18,11 @@
 # the source-of-truth "flat" version used by non-kube-prometheus setups.
 #
 # Labels on all HTTP metrics (from platform-gincommon):
-#   service — "iam-org-membership"
-#   method  — HTTP method
-#   path    — route pattern (e.g. /api/v1/tenants/:id)
-#   status  — HTTP status code
+#   domain, service, environment — identity ("iam", "iam-org-membership", APP_ENV)
+#   method       — HTTP method (non-standard methods become OTHER)
+#   route        — Gin route template (e.g. /api/v1/tenants/:id), or unknown
+#   status_class — 2xx | 4xx | 5xx
+#   error_class  — success | client_error | server_error
 #
 # Every alert carries:
 #   severity: page | ticket | warning | critical — routes to PagerDuty (page/critical)
@@ -61,14 +69,15 @@ groups:
 
       - alert: IAMOrgMembershipHighErrorRate
         expr: |
-          sum(rate(http_requests_total{job="iam-org-membership", status=~"5.."}[5m]))
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="iam-org-membership", status_class="5xx"}[5m]))
             /
-          sum(rate(http_requests_total{job="iam-org-membership"}[5m]))
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="iam-org-membership"}[5m]))
           > 0.05
         for: 5m
         labels:
           severity: warning
           team: platform
+          metric_status: proposed
         annotations:
           summary: iam-org-membership 5xx error rate above 5%
           description: >-
@@ -79,14 +88,15 @@ groups:
 
       - alert: IAMOrgMembershipCriticalErrorRate
         expr: |
-          sum(rate(http_requests_total{job="iam-org-membership", status=~"5.."}[5m]))
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="iam-org-membership", status_class="5xx"}[5m]))
             /
-          sum(rate(http_requests_total{job="iam-org-membership"}[5m]))
+          sum by (domain, service, environment) (rate(platform_http_requests_total{job="iam-org-membership"}[5m]))
           > 0.20
         for: 2m
         labels:
           severity: critical
           team: platform
+          metric_status: proposed
         annotations:
           summary: iam-org-membership 5xx error rate above 20%
           runbook: "iam-org-membership/critical-error-rate"
@@ -104,10 +114,10 @@ groups:
       - alert: IAMOrgMembershipI8HotPathLatency
         expr: |
           histogram_quantile(0.95,
-            sum by (le) (
-              rate(http_request_duration_seconds_bucket{
+            sum by (le, domain, service, environment) (
+              rate(platform_http_request_duration_seconds_bucket{
                 job="iam-org-membership",
-                path="/api/v1/internal/users/:id/memberships"
+                route="/api/v1/internal/users/:id/memberships"
               }[5m])
             )
           ) > 0.030
@@ -115,6 +125,7 @@ groups:
         labels:
           severity: warning
           team: platform
+          metric_status: proposed
           slo: SLO-2
         annotations:
           summary: I-8 memberships hot-path p95 above 30 ms
@@ -128,14 +139,15 @@ groups:
       - alert: IAMOrgMembershipHighLatency
         expr: |
           histogram_quantile(0.99,
-            sum by (le) (
-              rate(http_request_duration_seconds_bucket{job="iam-org-membership"}[5m])
+            sum by (le, domain, service, environment) (
+              rate(platform_http_request_duration_seconds_bucket{job="iam-org-membership"}[5m])
             )
           ) > 2.0
         for: 10m
         labels:
           severity: warning
           team: platform
+          metric_status: proposed
         annotations:
           summary: iam-org-membership p99 latency above 2s
           description: >-
@@ -147,14 +159,15 @@ groups:
       - alert: IAMOrgMembershipCriticalLatency
         expr: |
           histogram_quantile(0.99,
-            sum by (le) (
-              rate(http_request_duration_seconds_bucket{job="iam-org-membership"}[5m])
+            sum by (le, domain, service, environment) (
+              rate(platform_http_request_duration_seconds_bucket{job="iam-org-membership"}[5m])
             )
           ) > 25.0
         for: 5m
         labels:
           severity: critical
           team: platform
+          metric_status: proposed
         annotations:
           summary: iam-org-membership p99 latency above 25s — approaching timeout
           description: >-
@@ -169,9 +182,9 @@ groups:
 
       - alert: IAMFutureLifecycleEventRejected
         # EVT-15 future-time clamp — any occurrence pages. platform_dlq_messages_total
-        # is shared/generic (Tier 1) and may carry other reasons in future — filter
-        # to this alert's own cause so it doesn't page on an unrelated DLQ rejection.
-        expr: rate(platform_dlq_messages_total{reason="future_time_clamp"}[5m]) > 0
+        # is shared with platform-events (SQS redrive and outbox dead-letters) —
+        # filter to this service's own consume-side reject reason.
+        expr: sum by (domain, service, environment) (rate(platform_dlq_messages_total{operation="consume", reason="future_time_clamp"}[5m])) > 0
         for: 5m
         labels:
           severity: page
@@ -190,7 +203,7 @@ groups:
         # straight to the DLQ (cmd/server/inbound_schema.go). Every event of
         # that type from that producer is being dropped, so the tenant
         # projection is drifting — page. Filtered to this alert's own reason.
-        expr: sum by (event_type) (rate(platform_dlq_messages_total{reason="schema_violation"}[5m])) > 0
+        expr: sum by (domain, service, environment, event_type) (rate(platform_dlq_messages_total{operation="consume", reason="schema_violation"}[5m])) > 0
         for: 5m
         labels:
           severity: page
@@ -288,8 +301,11 @@ groups:
       - alert: IAMOrgMembershipOutboxDeadLetters
         # A rising count means SNS is unreachable, a schema is invalid, or the
         # outbox runner cannot make progress on some subset of events.
+        # platform-events records outbox dead-letters (records moved to
+        # outbox_dead_letters after OUTBOX_MAX_ATTEMPTS) as
+        # platform_dlq_messages_total{operation="outbox_publish",reason="max_attempts"}.
         expr: |
-          increase(outbox_dead_letters_total[30m]) > 0
+          sum by (domain, service, environment) (increase(platform_dlq_messages_total{service="iam-org-membership", operation="outbox_publish"}[30m])) > 0
         for: 5m
         labels:
           severity: critical
@@ -364,7 +380,8 @@ groups:
 
       - alert: IAMOrgMembershipConsumerDead
         expr: |
-          rate(platform_messages_received_total{service="iam-org-membership"}[10m]) == 0
+          # Recorded by platform-events' SQS consumer, per queue.
+          sum by (domain, service, environment, queue) (rate(platform_messages_received_total{service="iam-org-membership"}[10m])) == 0
         for: 5m
         labels:
           severity: critical

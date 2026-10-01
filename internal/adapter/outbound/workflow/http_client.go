@@ -99,7 +99,7 @@ func (c *HTTPClient) GetDelegateImpact(ctx context.Context, tenantID, userID uui
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, "get_delegate_impact", time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, "get_delegate_impact", time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, "get_delegate_impact", metrics.DependencyOutcome(err))
 		c.warn("workflow: GetDelegateImpact transport error", "user_id", userID, "error", err.Error())
@@ -171,7 +171,7 @@ func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, endpo
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.warn("workflow: transport error", "path", path, "error", err.Error())

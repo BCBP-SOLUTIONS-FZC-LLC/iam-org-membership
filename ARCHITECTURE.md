@@ -39,7 +39,7 @@ graph TD
         groupmappingclient["groupmappingclient/\nport.GroupMappingClient impl (HTTP)\nPOST /internal/tenants/:id/group-resolution (I-10 JIT)\nADR-0007 Wave 2, fails OPEN (empty resolution)\nGROUP_MAPPING_TIMEOUT_MS=300"]
         delegationcheck["delegationcheck/\nport.DelegationCheckClient impl (HTTP)\nGET /internal/delegations/dept-delegate (§8.8.4 precision lookup)\nADR-0008, fails OPEN to tenant-wide impact scoping\nDELEGATION_TIMEOUT_MS=1000 (raised from 300, Gap-8 fix)"]
         tokenservice["tokenservice/\nport.TokenServiceClient impl (HTTP)\nGET /service-accounts?principal_sub= (Token Service TS-5)\nAUTH-9/IB-3, fails OPEN — degrades to allowing the membership-create\n(P-6/I-3) / role-grant (P-10/P-28) operation\nTOKEN_SERVICE_TIMEOUT_MS=1000"]
-        metrics["metrics/\nbusiness.go — 19 counters, 2 histograms, 4 gauges, three-tier IAM Platform\nObservability Standard (platform_*/iam_*/iam_org_membership_*):\nplatform_messages_received/processed/failed_total{queue} · platform_duplicate_messages_total{consumer}\niam_org_membership_delegate_removal_blocked_total{scope} · iam_org_membership_seat_limit_reached_total{plan}\niam_lifecycle_event_skipped_total (EVT-14) · platform_dlq_messages_total (EVT-15)\niam_org_membership_tenant_ownerless (gauge) · iam_org_membership_realm_sync_pending (gauge) · iam_org_membership_seat_overage_active (gauge)\niam_org_membership_pending_invitations_stale (gauge) · iam_lifecycle_event_lag_seconds (histogram)\nplatform_dependency_request_seconds{target_service,endpoint} · platform_dependency_errors_total{target_service,endpoint,outcome}"]
+        metrics["metrics/\nbusiness.go — 19 counters, 2 histograms, 4 gauges, three-tier IAM Platform\nObservability Standard (platform_*/iam_*/iam_org_membership_*):\nplatform_messages_received/processed/failed_total (platform-events) · platform_duplicate_messages_total{queue,event_type}\niam_org_membership_delegate_removal_blocked_total{scope} · iam_org_membership_seat_limit_reached_total{plan}\niam_lifecycle_event_skipped_total (EVT-14) · platform_dlq_messages_total{operation,event_type,reason} (EVT-15)\niam_org_membership_tenant_ownerless (gauge) · iam_org_membership_realm_sync_pending (gauge) · iam_org_membership_seat_overage_active (gauge)\niam_org_membership_pending_invitations_stale (gauge) · iam_lifecycle_event_lag_seconds (histogram)\nplatform_dependency_request_seconds{dependency,operation,outcome} · iam_org_membership_dependency_call_failures_total{target_service,endpoint,outcome}"]
     end
 
     subgraph eventschema_grp["Embedded Schemas  —  eventbus/schemas/"]
@@ -431,7 +431,7 @@ sequenceDiagram
 
     Runner ->>+ OB: UPDATE outbox_events SET published_at = now() WHERE id = $1
     OB -->>- Runner: marked published
-    Note over Runner: retry up to OUTBOX_MAX_ATTEMPTS (5) with backoff — DLQ on exceed (outbox_dead_letters_total pages)
+    Note over Runner: retry up to OUTBOX_MAX_ATTEMPTS (5) with backoff — DLQ on exceed (platform_dlq_messages_total{operation=outbox_publish} pages)
 ```
 
 `Publisher.Enqueue` (`internal/adapter/outbound/eventbus/publisher.go`) marshals the payload, runs it through the `ValidatingCodec` for **schema validation only** (the returned bytes are discarded — the outbox always stores plain JSON), builds an `events.Envelope` carrying `tenant_id`/`trace_id`/`ip_address`/`user_agent`/`actor`/`subject`, and inserts it via `outbox.Enqueue(ctx, tx, env)` against the `pgx.Tx` it retrieves from `port.TxFromContext(ctx)` — the same transaction `TxRunner.RunInTx` opened for the business write. `TxRunner.RunInTx` (`internal/adapter/outbound/postgres/db.go`) additionally retries the whole callback on deadlock/serialization failure via `pgcommon.RunInTxWithRetryOpts` (3 attempts, 10 ms → 500 ms exponential backoff with 25% jitter) and maps any surviving connection-level error to `domain.ErrDBUnavailable` (503) through `wrapConnErr`, so a handler's error branch never has to special-case a transport failure.
@@ -850,7 +850,7 @@ sequenceDiagram
         Router -->>- Runner: published
         Runner ->> OB: mark published_at
         alt publish fails
-            Runner ->> OB: attempts++ — retry up to OUTBOX_MAX_ATTEMPTS, then dead letter<br/>(outbox_dead_letters_total pages)
+            Runner ->> OB: attempts++ — retry up to OUTBOX_MAX_ATTEMPTS, then dead letter<br/>(platform_dlq_messages_total{operation=outbox_publish} pages)
         end
     end
     SNS ->> SQS: fan-out filtered by EventType (6 membership subscribers, 2 tenant)
@@ -900,16 +900,16 @@ Two observability concerns run per request: Prometheus metrics (synchronous, in-
 ```mermaid
 graph LR
     subgraph request["Per-request (gincommon.ObservabilityMiddlewares — every HTTP call)"]
-        panic["PanicRecovery\n· defer recover()\n· log panic + stack\n· record OTel error on span\n· emit http_panic_total\n· return 500 JSON"]
+        panic["PanicRecovery\n· defer recover()\n· log panic + stack\n· record OTel error on span\n· emit platform_http_panics_total\n· return 500 JSON"]
         reqid["RequestID\n· read x-request-id or generate UUID\n· echo X-Request-ID header"]
         trace["Tracing (OTel)\n· extract W3C traceparent\n· start HTTP server span\n· propagated to Workflow/RP/Catalog/GroupMapping/Delegation/TokenService\n  via each client's shared httpx.NewClient (otelhttp transport)"]
-        metricsmw["Metrics\n· increment http_active_requests\n· defer: duration, sizes, status class"]
+        metricsmw["Metrics\n· increment platform_http_active_requests\n· defer: duration, sizes, status class"]
         logging["Logging (Zap)\n· defer: structured http_request log\n· sanitize header values"]
         guc["GUCBridgeMiddleware\n· pgcommon.GUCSetFromContext binds\n  SET LOCAL app.tenant_id per tx (RLS-6)\n· never session-scoped SET (would leak\n  across pooled PgBouncer backends)"]
     end
 
     subgraph prom["Prometheus metrics  →  /metrics (verified against internal/adapter/outbound/metrics/business.go)"]
-        p1["http_requests_total{method, route, status_class}\nhttp_request_duration_seconds{method, route, status_class}\nhttp_active_requests{route}\nhttp_panic_total\nbuild_info{service='iam-org-membership', version}"]
+        p1["platform_http_requests_total{method, route, status_class, error_class}\nplatform_http_request_duration_seconds{method, route, status_class, error_class}\nplatform_http_active_requests{route}\nplatform_http_panics_total\nplatform_build_info{version}\n(all + domain, service, environment)"]
         p_rls["iam_rls_violations_total{violation_type}\n(Layer 3, scraped from rls_violation_log)"]
         p_wf["Delegate-impact (§8.8):\niam_org_membership_delegate_removal_blocked_total{scope}\niam_org_membership_delegate_reassignment_total{action=replace_delegate|stop_workflows}\niam_org_membership_delegate_suspend_impact_total{checked} (§8.8.5 advisory)"]
         p_seat["Seat / invite:\niam_org_membership_seat_limit_reached_total{plan}  (SEAT-1, product signal not incident)\niam_org_membership_seat_overage_started_total{cause}\niam_org_membership_invite_throttled_total{reason=cooldown|rate_limit}"]
@@ -917,7 +917,7 @@ graph LR
         p_xsvc["Cross-service clients (Catalog/GroupMapping/Delegation):\nplatform_dependency_request_seconds{target_service,endpoint}\nplatform_dependency_errors_total{target_service,endpoint,outcome}\niam_org_membership_membership_exists_check_total{caller,result}  (I-15)"]
         p_gauges["In-process exporter gauges (ticker, every 5 min):\niam_org_membership_tenant_ownerless  (TM-12 — nonzero pages platform_operator)\niam_org_membership_realm_sync_pending  (T-15 backlog)\niam_org_membership_seat_overage_active  (SEAT-5)\niam_org_membership_pending_invitations_stale"]
         p_auth["Session / realm:\niam_auth_session_revoke_failed_total{reason}  (AUTH-8 fail-open, sustained pages)\niam_org_membership_realm_sync_failed_total{stage}  (T-15 reconciler)\niam_org_membership_tenant_ownerless_escalated_total{reason}"]
-        p_outbox["outbox_dead_letters_total{event_type}  (pages)\nplatform-events pool + retry counters"]
+        p_outbox["platform_dlq_messages_total{operation=outbox_publish,event_type}  (pages)\nplatform-events pool + retry counters"]
     end
 
     subgraph otel["OpenTelemetry Traces"]
@@ -964,8 +964,8 @@ graph LR
     db2 --> ot1
 
     subgraph alerts["Alert routing (§11.2)"]
-        a1["Page:\n· outbox_dead_letters_total rate > 0\n· iam_org_membership_tenant_ownerless > 0 (platform_operator)\n· platform_dlq_messages_total{reason=future_time_clamp} > 0 (clock skew)\n· platform_dlq_messages_total{reason=schema_violation} > 0 (consumed contract break)\n· iam_lifecycle_event_lag_seconds > 30 for ~2 min (SLO-3)\n· iam_org_membership_realm_sync_pending > 0 sustained > 10 min (T-15)\n· sustained iam_auth_session_revoke_failed_total (AUTH-8)"]
-        a2["Warn:\n· sustained platform_dependency_errors_total{target_service=catalog|group_mapping|delegation}\n· sustained iam_org_membership_delegate_removal_blocked_total w/o matching\n  reassignment/cancel (admins hitting block, not resolving)\n· sustained iam_org_membership_invite_throttled_total for one tenant"]
+        a1["Page:\n· platform_dlq_messages_total{operation=outbox_publish} rate > 0\n· iam_org_membership_tenant_ownerless > 0 (platform_operator)\n· platform_dlq_messages_total{operation=consume,reason=future_time_clamp} > 0 (clock skew)\n· platform_dlq_messages_total{operation=consume,reason=schema_violation} > 0 (consumed contract break)\n· iam_lifecycle_event_lag_seconds > 30 for ~2 min (SLO-3)\n· iam_org_membership_realm_sync_pending > 0 sustained > 10 min (T-15)\n· sustained iam_auth_session_revoke_failed_total (AUTH-8)"]
+        a2["Warn:\n· sustained iam_org_membership_dependency_call_failures_total{target_service=catalog|group_mapping|delegation}\n· sustained iam_org_membership_delegate_removal_blocked_total w/o matching\n  reassignment/cancel (admins hitting block, not resolving)\n· sustained iam_org_membership_invite_throttled_total for one tenant"]
         a3["Informational (not on-call):\n· iam_org_membership_seat_limit_reached_total spike → CSM/Billing (buy more seats)\n· overage_since older than SEAT_OVERAGE_GRACE_DAYS (30 d) → Billing"]
     end
     p2 --> a1
@@ -1189,7 +1189,7 @@ Before a downstream service subscribes to `iam.membership.events` or `iam.tenant
 - [ ] Enforce `aws:SourceArn` in the SQS queue resource policy against the correct topic ARN.
 
 **Observability**
-- [ ] Emit a metric or alert on DLQ delivery — this service pages on `outbox_dead_letters_total` rate > 0; a consuming service should hold itself to the same bar.
+- [ ] Emit a metric or alert on DLQ delivery — this service pages on `platform_dlq_messages_total{operation="outbox_publish"}` rate > 0; a consuming service should hold itself to the same bar.
 - [ ] Log the envelope `id` and `type` on every processed message for end-to-end traceability.
 
 ---

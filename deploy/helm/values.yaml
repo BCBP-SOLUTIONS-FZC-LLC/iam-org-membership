@@ -50,7 +50,12 @@ resources:
 # Non-secret env — mirrors .env-example. Anything with a URL/ARN/credential
 # lives in envFromSecret below.
 env:
-  APP_ENV: "production"
+  # APP_ENV is also the observability environment label: it must be one of
+  # local|dev|test|staging|prod (no aliases — "production" fails startup).
+  APP_ENV: "prod"
+  # Observability Standard domain (gincommon/pgcommon/events const label).
+  # Also set in code (gincommon.Config.Domain); startup fails without one.
+  OBSERVABILITY_DOMAIN: "iam"
   APP_PORT: "8080"
   METRICS_PORT: "9090"
 

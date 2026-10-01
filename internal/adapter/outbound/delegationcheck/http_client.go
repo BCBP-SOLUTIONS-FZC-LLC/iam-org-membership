@@ -123,7 +123,7 @@ func (c *HTTPClient) DeptDelegate(ctx context.Context, tenantID, userID, deptID 
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.warn("delegationcheck: DeptDelegate transport error", "tenant_id", tenantID, "user_id", userID, "dept_id", deptID, "error", err.Error())

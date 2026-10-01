@@ -40,20 +40,44 @@ import (
 	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/valkey"
 	workflowclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/workflow"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 
-	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/config"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
-	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgmetrics"
+	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgmetrics"
 )
 
 // buildVersion is injected by -ldflags at build time (see Dockerfile / Makefile).
 var buildVersion = "dev"
+
+// initLibraryMetrics registers platform-events' and platform-pgcommon's
+// platform_* metrics on gincommon's registerer with gincommon's identity
+// (call after ObservabilityMiddlewares and metrics.Register, before any
+// pgcommon.NewPool). A metric that cannot be registered is disabled by the
+// library and reported as a warning; an invalid identity aborts startup.
+func initLibraryMetrics(log port.Logger) {
+	identity := gincommon.MetricsConstLabels()
+	evWarnings, err := events.InitMetrics(events.MetricsIdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range evWarnings {
+		log.Warn("platform-events metric disabled", map[string]interface{}{"metric": w.Metric, "error": w.Error()})
+	}
+	if err != nil {
+		panic(fmt.Sprintf("init platform-events metrics: %v", err))
+	}
+	pgWarnings, err := pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range pgWarnings {
+		log.Warn("platform-pgcommon metric disabled", map[string]interface{}{"metric": w.Metric, "error": w.Error()})
+	}
+	if err != nil {
+		panic(fmt.Sprintf("init platform-pgcommon metrics: %v", err))
+	}
+}
 
 func main() {
 	appEnv := envOr("APP_ENV", "dev")
@@ -81,22 +105,31 @@ func main() {
 		Logger:       log,
 		ServiceName:  envOr("APP_NAME", "iam-org-membership"),
 		BuildVersion: envOr("BUILD_VERSION", buildVersion),
+		// Observability Standard identity: domain is fixed for this service
+		// (OBSERVABILITY_DOMAIN is also set in Helm/compose); the environment
+		// label comes from APP_ENV (local|dev|test|staging|prod — startup
+		// panics on anything else, e.g. "production").
+		Domain: "iam",
 	}
 	// ObservabilityMiddlewares is gincommon's public metrics-init API. Call
 	// it here (before any collector registration or exporter goroutine) so
 	// business / events / pgcommon metrics land on gincommon.MetricsRegisterer
-	// with matching {service, version} const labels. NewRouter applies the
-	// same middleware slice to the Gin engine; metrics.Init is sync.Once.
+	// with matching {domain, service, environment} const labels. NewRouter
+	// applies the same middleware slice to the Gin engine; metrics.Init is
+	// sync.Once.
 	_ = gincommon.ObservabilityMiddlewares(cfg)
 
+	// Business metrics BEFORE events.InitMetrics: the registry-shared
+	// platform_* collectors (DLQ, duplicates, dependency calls) are created
+	// here and reused by platform-events instead of conflicting with it.
 	metrics.Register(appEnv)
 
 	// platform-events outbox/publish/consume metrics and platform-pgcommon
-	// query/pool metrics share gincommon's registerer so a single /metrics
-	// scrape (promhttp on METRICS_PORT) serves HTTP + business + outbox +
-	// pg collectors together.
-	events.InitWithRegisterer(cfg.ServiceName, cfg.BuildVersion, gincommon.MetricsRegisterer())
-	pgmetrics.InitWithRegisterer(cfg.ServiceName, cfg.BuildVersion, gincommon.MetricsRegisterer())
+	// query/pool metrics share gincommon's registerer and identity so a
+	// single /metrics scrape (promhttp on METRICS_PORT) serves HTTP +
+	// business + outbox + pg collectors together. pgmetrics must be
+	// initialised before NewPool so the pool connection gauges register.
+	initLibraryMetrics(log)
 
 	// ── 3. Database — pgcommon.ConfigFromEnv reads DATABASE_URL/PG_* directly
 	// so pool sizing, PgBouncer mode, and DSN assembly have exactly one
@@ -490,7 +523,7 @@ func main() {
 	// SECURITY-10: DOCS_ENABLED=true without DOCS_AUTH_TOKEN in production/
 	// staging exposes the Swagger UI to unauthenticated callers. Hard-fail at
 	// startup so the misconfiguration is caught before any traffic is served.
-	if docsEnabled && docsAuthToken == "" && (appEnv == "production" || appEnv == "staging") {
+	if docsEnabled && docsAuthToken == "" && (appEnv == "prod" || appEnv == "staging") {
 		panic("startup aborted — DOCS_ENABLED requires DOCS_AUTH_TOKEN in production/staging (SECURITY-10)")
 	}
 
@@ -684,11 +717,11 @@ func envDuration(key string, def time.Duration) time.Duration {
 func validateRequiredEnv(appEnv string) {
 	type req struct {
 		key         string
-		devOK       bool // skip silently in dev/development/local/test
+		devOK       bool // skip silently in dev/local/test
 		stagingWarn bool // warn to stderr in staging instead of panicking (CONFIG-2 Option C)
 		reason      string
 	}
-	isDevLike := appEnv == "dev" || appEnv == "development" || appEnv == "local" || appEnv == "test"
+	isDevLike := appEnv == "dev" || appEnv == "local" || appEnv == "test"
 	isStaging := appEnv == "staging"
 
 	reqs := []req{
@@ -750,7 +783,7 @@ func validateRequiredEnv(appEnv string) {
 		missing = append(missing, "MIGRATION_DATABASE_URL: required when PG_BOUNCER_MODE=true — migrations must bypass PgBouncer")
 	}
 	// TLS Valkey in production.
-	isProd := appEnv == "production" || appEnv == "staging"
+	isProd := appEnv == "prod" || appEnv == "staging"
 	if isProd {
 		if v := os.Getenv("VALKEY_URL"); v != "" && !strings.HasPrefix(v, "rediss://") {
 			missing = append(missing, "VALKEY_URL: must use rediss:// in production/staging")

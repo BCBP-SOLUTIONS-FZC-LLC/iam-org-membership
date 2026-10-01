@@ -106,7 +106,7 @@ func TestRequireActiveMembership_ActiveMember_Proceeds(t *testing.T) {
 
 func TestGUCBridgeMiddleware_MalformedUserIDHeader_Returns401ViaRouter(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"},
 	})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
@@ -123,7 +123,7 @@ func TestGUCBridgeMiddleware_MalformedUserIDHeader_Returns401ViaRouter(t *testin
 
 func TestGUCBridgeMiddleware_MalformedTenantIDHeader_Returns401ViaRouter(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"},
 	})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,

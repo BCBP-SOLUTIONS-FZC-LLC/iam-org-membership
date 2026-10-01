@@ -11,7 +11,7 @@
 //   - Tier 2 — iam_* : a concept shared across multiple services WITHIN
 //     the IAM domain (RLS violations, session revocation, lifecycle-event
 //     bookkeeping) but not meaningful outside it. Carries no service name;
-//     "service", "environment" are injected centrally.
+//     "domain", "service", "environment" are injected centrally.
 //   - Tier 3 — iam_org_membership_* : behavior unique to this one
 //     service (seat caps, tenant-ownerless escalation, invitation
 //     lifecycle, delegate-impact advisories, ...). No other IAM service
@@ -20,9 +20,11 @@
 //
 // Every counter ends in _total; every histogram ends in _seconds. The
 // "domain"/"service"/"environment" labels are never left to individual
-// Inc()/Observe() call sites to supply — they're baked in once here via
-// ConstLabels (platformLabels/serviceLabels), so instrumentation callers
-// cannot omit or misspell them (rule 8).
+// Inc()/Observe() call sites to supply — they're baked in once via
+// ConstLabels (gincommon.MetricsConstLabels, see serviceLabels, and the
+// registry-built Tier-1 collectors), so instrumentation callers cannot
+// omit or misspell them (rule 8). No collector carries a version label;
+// the build version lives only on platform_build_info.
 //
 // Phase 0 registered the minimal infra set; Phase 6 landed the full
 // business metric surface per §11. This file was last reclassified to
@@ -30,28 +32,40 @@
 // see each var's doc comment for its tier and, for tier-1/2 promotions
 // without a named example in the standard, the rationale.
 //
-// Three Tier-1 candidates — DependencyRequestSeconds
-// (platform_dependency_request_seconds), DuplicateMessages
-// (platform_duplicate_messages_total), and DependencyErrors
-// (platform_dependency_errors_total) — are emitted in shadow, alongside
-// their Tier-3 counterparts (DependencyCallDurationSeconds,
-// ProcessedEventsDuplicatesTotal, DependencyCallFailuresTotal), so real
-// production data backs their ratification packets without this repo's
-// own alerts/SLOs depending on an unratified name. See PlatformRegistry
-// (registry.go) for each candidate's full submitted packet — status,
-// semantic definition, required/approved labels and their allowed
-// values, cardinality justification, aggregation expectations. Every
-// alert/recording-rule/SLO in this repo reads the Tier-3 metric until a
-// candidate's Status there flips from Proposed to Canonical (matches
-// iam-realm-provisioner's pattern, .github/scripts/metrics-registry-lint.sh
-// enforces it in CI).
+// Tier-1 platform_* collectors are NOT hand-built here: they come from the
+// central Platform Observability Registry via gincommon.NewShared*Vec, so
+// their name, help, label set and buckets are exactly the registry's
+// (platform-gincommon internal/obsregistry/registry.json). platform-events
+// registers the same names on the same registerer; because the
+// descriptors are identical it reuses these collectors, so the library
+// (SQS dead-letters, outbox dead-letters, SNS/SQS dependency calls) and
+// this service (its own DLQ rejects, duplicate filtering, peer HTTP calls)
+// write ONE series set. Registration order is therefore load-bearing:
+// Register must run after gincommon.ObservabilityMiddlewares and before
+// events.InitMetrics (cmd/server/main.go, cmd/reconciler/main.go).
+//
+// The consumer-lifecycle counters platform_messages_{received,processed,
+// failed}_total are recorded by platform-events' SQS consumer itself (per
+// message, labelled queue/event_type/reason), so this service no longer
+// records them.
+//
+// Two Tier-1 metrics this service writes — platform_dependency_request_
+// seconds and platform_duplicate_messages_total — are still Proposed in the
+// registry. Their Tier-3 counterparts (DependencyCallDurationSeconds,
+// ProcessedEventsDuplicatesTotal, DependencyCallFailuresTotal) remain this
+// repo's alerting/SLO source until ratification (registry.go,
+// .github/scripts/metrics-registry-lint.sh). The former Tier-1
+// dependency-errors shadow counter was removed: it was never in the
+// registry; its registry concept is
+// platform_dependency_request_seconds_count{outcome="error"}.
 package metrics
 
 import (
 	"context"
 	"errors"
-	"maps"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -67,24 +81,20 @@ const domain = "iam"
 var (
 	// ── Tier 1 — platform_* (shared across domains) ─────────────────────
 
-	// MessagesReceived/Processed/Failed count every inbound SQS message
-	// this service consumes, labelled by queue (tenant-orgm-q |
-	// billing-orgm-q). Wired centrally in cmd/server/main.go around
-	// MembershipEventConsumer.Handle, not inside Handle itself, so the
-	// queue identity — known only at the subscription call site — never
-	// has to be threaded through consumer internals.
-	MessagesReceived  *prometheus.CounterVec
-	MessagesProcessed *prometheus.CounterVec
-	MessagesFailed    *prometheus.CounterVec
-
-	// DuplicateMessages counts SQS redeliveries filtered by the
-	// processed_events composite PK (IDEMP-4 / PE-1) — the standard's
-	// platform_duplicate_messages_total concept: message-dedup is a
-	// generic queue-consumer semantic, not an IAM-specific one.
+	// DuplicateMessages (platform_duplicate_messages_total{queue,
+	// event_type}, Proposed) counts SQS redeliveries filtered by the
+	// processed_events composite PK (IDEMP-4 / PE-1). This service dedups
+	// with its own ledger, not platform-events' inbox, so only it can
+	// record them. queue comes from the context set by WithQueue.
 	DuplicateMessages *prometheus.CounterVec
 
-	// DLQMessages counts events this service actively rejects to DLQ
-	// without recording processed_events, by reason:
+	// DLQMessages (platform_dlq_messages_total{operation,event_type,
+	// reason}, Approved) is shared with platform-events: the library
+	// records operation="consume" redrive dead-letters it performs and
+	// operation="outbox_publish",reason="max_attempts" outbox dead-letters;
+	// this service records the events it actively rejects to the DLQ
+	// itself (cmd/server/dlq.go's raw-SQS router, which platform-events
+	// never sees) as operation="consume" with reason:
 	//   - future_time_clamp — EVT-15 (§16 A40: event.time > now() + skew,
 	//     a poison-pill/producer-clock-skew guard);
 	//   - schema_violation — a consumed payload failing its embedded JSON
@@ -93,26 +103,14 @@ var (
 	// Any nonzero rate of either pages; alerts filter on reason.
 	DLQMessages *prometheus.CounterVec
 
-	// DependencyRequestSeconds / DependencyErrors time and count the
-	// three synchronous cross-service client calls (catalogadmin /
-	// groupmappingclient / delegationcheck) — LLD §11.2, source for the
-	// §18.7-§18.9 latency budgets. The standard's platform_dependency_
-	// request_seconds concept verbatim: any IAM/Workflow/Billing/Tender
-	// service making a synchronous outbound call to a peer can emit the
-	// same shape. target_service (catalog|group_mapping|delegation) is
-	// the downstream peer being called — distinct from the "service"
-	// const label, which is always this metric's own emitting service.
-	// DependencyErrors' outcome is 5xx|timeout|fallback_served;
-	// "fallback_served" is recorded by the calling service
-	// (CatalogService/GroupMappingService), not the client, since only
-	// the caller knows whether a stale/last-known-good value was served
-	// instead of surfacing the error. DependencyErrors itself has no
-	// directly-named platform_* counterpart in the standard's examples —
-	// added by symmetry with DependencyRequestSeconds (rule 7: prefer
-	// shared whenever reusable) since outcome-classified failure counts
-	// aren't recoverable from a latency histogram's buckets alone.
+	// DependencyRequestSeconds (platform_dependency_request_seconds{
+	// dependency,operation,outcome}, Proposed) times the synchronous
+	// cross-service client calls. dependency is the downstream peer
+	// (catalog|group_mapping|delegation|realm_provisioner|workflow|
+	// token_service), operation the client endpoint in snake_case,
+	// outcome success|error (error = transport failure or 5xx). Shared
+	// with platform-events, which records its sns/sqs/codec calls here.
 	DependencyRequestSeconds *prometheus.HistogramVec
-	DependencyErrors         *prometheus.CounterVec
 
 	// ── Tier 3 predecessors, shadow-authoritative until ratification ────
 
@@ -123,14 +121,13 @@ var (
 	// Proposed to Canonical. Same call site, same values, different name.
 	DependencyCallDurationSeconds *prometheus.HistogramVec
 
-	// DependencyCallFailuresTotal is DependencyErrors's Tier-3
-	// predecessor — authoritative until platform_dependency_errors_total
-	// ratifies (registry.go). Unlike the other two shadow pairs, this
-	// Tier-1 candidate has no named counterpart in the standard's own
-	// examples at all (added by symmetry, see DependencyErrors's doc
-	// comment) — an even less settled proposal than the standard's own
-	// Registry-Proposed Examples, so this Tier-3 metric is not merely
-	// cautious but the only currently-sanctioned name for this signal.
+	// DependencyCallFailuresTotal counts cross-service dependency call
+	// failures by outcome (5xx|timeout|fallback_served; "fallback_served"
+	// is recorded by the calling service layer — CatalogService/
+	// GroupMappingService — since only it knows whether a stale value was
+	// served). It is the authoritative failure counter; the registry has
+	// no platform_* equivalent with these outcomes (the closest is
+	// platform_dependency_request_seconds_count{outcome="error"}).
 	DependencyCallFailuresTotal *prometheus.CounterVec
 
 	// ProcessedEventsDuplicatesTotal is DuplicateMessages's Tier-3
@@ -232,58 +229,100 @@ var (
 	PendingInvitationsStale prometheus.Gauge // invitation-expiry cron health
 )
 
-// IncMessagesReceived/Processed/Failed record one SQS message's outcome
-// against platform_messages_{received,processed,failed}_total, labelled by
-// queue. Nil-safe, see ObserveDependencyLatency.
-func IncMessagesReceived(queue string) {
-	if MessagesReceived != nil {
-		MessagesReceived.WithLabelValues(queue).Inc()
+type queueCtxKey struct{}
+
+// WithQueue returns ctx carrying the logical queue name (e.g.
+// tenant-orgm-q) a consumed message came from, so code deep in the
+// consumer (dedup) can label platform_* series by queue without threading
+// it through every handler signature. cmd/server's instrumentedHandler
+// sets it per message.
+func WithQueue(ctx context.Context, queue string) context.Context {
+	return context.WithValue(ctx, queueCtxKey{}, queue)
+}
+
+// QueueFromContext returns the queue set by WithQueue, or "unknown" (the
+// registry's value for an absent queue).
+func QueueFromContext(ctx context.Context) string {
+	if q, ok := ctx.Value(queueCtxKey{}).(string); ok && q != "" {
+		return q
+	}
+	return "unknown"
+}
+
+// IncDuplicate records one redelivery filtered by processed_events against
+// platform_duplicate_messages_total{queue,event_type} (queue from ctx) and
+// the authoritative Tier-3 iam_org_membership_processed_events_duplicates_
+// total{consumer}. Nil-safe.
+func IncDuplicate(ctx context.Context, consumer, eventType string) {
+	if ProcessedEventsDuplicatesTotal != nil {
+		ProcessedEventsDuplicatesTotal.WithLabelValues(consumer).Inc()
+	}
+	if DuplicateMessages != nil {
+		DuplicateMessages.WithLabelValues(QueueFromContext(ctx), eventLabel(eventType)).Inc()
 	}
 }
 
-func IncMessagesProcessed(queue string) {
-	if MessagesProcessed != nil {
-		MessagesProcessed.WithLabelValues(queue).Inc()
+// IncDLQ records one event this service rejected to its DLQ, as
+// platform_dlq_messages_total{operation="consume",event_type,reason}.
+// Nil-safe.
+func IncDLQ(eventType, reason string) {
+	if DLQMessages != nil {
+		DLQMessages.WithLabelValues(dlqOperationConsume, eventLabel(eventType), reason).Inc()
 	}
 }
 
-func IncMessagesFailed(queue string) {
-	if MessagesFailed != nil {
-		MessagesFailed.WithLabelValues(queue).Inc()
+// dlqOperationConsume is the registry operation value for a consumed
+// message moved to dead-letter storage.
+const dlqOperationConsume = "consume"
+
+// eventLabel bounds an event_type label value the way the registry
+// requires: "unknown" when empty, "__oversized__" past 128 bytes.
+func eventLabel(eventType string) string {
+	switch {
+	case eventType == "":
+		return "unknown"
+	case len(eventType) > 128:
+		return "__oversized__"
+	default:
+		return eventType
 	}
 }
 
-// ObserveDependencyLatency records a cross-service call's duration against
-// the downstream peer (targetService — "catalog"|"group_mapping"|
-// "delegation"), not this service's own identity (that's the metric's
-// "service" const label, stamped centrally below). Nil-safe —
-// DependencyRequestSeconds is only non-nil once Register() has run (server
-// startup), so client/service unit tests that never call Register() get a
-// silent no-op rather than a nil-pointer panic.
-//
-// Dual-emits to DependencyCallDurationSeconds, the Tier-3 predecessor that
-// remains this repo's authoritative alerting/SLO source until
-// platform_dependency_request_seconds ratifies (registry.go).
+// ObserveDependencyLatency records a cross-service call's duration on the
+// authoritative Tier-3 iam_org_membership_dependency_call_duration_seconds
+// {target_service,endpoint} only. HTTP clients use ObserveDependencyCall,
+// which also records the registry's platform_dependency_request_seconds
+// with an outcome. Nil-safe — collectors are only non-nil once Register()
+// has run, so unit tests that never call Register() get a silent no-op.
 func ObserveDependencyLatency(targetService, endpoint string, seconds float64) {
-	if DependencyRequestSeconds != nil {
-		DependencyRequestSeconds.WithLabelValues(targetService, endpoint).Observe(seconds)
-	}
 	if DependencyCallDurationSeconds != nil {
 		DependencyCallDurationSeconds.WithLabelValues(targetService, endpoint).Observe(seconds)
 	}
 }
 
-// IncDependencyError records a cross-service call failure by outcome,
-// against the downstream peer (targetService). Nil-safe, see
-// ObserveDependencyLatency.
-//
-// Dual-emits to DependencyCallFailuresTotal, the Tier-3 predecessor that
-// remains this repo's authoritative alerting/SLO source until
-// platform_dependency_errors_total ratifies (registry.go).
-func IncDependencyError(targetService, endpoint, outcome string) {
-	if DependencyErrors != nil {
-		DependencyErrors.WithLabelValues(targetService, endpoint, outcome).Inc()
+// ObserveDependencyCall records one synchronous call to a peer service:
+// the Tier-3 latency histogram (see ObserveDependencyLatency) plus
+// platform_dependency_request_seconds{dependency=targetService,
+// operation=endpoint in snake_case, outcome}. outcome is "error" for a
+// transport error (err != nil) or a 5xx response, else "success" — a 4xx is
+// the caller's own request being rejected, not a dependency fault. resp may
+// be nil when err is set. Nil-safe.
+func ObserveDependencyCall(targetService, endpoint string, seconds float64, resp *http.Response, err error) {
+	ObserveDependencyLatency(targetService, endpoint, seconds)
+	if DependencyRequestSeconds == nil {
+		return
 	}
+	outcome := "success"
+	if err != nil || resp == nil || resp.StatusCode >= 500 {
+		outcome = "error"
+	}
+	DependencyRequestSeconds.WithLabelValues(targetService, strings.ReplaceAll(endpoint, "-", "_"), outcome).Observe(seconds)
+}
+
+// IncDependencyError records a cross-service call failure by outcome
+// (5xx|timeout|fallback_served) on the authoritative
+// iam_org_membership_dependency_call_failures_total. Nil-safe.
+func IncDependencyError(targetService, endpoint, outcome string) {
 	if DependencyCallFailuresTotal != nil {
 		DependencyCallFailuresTotal.WithLabelValues(targetService, endpoint, outcome).Inc()
 	}
@@ -336,7 +375,8 @@ func ObserveLifecycleEventLag(eventType string, seconds float64) {
 }
 
 // DependencyOutcome classifies a cross-service client transport error into
-// one of platform_dependency_errors_total's two client-observable outcomes
+// one of iam_org_membership_dependency_call_failures_total's two
+// client-observable outcomes
 // ("timeout" | "5xx"). The third outcome, "fallback_served", is recorded by
 // the calling service layer, not here — only it knows whether a stale/
 // last-known-good value was served instead of surfacing the error.
@@ -351,103 +391,117 @@ func DependencyOutcome(err error) string {
 	return "5xx"
 }
 
-// platformLabels returns the ConstLabels for a Tier-1 platform_* collector:
-// domain (fixed "iam"), environment (Register's caller-supplied argument),
-// and gincommon's {service, version} — centrally injected here (rule 8) so
-// no Inc()/Observe() call site can omit or misspell "domain"/"service"/
-// "environment".
-func platformLabels(environment string) prometheus.Labels {
-	out := prometheus.Labels{"domain": domain, "environment": environment}
-	maps.Copy(out, gincommon.MetricsConstLabels())
-	return out
-}
-
 // serviceLabels returns the ConstLabels for a Tier-2 (iam_*) or Tier-3
-// (iam_org_membership_*) collector: environment plus gincommon's
-// {service, version} — no "domain" label, since the iam_ namespace itself
-// already encodes domain per the standard's Tier-2 required-labels list.
+// (iam_org_membership_*) collector: gincommon's {domain, environment,
+// service} (MetricsConstLabels) — the same identity every gincommon,
+// platform-events and platform-pgcommon series carries, injected centrally
+// (rule 8) so no Inc()/Observe() call site can omit or misspell it.
+// environment (Register's argument) and domain="iam" are only a fallback
+// for unit tests that register metrics without initialising gincommon.
 func serviceLabels(environment string) prometheus.Labels {
-	out := prometheus.Labels{"environment": environment}
-	maps.Copy(out, gincommon.MetricsConstLabels())
-	return out
+	if labels := gincommon.MetricsConstLabels(); len(labels) > 0 {
+		return labels
+	}
+	return prometheus.Labels{"domain": domain, "environment": environment}
 }
 
 var registerOnce sync.Once
 
+var (
+	sharedMu   sync.Mutex
+	sharedDone bool
+)
+
 // Register wires business metrics onto gincommon's Prometheus registerer
-// (same registry as HTTP metrics), with environment stamped as a const
-// label on every collector. Call once at startup AFTER
-// ObservabilityMiddlewares has run and BEFORE the /metrics endpoint is
-// served. Idempotent — only the first call's environment takes effect.
+// (same registry as HTTP metrics). Call once at startup AFTER
+// ObservabilityMiddlewares has run, BEFORE events.InitMetrics (so
+// platform-events reuses the shared Tier-1 collectors instead of
+// registering its own) and BEFORE the /metrics endpoint is served.
+// Idempotent. The Tier-1 collectors need gincommon's identity: if gincommon
+// is not initialised yet (some unit tests), they are skipped and created
+// by the first later Register call that finds it initialised.
 func Register(environment string) {
 	registerOnce.Do(func() { registerMetrics(environment) })
+	registerShared()
+}
+
+// registerShared builds the registry-owned Tier-1 collectors once
+// gincommon's identity is known. A collector platform-events (or an
+// earlier registration) already holds is adopted rather than duplicated,
+// so the call is order-tolerant; any other registration error panics, like
+// MustRegister.
+func registerShared() {
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if sharedDone || len(gincommon.MetricsConstLabels()) == 0 {
+		return
+	}
+	DuplicateMessages = mustShared(gincommon.NewSharedCounterVec(nil, "platform_duplicate_messages_total"))
+	DLQMessages = mustShared(gincommon.NewSharedCounterVec(nil, "platform_dlq_messages_total"))
+	DependencyRequestSeconds = mustShared(gincommon.NewSharedHistogramVec(nil, "platform_dependency_request_seconds"))
+	sharedDone = true
+
+	// DLQMessages — every handled event type crossed with both
+	// service-side reject reasons, so dashboards show 0 rather than "no
+	// data". event_type is the envelope type at the point of rejection
+	// (EVT-15 fires before the handler runs, schema_violation fires for any
+	// consumed type).
+	for _, et := range handledEventTypes {
+		DLQMessages.WithLabelValues(dlqOperationConsume, et, "future_time_clamp")
+		DLQMessages.WithLabelValues(dlqOperationConsume, et, "schema_violation")
+	}
+}
+
+// mustShared returns the collector gincommon built, or — when an identical
+// collector is already registered (platform-events registered it first)
+// — the existing one.
+func mustShared[C prometheus.Collector](c C, err error) C {
+	if err == nil {
+		return c
+	}
+	var are prometheus.AlreadyRegisteredError
+	if errors.As(err, &are) {
+		if existing, ok := are.ExistingCollector.(C); ok {
+			return existing
+		}
+	}
+	panic("metrics: register shared platform collector: " + err.Error())
+}
+
+// handledEventTypes is every event type this consumer handles (and so may
+// reject to the DLQ), used to pre-warm label combinations.
+var handledEventTypes = []string{
+	"TrialTenantProvisioned", "TenantRealmReady", "TenantConverted",
+	"DirectPaidSignup", "TrialExpired", "TrialReactivated",
+	"TenantSuspended", "TenantOffboarded",
+	"TenantPlanChanged", "TenantPaymentPastDue",
+	"TenantSubscriptionCancelled", "TenantReactivated", "TenantSeatsChanged",
+	"DepartmentCatalogChanged",
 }
 
 func registerMetrics(environment string) {
-	pLabels := platformLabels(environment)
 	sLabels := serviceLabels(environment)
 
-	// ── Tier 1 — platform_* ──────────────────────────────────────────────
-	MessagesReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "platform_messages_received_total",
-		Help:        "Inbound queue messages dequeued, by queue, before processing.",
-		ConstLabels: pLabels,
-	}, []string{"queue"})
-
-	MessagesProcessed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "platform_messages_processed_total",
-		Help:        "Inbound queue messages that completed processing successfully, by queue.",
-		ConstLabels: pLabels,
-	}, []string{"queue"})
-
-	MessagesFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "platform_messages_failed_total",
-		Help:        "Inbound queue messages whose processing returned an error, by queue (includes DLQ rejections).",
-		ConstLabels: pLabels,
-	}, []string{"queue"})
-
-	DuplicateMessages = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "platform_duplicate_messages_total",
-		Help:        "Redeliveries filtered by the processed_events composite PK (IDEMP-4), by consumer.",
-		ConstLabels: pLabels,
-	}, []string{"consumer"})
-
-	DLQMessages = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "platform_dlq_messages_total",
-		Help:        "Events actively rejected to DLQ without recording processed_events, by event_type and reason. Any nonzero rate pages.",
-		ConstLabels: pLabels,
-	}, []string{"event_type", "reason"})
-
-	DependencyRequestSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "platform_dependency_request_seconds",
-		Help:        "Latency of synchronous cross-service dependency calls, by target_service and endpoint.",
-		Buckets:     []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
-		ConstLabels: pLabels,
-	}, []string{"target_service", "endpoint"})
-
-	DependencyErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "platform_dependency_errors_total",
-		Help:        "Cross-service dependency call failures by target_service/endpoint/outcome (5xx|timeout|fallback_served).",
-		ConstLabels: pLabels,
-	}, []string{"target_service", "endpoint", "outcome"})
+	// Tier 1 — platform_* collectors are built by registerShared from the
+	// central registry, not here.
 
 	// ── Tier 3 predecessors, shadow-authoritative until ratification ────
 	DependencyCallDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:        "iam_org_membership_dependency_call_duration_seconds",
-		Help:        "Latency of synchronous cross-service dependency calls, by target_service and endpoint. Authoritative predecessor of platform_dependency_request_seconds (Proposed, registry.go) until ratification.",
+		Help:        "Latency of synchronous cross-service dependency calls, by target_service and endpoint. Authoritative alerting/SLO source until platform_dependency_request_seconds (Proposed, registry.go) is ratified.",
 		Buckets:     []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
 		ConstLabels: sLabels,
 	}, []string{"target_service", "endpoint"})
 
 	DependencyCallFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name:        "iam_org_membership_dependency_call_failures_total",
-		Help:        "Cross-service dependency call failures by target_service/endpoint/outcome. Authoritative predecessor of platform_dependency_errors_total (Proposed, registry.go) until ratification.",
+		Help:        "Cross-service dependency call failures by target_service/endpoint/outcome (5xx|timeout|fallback_served). Authoritative failure counter; platform_dependency_request_seconds_count{outcome=\"error\"} is the registry concept.",
 		ConstLabels: sLabels,
 	}, []string{"target_service", "endpoint", "outcome"})
 
 	ProcessedEventsDuplicatesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name:        "iam_org_membership_processed_events_duplicates_total",
-		Help:        "SQS redeliveries filtered by the processed_events composite PK (IDEMP-4). Authoritative predecessor of platform_duplicate_messages_total (Proposed, registry.go) until ratification.",
+		Help:        "SQS redeliveries filtered by the processed_events composite PK (IDEMP-4). Authoritative alerting source until platform_duplicate_messages_total (Proposed, registry.go) is ratified.",
 		ConstLabels: sLabels,
 	}, []string{"consumer"})
 
@@ -566,13 +620,6 @@ func registerMetrics(environment string) {
 	})
 
 	gincommon.MetricsRegisterer().MustRegister(
-		MessagesReceived,
-		MessagesProcessed,
-		MessagesFailed,
-		DuplicateMessages,
-		DLQMessages,
-		DependencyRequestSeconds,
-		DependencyErrors,
 		DependencyCallDurationSeconds,
 		DependencyCallFailuresTotal,
 		ProcessedEventsDuplicatesTotal,
@@ -606,30 +653,6 @@ func registerMetrics(environment string) {
 
 	// OBS-8: pre-initialise bounded label combinations so counters appear at
 	// 0 immediately on startup rather than only after the first event arrives.
-
-	// MessagesReceived/Processed/Failed — the two queues this service subscribes to.
-	for _, q := range []string{"tenant-orgm-q", "billing-orgm-q"} {
-		MessagesReceived.WithLabelValues(q)
-		MessagesProcessed.WithLabelValues(q)
-		MessagesFailed.WithLabelValues(q)
-	}
-
-	// DLQMessages — all handled event types cross both known reject reasons.
-	// event_type is the envelope type at the point of rejection (EVT-15 fires
-	// before the handler runs, schema_violation fires for any consumed type);
-	// we pre-warm every type known to this consumer so the cardinality is
-	// bounded and dashboards show 0 for quiet queues.
-	for _, et := range []string{
-		"TrialTenantProvisioned", "TenantRealmReady", "TenantConverted",
-		"DirectPaidSignup", "TrialExpired", "TrialReactivated",
-		"TenantSuspended", "TenantOffboarded",
-		"TenantPlanChanged", "TenantPaymentPastDue",
-		"TenantSubscriptionCancelled", "TenantReactivated", "TenantSeatsChanged",
-		"DepartmentCatalogChanged",
-	} {
-		DLQMessages.WithLabelValues(et, "future_time_clamp")
-		DLQMessages.WithLabelValues(et, "schema_violation")
-	}
 
 	// LifecycleEventSkipped — EVT-14 recency guard fires for any applied
 	// event type; pre-warm the same set of known handled types.

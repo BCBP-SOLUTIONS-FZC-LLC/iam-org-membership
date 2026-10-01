@@ -32,7 +32,7 @@ func TestRouter_I16_ReachableWithRPsSentinelTenantHeader(t *testing.T) {
 	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, svc)
 
 	router := NewRouter(RouterConfig{
-		GinConfig:       gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig:       gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"},
 		InternalHandler: internalH,
 	})
 
@@ -58,7 +58,7 @@ func TestRouter_I16_MissingTenantHeaderStill401s(t *testing.T) {
 	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, nil)
 
 	router := NewRouter(RouterConfig{
-		GinConfig:       gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig:       gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"},
 		InternalHandler: internalH,
 	})
 

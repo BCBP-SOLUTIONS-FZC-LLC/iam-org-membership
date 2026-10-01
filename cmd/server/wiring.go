@@ -11,8 +11,8 @@ import (
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/config"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 // buildTopicPublisher returns an SNS publisher for topicARN carrying codec
@@ -74,9 +74,12 @@ func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName 
 	return eventbusadapter.NewGlueCodec(ctx, glueClient, registryName, schemaNames)
 }
 
-// instrumentedHandler wraps an SQS handler with the Tier-1
-// platform_messages_{received,processed,failed}_total counters, labelled by
-// queue, and a linked OTel consumer span (OBS-7/OBS-9).
+// instrumentedHandler wraps an SQS handler with a linked OTel consumer span
+// (OBS-7/OBS-9) and tags the context with the queue name (metrics.WithQueue)
+// so platform_duplicate_messages_total can be labelled by queue. The
+// platform_messages_{received,processed,failed}_total counters are recorded
+// by platform-events' SQS consumer itself (queue, event_type, reason), so
+// they are not recorded here — doing so would double count.
 //
 // Distributed trace linkage: published envelopes carry the producer's
 // trace_id (TraceID hex) and correlation_id (parent SpanID hex) set by
@@ -92,7 +95,7 @@ func buildTopicCodec(ctx context.Context, glueClient *glue.Client, registryName 
 func instrumentedHandler(queue string, h events.Handler) events.Handler {
 	tracer := otel.Tracer("iam-org-membership")
 	return func(ctx context.Context, env events.Envelope[json.RawMessage]) error {
-		metrics.IncMessagesReceived(queue)
+		ctx = metrics.WithQueue(ctx, queue)
 
 		// OBS-7/OBS-9: link this consumer span to the producer's trace so the
 		// async boundary is navigable in Jaeger/Tempo without breaking the
@@ -130,10 +133,8 @@ func instrumentedHandler(queue string, h events.Handler) events.Handler {
 
 		if err := h(ctx, env); err != nil {
 			span.RecordError(err)
-			metrics.IncMessagesFailed(queue)
 			return err
 		}
-		metrics.IncMessagesProcessed(queue)
 		return nil
 	}
 }

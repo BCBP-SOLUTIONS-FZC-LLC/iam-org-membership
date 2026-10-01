@@ -119,7 +119,7 @@ func (c *HTTPClient) Departments(ctx context.Context) ([]port.CatalogDepartment,
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.warn("catalogadmin: Departments transport error", "error", err.Error())
@@ -161,7 +161,7 @@ func (c *HTTPClient) Plans(ctx context.Context) ([]port.CatalogPlan, error) {
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.warn("catalogadmin: Plans transport error", "error", err.Error())

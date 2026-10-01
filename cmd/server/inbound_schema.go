@@ -9,7 +9,7 @@ import (
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 // errSchemaViolation marks a consumed payload that fails its embedded JSON
@@ -33,7 +33,7 @@ type payloadValidator interface {
 // An event type with no embedded schema passes through untouched, so
 // MembershipEventConsumer's ackUnknown forward-compat path still sees it.
 // A violation is logged, counted as
-// platform_dlq_messages_total{reason="schema_violation"}, and returned as
+// platform_dlq_messages_total{operation="consume",reason="schema_violation"}, and returned as
 // errSchemaViolation for the DLQ router.
 func validateConsumed(h events.Handler, v payloadValidator, log port.Logger) events.Handler {
 	return func(ctx context.Context, env events.Envelope[json.RawMessage]) error {
@@ -41,9 +41,7 @@ func validateConsumed(h events.Handler, v payloadValidator, log port.Logger) eve
 		if err == nil || errors.Is(err, eventbusadapter.ErrNoSchema) {
 			return h(ctx, env)
 		}
-		if metrics.DLQMessages != nil {
-			metrics.DLQMessages.WithLabelValues(env.Type, schemaViolationReason).Inc()
-		}
+		metrics.IncDLQ(env.Type, schemaViolationReason)
 		if log != nil {
 			log.Warn("consumed event violates its embedded schema — rejecting to DLQ",
 				map[string]any{"event_id": env.ID, "event_type": env.Type, "source": env.Source, "error": err.Error()})
@@ -54,8 +52,12 @@ func validateConsumed(h events.Handler, v payloadValidator, log port.Logger) eve
 
 // inboundHandler composes the full inbound pipeline for one queue,
 // outermost first: DLQ routing (permanent rejects → DLQ + ack) →
-// platform_messages_* counters (so rejects still count as failed) →
-// consumed-schema validation → the consumer's own Handle.
+// consumer span + queue context (instrumentedHandler) → consumed-schema
+// validation → the consumer's own Handle. platform-events' consumer counts
+// every delivery in platform_messages_*; a reject routed to the DLQ here is
+// acked, so it appears in platform_messages_processed_total there and in
+// platform_dlq_messages_total{operation="consume"} (recorded at the reject
+// site).
 func inboundHandler(ctx context.Context, client dlqTransport, queueURL, queue string, h events.Handler, v payloadValidator, log port.Logger) events.Handler {
 	return withDLQRouting(ctx, client, queueURL, instrumentedHandler(queue, validateConsumed(h, v, log)), log)
 }

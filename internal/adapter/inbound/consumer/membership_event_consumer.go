@@ -50,8 +50,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 )
 
@@ -99,9 +99,7 @@ func NewMembershipEventConsumer(txRunner port.TxRunner, tenants port.TenantRepos
 func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	// ── EVT-15 future-time clamp ─────────────────────────────────────────
 	if !env.Timestamp.IsZero() && env.Timestamp.After(time.Now().UTC().Add(c.skew)) {
-		if metrics.DLQMessages != nil {
-			metrics.DLQMessages.WithLabelValues(env.Type, "future_time_clamp").Inc()
-		}
+		metrics.IncDLQ(env.Type, "future_time_clamp")
 		c.logger.Warn("EVT-15 future-time clamp — DLQ",
 			"event_id", env.ID, "event_type", env.Type, "event_time", env.Timestamp)
 		return ErrPoisonPill
@@ -118,7 +116,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	// Cheap dedup probe outside the tx to save a lock acquisition on replay.
-	seen, err := skipDuplicate(ctx, c.idempotency, env.ID)
+	seen, err := skipDuplicate(ctx, c.idempotency, env.ID, env.Type)
 	if err != nil {
 		return err
 	}

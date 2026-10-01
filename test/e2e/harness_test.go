@@ -47,10 +47,10 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
-	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
 const (
@@ -154,7 +154,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	// main.go after the fact).
 	gin.SetMode(gin.TestMode)
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-e2e"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-e2e"},
 		Docs:      httpadapter.DocsConfig{Environment: "test"},
 
 		TenantRepo:     tenantRepo,

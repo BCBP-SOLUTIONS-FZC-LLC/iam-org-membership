@@ -118,7 +118,7 @@ func (c *HTTPClient) IsServiceAccount(ctx context.Context, tenantID, userID uuid
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.warn("tokenservice: IsServiceAccount transport error", "tenant_id", tenantID, "user_id", userID, "error", err.Error())

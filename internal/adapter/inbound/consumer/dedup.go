@@ -7,29 +7,24 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 // skipDuplicate is the cheap processed_events probe every known-type
 // handler runs before opening a write transaction. A hit increments
 // iam_org_membership_processed_events_duplicates_total (IDEMP-4, this
 // repo's authoritative signal) and, in shadow, the Tier-1 candidate
-// platform_duplicate_messages_total pending ratification (registry.go) —
-// then short-circuits. platform-events has no processed-events API —
+// platform_duplicate_messages_total{queue,event_type} pending ratification
+// (registry.go; queue from metrics.WithQueue) — then short-circuits. platform-events has no processed-events API —
 // Envelope.ID + INSERT ON CONFLICT DO NOTHING is the library's documented
 // consumer pattern (same as iam-realm-provisioner).
-func skipDuplicate(ctx context.Context, dedup port.IdempotencyStore, eventID string) (bool, error) {
+func skipDuplicate(ctx context.Context, dedup port.IdempotencyStore, eventID, eventType string) (bool, error) {
 	processed, err := dedup.IsProcessed(ctx, consumerName, eventID)
 	if err != nil {
 		return false, err
 	}
 	if processed {
-		if metrics.ProcessedEventsDuplicatesTotal != nil {
-			metrics.ProcessedEventsDuplicatesTotal.WithLabelValues(consumerName).Inc()
-		}
-		if metrics.DuplicateMessages != nil {
-			metrics.DuplicateMessages.WithLabelValues(consumerName).Inc()
-		}
+		metrics.IncDuplicate(ctx, consumerName, eventType)
 		return true, nil
 	}
 	return false, nil

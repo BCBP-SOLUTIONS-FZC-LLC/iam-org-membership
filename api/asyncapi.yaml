@@ -66,7 +66,7 @@ info:
          that differs from every registered version won't resolve.
       3. Verify the pod IAM role has glue:GetSchemaByDefinition on BOTH registry ARNs.
       4. Fix the root cause — the pod will recover automatically on the next restart.
-    Alert on outbox_dead_letters_total (per source topic) for events that fail
+    Alert on platform_dlq_messages_total{operation="outbox_publish"} (per event_type) for events that fail
     after a successful startup.
 
     ── Message Size Limit ───────────────────────────────────────────────────────
@@ -1238,7 +1238,7 @@ operations:
         The platform-events outbox runner retries failed SNS publishes with
         exponential backoff (initial 1 s, doubles each attempt, capped at 5 min).
         Events that exhaust all retries are moved to the outbox_dead_letters table
-        and increment the outbox_dead_letters_total Prometheus counter (labelled
+        and increment the platform_dlq_messages_total{operation="outbox_publish",reason="max_attempts"} Prometheus counter (labelled
         with the source topic). Alert on this counter per topic so dead-lettered
         events are investigated promptly.
 

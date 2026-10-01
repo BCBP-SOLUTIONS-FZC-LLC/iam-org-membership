@@ -4,7 +4,7 @@
 **Severity:** Critical — domain events are being lost.
 
 ## Symptoms
-- `outbox_dead_letters_total` rising in Prometheus
+- `platform_dlq_messages_total{operation="outbox_publish"}` (outbox dead-letters, `reason="max_attempts"`) rising in Prometheus
 - Events not reaching downstream consumers (AuthZ Enrichment, Delegation, Tender ACL)
 
 ## Immediate Actions

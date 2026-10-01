@@ -19,15 +19,15 @@ import (
 func TestObserveDependencyLatency_RecordsAfterRegister(t *testing.T) {
 	ensureRegistered(t)
 	ObserveDependencyLatency("catalog", "departments", 0.042)
-	count := testutil.CollectAndCount(DependencyRequestSeconds)
+	count := testutil.CollectAndCount(DependencyCallDurationSeconds)
 	assert.Positive(t, count)
 }
 
 func TestIncDependencyError_RecordsAfterRegister(t *testing.T) {
 	ensureRegistered(t)
-	before := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
+	before := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dept-delegate", "timeout"))
 	IncDependencyError("delegation", "dept-delegate", "timeout")
-	after := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
+	after := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dept-delegate", "timeout"))
 	assert.Equal(t, before+1, after)
 }
 
@@ -58,22 +58,26 @@ func TestRecorder_IncRealmSyncFailed_RecordsAfterRegister(t *testing.T) {
 	assert.Equal(t, before+1, after)
 }
 
-// IncMessagesReceived/Processed/Failed back platform_messages_*_total —
-// verify each records against the right collector and label.
-func TestIncMessages_RecordAfterRegister(t *testing.T) {
+// IncDLQ / IncDuplicate back the registry-shaped platform_dlq_messages_
+// total{operation,event_type,reason} and platform_duplicate_messages_total
+// {queue,event_type} (queue from WithQueue).
+func TestIncDLQAndDuplicate_RecordAfterRegister(t *testing.T) {
 	ensureRegistered(t)
 
-	before := testutil.ToFloat64(MessagesReceived.WithLabelValues("tenant-orgm-q"))
-	IncMessagesReceived("tenant-orgm-q")
-	assert.Equal(t, before+1, testutil.ToFloat64(MessagesReceived.WithLabelValues("tenant-orgm-q")))
+	before := testutil.ToFloat64(DLQMessages.WithLabelValues("consume", "TenantSuspended", "future_time_clamp"))
+	IncDLQ("TenantSuspended", "future_time_clamp")
+	assert.Equal(t, before+1, testutil.ToFloat64(DLQMessages.WithLabelValues("consume", "TenantSuspended", "future_time_clamp")))
 
-	before = testutil.ToFloat64(MessagesProcessed.WithLabelValues("tenant-orgm-q"))
-	IncMessagesProcessed("tenant-orgm-q")
-	assert.Equal(t, before+1, testutil.ToFloat64(MessagesProcessed.WithLabelValues("tenant-orgm-q")))
+	ctx := WithQueue(context.Background(), "tenant-orgm-q")
+	before = testutil.ToFloat64(DuplicateMessages.WithLabelValues("tenant-orgm-q", "TenantSuspended"))
+	tier3 := testutil.ToFloat64(ProcessedEventsDuplicatesTotal.WithLabelValues("membership"))
+	IncDuplicate(ctx, "membership", "TenantSuspended")
+	assert.Equal(t, before+1, testutil.ToFloat64(DuplicateMessages.WithLabelValues("tenant-orgm-q", "TenantSuspended")))
+	assert.Equal(t, tier3+1, testutil.ToFloat64(ProcessedEventsDuplicatesTotal.WithLabelValues("membership")))
 
-	before = testutil.ToFloat64(MessagesFailed.WithLabelValues("billing-orgm-q"))
-	IncMessagesFailed("billing-orgm-q")
-	assert.Equal(t, before+1, testutil.ToFloat64(MessagesFailed.WithLabelValues("billing-orgm-q")))
+	assert.Equal(t, "unknown", QueueFromContext(context.Background()))
+	IncDuplicate(context.Background(), "membership", "")
+	assert.Equal(t, 1.0, testutil.ToFloat64(DuplicateMessages.WithLabelValues("unknown", "unknown")))
 }
 
 type timeoutNetError struct{}

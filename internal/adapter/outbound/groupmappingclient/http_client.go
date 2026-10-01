@@ -125,7 +125,7 @@ func (c *HTTPClient) ResolveGroups(ctx context.Context, tenantID uuid.UUID, grou
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
 		c.warn("groupmappingclient: ResolveGroups transport error", "tenant_id", tenantID, "error", err.Error())

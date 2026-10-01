@@ -20,13 +20,13 @@ import (
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/config"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgmetrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgmetrics"
 	"go.opentelemetry.io/otel"
 )
 
@@ -116,16 +116,37 @@ func run() int {
 	// ObservabilityMiddlewares is gincommon's public metrics-init API —
 	// call it here (mirrors cmd/server/main.go) so business / events /
 	// pgcommon metrics land on gincommon.MetricsRegisterer with matching
-	// {service, version} const labels. This CronJob never serves /metrics;
-	// collectors still have to exist because jobs increment them.
+	// {domain, service, environment} const labels. This CronJob never
+	// serves /metrics; collectors still have to exist because jobs
+	// increment them. Domain is required (startup panics without it); the
+	// environment comes from APP_ENV (local|dev|test|staging|prod).
 	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
 		Logger:       rawLog,
 		ServiceName:  serviceName,
 		BuildVersion: buildVersion,
+		Domain:       "iam",
 	})
+	// Business metrics before events.InitMetrics so platform-events reuses
+	// the registry-shared platform_* collectors (see metrics.Register).
 	metrics.Register(appEnv)
-	events.InitWithRegisterer(serviceName, buildVersion, gincommon.MetricsRegisterer())
-	pgmetrics.InitWithRegisterer(serviceName, buildVersion, gincommon.MetricsRegisterer())
+	identity := gincommon.MetricsConstLabels()
+	evWarnings, err := events.InitMetrics(events.MetricsIdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range evWarnings {
+		log.Warn("platform-events metric disabled", "metric", w.Metric, "error", w.Error())
+	}
+	if err != nil {
+		log.Error("init platform-events metrics", "error", err.Error())
+		return 1
+	}
+	// Before NewPool below, so the pool connection gauges register.
+	pgMetricWarnings, err := pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range pgMetricWarnings {
+		log.Warn("platform-pgcommon metric disabled", "metric", w.Metric, "error", w.Error())
+	}
+	if err != nil {
+		log.Error("init platform-pgcommon metrics", "error", err.Error())
+		return 1
+	}
 
 	log.Info("reconciler starting", "job", jobName)
 
@@ -271,7 +292,7 @@ func envInt(key string, def int) int {
 // identically in both binaries.
 func isDevLikeEnv(appEnv string) bool {
 	switch appEnv {
-	case "dev", "development", "local", "test":
+	case "dev", "local", "test":
 		return true
 	default:
 		return false

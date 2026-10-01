@@ -34,7 +34,7 @@ type Pinger interface {
 }
 
 // DocsConfig controls whether — and how — the interactive docs surface
-// (Swagger UI, AsyncAPI catalog) is exposed. Outside production it's
+// (Swagger UI, AsyncAPI catalog) is exposed. Outside production (APP_ENV=prod) it's
 // always on; in production it's opt-in via Enabled and, if AuthToken is
 // set, gated behind a bearer token so the API surface isn't exposed to
 // the open internet by default. Mirrors group-mapping-jit-config's
@@ -46,7 +46,7 @@ type DocsConfig struct {
 }
 
 func (d DocsConfig) active() bool {
-	return d.Environment != "production" || d.Enabled
+	return d.Environment != "prod" || d.Enabled
 }
 
 // RouterConfig bundles every dependency NewRouter needs: the already-built
@@ -277,7 +277,7 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 	}
 
 	var authMiddleware gin.HandlerFunc = func(c *gin.Context) { c.Next() }
-	if cfg.Docs.Environment == "production" {
+	if cfg.Docs.Environment == "prod" {
 		if cfg.Docs.AuthToken != "" {
 			// Constant-time compare (crypto/subtle) rather than != — a plain
 			// string compare short-circuits on the first differing byte, a

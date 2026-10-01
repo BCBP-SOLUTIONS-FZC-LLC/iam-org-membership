@@ -12,7 +12,7 @@ import (
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 // DLQReason message-attribute values, matching the
@@ -102,9 +102,7 @@ func routeRejectsToDLQ(h events.Handler, transport dlqTransport, dlqURL string, 
 				log.Warn("DLQ send failed — falling back to SQS redrive",
 					map[string]any{"event_id": env.ID, "event_type": env.Type, "reason": reason, "dlq_url": dlqURL, "error": sErr.Error()})
 			}
-			if metrics.DLQMessages != nil {
-				metrics.DLQMessages.WithLabelValues(env.Type, reason).Inc()
-			}
+			metrics.IncDLQ(env.Type, reason)
 			return err
 		}
 		return nil

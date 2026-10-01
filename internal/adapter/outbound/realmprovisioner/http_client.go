@@ -131,7 +131,7 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 
 	start := time.Now()
 	resp, err := c.client.Do(httpReq)
-	metrics.ObserveDependencyLatency(xsvcService, "create_invited_user", time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, "create_invited_user", time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, "create_invited_user", metrics.DependencyOutcome(err))
 		c.warn("rp: CreateInvitedUser transport error", "email_present", req.Email != "", "error", err.Error())
@@ -166,7 +166,7 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, "delete_user", time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, "delete_user", time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, "delete_user", metrics.DependencyOutcome(err))
 		c.warn("rp: DeleteUser transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
@@ -209,7 +209,7 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, "patch_realm_config", time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, "patch_realm_config", time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, "patch_realm_config", metrics.DependencyOutcome(err))
 		c.warn("rp: PatchRealmConfig transport error", "tenant_id", tenantID, "error", err.Error())
@@ -254,7 +254,7 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, "revoke_user_sessions", time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, "revoke_user_sessions", time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, "revoke_user_sessions", metrics.DependencyOutcome(err))
 		if metrics.AuthSessionRevokeFailed != nil {
@@ -298,7 +298,7 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, "reset_mfa", time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, "reset_mfa", time.Since(start).Seconds(), resp, err)
 	if err != nil {
 		metrics.IncDependencyError(xsvcService, "reset_mfa", metrics.DependencyOutcome(err))
 		c.warn("rp: ResetMFA transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())

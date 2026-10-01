@@ -246,7 +246,7 @@ func TestRegisterDocsRoutes_InactiveDocs_NoRoutesAdded(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	cfg := RouterConfig{
-		Docs: DocsConfig{Environment: "production", Enabled: false},
+		Docs: DocsConfig{Environment: "prod", Enabled: false},
 	}
 	registerDocsRoutes(r, cfg)
 
@@ -285,7 +285,7 @@ func TestRegisterDocsRoutes_Production_WithAuthToken_BlocksUnauth(t *testing.T) 
 	r := gin.New()
 	cfg := RouterConfig{
 		Docs: DocsConfig{
-			Environment: "production",
+			Environment: "prod",
 			Enabled:     true,
 			AuthToken:   "secret-token",
 		},
@@ -307,7 +307,7 @@ func TestRegisterDocsRoutes_Production_WithAuthToken_AllowsValidToken(t *testing
 	r := gin.New()
 	cfg := RouterConfig{
 		Docs: DocsConfig{
-			Environment: "production",
+			Environment: "prod",
 			Enabled:     true,
 			AuthToken:   "secret-token",
 		},
@@ -332,11 +332,11 @@ func TestRegisterDocsRoutes_Production_NoAuthToken_NoLogger_NoPanic(t *testing.T
 	r := gin.New()
 	cfg := RouterConfig{
 		Docs: DocsConfig{
-			Environment: "production",
+			Environment: "prod",
 			Enabled:     true,
 			AuthToken:   "", // no auth token → fallback to no-op middleware
 		},
-		GinConfig: gincommon.Config{Logger: nil}, // no logger → warn is silently skipped
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", Logger: nil}, // no logger → warn is silently skipped
 	}
 	assert.NotPanics(t, func() {
 		registerDocsRoutes(r, cfg)
@@ -353,13 +353,13 @@ func TestDocsConfig_ActiveOutsideProduction(t *testing.T) {
 // TestDocsConfig_InProductionEnabledTrue verifies that production + Enabled=true
 // is active.
 func TestDocsConfig_InProductionEnabledTrue(t *testing.T) {
-	d := DocsConfig{Environment: "production", Enabled: true}
+	d := DocsConfig{Environment: "prod", Enabled: true}
 	assert.True(t, d.active())
 }
 
 // TestDocsConfig_InProductionEnabledFalse verifies that production + Enabled=false
 // is not active.
 func TestDocsConfig_InProductionEnabledFalse(t *testing.T) {
-	d := DocsConfig{Environment: "production", Enabled: false}
+	d := DocsConfig{Environment: "prod", Enabled: false}
 	assert.False(t, d.active())
 }

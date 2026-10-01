@@ -301,7 +301,7 @@ func TestRegisterDocsRoutes_ProdWithAuthToken_RequiresBearer(t *testing.T) {
 	cfg := RouterConfig{
 		Docs: DocsConfig{
 			Enabled:     true,
-			Environment: "production",
+			Environment: "prod",
 			AuthToken:   "secret-token",
 		},
 		GinConfig: gincommon.Config{},
@@ -335,10 +335,10 @@ func TestRegisterDocsRoutes_ProdWithoutAuthToken_Warns(t *testing.T) {
 	cfg := RouterConfig{
 		Docs: DocsConfig{
 			Enabled:     true,
-			Environment: "production",
+			Environment: "prod",
 			AuthToken:   "", // no token
 		},
-		GinConfig: gincommon.Config{Logger: logger},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", Logger: logger},
 	}
 	registerDocsRoutes(r, cfg)
 	assert.True(t, warned, "missing auth token in production must trigger a warning")
@@ -399,9 +399,9 @@ func TestRegisterDocsRoutes_SwaggerInitializerJS_ServedByInitHandler(t *testing.
 func TestRegisterDocsRoutes_Inactive_NoRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	// active() = false when Environment="production" && Enabled=false.
+	// active() = false when Environment="prod" && Enabled=false.
 	cfg := RouterConfig{
-		Docs: DocsConfig{Environment: "production", Enabled: false},
+		Docs: DocsConfig{Environment: "prod", Enabled: false},
 	}
 	registerDocsRoutes(r, cfg)
 

@@ -65,7 +65,7 @@ Order of operations for production:
        --metric-name TestMetric --value 1                                      # expect no output
    ```
 3. Deploy the new image + Helm chart.
-4. Watch `outbox_dead_letters_total` — a rising rate immediately after rollout
+4. Watch `platform_dlq_messages_total{operation="outbox_publish"}` — a rising rate immediately after rollout
    means the policy did not apply (SNS Publish denied). Roll back if so.
 
 ## Least-privilege scoping
