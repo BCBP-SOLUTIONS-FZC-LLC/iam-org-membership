@@ -47,6 +47,9 @@ jobs:
   health-review:
     name: Quarterly schema health review (${{ matrix.registry }})
     runs-on: ubuntu-latest
+    # Skipped (not failed) until AWS is wired for this repo: AWS_REGION is the
+    # switch. Nothing is deployed yet; schema validation still runs on PRs.
+    if: vars.AWS_REGION != ''
     environment: staging
     strategy:
       fail-fast: false

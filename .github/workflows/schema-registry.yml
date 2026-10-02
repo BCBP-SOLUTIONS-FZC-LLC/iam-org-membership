@@ -92,9 +92,12 @@ jobs:
   staging:
     name: Register schemas → staging (${{ matrix.registry }})
     runs-on: ubuntu-latest
+    # Skipped (not failed) until AWS is wired for this repo: AWS_REGION is the
+    # switch. Nothing is deployed yet; schema validation still runs on PRs.
     if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+      vars.AWS_REGION != '' && (
+        github.event_name == 'push' ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging'))
     environment: staging
     permissions:
       contents: write
@@ -142,8 +145,11 @@ jobs:
             echo "::error title=Schema Registry Frozen::Registration is frozen for ${ENVIRONMENT}. Lift the freeze or re-trigger with force=true."
             exit 1
           fi
-          [ "${FORCE_REGISTRATION}" = "true" ] && [ "${SCHEMA_FREEZE:-}" = "true" ] && \
+          # An if, not `[ … ] && echo`: as the step's last command a false
+          # test would exit 1 and fail every unfrozen run.
+          if [ "${FORCE_REGISTRATION}" = "true" ] && [ "${SCHEMA_FREEZE:-}" = "true" ]; then
             echo "::warning title=Freeze Override::SCHEMA_FREEZE set on ${ENVIRONMENT} but force=true — proceeding."
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.2.3
@@ -344,9 +350,12 @@ jobs:
   production:
     name: Register schemas → production (${{ matrix.registry }})
     runs-on: ubuntu-latest
+    # Skipped (not failed) until AWS is wired for this repo: AWS_REGION is the
+    # switch. Nothing is deployed yet; schema validation still runs on PRs.
     if: |
-      github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+      vars.AWS_REGION != '' && (
+        github.event_name == 'release' ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'production'))
     environment: production
     permissions:
       contents: write
@@ -393,8 +402,11 @@ jobs:
             echo "::error title=Schema Registry Frozen::Registration is frozen for ${ENVIRONMENT}. Lift the freeze or re-trigger with force=true."
             exit 1
           fi
-          [ "${FORCE_REGISTRATION}" = "true" ] && [ "${SCHEMA_FREEZE:-}" = "true" ] && \
+          # An if, not `[ … ] && echo`: as the step's last command a false
+          # test would exit 1 and fail every unfrozen run.
+          if [ "${FORCE_REGISTRATION}" = "true" ] && [ "${SCHEMA_FREEZE:-}" = "true" ]; then
             echo "::warning title=Freeze Override::SCHEMA_FREEZE set on ${ENVIRONMENT} but force=true — proceeding."
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.2.3

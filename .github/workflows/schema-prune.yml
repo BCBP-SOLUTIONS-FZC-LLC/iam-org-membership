@@ -75,9 +75,12 @@ jobs:
   prune-staging:
     name: Prune schemas → staging (${{ matrix.registry }})
     runs-on: ubuntu-latest
+    # Skipped (not failed) until AWS is wired for this repo: AWS_REGION is the
+    # switch. Nothing is deployed yet; schema validation still runs on PRs.
     if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+      vars.AWS_REGION != '' && (
+        github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging'))
     environment: staging
     permissions:
       contents: write    # required by "Commit archived schemas" step (execute mode only)
@@ -219,7 +222,9 @@ jobs:
   prune-production:
     name: Prune schemas → production (${{ matrix.registry }})
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'production'
+    # Skipped (not failed) until AWS is wired for this repo: AWS_REGION is the
+    # switch. Nothing is deployed yet; schema validation still runs on PRs.
+    if: vars.AWS_REGION != '' && github.event_name == 'workflow_dispatch' && inputs.environment == 'production'
     environment: production
     permissions:
       contents: write
