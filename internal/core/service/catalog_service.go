@@ -67,7 +67,7 @@ func (s *CatalogService) Departments(ctx context.Context) ([]domain.Department, 
 	depts, err := s.client.Departments(ctx)
 	if err != nil {
 		if stale := s.getCachedDepartments(ctx, cacheKeyDepartmentsStale()); stale != nil {
-			metrics.IncDependencyError("catalog", "departments", "fallback_served")
+			metrics.IncDependencyError("catalog", "departments", metrics.DependencyReasonFallbackServed)
 			s.log.WarnContext(ctx, "catalogadmin: Departments live call failed — serving stale-if-error fallback",
 				"error", err.Error())
 			return stale, nil
@@ -110,7 +110,7 @@ func (s *CatalogService) Plans(ctx context.Context) ([]domain.Plan, error) {
 	plans, err := s.client.Plans(ctx)
 	if err != nil {
 		if stale := s.getCachedPlans(ctx, cacheKeyPlansStale()); stale != nil {
-			metrics.IncDependencyError("catalog", "plans", "fallback_served")
+			metrics.IncDependencyError("catalog", "plans", metrics.DependencyReasonFallbackServed)
 			s.log.WarnContext(ctx, "catalogadmin: Plans live call failed — serving stale-if-error fallback",
 				"error", err.Error())
 			return stale, nil

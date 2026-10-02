@@ -121,14 +121,14 @@ func (c *HTTPClient) Departments(ctx context.Context) ([]port.CatalogDepartment,
 	resp, err := c.client.Do(req)
 	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyErrorReason(err))
 		c.warn("catalogadmin: Departments transport error", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode >= 500 {
-			metrics.IncDependencyError(xsvcService, endpoint, "5xx")
+			metrics.IncDependencyError(xsvcService, endpoint, metrics.HTTPStatusReason(resp.StatusCode))
 		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("catalogadmin: Departments returned %d: %s", resp.StatusCode, string(msg))
@@ -163,14 +163,14 @@ func (c *HTTPClient) Plans(ctx context.Context) ([]port.CatalogPlan, error) {
 	resp, err := c.client.Do(req)
 	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyErrorReason(err))
 		c.warn("catalogadmin: Plans transport error", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode >= 500 {
-			metrics.IncDependencyError(xsvcService, endpoint, "5xx")
+			metrics.IncDependencyError(xsvcService, endpoint, metrics.HTTPStatusReason(resp.StatusCode))
 		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("catalogadmin: Plans returned %d: %s", resp.StatusCode, string(msg))

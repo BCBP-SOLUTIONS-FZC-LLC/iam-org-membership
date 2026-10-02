@@ -9,14 +9,12 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/puddle/v2"
 )
 
 // DSNFromEnv builds a PostgreSQL connection URL for the application pool by
@@ -33,36 +31,18 @@ import (
 // calls url.Parse on the DSN after prepending "pgx5://"; a keyword/value DSN
 // would produce invalid URL escapes (%20 for spaces) and fail at startup.
 // pgcommon builds the DSN via net/url, which already produces this format.
+//
+// PG_STATEMENT_TIMEOUT is not part of the DSN: ConfigFromEnv reads it into
+// Config.StatementTimeout and pgcommon applies it per transaction
+// (SET LOCAL), which is safe behind PgBouncer transaction pooling.
 func DSNFromEnv() string {
 	cfg, _ := pgcommon.ConfigFromEnv()
-	// Always apply PG_STATEMENT_TIMEOUT regardless of whether DATABASE_URL
-	// was set. pgcommon returns DATABASE_URL verbatim without a
-	// statement_timeout option, so we must append it here unconditionally
-	// (PERF-7).
-	return ApplyStatementTimeout(cfg.DSN)
+	return cfg.DSN
 }
 
-// ApplyStatementTimeout appends a server-side statement_timeout option to dsn
-// so hung queries release pool connections instead of holding them for the
-// full HTTP deadline. PG_STATEMENT_TIMEOUT accepts a Go duration string
-// (e.g. "5s", "500ms"). This has no pgcommon equivalent — pgcommon.Config has
-// no statement-timeout field — so it remains a small extension layered on
-// top of the pgcommon-built DSN rather than a full DSN builder. Ignored when
-// dsn is empty or PG_STATEMENT_TIMEOUT is unset.
-func ApplyStatementTimeout(dsn string) string {
-	if dsn == "" {
-		return dsn
-	}
-	if t := os.Getenv("PG_STATEMENT_TIMEOUT"); t != "" {
-		if d, err := time.ParseDuration(t); err == nil && d > 0 {
-			if strings.Contains(dsn, "statement_timeout") {
-				return dsn
-			}
-			dsn += fmt.Sprintf("&options=-c%%20statement_timeout%%3D%d", d.Milliseconds())
-		}
-	}
-	return dsn
-}
+// SystemPoolName is the pool metric label of the BYPASSRLS system pool, so
+// its platform_db_* series stay separate from the app pool's.
+const SystemPoolName = "system"
 
 // SystemPoolConfig returns pgcommon.Config for the BYPASSRLS system pool
 // (LLD §4.4), matching iam-user-profile. The system pool deliberately has
@@ -74,15 +54,25 @@ func ApplyStatementTimeout(dsn string) string {
 // ConfigFromEnv pool sizing, breaking transaction-pooling deployments
 // even when the app pool correctly reads PG_BOUNCER_MODE.
 //
-// Pool sizing, lifetimes, and SlowQueryThreshold are copied from
-// ConfigFromEnv so sysPool and the app pool share one env-driven source
-// of truth. Tracer is left unset — call sites wire NewOTelTracer so
-// db.query spans export through gincommon's TracerProvider.
+// Pool sizing, lifetimes, SlowQueryThreshold and StatementTimeout are
+// copied from ConfigFromEnv so sysPool and the app pool share one
+// env-driven source of truth. PoolName is always SystemPoolName. Tracer is
+// left unset — call sites wire gincommon.NewSpanTracer so db.query spans
+// export through gincommon's TracerProvider.
 func SystemPoolConfig(dsn string, log port.Logger) pgcommon.Config {
 	cfg, _ := pgcommon.ConfigFromEnv()
-	cfg.DSN = ApplyStatementTimeout(dsn)
+	cfg.DSN = dsn
+	cfg.PoolName = SystemPoolName
 	cfg.GUCProvider = nil
 	cfg.PGBouncerMode = true
+	// ConfigFromEnv chose its MinConns default (2) for the PG_BOUNCER_MODE
+	// it read, before PgBouncer mode was forced on here. Unless PG_MIN_CONNS
+	// was set deliberately, zero it so NewPool applies the PgBouncer default
+	// (0 — let PgBouncer manage backends) instead of pinning 2 idle
+	// connections per replica through the pooler.
+	if _, set := os.LookupEnv("PG_MIN_CONNS"); !set {
+		cfg.MinConns = 0
+	}
 	cfg.Tracer = nil
 	if log != nil {
 		cfg.Logger = NewLoggerAdapter(log)
@@ -104,15 +94,15 @@ func SystemDSNFromEnv() string {
 	return DSNFromEnv()
 }
 
-// MigrationDSNFromEnv returns the DSN for schema migrations. Migrations MUST
-// bypass PgBouncer because the migration runner uses pg_advisory_lock which
-// is session-scoped and breaks under transaction pooling (CONFIG-2).
-// MIGRATION_DATABASE_URL must be set whenever PG_BOUNCER_MODE=true.
+// MigrationDSNFromEnv returns the DSN for schema migrations:
+// MIGRATION_DATABASE_URL when set, else the app DSN (pgcommon's own
+// MigrationDSNFromEnv). Migrations MUST bypass PgBouncer because the
+// migration runner uses pg_advisory_lock, which is session-scoped and
+// breaks under transaction pooling (CONFIG-2), so MIGRATION_DATABASE_URL
+// must be set whenever PG_BOUNCER_MODE is on. No statement timeout is
+// applied: long DDL and the advisory-lock wait must not be cut short.
 func MigrationDSNFromEnv() string {
-	if dsn := os.Getenv("MIGRATION_DATABASE_URL"); dsn != "" {
-		return ApplyStatementTimeout(dsn)
-	}
-	return DSNFromEnv()
+	return pgcommon.MigrationDSNFromEnv()
 }
 
 // TxRunner wraps pgcommon.Pool to implement service.TxRunner. When a
@@ -188,15 +178,14 @@ func withPool(ctx context.Context, pool *pgcommon.Pool, fn func(pgx.Tx) error) e
 // distinguish an integrity violation from a network outage.
 //
 // SQLSTATE class 08 (connection exception), 53 (insufficient resources),
-// 57 (operator intervention) and 58 (system error) are remapped to
-// domain.ErrDBUnavailable here so HTTP HandleError never needs to inspect
-// a raw *pgconn.PgError — those classes are availability failures (503).
-// puddle.ErrClosedPool (surfaced by pgxpool.Pool.BeginTx/Acquire on a
-// closed pool — pgcommon's own equivalent sentinel is unexported outside
-// that module, so puddle's is the one this package can actually check) is
-// the other positively-identifiable connectivity failure: a closed pool is
-// never a SQL-protocol response, but is unambiguously "the database is
-// unavailable", not a caller's business error.
+// 57 (operator intervention, except 57014) and 58 (system error) are
+// remapped to domain.ErrDBUnavailable here so HTTP HandleError never needs
+// to inspect a raw *pgconn.PgError — those classes are availability
+// failures (503). A closed pool (pgcommon.IsPoolClosed: pgcommon's own
+// sentinel after Close/DrainAndClose, or pgxpool's) is the other
+// positively-identifiable connectivity failure. 57014 (query_canceled —
+// statement_timeout fired) and 55P03 (lock_not_available — lock_timeout)
+// are slow-query signals, not outages, and map to request_timeout.
 //
 // Everything else — including a plain Go error a caller's own RunInTx/
 // withPool callback returns for its own business reasons — passes through
@@ -223,22 +212,54 @@ func wrapConnErr(err error) error {
 	if errors.As(err, &de) {
 		return err
 	}
-	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err) || errors.Is(err, puddle.ErrClosedPool) {
-		return domain.NewError(domain.ErrDBUnavailable, "database unavailable")
+	// Deadline first: pgcommon's retry wraps BOTH the context error and the
+	// last attempt's error when the request deadline cuts a deadlock /
+	// serialization-failure backoff short ("retry wait … interrupted: %w
+	// (last error: %w)"), so checking the deadlock first would misreport a
+	// timeout as a conflict.
+	// The original error stays in the chain (Cause wraps both), so a caller
+	// can still test errors.Is(err, context.Canceled) — e.g. on shutdown.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return &domain.DomainError{
+			Code:    domain.ErrRequestTimeout.Error(),
+			Message: "request deadline exceeded during a database operation",
+			Cause:   fmt.Errorf("%w: %w", domain.ErrRequestTimeout, err),
+		}
+	}
+	// Retries exhausted on a deadlock (40P01) or serialization failure
+	// (40001): a genuine concurrent-write conflict, safe for the client to
+	// retry — 409, not an unexplained 500.
+	if pgcommon.IsDeadlock(err) || pgcommon.IsSerializationFailure(err) {
+		return (&domain.DomainError{
+			Code:    domain.ErrConflict.Error(),
+			Message: "concurrent update conflict — retry the request",
+			Cause:   fmt.Errorf("%w: %w", domain.ErrConflict, err),
+		}).WithDetails(map[string]any{"code": "concurrent_update"})
+	}
+	if pgcommon.IsQueryCanceled(err) || pgcommon.IsLockNotAvailable(err) {
+		return &domain.DomainError{
+			Code:    domain.ErrRequestTimeout.Error(),
+			Message: "database statement or lock timeout",
+			Cause:   fmt.Errorf("%w: %w", domain.ErrRequestTimeout, err),
+		}
+	}
+	if IsDBUnavailable(err) {
+		// Cause keeps the original error so logs and errors.As still see
+		// the SQLSTATE.
+		return &domain.DomainError{
+			Code:    domain.ErrDBUnavailable.Error(),
+			Message: "database unavailable",
+			Cause:   fmt.Errorf("%w: %w", domain.ErrDBUnavailable, err),
+		}
 	}
 	return err
 }
 
-// isOperatorOrSystemErrorSQLState reports whether err is a Postgres error
-// in SQLSTATE class 57 or 58. pgcommon v1.3.0 has dedicated helpers for
-// 08/53 but not these two; we classify via the pgconn Error() text
-// ("… (SQLSTATE 57P01)") so callers never import pgconn.
-func isOperatorOrSystemErrorSQLState(err error) bool {
-	if !pgcommon.IsPgError(err) {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "SQLSTATE 57") || strings.Contains(msg, "SQLSTATE 58")
+// IsDBUnavailable reports whether err is a database availability failure:
+// SQLSTATE class 08, 53, 57 (except 57014) or 58, or a closed pool.
+func IsDBUnavailable(err error) bool {
+	return pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) ||
+		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err) || pgcommon.IsPoolClosed(err)
 }
 
 // itoa is a tiny helper so callers can inline a LIMIT clause into a raw SQL

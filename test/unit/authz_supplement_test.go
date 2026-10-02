@@ -26,7 +26,7 @@
 //  4. SlogStyleLogger.DebugContext / InfoContext — the two 0.0% methods in
 //     port/logger.go that are context-aware variants.
 //  5. metrics.IncMembershipExistsCheck, ObserveDependencyLatency,
-//     IncDependencyError, DependencyOutcome — nil-guard and non-nil path
+//     IncDependencyError, DependencyErrorReason — nil-guard and non-nil path
 //     (require nil metric vars to be safe no-ops).
 //  6. eventbus.Publisher.WithLogger — 0.0% function.
 package unit_test
@@ -274,30 +274,30 @@ func TestMetrics_ObserveDependencyLatency_NilMetric_NoPanic(t *testing.T) {
 // TestMetrics_IncDependencyError_NilMetric_NoPanic verifies the nil-guard.
 func TestMetrics_IncDependencyError_NilMetric_NoPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
-		metrics.IncDependencyError("catalog", "GET /plans", "5xx")
+		metrics.IncDependencyError("catalog", "GET /plans", "http_5xx")
 	})
 }
 
-// TestMetrics_DependencyOutcome_Timeout_FromDeadlineExceeded verifies that
+// TestMetrics_DependencyErrorReason_Timeout_FromDeadlineExceeded verifies that
 // context.DeadlineExceeded maps to "timeout".
-func TestMetrics_DependencyOutcome_Timeout_FromDeadlineExceeded(t *testing.T) {
-	outcome := metrics.DependencyOutcome(context.DeadlineExceeded)
+func TestMetrics_DependencyErrorReason_Timeout_FromDeadlineExceeded(t *testing.T) {
+	outcome := metrics.DependencyErrorReason(context.DeadlineExceeded)
 	assert.Equal(t, "timeout", outcome)
 }
 
-// TestMetrics_DependencyOutcome_Timeout_FromNetError verifies that a net.Error
+// TestMetrics_DependencyErrorReason_Timeout_FromNetError verifies that a net.Error
 // with Timeout()=true maps to "timeout".
-func TestMetrics_DependencyOutcome_Timeout_FromNetError(t *testing.T) {
+func TestMetrics_DependencyErrorReason_Timeout_FromNetError(t *testing.T) {
 	netErr := &net.OpError{Op: "dial", Net: "tcp", Err: &timeoutErr{}}
-	outcome := metrics.DependencyOutcome(netErr)
+	outcome := metrics.DependencyErrorReason(netErr)
 	assert.Equal(t, "timeout", outcome)
 }
 
-// TestMetrics_DependencyOutcome_5xx_FromGenericError verifies that a non-timeout
-// error maps to "5xx".
-func TestMetrics_DependencyOutcome_5xx_FromGenericError(t *testing.T) {
-	outcome := metrics.DependencyOutcome(errors.New("internal error"))
-	assert.Equal(t, "5xx", outcome)
+// TestMetrics_DependencyErrorReason_Transport_FromGenericError verifies that a non-timeout
+// error maps to "transport".
+func TestMetrics_DependencyErrorReason_Transport_FromGenericError(t *testing.T) {
+	outcome := metrics.DependencyErrorReason(errors.New("internal error"))
+	assert.Equal(t, "transport", outcome)
 }
 
 // timeoutErr implements net.Error with Timeout()=true for testing.

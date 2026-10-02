@@ -133,13 +133,13 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 	resp, err := c.client.Do(httpReq)
 	metrics.ObserveDependencyCall(xsvcService, "create_invited_user", time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, "create_invited_user", metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, "create_invited_user", metrics.DependencyErrorReason(err))
 		c.warn("rp: CreateInvitedUser transport error", "email_present", req.Email != "", "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		metrics.IncDependencyError(xsvcService, "create_invited_user", "5xx")
+		metrics.IncDependencyError(xsvcService, "create_invited_user", metrics.HTTPStatusReason(resp.StatusCode))
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("rp: CreateInvitedUser returned %d: %s", resp.StatusCode, string(msg))
 	}
@@ -168,7 +168,7 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 	resp, err := c.client.Do(req)
 	metrics.ObserveDependencyCall(xsvcService, "delete_user", time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, "delete_user", metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, "delete_user", metrics.DependencyErrorReason(err))
 		c.warn("rp: DeleteUser transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
 		return err
 	}
@@ -180,7 +180,7 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, tenantID, keycloakUserID uu
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	metrics.IncDependencyError(xsvcService, "delete_user", "5xx")
+	metrics.IncDependencyError(xsvcService, "delete_user", metrics.HTTPStatusReason(resp.StatusCode))
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("rp: DeleteUser returned %d: %s", resp.StatusCode, string(msg))
 }
@@ -211,7 +211,7 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 	resp, err := c.client.Do(req)
 	metrics.ObserveDependencyCall(xsvcService, "patch_realm_config", time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, "patch_realm_config", metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, "patch_realm_config", metrics.DependencyErrorReason(err))
 		c.warn("rp: PatchRealmConfig transport error", "tenant_id", tenantID, "error", err.Error())
 		return err
 	}
@@ -256,7 +256,7 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 	resp, err := c.client.Do(req)
 	metrics.ObserveDependencyCall(xsvcService, "revoke_user_sessions", time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, "revoke_user_sessions", metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, "revoke_user_sessions", metrics.DependencyErrorReason(err))
 		if metrics.AuthSessionRevokeFailed != nil {
 			metrics.AuthSessionRevokeFailed.WithLabelValues("transport").Inc()
 		}
@@ -268,15 +268,21 @@ func (c *HTTPClient) RevokeUserSessions(ctx context.Context, tenantID, keycloakU
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	metrics.IncDependencyError(xsvcService, "revoke_user_sessions", "5xx")
+	metrics.IncDependencyError(xsvcService, "revoke_user_sessions", metrics.HTTPStatusReason(resp.StatusCode))
 	if metrics.AuthSessionRevokeFailed != nil {
-		metrics.AuthSessionRevokeFailed.WithLabelValues(fmt.Sprintf("%d", resp.StatusCode)).Inc()
+		metrics.AuthSessionRevokeFailed.WithLabelValues(revokeFailureReason(resp.StatusCode)).Inc()
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	c.warn("rp: RevokeUserSessions non-2xx — fail-open",
 		"keycloak_user_id", keycloakUserID, "status", resp.StatusCode, "body", string(msg))
 	return fmt.Errorf("rp: RevokeUserSessions returned %d", resp.StatusCode)
 }
+
+// revokeFailureReason maps a non-2xx RevokeUserSessions status onto the
+// central registry's reason vocabulary for iam_auth_session_revoke_failed_total
+// (transport | http_4xx | http_5xx | http_other). The registry only accepts
+// values starting with a letter, so the raw status code is not a valid label.
+func revokeFailureReason(status int) string { return metrics.HTTPStatusReason(status) }
 
 // ResetMFA calls RP-9 (LLD §16 OQ-8, F6 of the RP↔O&M alignment review).
 // RP confirmed this is O&M-initiated (a tenant-admin user-management
@@ -300,7 +306,7 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 	resp, err := c.client.Do(req)
 	metrics.ObserveDependencyCall(xsvcService, "reset_mfa", time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, "reset_mfa", metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, "reset_mfa", metrics.DependencyErrorReason(err))
 		c.warn("rp: ResetMFA transport error", "keycloak_user_id", keycloakUserID, "error", err.Error())
 		return err
 	}
@@ -308,7 +314,7 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	metrics.IncDependencyError(xsvcService, "reset_mfa", "5xx")
+	metrics.IncDependencyError(xsvcService, "reset_mfa", metrics.HTTPStatusReason(resp.StatusCode))
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("rp: ResetMFA returned %d: %s", resp.StatusCode, string(msg))
 }

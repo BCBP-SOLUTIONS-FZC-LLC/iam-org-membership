@@ -172,28 +172,6 @@ func TestReconcilerStore_HardDeleteExpiredTrials_ExecErrorPassesThrough(t *testi
 // platform-events' outbox.Runner.PrunePublished now (cmd/reconciler/jobs/
 // outbox_prune.go); this hand-rolled DELETE had zero production callers.
 
-// ── PruneProcessedEvents ─────────────────────────────────────────────────
-
-func TestReconcilerStore_PruneProcessedEvents_ReturnsRowsAffected(t *testing.T) {
-	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.NewCommandTag("DELETE 2"), nil
-		},
-	}
-	n, err := NewReconcilerStore(nil).
-		PruneProcessedEvents(injectTx(context.Background(), tx), 8, 500)
-	require.NoError(t, err)
-	assert.Equal(t, 2, n)
-}
-
-func TestReconcilerStore_PruneProcessedEvents_ExecErrorPassesThrough(t *testing.T) {
-	execErr := errors.New("delete failed")
-	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, execErr
-		},
-	}
-	_, err := NewReconcilerStore(nil).
-		PruneProcessedEvents(injectTx(context.Background(), tx), 8, 500)
-	assert.ErrorIs(t, err, execErr)
-}
+// PruneProcessedEvents was removed — processed_events pruning goes through
+// platform-events' inbox.Store.Prune (InboxRepository.Prune, covered in
+// test/postgres TestInbox_ExactlyOnce).

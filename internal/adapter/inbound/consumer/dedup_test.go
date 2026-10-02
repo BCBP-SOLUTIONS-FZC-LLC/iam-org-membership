@@ -43,61 +43,44 @@ func (d *stubDedup) MarkProcessed(_ context.Context, _, eventID string) error {
 
 type stubTx struct{}
 
-func (stubTx) RunInTx(_ context.Context, fn func(context.Context) error) error {
-	return fn(context.Background())
+func (stubTx) RunInTx(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
 }
 
-func TestSkipDuplicate_IncrementsMetricOnHit(t *testing.T) {
+// A duplicate skips fn and counts only the Tier-3 counter; platform-events'
+// inbox counts platform_duplicate_messages_total itself.
+func TestProcessOnce_DuplicateSkipsFnAndCountsTier3(t *testing.T) {
 	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
 		ServiceName: "iam-org-membership", BuildVersion: "test", Domain: "iam", Environment: "test",
 	})
 	metrics.Register("test")
-	metrics.DuplicateMessages.Reset()
 	metrics.ProcessedEventsDuplicatesTotal.Reset()
 	dedup := &stubDedup{seen: map[string]bool{"evt-1": true}}
+	inbox := newFakeInbox(stubTx{}, dedup)
 
-	ctx := metrics.WithQueue(context.Background(), "tenant-orgm-q")
-	hit, err := skipDuplicate(ctx, dedup, "evt-1", "TenantSuspended")
-	require.NoError(t, err)
-	assert.True(t, hit)
-	assert.InDelta(t, 1, testutil.ToFloat64(metrics.DuplicateMessages.WithLabelValues("tenant-orgm-q", "TenantSuspended")), 0.01,
-		"Tier-1 candidate platform_duplicate_messages_total must record the hit")
-	assert.InDelta(t, 1, testutil.ToFloat64(metrics.ProcessedEventsDuplicatesTotal.WithLabelValues(consumerName)), 0.01,
-		"Tier-3 predecessor iam_org_membership_processed_events_duplicates_total must record the same hit")
+	ran := false
+	env := events.Envelope[json.RawMessage]{ID: "evt-1", Type: "TenantSuspended"}
+	require.NoError(t, processOnce(context.Background(), inbox, consumerName, env, func(context.Context) error { ran = true; return nil }))
+	assert.False(t, ran)
+	assert.InDelta(t, 1, testutil.ToFloat64(metrics.ProcessedEventsDuplicatesTotal.WithLabelValues(consumerName)), 0.01)
 
-	hit, err = skipDuplicate(ctx, dedup, "evt-new", "TenantSuspended")
-	require.NoError(t, err)
-	assert.False(t, hit)
+	env.ID = "evt-new"
+	require.NoError(t, processOnce(context.Background(), inbox, consumerName, env, func(context.Context) error { ran = true; return nil }))
+	assert.True(t, ran)
+	assert.Equal(t, []string{"evt-new"}, dedup.marked)
 }
 
 func TestAckUnknown_MarksProcessed(t *testing.T) {
 	dedup := &stubDedup{}
 	env := events.Envelope[json.RawMessage]{ID: "evt-unknown", Type: "NeverHeardOfThis"}
-	err := ackUnknown(context.Background(), stubTx{}, dedup, port.NewSlogStyleLogger(nil), consumerName, env)
+	err := ackUnknown(context.Background(), newFakeInbox(stubTx{}, dedup), port.NewSlogStyleLogger(nil), consumerName, env)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"evt-unknown"}, dedup.marked)
 }
 
-// TestSkipDuplicate_IsProcessedErrorPropagates covers skipDuplicate's
-// early-return branch when the IsProcessed probe itself fails — distinct
-// from the hit/miss branches already covered above.
-func TestSkipDuplicate_IsProcessedErrorPropagates(t *testing.T) {
+func TestProcessOnce_InboxErrorPropagates(t *testing.T) {
 	wantErr := errors.New("dedup store unavailable")
-	dedup := &stubDedup{err: wantErr}
-
-	hit, err := skipDuplicate(context.Background(), dedup, "evt-x", "TenantSuspended")
+	env := events.Envelope[json.RawMessage]{ID: "evt-x", Type: "TenantSuspended"}
+	err := processOnce(context.Background(), newFakeInbox(stubTx{}, &stubDedup{err: wantErr}), consumerName, env, func(context.Context) error { return nil })
 	require.ErrorIs(t, err, wantErr)
-	assert.False(t, hit)
-}
-
-// TestMarkProcessedInTx_WrapsMarkProcessedError covers markProcessedInTx's
-// error-wrapping branch (dedup.MarkProcessed failing inside RunInTx).
-func TestMarkProcessedInTx_WrapsMarkProcessedError(t *testing.T) {
-	wantErr := errors.New("insert conflict")
-	dedup := &stubDedup{markErr: wantErr}
-
-	err := markProcessedInTx(context.Background(), stubTx{}, dedup, consumerName, "evt-y")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, wantErr)
-	assert.Contains(t, err.Error(), "mark processed")
 }

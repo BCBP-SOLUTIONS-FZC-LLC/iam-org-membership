@@ -2,53 +2,81 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/inbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
-	"github.com/jackc/pgx/v5"
 )
 
-// IdempotencyRepository implements port.IdempotencyStore against the
-// processed_events table (§4.2), shared by every SQS consumer this service
-// runs. See port.IdempotencyStore's doc comment for why MarkProcessed
-// joins the caller's transaction (EVT-14) rather than opening its own, the
-// one deliberate difference from iam-user-profile's equivalent store.
-type IdempotencyRepository struct {
-	pool *pgcommon.Pool
+// InboxRepository implements port.Inbox with platform-events' inbox.Store,
+// one Store per consumer name over the shared processed_events table
+// (§4.2). See port.Inbox for the transaction contract.
+type InboxRepository struct {
+	pool   *pgcommon.Pool
+	events port.EventPublisher
+
+	mu     sync.Mutex
+	stores map[string]*inbox.Store
 }
 
-var _ port.IdempotencyStore = (*IdempotencyRepository)(nil)
+var _ port.Inbox = (*InboxRepository)(nil)
 
-// NewIdempotencyRepository builds an IdempotencyRepository.
-func NewIdempotencyRepository(pool *pgcommon.Pool) *IdempotencyRepository {
-	return &IdempotencyRepository{pool: pool}
+// NewInboxRepository builds an InboxRepository on pool. events is bound into
+// fn's ctx (port.WithEventPublisher) exactly as TxRunner does, so a consumer
+// can enqueue relay events atomically with its projection; nil disables it.
+func NewInboxRepository(pool *pgcommon.Pool, events port.EventPublisher) *InboxRepository {
+	return &InboxRepository{pool: pool, events: events, stores: map[string]*inbox.Store{}}
 }
 
-// IsProcessed reports whether eventID has already been recorded as
-// processed by consumer. A standalone read outside any caller transaction.
-func (r *IdempotencyRepository) IsProcessed(ctx context.Context, consumer, eventID string) (bool, error) {
-	var exists bool
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM processed_events WHERE event_id = $1 AND consumer = $2)`,
-			eventID, consumer,
-		).Scan(&exists)
-	})
+// ProcessOnce implements port.Inbox.
+func (r *InboxRepository) ProcessOnce(ctx context.Context, consumer, eventID, eventType string, fn func(txCtx context.Context) error) (bool, error) {
+	store, err := r.store(consumer)
 	if err != nil {
 		return false, err
 	}
-	return exists, nil
+	ran := false
+	env := events.Envelope[json.RawMessage]{ID: eventID, Type: eventType}
+	err = store.Process(ctx, env, func(ctx context.Context, tx pgcommon.Tx) error {
+		ran = true
+		txCtx := port.WithTx(ctx, tx)
+		if r.events != nil {
+			txCtx = port.WithEventPublisher(txCtx, r.events)
+		}
+		return fn(txCtx)
+	})
+	if err != nil {
+		return false, wrapConnErr(err)
+	}
+	return !ran, nil
 }
 
-// MarkProcessed records eventID as processed by consumer. Inside
-// TxRunner.RunInTx this joins the outer transaction so the dedup write
-// commits or rolls back atomically with the projection.
-func (r *IdempotencyRepository) MarkProcessed(ctx context.Context, consumer, eventID string) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO processed_events (event_id, consumer)
-			VALUES ($1, $2)
-			ON CONFLICT (event_id, consumer) DO NOTHING`, eventID, consumer)
-		return err
-	})
+var _ port.InboxPruner = (*InboxRepository)(nil)
+
+// Prune implements port.InboxPruner with inbox.Store.Prune, which loops
+// batch-sized deletes until no expired row is left.
+func (r *InboxRepository) Prune(ctx context.Context, consumer string, retention time.Duration, batch int) (int64, error) {
+	store, err := r.store(consumer)
+	if err != nil {
+		return 0, err
+	}
+	n, err := store.Prune(ctx, retention, batch)
+	return n, wrapConnErr(err)
+}
+
+func (r *InboxRepository) store(consumer string) (*inbox.Store, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.stores[consumer]; ok {
+		return s, nil
+	}
+	s, err := inbox.NewStore(r.pool, consumer)
+	if err != nil {
+		return nil, err
+	}
+	r.stores[consumer] = s
+	return s, nil
 }

@@ -5,6 +5,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,6 +103,9 @@ func GUCBridgeMiddleware() gin.HandlerFunc {
 			return
 		}
 		ctx := requestctx.WithContext(c.Request.Context(), rc)
+		// x-request-id rides on the plain context so outbound clients
+		// (httpx transport) forward it to the services this request calls.
+		ctx = requestctx.WithRequestID(ctx, gincommon.RequestIDFromContext(c))
 
 		// Bridge into pgcommon so the pool checkout hook emits `SET LOCAL
 		// app.tenant_id` on every transaction (writes and reads). Both IDs
@@ -285,57 +289,123 @@ func RequireActiveMembership(memberships port.MembershipRepository) gin.HandlerF
 	}
 }
 
-// NormalizeAuthErrors intercepts 401 responses from platform-gincommon's auth
-// middleware and rewrites them to match our standard error envelope (LLD §17,
-// G-13). The library writes {"error":"missing or invalid...","status":401}
-// without a "code" field; this middleware adds code=missing_identity_headers
-// so all 401s have a consistent shape.
+// NormalizeAuthErrors rewrites the error bodies platform-gincommon's own
+// middlewares write inside it — RequireAuth's 401 and ContextMiddleware's
+// 400 — to this service's envelope (LLD §17, G-13). The library writes
+// {"error":"...","status":N} without a "code"; this adds one:
+//   - 401: ambiguous_identity_headers when an identity header was sent more
+//     than once, missing_identity_headers otherwise;
+//   - 400: invalid_request_context.
+//
+// A body that already has a "code" (every HandleError response) is left
+// alone. Two library responses are written outside this middleware and keep
+// gincommon's shape: the request-deadline 503 (TimeoutMiddleware, body
+// {"error":"request timeout"}) and the panic-recovery 500.
+//
+// Only a 400 or 401 is buffered. Any other status passes straight through to
+// the real writer, and a handler that writes nothing leaves the response
+// unwritten, so gincommon's TimeoutMiddleware can still answer with its 503.
 func NormalizeAuthErrors() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		buf := &bufferedWriter{ResponseWriter: c.Writer, buf: &bytes.Buffer{}}
 		c.Writer = buf
+		// Hand the real writer back to the outer middlewares (observability,
+		// TimeoutMiddleware, panic recovery) however the chain exits — a
+		// panicking handler unwinds past the code after c.Next().
+		defer func() { c.Writer = buf.ResponseWriter }()
 		c.Next()
-		if buf.status == http.StatusUnauthorized {
-			var raw map[string]any
-			if err := json.Unmarshal(buf.buf.Bytes(), &raw); err == nil {
-				if _, hasCode := raw["code"]; !hasCode {
-					raw["code"] = "missing_identity_headers"
-					raw["error"] = "missing_identity_headers"
-					rewritten, _ := json.Marshal(raw)
-					buf.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
-					buf.ResponseWriter.WriteHeader(http.StatusUnauthorized)
-					_, _ = buf.ResponseWriter.Write(rewritten)
-					return
-				}
+		if buf.status == 0 {
+			return // passed through (or nothing written)
+		}
+		c.Writer = buf.ResponseWriter
+		body := buf.buf.Bytes()
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err == nil {
+			if _, hasCode := raw["code"]; !hasCode {
+				code := libraryErrorCode(buf.status, raw)
+				raw["code"] = code
+				raw["error"] = code
+				body, _ = json.Marshal(raw)
+				buf.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
 			}
 		}
-		if buf.status != 0 {
-			buf.ResponseWriter.WriteHeader(buf.status)
+		buf.ResponseWriter.WriteHeader(buf.status)
+		if len(body) > 0 {
+			_, _ = buf.ResponseWriter.Write(body)
 		}
-		_, _ = buf.ResponseWriter.Write(buf.buf.Bytes())
 	}
 }
 
-type bufferedWriter struct {
-	gin.ResponseWriter
-	buf    *bytes.Buffer
-	status int
+// libraryErrorCode is the code for a platform-gincommon error body.
+func libraryErrorCode(status int, raw map[string]any) string {
+	if status == http.StatusBadRequest {
+		return "invalid_request_context"
+	}
+	return authErrorCode(raw)
 }
 
-func (w *bufferedWriter) WriteHeader(code int) { w.status = code }
+// authErrorCode classifies a platform-gincommon 401 body by its message.
+func authErrorCode(raw map[string]any) string {
+	if msg, _ := raw["error"].(string); strings.HasPrefix(msg, "ambiguous ") {
+		return "ambiguous_identity_headers"
+	}
+	return "missing_identity_headers"
+}
+
+// bufferedWriter holds back a 400 or 401 so NormalizeAuthErrors can rewrite
+// it; every other status is written through to the embedded writer as it
+// comes.
+type bufferedWriter struct {
+	gin.ResponseWriter
+	buf         *bytes.Buffer
+	status      int  // buffered status (400 or 401 only)
+	passthrough bool // another status was set: write straight through
+}
+
+// buffered reports whether NormalizeAuthErrors may need to rewrite code.
+func buffered(code int) bool {
+	return code == http.StatusUnauthorized || code == http.StatusBadRequest
+}
+
+func (w *bufferedWriter) WriteHeader(code int) {
+	if w.passthrough {
+		w.ResponseWriter.WriteHeader(code)
+		return
+	}
+	if buffered(code) {
+		w.status = code
+		return
+	}
+	w.passthrough = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
 func (w *bufferedWriter) Write(b []byte) (int, error) {
+	if w.passthrough {
+		return w.ResponseWriter.Write(b)
+	}
 	if w.status == 0 {
-		w.status = http.StatusOK
+		// Write without a status: an implicit 200, never a 401.
+		w.passthrough = true
+		return w.ResponseWriter.Write(b)
 	}
 	return w.buf.Write(b)
 }
+
 func (w *bufferedWriter) Status() int {
-	if w.status == 0 {
+	if w.passthrough || w.status == 0 {
 		return w.ResponseWriter.Status()
 	}
 	return w.status
 }
-func (w *bufferedWriter) Written() bool { return w.buf.Len() > 0 || w.status != 0 }
+
+func (w *bufferedWriter) Written() bool {
+	if w.passthrough {
+		return w.ResponseWriter.Written()
+	}
+	return w.buf.Len() > 0 || w.status != 0
+}
+
 func (w *bufferedWriter) WriteString(s string) (int, error) {
 	return w.Write([]byte(s))
 }
@@ -376,6 +446,9 @@ func RegisterValidators() {
 // service) — populates `request_id`/`trace_id` for cross-service
 // correlation.
 func HandleError(c *gin.Context, err error) {
+	if leaveToRequestContext(c, err) {
+		return
+	}
 	var de *domain.DomainError
 	if errors.As(err, &de) {
 		status := domainErrorStatus(de)
@@ -390,14 +463,37 @@ func HandleError(c *gin.Context, err error) {
 		return
 	}
 	// Raw pgconn.PgError that was not caught and translated by the service
-	// layer. wrapConnErr maps classes 08/53/57/58 to ErrDBUnavailable, so
-	// the DomainError branch above is the production path. This fallback
-	// still classifies a leaked PgError (tests, future missed wrap) into
-	// 503 db_unavailable per LLD §17 without importing pgconn: classes
-	// 08/53 via pgcommon helpers, 57/58 via the SQLSTATE text pgconn
-	// puts in Error().
-	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err) {
+	// layer. wrapConnErr maps these classes to ErrDBUnavailable, so the
+	// DomainError branch above is the production path. This fallback still
+	// classifies a leaked PgError (tests, future missed wrap) into 503
+	// db_unavailable per LLD §17, using pgcommon's SQLSTATE helpers so
+	// inbound HTTP never imports pgconn.
+	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) ||
+		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err) || pgcommon.IsPoolClosed(err) {
 		er := newErrorResponse(c, domain.ErrDBUnavailable.Error(), "database unavailable", nil)
+		er.Status = http.StatusServiceUnavailable
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
+		return
+	}
+	// A leaked statement/lock timeout (57014/55P03) or an exhausted
+	// deadlock/serialization retry (40P01/40001): the same codes wrapConnErr
+	// gives them, never a 500.
+	if pgcommon.IsQueryCanceled(err) || pgcommon.IsLockNotAvailable(err) {
+		er := newErrorResponse(c, domain.ErrRequestTimeout.Error(), "database statement or lock timeout", nil)
+		er.Status = http.StatusServiceUnavailable
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
+		return
+	}
+	if pgcommon.IsDeadlock(err) || pgcommon.IsSerializationFailure(err) {
+		er := newErrorResponse(c, domain.ErrConflict.Error(), "concurrent update conflict — retry the request", nil)
+		er.Status = http.StatusConflict
+		c.AbortWithStatusJSON(http.StatusConflict, errorResponseWithDetails(er, map[string]any{"code": "concurrent_update"}))
+		return
+	}
+	// A request deadline that expired outside a wrapped repository call (or
+	// a client that went away) is a timeout, not a server fault.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		er := newErrorResponse(c, domain.ErrRequestTimeout.Error(), "request deadline exceeded", nil)
 		er.Status = http.StatusServiceUnavailable
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
 		return
@@ -410,17 +506,37 @@ func HandleError(c *gin.Context, err error) {
 	c.AbortWithStatusJSON(http.StatusInternalServerError, er)
 }
 
-// isOperatorOrSystemErrorSQLState reports whether err is a Postgres error
-// in SQLSTATE class 57 (operator_intervention) or 58 (system_error).
-// pgcommon v1.3.0 has no dedicated helper for these two, so we match the
-// "(SQLSTATE 57…)" / "(SQLSTATE 58…)" text pgconn puts in Error() instead
-// of type-asserting *pgconn.PgError (inbound HTTP must not import pgconn).
-func isOperatorOrSystemErrorSQLState(err error) bool {
-	if !pgcommon.IsPgError(err) {
+// clientClosedRequest is the de-facto status (nginx's 499) recorded when the
+// client went away before a response; nothing reads the body.
+const clientClosedRequest = 499
+
+// leaveToRequestContext handles errors caused by the request's own context
+// ending, which this handler must not report as its own failure:
+//
+//   - The request deadline expired (gincommon's Config.RequestTimeout): abort
+//     without writing, so gincommon's timeout middleware writes its 503 and
+//     counts it on platform_http_request_timeouts_total. Writing a 503 here
+//     would mark the response started and the library would skip both.
+//   - The client disconnected: record 499 instead of a misleading 5xx.
+//
+// It only applies when the request context itself is done; a deadline that
+// belongs to something else (e.g. a statement_timeout) is still reported by
+// HandleError as request_timeout.
+func leaveToRequestContext(c *gin.Context, err error) bool {
+	if c.Request == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "SQLSTATE 57") || strings.Contains(msg, "SQLSTATE 58")
+	switch ctxErr := c.Request.Context().Err(); {
+	case ctxErr == nil:
+		return false
+	case errors.Is(ctxErr, context.DeadlineExceeded) && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, domain.ErrRequestTimeout)):
+		c.Abort()
+		return true
+	case errors.Is(ctxErr, context.Canceled) && (errors.Is(err, context.Canceled) || errors.Is(err, domain.ErrRequestTimeout)):
+		c.AbortWithStatus(clientClosedRequest)
+		return true
+	}
+	return false
 }
 
 // errorResponseWithDetails renders the flat ErrorResponse envelope with
@@ -487,6 +603,7 @@ func domainErrorStatus(de *domain.DomainError) int {
 		errors.Is(de.Cause, domain.ErrCacheUnavailable),
 		errors.Is(de.Cause, domain.ErrWorkflowServiceUnavailable),
 		errors.Is(de.Cause, domain.ErrRealmProvisionerUnavailable),
+		errors.Is(de.Cause, domain.ErrRequestTimeout),
 		errors.Is(de.Cause, domain.ErrCatalogUnavailable),
 		errors.Is(de.Cause, domain.ErrGroupMappingUnavailable),
 		errors.Is(de.Cause, domain.ErrDependencyUnavailable):

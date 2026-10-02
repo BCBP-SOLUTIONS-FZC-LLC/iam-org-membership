@@ -92,6 +92,10 @@ type RouterConfig struct {
 	Consumers []Pinger
 }
 
+// defaultRequestTimeout is the per-request deadline when RouterConfig's
+// GinConfig leaves RequestTimeout unset.
+const defaultRequestTimeout = 30 * time.Second
+
 // Router owns the Gin engine for this service.
 type Router struct {
 	engine *gin.Engine
@@ -119,10 +123,16 @@ func NewRouter(cfg RouterConfig) *Router {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 		c.Next()
 	})
-	// 30 s hard deadline on every request.
-	r.Use(gincommon.TimeoutMiddleware(30 * time.Second))
-	// Panic recovery, request-ID, tracing, correlation, metrics, logging.
-	r.Use(gincommon.ObservabilityMiddlewares(cfg.GinConfig)...)
+	// Panic recovery, request-ID, tracing, correlation, metrics, logging —
+	// and, innermost, the request deadline (GinConfig.RequestTimeout,
+	// defaulted to defaultRequestTimeout). Inside observability, a timeout is
+	// recorded as the 503 the client gets; registered outside it (the old
+	// r.Use(TimeoutMiddleware) first), metrics and logs recorded 200.
+	ginCfg := cfg.GinConfig
+	if ginCfg.RequestTimeout <= 0 {
+		ginCfg.RequestTimeout = defaultRequestTimeout
+	}
+	r.Use(gincommon.ObservabilityMiddlewares(ginCfg)...)
 	// G-13: normalize platform-gincommon 401 responses to include code field.
 	r.Use(NormalizeAuthErrors())
 
@@ -287,10 +297,9 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 			authMiddleware = func(c *gin.Context) {
 				got := []byte(c.GetHeader("Authorization"))
 				if len(got) != len(want) || subtle.ConstantTimeCompare(got, want) != 1 {
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-						"code":    "unauthorized",
-						"message": "docs require Authorization: Bearer <DOCS_AUTH_TOKEN>",
-					})
+					er := newErrorResponse(c, "unauthorized", "docs require Authorization: Bearer <DOCS_AUTH_TOKEN>", nil)
+					er.Status = http.StatusUnauthorized
+					c.AbortWithStatusJSON(http.StatusUnauthorized, er)
 					return
 				}
 				c.Next()

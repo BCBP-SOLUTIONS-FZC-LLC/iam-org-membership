@@ -31,7 +31,10 @@ RUN CGO_ENABLED=0 GOOS=linux \
     -o bin/iam-org-membership ./cmd/server && \
     go build -trimpath \
     -ldflags="-s -w -X main.buildVersion=${BUILD_VERSION}" \
-    -o bin/reconciler ./cmd/reconciler
+    -o bin/reconciler ./cmd/reconciler && \
+    go build -trimpath \
+    -ldflags="-s -w" \
+    -o bin/migrate ./cmd/migrate
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
 
@@ -45,6 +48,7 @@ LABEL org.opencontainers.image.title="iam-org-membership" \
 
 COPY --from=builder /build/bin/iam-org-membership /iam-org-membership
 COPY --from=builder /build/bin/reconciler /reconciler
+COPY --from=builder /build/bin/migrate /migrate
 
 EXPOSE 8080 9090
 

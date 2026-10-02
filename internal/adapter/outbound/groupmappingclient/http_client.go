@@ -127,14 +127,14 @@ func (c *HTTPClient) ResolveGroups(ctx context.Context, tenantID uuid.UUID, grou
 	resp, err := c.client.Do(req)
 	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyErrorReason(err))
 		c.warn("groupmappingclient: ResolveGroups transport error", "tenant_id", tenantID, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode >= 500 {
-			metrics.IncDependencyError(xsvcService, endpoint, "5xx")
+			metrics.IncDependencyError(xsvcService, endpoint, metrics.HTTPStatusReason(resp.StatusCode))
 		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		c.warn("groupmappingclient: ResolveGroups non-2xx", "tenant_id", tenantID, "status", resp.StatusCode, "body", string(msg))

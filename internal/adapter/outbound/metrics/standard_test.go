@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -45,9 +43,13 @@ func TestStandard_LibrariesShareRegistryCollectors(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, pgWarnings, "no platform-pgcommon metric may be disabled")
 
-	IncDLQ("TenantSuspended", "schema_violation")
+	// platform-events counts every DLQ forward on the shared collector; the
+	// service counts the reject reason on its own Tier-3 counter.
+	DLQMessages.WithLabelValues("consume", "TenantSuspended", "explicit").Inc()
+	IncConsumedEventRejected("TenantSuspended", "schema_violation")
+	exerciseEveryCollector(t)
 
-	gathered, err := prometheus.DefaultGatherer.Gather()
+	gathered, err := gincommon.MetricsGatherer().Gather()
 	require.NoError(t, err)
 	names := map[string]bool{}
 	for _, mf := range gathered {
@@ -60,7 +62,7 @@ func TestStandard_LibrariesShareRegistryCollectors(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"platform_build_info", "platform_dlq_messages_total", "platform_library_info"} {
+	for _, want := range []string{"platform_build_info", "platform_dlq_messages_total", "platform_library_info", "iam_org_membership_consumed_event_rejected_total"} {
 		assert.True(t, names[want], "%s must be exported", want)
 	}
 
@@ -68,7 +70,36 @@ func TestStandard_LibrariesShareRegistryCollectors(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 		req.Header.Set("Accept", "text/plain")
-		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}).ServeHTTP(rec, req)
+		gincommon.MetricsHandler().ServeHTTP(rec, req) // the production /metrics handler
 		require.NoError(t, os.WriteFile(out, rec.Body.Bytes(), 0o600))
 	}
+}
+
+// exerciseEveryCollector records one sample with representative production
+// label values on every collector this package owns, so the scrape written
+// for `metricslint check` exposes every label set (an unsampled vec has no
+// series, and its label values would go unchecked).
+func exerciseEveryCollector(t *testing.T) {
+	t.Helper()
+	ObserveDependencyLatency("catalog", "plans", 0.01)
+	for _, reason := range []string{
+		DependencyReasonTimeout, DependencyReasonTransport, DependencyReasonFallbackServed,
+		HTTPStatusReason(404), HTTPStatusReason(503), HTTPStatusReason(302),
+	} {
+		IncDependencyError("realm_provisioner", "revoke_user_sessions", reason)
+	}
+	IncDuplicate(t.Context(), "membership", "TenantSuspended")
+	ObserveLifecycleEventLag("TenantSuspended", 0.2)
+	LifecycleEventSkipped.WithLabelValues("TenantSuspended").Inc()
+	UnknownEventAcknowledged.WithLabelValues("SomethingNew").Inc()
+	DelegateSuspendImpact.WithLabelValues("true").Inc()
+	TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
+	IncSeatOverageStarted(SeatOverageCauseReconciler)
+	IncSeatLimitReached("trial")
+	IncInviteThrottled(InviteThrottleReinviteTooSoon)
+	IncRealmSyncFailed("patch_realm_config")
+	IncDelegateRemovalBlocked(DelegateBlockScopeTenantRemoval)
+	IncDelegateReassignment("replace_delegate")
+	IncMembershipExistsCheck("tender_acl", "active")
+	IncPublicTenantResolve("found")
 }

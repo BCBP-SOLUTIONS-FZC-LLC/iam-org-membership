@@ -337,7 +337,9 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
 
-	return s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+	escalated := false
+	err := s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+		escalated = false
 		// Look up membership (need expected version for soft delete).
 		mem, err := s.memberships.FindByUserID(txCtx, tenantID, userID)
 		if err != nil {
@@ -443,21 +445,25 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 					return err
 				}
 				// Only page if this call actually flipped the flag (idempotent
-				// re-removals during retries must not double-alert).
-				if flipped {
-					if metrics.TenantOwnerlessEscalated != nil {
-						metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
-					}
-					s.log.ErrorContext(txCtx, "tenant_ownerless_escalation",
-						"tenant_id", tenantID.String(),
-						"removed_user_id", userID.String(),
-						"reason", "last_active_owner_removed",
-					)
-				}
+				// re-removals must not double-alert).
+				escalated = flipped
 			}
 		}
 		return nil
 	})
+	// Counted and logged after commit: a rolled-back or retried attempt
+	// must not page.
+	if err == nil && escalated {
+		if metrics.TenantOwnerlessEscalated != nil {
+			metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
+		}
+		s.log.ErrorContext(ctx, "tenant_ownerless_escalation",
+			"tenant_id", tenantID.String(),
+			"removed_user_id", userID.String(),
+			"reason", "last_active_owner_removed",
+		)
+	}
+	return err
 }
 
 // ── validation helpers (GAP-I1-3/I1-4/I1-5) ──────────────────────────────

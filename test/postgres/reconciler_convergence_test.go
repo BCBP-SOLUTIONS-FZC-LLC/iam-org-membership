@@ -88,6 +88,8 @@ func newJobContext(t *testing.T, _ context.Context) (*jobs.Context, *captureEven
 		Invitations:            postgres.NewInvitationRepository(sysPool),
 		Reconciler:             postgres.NewReconcilerStore(sysPool),
 		OutboxRunner:           outboxRunner,
+		Inbox:                  postgres.NewInboxRepository(sysPool, nil),
+		InboxConsumers:         []string{"test-consumer", "test-consumer-batch"},
 		BatchLimit:             100,
 		ProcessedEventsTTLDays: 8,
 	}
@@ -328,11 +330,11 @@ func TestReconciler_ProcessedEventsPrune_NoOpOnEmptyTable(t *testing.T) {
 	assert.Equal(t, 0, res.Succeeded, "empty table → no deletions")
 }
 
-// TestReconciler_ProcessedEventsPrune_BatchLimitCapsOneTick — a backlog
-// larger than BatchLimit deletes exactly BatchLimit rows in one call,
-// leaving the rest for the next tick. Real gap the LLD-vs-code audit
-// found: this delete used to be a single unbounded statement.
-func TestReconciler_ProcessedEventsPrune_BatchLimitCapsOneTick(t *testing.T) {
+// TestReconciler_ProcessedEventsPrune_DrainsBacklogInBatches — a backlog
+// larger than BatchLimit is fully deleted in one run, BatchLimit rows per
+// delete: a single batch per daily run would let the table grow without
+// bound once traffic exceeds BatchLimit events a day.
+func TestReconciler_ProcessedEventsPrune_DrainsBacklogInBatches(t *testing.T) {
 	t.Parallel()
 	jctx, _, rawPool := newJobContext(t, context.Background())
 	jctx.BatchLimit = 3
@@ -347,12 +349,12 @@ func TestReconciler_ProcessedEventsPrune_BatchLimitCapsOneTick(t *testing.T) {
 
 	res, err := jobs.ProcessedEventsPrune(ctx, jctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, res.Succeeded, "BatchLimit=3 must cap this tick at exactly 3 deletes")
+	assert.Equal(t, 5, res.Succeeded, "the whole backlog goes in one run (3 + 2)")
 
 	var remaining int
 	require.NoError(t, rawPool.QueryRow(ctx,
 		`SELECT count(*) FROM processed_events WHERE consumer = 'test-consumer-batch'`).Scan(&remaining))
-	assert.Equal(t, 2, remaining, "the other 2 stale rows must survive for the next tick")
+	assert.Zero(t, remaining)
 }
 
 // ── OutboxPrune ──────────────────────────────────────────────────────────
@@ -399,16 +401,17 @@ func TestReconciler_OutboxPrune_DeletesPublishedPastRetention(t *testing.T) {
 		"a fresh-published row and an unpublished row must both survive")
 }
 
-// TestReconciler_OutboxPrune_BatchLimitCapsOneTick — same batching
-// guarantee as ProcessedEventsPrune, for outbox_events.
-func TestReconciler_OutboxPrune_BatchLimitCapsOneTick(t *testing.T) {
+// TestReconciler_OutboxPrune_DrainsBacklogInBatches — PrunePublished deletes
+// at most BatchLimit rows per call; OutboxPrune calls it until a batch comes
+// back short, so the whole backlog goes in one run.
+func TestReconciler_OutboxPrune_DrainsBacklogInBatches(t *testing.T) {
 	t.Parallel()
 	jctx, _, rawPool := newJobContext(t, context.Background())
 	jctx.BatchLimit = 2
 	jctx.OutboxRetentionDays = 8
 	ctx := context.Background()
 
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 5; i++ {
 		_, err := rawPool.Exec(ctx, `
 			INSERT INTO outbox_events (id, event_type, payload, published_at)
 			VALUES ($1, 'TestEvent', '{}'::jsonb, now() - interval '10 days')`, uuid.New())
@@ -417,5 +420,5 @@ func TestReconciler_OutboxPrune_BatchLimitCapsOneTick(t *testing.T) {
 
 	res, err := jobs.OutboxPrune(ctx, jctx)
 	require.NoError(t, err)
-	assert.Equal(t, 2, res.Succeeded, "BatchLimit=2 must cap this tick at exactly 2 deletes")
+	assert.Equal(t, 5, res.Succeeded, "2 + 2 + 1, stopping on the short batch")
 }

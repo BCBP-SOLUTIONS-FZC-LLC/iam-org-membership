@@ -446,10 +446,8 @@ func TestHandleError_DBResourceExhaustionSQLState_Returns503(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "db_unavailable")
 }
 
-// pgcommon v1.3.0 added IsConnectionException/IsInsufficientResources for
-// classes 08/53, but has no dedicated helper for 57 (operator_intervention)
-// or 58 (system_error) — isOperatorOrSystemErrorSQLState's hand-rolled
-// fallback must still catch these two.
+// A leaked class 57 (operator_intervention) or 58 (system_error) PgError is
+// a database outage (pgcommon.IsOperatorIntervention / IsSystemError).
 func TestHandleError_OperatorOrSystemErrorSQLState_Returns503(t *testing.T) {
 	for _, code := range []string{"57P01", "58030"} { // admin_shutdown, io_error
 		t.Run(code, func(t *testing.T) {
@@ -584,4 +582,25 @@ func TestNormalizeAuthErrors_SkipsIfCodeAlreadyPresent(t *testing.T) {
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
 	// code field must still be present and correct
 	assert.Equal(t, "missing_identity_headers", body["code"])
+}
+
+// A raw statement/lock timeout or exhausted deadlock that skipped
+// wrapConnErr still gets its proper code, never a 500.
+func TestHandleError_LeakedTimeoutAndConflictSQLStates(t *testing.T) {
+	for code, want := range map[string]struct {
+		status int
+		body   string
+	}{
+		"57014": {http.StatusServiceUnavailable, "request_timeout"},
+		"55P03": {http.StatusServiceUnavailable, "request_timeout"},
+		"40P01": {http.StatusConflict, "concurrent_update"},
+		"40001": {http.StatusConflict, "concurrent_update"},
+	} {
+		t.Run(code, func(t *testing.T) {
+			c, w := newTestContext(nil)
+			HandleError(c, &pgconn.PgError{Code: code})
+			assert.Equal(t, want.status, w.Code)
+			assert.Contains(t, w.Body.String(), want.body)
+		})
+	}
 }

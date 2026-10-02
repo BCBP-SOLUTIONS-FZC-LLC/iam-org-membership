@@ -147,6 +147,122 @@ spec:
               Check the outbox runner logs for SNS publish errors and verify
               SNS_TOPIC_MEMBERSHIP_ARN / SNS_TOPIC_TENANT_ARN connectivity.
 
+    - name: iam_org_membership_platform_libraries
+      rules:
+        - alert: IAMOrgMembershipOutboxOrderingBlocked
+          # Ordered outbox records (one key per tenant/subject, EnqueueOrdered)
+          # waiting behind a head record that keeps failing to publish. The key
+          # clears when the head is published or dead-lettered (OUTBOX_MAX_ATTEMPTS).
+          expr: |
+            max by (domain, service, environment) (platform_outbox_ordering_blocked_events{job={{ include "iam-org-membership.fullname" . | quote }}}) > 0
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: iam-org-membership ordered outbox events are blocked behind a failing record
+            description: >-
+              {{ "{{ $value }}" }} outbox records are waiting for an earlier record of the
+              same tenant/subject key to publish. Find the failing head in the outbox
+              runner logs (last_error) and fix it, or let it dead-letter.
+            runbook: "iam-org-membership/outbox-ordering-blocked"
+
+        - alert: IAMOrgMembershipOutboxBacklog
+          # The oldest due outbox record has waited more than 5 minutes: SNS is
+          # failing transiently (no attempt is counted, so nothing dead-letters) or
+          # the runner cannot keep up.
+          expr: |
+            max by (domain, service, environment) (platform_outbox_oldest_pending_age{job={{ include "iam-org-membership.fullname" . | quote }}}) > 300
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: iam-org-membership outbox delivery is more than 5 minutes behind
+            description: >-
+              The oldest pending outbox event is {{ "{{ $value | humanizeDuration }}" }} old.
+              Check the outbox runner logs for SNS publish errors
+              and platform_outbox_pending_events.
+            runbook: "iam-org-membership/outbox-backlog"
+
+        - alert: IAMOrgMembershipDLQBacklog
+          # Messages sitting in an inbound queue's DLQ (sampled every
+          # SQS_QUEUE_DEPTH_INTERVAL). Complements the inflow alerts with the backlog.
+          expr: |
+            max by (domain, service, environment, queue) (platform_dlq_depth{job={{ include "iam-org-membership.fullname" . | quote }}}) > 0
+          for: 30m
+          labels:
+            severity: warning
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: Messages are waiting in the {{ "{{ $labels.queue }}" }} DLQ
+            description: >-
+              {{ "{{ $value }}" }} messages in the DLQ of {{ "{{ $labels.queue }}" }}. Inspect their
+              DLQReason attribute, fix the cause, then redrive.
+            runbook: "iam-org-membership/dlq-backlog"
+
+        - alert: IAMOrgMembershipDBPoolSaturated
+          # Worst replica per pool (pgcommon's reference rule, scoped to this service).
+          expr: |
+            max by (domain, service, environment, pool) (
+              sum by (domain, service, environment, pool, instance) (platform_db_pool_connections{job={{ include "iam-org-membership.fullname" . | quote }}, state="acquired"})
+                /
+              (sum by (domain, service, environment, pool, instance) (platform_db_pool_max_connections{job={{ include "iam-org-membership.fullname" . | quote }}}) > 0)
+            ) > 0.9
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: iam-org-membership Postgres pool {{ "{{ $labels.pool }}" }} is over 90% utilised
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of pool {{ "{{ $labels.pool }}" }}'s connections are
+              checked out on the busiest replica; callers are about to queue for
+              connections (pool="default" is the API pool, pool="system" the BYPASSRLS pool).
+            runbook: "iam-org-membership/db-pool-saturated"
+
+        - alert: IAMOrgMembershipDBAcquireErrors
+          expr: |
+            max by (domain, service, environment, pool) (
+              (
+                  sum by (domain, service, environment, pool, instance) (rate(platform_db_pool_acquires_total{job={{ include "iam-org-membership.fullname" . | quote }}, outcome="error"}[5m]))
+                or
+                  sum by (domain, service, environment, pool, instance) (rate(platform_db_pool_acquires_total{job={{ include "iam-org-membership.fullname" . | quote }}}[5m])) * 0
+              )
+                /
+              (sum by (domain, service, environment, pool, instance) (rate(platform_db_pool_acquires_total{job={{ include "iam-org-membership.fullname" . | quote }}}[5m])) > 0)
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: iam-org-membership cannot get Postgres connections from pool {{ "{{ $labels.pool }}" }}
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of connection acquires are failing on the
+              worst replica (timeouts, closed pool or database unreachable). Requests
+              answer 503 db_unavailable.
+            runbook: "iam-org-membership/db-acquire-errors"
+
+        - alert: IAMOrgMembershipDBRetriesExhausted
+          expr: |
+            sum by (domain, service, environment, pool, reason) (increase(platform_db_transaction_retries_exhausted_total{job={{ include "iam-org-membership.fullname" . | quote }}}[15m])) > 0
+          labels:
+            severity: warning
+            team: platform
+            metric_status: proposed
+          annotations:
+            summary: iam-org-membership transactions failed after exhausting {{ "{{ $labels.reason }}" }} retries
+            description: >-
+              Transactions on pool {{ "{{ $labels.pool }}" }} kept hitting {{ "{{ $labels.reason }}" }}
+              conflicts through every retry; callers got 409 concurrent_update.
+            runbook: "iam-org-membership/db-retries-exhausted"
+
     # LLD §11.2 — org-membership specific gauges/counters emitted by the 4
     # in-process exporter goroutines (started alongside the outbox runner in
     # cmd/server/main.go per our Option A decision) and the consumer/reconciler
@@ -237,11 +353,10 @@ spec:
         - alert: IAMFutureLifecycleEventRejected
           # EVT-15 future-time clamp — a producer's clock is skewed OR they
           # emitted an event >MAX_LIFECYCLE_EVENT_SKEW_SECONDS in the future.
-          # Any occurrence pages. platform_dlq_messages_total is shared with
-          # platform-events (SQS redrive / outbox dead-letters) — filter to
-          # this service's own consume-side reject reason.
+          # Any occurrence pages. Counted at the reject site; the DLQ forward
+          # itself is platform_dlq_messages_total{reason="explicit"}.
           expr: |
-            sum by (domain, service, environment) (increase(platform_dlq_messages_total{operation="consume", reason="future_time_clamp"}[5m])) > 0
+            sum by (domain, service, environment) (increase(iam_org_membership_consumed_event_rejected_total{reason="future_time_clamp"}[5m])) > 0
           labels:
             severity: critical
             team: platform
@@ -256,10 +371,9 @@ spec:
         - alert: IAMConsumedEventSchemaViolation
           # A consumed payload failed its embedded JSON Schema and was sent
           # straight to the DLQ (cmd/server/inbound_schema.go) — a producer
-          # contract break or a stale local asyncapi.yaml. Filter to this
-          # alert's own reason.
+          # contract break or a stale local asyncapi.yaml.
           expr: |
-            sum by (domain, service, environment, event_type) (increase(platform_dlq_messages_total{operation="consume", reason="schema_violation"}[5m])) > 0
+            sum by (domain, service, environment, event_type) (increase(iam_org_membership_consumed_event_rejected_total{reason="schema_violation"}[5m])) > 0
           labels:
             severity: critical
             team: platform
@@ -271,6 +385,23 @@ spec:
               Either the producer broke its contract or this service's
               api/asyncapi.yaml is stale. Inspect a DLQ message
               (DLQReason=schema_violation), fix the wrong side, then redrive.
+
+        - alert: IAMMalformedInboundMessage
+          # platform-events forwarded an unparseable (malformed) or
+          # undecodable (decode_error) message to the queue's DLQ. These used
+          # to be deleted and only logged; now the original is kept.
+          expr: |
+            sum by (domain, service, environment, reason) (increase(platform_dlq_messages_total{operation="consume", reason=~"malformed|decode_error"}[5m])) > 0
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: Unparseable messages ({{ "{{ $labels.reason }}" }}) are reaching the DLQ
+            description: >-
+              iam-org-membership's consumer forwarded messages it could not parse
+              to a DLQ. The library logs the message ID and body_sha256, never the
+              body, so inspect the DLQ copy (DLQReason, OriginalQueue, FailedAt
+              attributes), fix the producer, then redrive.
 
     - name: iam_org_membership_compliance
       rules:

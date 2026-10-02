@@ -1,4 +1,4 @@
-package main
+package sqspipeline
 
 import (
 	"context"
@@ -11,15 +11,22 @@ import (
 
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events/mock"
 )
 
 // realValidator is the production ValidatingCodec over the embedded
-// schemas/*.json, so these tests exercise the actual consumed contracts.
-func realValidator(t *testing.T) *eventbusadapter.ValidatingCodec {
+// schemas/*.json, adapted exactly as cmd/server does (ErrNoSchema → valid),
+// so these tests exercise the actual consumed contracts.
+func realValidator(t *testing.T) Validator {
 	t.Helper()
 	v, err := eventbusadapter.NewValidatingCodec(eventbusadapter.NoopCodec{})
 	require.NoError(t, err)
-	return v
+	return ValidatorFunc(func(eventType string, payload []byte) error {
+		if err := v.Validate(eventType, payload); !errors.Is(err, eventbusadapter.ErrNoSchema) {
+			return err
+		}
+		return nil
+	})
 }
 
 // recordingHandler counts calls and returns err.
@@ -94,27 +101,17 @@ func TestValidateConsumed_HandlerErrorPropagatesUnchanged(t *testing.T) {
 	assert.False(t, ok, "transient handler errors must keep normal retry semantics")
 }
 
-// TestInboundHandler_SchemaViolation_EndsUpInDLQ exercises the full
-// composed pipeline: violation → DLQ with DLQReason=schema_violation → ack.
-func TestInboundHandler_SchemaViolation_EndsUpInDLQ(t *testing.T) {
-	transport := &fakeDLQTransport{dlqURL: flociDLQURL}
-	inner := &recordingHandler{}
-	h := inboundHandler(context.Background(), transport, flociQueueURL, "tenant-orgm-q", inner.handle, realValidator(t), &fakeLogger{})
-
-	require.NoError(t, h(context.Background(), envelopeOf("TenantSuspended", `{"source":"hacker"}`)))
-	assert.Zero(t, inner.calls)
-	require.Len(t, transport.sent, 1)
-	assert.Equal(t, schemaViolationReason, transport.sent[0].Reason)
-}
-
+// TestInboundHandler_ValidEvent_NoDLQ: a conforming event reaches the
+// handler and nothing is dead-lettered. (The violation path, through a real
+// consumer, is TestConsumer_SchemaViolation_ForwardedThroughInboundPipeline.)
 func TestInboundHandler_ValidEvent_NoDLQ(t *testing.T) {
-	transport := &fakeDLQTransport{dlqURL: flociDLQURL}
+	dlq := &mock.DLQPublisher{}
 	inner := &recordingHandler{}
-	h := inboundHandler(context.Background(), transport, flociQueueURL, "tenant-orgm-q", inner.handle, realValidator(t), &fakeLogger{})
+	h := inboundHandler("tenant-orgm-q", inner.handle, realValidator(t), dlq, &fakeLogger{})
 
 	require.NoError(t, h(context.Background(), envelopeOf("TenantSeatsChanged", `{"licensed_seats":3}`)))
 	assert.Equal(t, 1, inner.calls)
-	assert.Empty(t, transport.sent)
+	assert.Empty(t, dlq.Sent())
 }
 
 // TestValidateConsumed_TenantRealmReady_MatchesRealmProvisionerShape pins

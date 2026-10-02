@@ -62,7 +62,9 @@ func reconcileOneTenant(ctx context.Context, jctx *Context, tenantID uuid.UUID) 
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
 	// Use the txRunner so any emitted event goes into the same tx as the
 	// tenants UPDATE.
-	return jctx.TxRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+	started := false
+	err := jctx.TxRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+		started = false
 		occ, err := jctx.Tenants.LockSeatOccupancy(txCtx, tenantID)
 		if err != nil {
 			return err
@@ -77,15 +79,21 @@ func reconcileOneTenant(ctx context.Context, jctx *Context, tenantID uuid.UUID) 
 			if err := jctx.Tenants.SetOverageSince(txCtx, tenantID, &now); err != nil {
 				return err
 			}
+			started = true
 			if pub != nil {
-				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+				// The event commits with the overage_since change or not at
+				// all: an enqueue error rolls the transition back.
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventTenantSeatOverageStarted, TenantID: tenantID,
 					Subject: tenantID.String(), Actor: "iam-system",
+					IPAddress: cronIPAddress, UserAgent: cronUserAgent("seat-overage-reconcile"),
 					Data: domain.TenantSeatOverageStartedPayload{
 						TenantID: tenantID, LicensedSeats: occ.LicensedSeats,
 						ActiveUsers: occ.Active, PendingInvitations: occ.Pending, OverageSince: now,
 					},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		case !overCap && occ.OverageSince != nil:
 			now := time.Now().UTC()
@@ -93,11 +101,14 @@ func reconcileOneTenant(ctx context.Context, jctx *Context, tenantID uuid.UUID) 
 				return err
 			}
 			if pub != nil {
-				_ = pub.Enqueue(txCtx, &domain.DomainEvent{
+				if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 					Type: domain.EventTenantSeatOverageResolved, TenantID: tenantID,
 					Subject: tenantID.String(), Actor: "iam-system",
+					IPAddress: cronIPAddress, UserAgent: cronUserAgent("seat-overage-reconcile"),
 					Data: domain.TenantSeatOverageResolvedPayload{TenantID: tenantID, ResolvedAt: now},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		default:
 			// No transition — either both true (still over-cap, keep
@@ -105,4 +116,9 @@ func reconcileOneTenant(ctx context.Context, jctx *Context, tenantID uuid.UUID) 
 		}
 		return nil
 	})
+	// Counted after commit, so a rolled-back or retried transition is not.
+	if err == nil && started && jctx.Metrics != nil {
+		jctx.Metrics.IncSeatOverageStarted()
+	}
+	return err
 }

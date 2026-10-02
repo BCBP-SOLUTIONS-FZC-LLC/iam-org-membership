@@ -66,7 +66,7 @@ func TestEVT16_001_TenantStateChangedRelayThroughWire(t *testing.T) {
 	require.NoError(t, err)
 	outboxPub := eventbusadapter.New("iam-org-membership-test", codec)
 
-	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outboxPub), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outboxPub), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	// Topics + queues.
 	tenantTopic := e.createTopic(t, "iam-tenant-events")
@@ -160,7 +160,7 @@ func TestTwoTenantsIndependentProjection(t *testing.T) {
 	tenantB := seedTenantForConsumer(t, e, "multi-tenant-b")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)

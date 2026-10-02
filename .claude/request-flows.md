@@ -91,7 +91,7 @@ The full OOO delegation lifecycle previously documented in this section and §8.
 
 **Core's only remaining delegation touchpoints** are both synchronous, read-only, and off the I-8 hot path:
 1. The delegate-impact gate on user removal (§8.8) via `port.WorkflowClient` — this talks to the **Workflow** Service, not Delegation, and is completely unaffected by the decomposition.
-2. The department-scope precision lookup on the admin dept-membership Assign/Remove path (§8.8.4) via `port.DelegationCheckClient` → `GET {DELEGATION_BASE_URL}/internal/delegations/dept-delegate`, which replaces the local `delegations` table lookup Core lost. On a Delegation Service outage this degrades to tenant-wide impact scoping (still correct, less precise) — never a hard failure.
+2. The department-scope precision lookup on the admin dept-membership Assign/Remove path (§8.8.4) via `port.DelegationCheckClient` → `GET {DELEGATION_BASE_URL}/internal/delegations/dept-delegate`, which replaces the local `delegations` table lookup Core lost. On a Delegation Service outage, a removal (P-11) degrades to tenant-wide impact scoping (still correct, less precise) and a demotion (P-10) proceeds ungated — never a hard failure.
 
 ## 8.7 (removed — see §8.6)
 
@@ -130,7 +130,7 @@ DELETE /tenants/:id/members/:user_id (P-8) OR /internal/tenants/:id/members/:use
       5xx/timeout → 503 workflow_service_unavailable (no DB write, WFI-8)
       active_workflows > 0 → 409 workflow_resolution_required
         body: {active_workflows, delegate_user_id, workflow_ids[], allowed_actions: [replace_delegate, stop_workflows]}
-        iam_org_membership_delegate_removal_blocked_total{trigger=full_removal}++
+        iam_org_membership_delegate_removal_blocked_total{scope=tenant_removal}++
         NO membership/delegation change, NO event (WFI-3)
       active_workflows == 0 → proceed to existing §15.2.2 cascade
 ```
@@ -158,7 +158,7 @@ Same gate, now backed by the Delegation Service's dept-delegate lookup instead o
 - **P-10 promotion or unchanged** → check is **skipped entirely** (WFI-12, mock `AssertNotCalled`).
 - **P-10 decrease** → if the pre-filter yields no id (none found, or degraded on outage) → proceed unchanged, `WorkflowClient.GetDelegateImpact` is not called. If it yields an id → `WorkflowClient.GetDelegateImpact(tenant, user, delegation_id=<id>)`.
 - **P-11** → always calls `WorkflowClient.GetDelegateImpact(tenant, user, delegation_id)` with whatever the pre-filter returned — a specific id, or nil (which the Workflow Service's contract treats as tenant-wide, §8.8.1 — still correct, less precise, never a hard failure).
-- `active_workflows > 0` → `409 workflow_resolution_required` (`trigger=dept_demotion`/`dept_removal`).
+- `active_workflows > 0` → `409 workflow_resolution_required` (`scope=dept_demotion`/`dept_removal`; the demotion gate's Delegation and Workflow calls run before the write transaction).
 - `scope='all'` delegations remain outside this dept-scoped pre-filter (WFI-10) — they still gate full removal (§8.8), not dept demotion.
 
 ### 8.8.5 Suspension Advisory (§16 C3, WFI-13, fail-open)
@@ -267,7 +267,9 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 
 ### 9.2 Idempotency
 
-- Outbound: UUID v7 `id` in envelope, consumer `processed_events` dedup, outbox `ClaimLease` prevents double-publish.
+- Outbound: UUID v7 `id` in envelope, outbox claim lease (`OUTBOX_CLAIM_LEASE_DURATION`) prevents two replicas publishing one record; delivery is at-least-once, deduplicated by each consumer.
+- Outbound ordering: events with a subject are enqueued via `outbox.EnqueueOrdered` keyed `<tenant_id>/<subject>`, after `pg_advisory_xact_lock(hashtextextended('outbox-order:<key>', 0))` in the same transaction, so writers for one key never interleave and one user's events publish in commit order (an opposite-order lock deadlock is retried as 40P01). SNS/SQS delivery is not ordered end to end — consumers keep their recency guards (EVT-14 here).
+- Inbound (IDEMP-2): `consumer/dedup.go`'s `processOnce` over `port.Inbox` (`postgres.InboxRepository` → platform-events `inbox.Store.Process`) claims `(event_id uuid, consumer)` in `processed_events` as the **first** statement of the transaction that then runs the projection, EVT-14 row lock and relay enqueues; a concurrent duplicate blocks on the claim and is skipped once the first commits (counted on `iam_org_membership_processed_events_duplicates_total` and the library's `platform_duplicate_messages_total`). EVT-15 / schema rejects go to the DLQ without a claim; unknown types are claimed and acked (`ackUnknown`).
 - Internal: `ON CONFLICT DO NOTHING` (tenant) / `DO UPDATE` (memberships), Event Consumer sends stable `idempotency_key` from Keycloak event ID.
 - JIT: `INSERT ... ON CONFLICT (tenant_id, user_id, department_id) DO UPDATE SET role_level=…, deleted_at=NULL`.
 
@@ -277,7 +279,9 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 |---|---|---|
 | DB commit OK, Valkey DEL fails | logged | TTL self-heals (≤300 s) |
 | Outbox crashes after publish, before mark | lease expires, re-claimed | Consumer `processed_events` dedups |
-| DELETE cascade invoked twice | `processed_events` insert-or-ignore | Second is no-op |
+| Same event delivered twice (redelivery / concurrent replicas) | inbox claim `ON CONFLICT DO NOTHING` | Second waits on the claim, then is skipped |
+| DELETE cascade invoked twice | `processed_events` claim / IDEMP-3 convergence | Second is no-op |
+| Outbox record exhausts `OUTBOX_MAX_ATTEMPTS` | moved to `outbox_dead_letters`, `IAMOrgMembershipOutboxDeadLetters` | `outbox.Runner.ReprocessDeadLetters[With]` (`docs/runbook-outbox-dead-letter.md`); the record rejoins the back of its ordering key |
 | RLS GUC unset | `rls_check_tenant` slow path → violation log | 0 rows, CloudWatch alarm |
 | SNS throttle during outbox publish | platform-events retryable | Auto retry; DLQ on permanent failure |
 
@@ -364,9 +368,9 @@ Idempotent via `processed_events`. The whole wipe (steps 1–3) commits as one t
 
 | Table | Retention | Mechanism |
 |---|---|---|
-| `processed_events` | 8 d | `processed-events-prune` CronJob (IDEMP-4 window; > 7-d SQS lifetime) |
-| `rls_violation_log` | 30 d | Hourly CronJob |
-| `outbox_events` (published) | 8 days | `outbox-prune` CronJob — being migrated to `outbox.Runner.PrunePublished(ctx, retention, batchLimit)` (`platform-events`) off the earlier hand-rolled batched raw-SQL delete against `port.ReconcilerStore`; still uncommitted as of 2026-09-20, but its `test/postgres` integration-test gap (tests never wired the new `OutboxRunner` dependency, so they exercised the no-op skip path instead of real prune logic) was found and fixed the same day — full `test/postgres` suite passes |
+| `processed_events` | 8 d | `processed-events-prune` CronJob — platform-events `inbox.Store.Prune` via `InboxRepository.Prune`, once per consumer name (IDEMP-4 window; > 7-d SQS lifetime) |
+| `rls_violation_log` | 30 d (intended) | **No pruning job exists today** — none of the 7 CronJobs touches it; rows accumulate until one is added |
+| `outbox_events` (published) | 8 days | `outbox-prune` CronJob — `outbox.Runner.PrunePublished(ctx, retention, batchLimit)` (`platform-events`), called until a batch comes back short; the hand-rolled `ReconcilerStore.PruneOutbox` it replaced is deleted |
 | `pending_invitations` (terminal) | not hard-deleted by any job | No `invitation-cleanup` CronJob exists in this repo — terminal rows (`accepted`/`expired`/`revoked`) persist until tenant offboarding cascade (`ON DELETE CASCADE`) or an explicit GDPR erasure-by-email (§15.8) |
 
 **Removed from this table (ADR-0008/ADR-0007):** `delegations` and `tender_acl_entries` retention rows — Core owns neither table any more; their soft-delete-then-hard-delete retention is now the Delegation Service's and Tender-ACL Service's own concern in their respective databases.

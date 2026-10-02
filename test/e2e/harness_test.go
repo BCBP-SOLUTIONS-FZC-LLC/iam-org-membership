@@ -154,7 +154,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	// main.go after the fact).
 	gin.SetMode(gin.TestMode)
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
-		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-e2e"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Docs:      httpadapter.DocsConfig{Environment: "test"},
 
 		TenantRepo:     tenantRepo,

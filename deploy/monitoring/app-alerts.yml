@@ -181,10 +181,9 @@ groups:
     rules:
 
       - alert: IAMFutureLifecycleEventRejected
-        # EVT-15 future-time clamp — any occurrence pages. platform_dlq_messages_total
-        # is shared with platform-events (SQS redrive and outbox dead-letters) —
-        # filter to this service's own consume-side reject reason.
-        expr: sum by (domain, service, environment) (rate(platform_dlq_messages_total{operation="consume", reason="future_time_clamp"}[5m])) > 0
+        # EVT-15 future-time clamp — any occurrence pages. Counted at the reject
+        # site; the DLQ forward itself is platform_dlq_messages_total{reason="explicit"}.
+        expr: sum by (domain, service, environment) (rate(iam_org_membership_consumed_event_rejected_total{reason="future_time_clamp"}[5m])) > 0
         for: 5m
         labels:
           severity: page
@@ -201,9 +200,9 @@ groups:
       - alert: IAMConsumedEventSchemaViolation
         # A consumed payload failed its embedded JSON Schema and was sent
         # straight to the DLQ (cmd/server/inbound_schema.go). Every event of
-        # that type from that producer is being dropped, so the tenant
-        # projection is drifting — page. Filtered to this alert's own reason.
-        expr: sum by (domain, service, environment, event_type) (rate(platform_dlq_messages_total{operation="consume", reason="schema_violation"}[5m])) > 0
+        # that type from that producer is being dead-lettered, so the tenant
+        # projection is drifting — page.
+        expr: sum by (domain, service, environment, event_type) (rate(iam_org_membership_consumed_event_rejected_total{reason="schema_violation"}[5m])) > 0
         for: 5m
         labels:
           severity: page
@@ -217,6 +216,27 @@ groups:
             api/asyncapi.yaml is stale. Inspect a DLQ message (DLQReason=
             schema_violation), fix the side that is wrong, then redrive.
           runbook: "iam-org-membership/consumed-schema-violation"
+
+      - alert: IAMMalformedInboundMessage
+        # platform-events forwarded a message it could not parse as an event
+        # envelope (malformed) or whose Glue payload it could not decode
+        # (decode_error) to the queue's DLQ. Before WithDLQForwarding these
+        # were deleted and only logged; now they are kept, so the original
+        # body can be inspected and redriven.
+        expr: sum by (domain, service, environment, reason) (rate(platform_dlq_messages_total{operation="consume", reason=~"malformed|decode_error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: iam-org-membership
+        annotations:
+          summary: "Unparseable messages ({{ $labels.reason }}) are reaching the DLQ"
+          description: |
+            iam-org-membership's consumer forwarded messages it could not parse
+            ({{ $labels.reason }}) to a DLQ. The library logs the message ID and
+            body_sha256 (never the body), so inspect the DLQ copy itself: its
+            DLQReason, OriginalQueue and FailedAt attributes say where it came
+            from. Fix the producer, then redrive.
+          runbook: "iam-org-membership/malformed-inbound-message"
 
       - alert: IAMCrossTenantRLSViolation
         expr: rate(iam_rls_violations_total{violation_type="cross_tenant_access"}[5m]) > 0
@@ -318,6 +338,125 @@ groups:
             SNS_TOPIC_MEMBERSHIP_ARN / SNS_TOPIC_TENANT_ARN connectivity.
           runbook: "iam-org-membership/outbox-dead-letter"
 
+  # ── Outbox ordering, backlogs and database pools (platform library metrics,
+  #    proposed in the registry) ───────────────────────────────────────────────
+  - name: iam-org-membership.platform-libraries
+    rules:
+
+      - alert: IAMOrgMembershipOutboxOrderingBlocked
+        # Ordered outbox records (one key per tenant/subject, EnqueueOrdered)
+        # waiting behind a head record that keeps failing to publish. The key
+        # clears when the head is published or dead-lettered (OUTBOX_MAX_ATTEMPTS).
+        expr: |
+          max by (domain, service, environment) (platform_outbox_ordering_blocked_events{service="iam-org-membership"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: iam-org-membership ordered outbox events are blocked behind a failing record
+          description: >-
+            {{ $value }} outbox records are waiting for an earlier record of the
+            same tenant/subject key to publish. Find the failing head in the outbox
+            runner logs (last_error) and fix it, or let it dead-letter.
+          runbook: "iam-org-membership/outbox-ordering-blocked"
+
+      - alert: IAMOrgMembershipOutboxBacklog
+        # The oldest due outbox record has waited more than 5 minutes: SNS is
+        # failing transiently (no attempt is counted, so nothing dead-letters) or
+        # the runner cannot keep up.
+        expr: |
+          max by (domain, service, environment) (platform_outbox_oldest_pending_age{service="iam-org-membership"}) > 300
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: iam-org-membership outbox delivery is more than 5 minutes behind
+          description: >-
+            The oldest pending outbox event is {{ $value | humanizeDuration }} old.
+            Check the outbox runner logs for SNS publish errors
+            and platform_outbox_pending_events.
+          runbook: "iam-org-membership/outbox-backlog"
+
+      - alert: IAMOrgMembershipDLQBacklog
+        # Messages sitting in an inbound queue's DLQ (sampled every
+        # SQS_QUEUE_DEPTH_INTERVAL). Complements the inflow alerts with the backlog.
+        expr: |
+          max by (domain, service, environment, queue) (platform_dlq_depth{service="iam-org-membership"}) > 0
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: Messages are waiting in the {{ $labels.queue }} DLQ
+          description: >-
+            {{ $value }} messages in the DLQ of {{ $labels.queue }}. Inspect their
+            DLQReason attribute, fix the cause, then redrive.
+          runbook: "iam-org-membership/dlq-backlog"
+
+      - alert: IAMOrgMembershipDBPoolSaturated
+        # Worst replica per pool (pgcommon's reference rule, scoped to this service).
+        expr: |
+          max by (domain, service, environment, pool) (
+            sum by (domain, service, environment, pool, instance) (platform_db_pool_connections{service="iam-org-membership", state="acquired"})
+              /
+            (sum by (domain, service, environment, pool, instance) (platform_db_pool_max_connections{service="iam-org-membership"}) > 0)
+          ) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: iam-org-membership Postgres pool {{ $labels.pool }} is over 90% utilised
+          description: >-
+            {{ $value | humanizePercentage }} of pool {{ $labels.pool }}'s connections are
+            checked out on the busiest replica; callers are about to queue for
+            connections (pool="default" is the API pool, pool="system" the BYPASSRLS pool).
+          runbook: "iam-org-membership/db-pool-saturated"
+
+      - alert: IAMOrgMembershipDBAcquireErrors
+        expr: |
+          max by (domain, service, environment, pool) (
+            (
+                sum by (domain, service, environment, pool, instance) (rate(platform_db_pool_acquires_total{service="iam-org-membership", outcome="error"}[5m]))
+              or
+                sum by (domain, service, environment, pool, instance) (rate(platform_db_pool_acquires_total{service="iam-org-membership"}[5m])) * 0
+            )
+              /
+            (sum by (domain, service, environment, pool, instance) (rate(platform_db_pool_acquires_total{service="iam-org-membership"}[5m])) > 0)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: iam-org-membership cannot get Postgres connections from pool {{ $labels.pool }}
+          description: >-
+            {{ $value | humanizePercentage }} of connection acquires are failing on the
+            worst replica (timeouts, closed pool or database unreachable). Requests
+            answer 503 db_unavailable.
+          runbook: "iam-org-membership/db-acquire-errors"
+
+      - alert: IAMOrgMembershipDBRetriesExhausted
+        expr: |
+          sum by (domain, service, environment, pool, reason) (increase(platform_db_transaction_retries_exhausted_total{service="iam-org-membership"}[15m])) > 0
+        labels:
+          severity: warning
+          team: platform
+          metric_status: proposed
+        annotations:
+          summary: iam-org-membership transactions failed after exhausting {{ $labels.reason }} retries
+          description: >-
+            Transactions on pool {{ $labels.pool }} kept hitting {{ $labels.reason }}
+            conflicts through every retry; callers got 409 concurrent_update.
+          runbook: "iam-org-membership/db-retries-exhausted"
+
   # ── Outbound dependency health (ticket / page) ──────────────────────────────
   - name: iam-org-membership.outbound
     interval: 30s
@@ -368,7 +507,7 @@ groups:
           summary: "A producer is emitting an event type this consumer doesn't handle"
           description: |
             iam-org-membership is silently ack'ing events of type
-            "{{ $labels.event_type }}" on topic {{ $labels.topic }}. This is
+            "{{ $labels.event_type }}". This is
             forward-compat behavior (silent ack + log + metric), but the
             producer has added a type we should be handling. Add a case in
             membership_event_consumer.go / classify().

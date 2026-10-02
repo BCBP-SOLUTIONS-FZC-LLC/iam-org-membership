@@ -21,8 +21,8 @@
 // Every counter ends in _total; every histogram ends in _seconds. The
 // "domain"/"service"/"environment" labels are never left to individual
 // Inc()/Observe() call sites to supply — they're baked in once via
-// ConstLabels (gincommon.MetricsConstLabels, see serviceLabels, and the
-// registry-built Tier-1 collectors), so instrumentation callers cannot
+// ConstLabels by gincommon's constructors (NewShared*Vec for Tiers 1-2,
+// NewCounterVec / NewGauge / NewHistogramVec for Tier 3), so instrumentation callers cannot
 // omit or misspell them (rule 8). No collector carries a version label;
 // the build version lives only on platform_build_info.
 //
@@ -65,6 +65,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
@@ -72,11 +73,6 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 )
-
-// domain is this service's fixed IAM Platform Observability Standard
-// domain identity — a constant, not a runtime-varying label value, since
-// every metric this package registers is emitted by an IAM-domain service.
-const domain = "iam"
 
 var (
 	// ── Tier 1 — platform_* (shared across domains) ─────────────────────
@@ -89,19 +85,25 @@ var (
 	DuplicateMessages *prometheus.CounterVec
 
 	// DLQMessages (platform_dlq_messages_total{operation,event_type,
-	// reason}, Approved) is shared with platform-events: the library
-	// records operation="consume" redrive dead-letters it performs and
-	// operation="outbox_publish",reason="max_attempts" outbox dead-letters;
-	// this service records the events it actively rejects to the DLQ
-	// itself (cmd/server/dlq.go's raw-SQS router, which platform-events
-	// never sees) as operation="consume" with reason:
+	// reason}, Approved) is shared with platform-events, which counts every
+	// dead-letter exactly once: its own forwards (malformed, decode_error,
+	// max_receive_count), this service's explicit rejects forwarded through
+	// its DLQPublisher (reason="explicit", sqspipeline/dlq.go), and outbox
+	// dead-letters (operation="outbox_publish"). This service never
+	// increments it itself; why a message was rejected is
+	// ConsumedEventRejected below.
+	DLQMessages *prometheus.CounterVec
+
+	// ConsumedEventRejected (iam_org_membership_consumed_event_rejected_total
+	// {event_type,reason}) counts consumed events this service rejects as
+	// permanent failures, at the reject site:
 	//   - future_time_clamp — EVT-15 (§16 A40: event.time > now() + skew,
 	//     a poison-pill/producer-clock-skew guard);
 	//   - schema_violation — a consumed payload failing its embedded JSON
-	//     Schema (cmd/server/inbound_schema.go), i.e. a producer contract
+	//     Schema (sqspipeline/inbound_schema.go), i.e. a producer contract
 	//     break.
-	// Any nonzero rate of either pages; alerts filter on reason.
-	DLQMessages *prometheus.CounterVec
+	// Each is then forwarded to the DLQ. Any nonzero rate of either pages.
+	ConsumedEventRejected *prometheus.CounterVec
 
 	// DependencyRequestSeconds (platform_dependency_request_seconds{
 	// dependency,operation,outcome}, Proposed) times the synchronous
@@ -122,7 +124,8 @@ var (
 	DependencyCallDurationSeconds *prometheus.HistogramVec
 
 	// DependencyCallFailuresTotal counts cross-service dependency call
-	// failures by outcome (5xx|timeout|fallback_served; "fallback_served"
+	// failures by reason (timeout|transport|http_4xx|http_5xx|http_other|
+	// fallback_served; "fallback_served"
 	// is recorded by the calling service layer — CatalogService/
 	// GroupMappingService — since only it knows whether a stale value was
 	// served). It is the authoritative failure counter; the registry has
@@ -148,7 +151,8 @@ var (
 	RLSViolations *prometheus.CounterVec
 
 	// AuthSessionRevokeFailed counts RP RevokeUserSessions calls that
-	// returned non-2xx or errored (AUTH-8 fail-open). AUTH-* is a shared
+	// returned non-2xx or errored (AUTH-8 fail-open). reason is one of the
+	// registry's values: transport, http_4xx, http_5xx, http_other. AUTH-* is a shared
 	// IAM-subsystem security-invariant catalogue, not unique to this
 	// service's own business logic — any IAM service that reduces a
 	// user's privilege via a Realm-Provisioner session-revoke call can
@@ -229,51 +233,25 @@ var (
 	PendingInvitationsStale prometheus.Gauge // invitation-expiry cron health
 )
 
-type queueCtxKey struct{}
-
-// WithQueue returns ctx carrying the logical queue name (e.g.
-// tenant-orgm-q) a consumed message came from, so code deep in the
-// consumer (dedup) can label platform_* series by queue without threading
-// it through every handler signature. cmd/server's instrumentedHandler
-// sets it per message.
-func WithQueue(ctx context.Context, queue string) context.Context {
-	return context.WithValue(ctx, queueCtxKey{}, queue)
-}
-
-// QueueFromContext returns the queue set by WithQueue, or "unknown" (the
-// registry's value for an absent queue).
-func QueueFromContext(ctx context.Context) string {
-	if q, ok := ctx.Value(queueCtxKey{}).(string); ok && q != "" {
-		return q
-	}
-	return "unknown"
-}
-
-// IncDuplicate records one redelivery filtered by processed_events against
-// platform_duplicate_messages_total{queue,event_type} (queue from ctx) and
-// the authoritative Tier-3 iam_org_membership_processed_events_duplicates_
-// total{consumer}. Nil-safe.
-func IncDuplicate(ctx context.Context, consumer, eventType string) {
+// IncDuplicate records one redelivery filtered by processed_events on the
+// authoritative Tier-3 iam_org_membership_processed_events_duplicates_
+// total{consumer}. The Tier-1 platform_duplicate_messages_total{queue,
+// event_type} is recorded by platform-events' inbox on the same duplicate.
+// Nil-safe.
+func IncDuplicate(_ context.Context, consumer, _ string) {
 	if ProcessedEventsDuplicatesTotal != nil {
 		ProcessedEventsDuplicatesTotal.WithLabelValues(consumer).Inc()
 	}
-	if DuplicateMessages != nil {
-		DuplicateMessages.WithLabelValues(QueueFromContext(ctx), eventLabel(eventType)).Inc()
-	}
 }
 
-// IncDLQ records one event this service rejected to its DLQ, as
-// platform_dlq_messages_total{operation="consume",event_type,reason}.
-// Nil-safe.
-func IncDLQ(eventType, reason string) {
-	if DLQMessages != nil {
-		DLQMessages.WithLabelValues(dlqOperationConsume, eventLabel(eventType), reason).Inc()
+// IncConsumedEventRejected records one consumed event this service rejected
+// as a permanent failure (reason future_time_clamp or schema_violation).
+// The DLQ forward itself is counted by platform-events. Nil-safe.
+func IncConsumedEventRejected(eventType, reason string) {
+	if ConsumedEventRejected != nil {
+		ConsumedEventRejected.WithLabelValues(eventLabel(eventType), reason).Inc()
 	}
 }
-
-// dlqOperationConsume is the registry operation value for a consumed
-// message moved to dead-letter storage.
-const dlqOperationConsume = "consume"
 
 // eventLabel bounds an event_type label value the way the registry
 // requires: "unknown" when empty, "__oversized__" past 128 bytes.
@@ -296,7 +274,7 @@ func eventLabel(eventType string) string {
 // has run, so unit tests that never call Register() get a silent no-op.
 func ObserveDependencyLatency(targetService, endpoint string, seconds float64) {
 	if DependencyCallDurationSeconds != nil {
-		DependencyCallDurationSeconds.WithLabelValues(targetService, endpoint).Observe(seconds)
+		DependencyCallDurationSeconds.WithLabelValues(targetService, endpointLabel(endpoint)).Observe(seconds)
 	}
 }
 
@@ -316,15 +294,20 @@ func ObserveDependencyCall(targetService, endpoint string, seconds float64, resp
 	if err != nil || resp == nil || resp.StatusCode >= 500 {
 		outcome = "error"
 	}
-	DependencyRequestSeconds.WithLabelValues(targetService, strings.ReplaceAll(endpoint, "-", "_"), outcome).Observe(seconds)
+	DependencyRequestSeconds.WithLabelValues(targetService, endpointLabel(endpoint), outcome).Observe(seconds)
 }
 
-// IncDependencyError records a cross-service call failure by outcome
-// (5xx|timeout|fallback_served) on the authoritative
+// endpointLabel spells an endpoint label value in snake_case (callers name
+// some endpoints after their URL path, e.g. "group-resolution"), so every
+// dependency series uses one spelling.
+func endpointLabel(endpoint string) string { return strings.ReplaceAll(endpoint, "-", "_") }
+
+// IncDependencyError records a cross-service call failure by reason
+// (see DependencyErrorReason / HTTPStatusReason / DependencyReasonFallbackServed) on the authoritative
 // iam_org_membership_dependency_call_failures_total. Nil-safe.
-func IncDependencyError(targetService, endpoint, outcome string) {
+func IncDependencyError(targetService, endpoint, reason string) {
 	if DependencyCallFailuresTotal != nil {
-		DependencyCallFailuresTotal.WithLabelValues(targetService, endpoint, outcome).Inc()
+		DependencyCallFailuresTotal.WithLabelValues(targetService, endpointLabel(endpoint), reason).Inc()
 	}
 }
 
@@ -341,6 +324,58 @@ func IncMembershipExistsCheck(caller, result string) {
 func IncPublicTenantResolve(result string) {
 	if PublicTenantResolve != nil {
 		PublicTenantResolve.WithLabelValues(result).Inc()
+	}
+}
+
+// Label values for the business-decision counters below. Fixed sets, so the
+// series are bounded and pre-warmed.
+const (
+	DelegateBlockScopeTenantRemoval = "tenant_removal"
+	DelegateBlockScopeDeptRemoval   = "dept_removal"
+	DelegateBlockScopeDeptDemotion  = "dept_demotion"
+
+	InviteThrottleReinviteTooSoon = "reinvite_too_soon"
+	InviteThrottleTenantRate      = "tenant_rate_limited"
+	InviteThrottleActorRate       = "actor_rate_limited"
+
+	SeatOverageCauseReconciler = "occupancy"
+)
+
+// IncDelegateRemovalBlocked counts a removal or demotion refused with 409
+// workflow_resolution_required. Nil-safe.
+func IncDelegateRemovalBlocked(scope string) {
+	if DelegateRemovalBlocked != nil {
+		DelegateRemovalBlocked.WithLabelValues(scope).Inc()
+	}
+}
+
+// IncDelegateReassignment counts a completed P-26 removal resolution by
+// action (replace_delegate | stop_workflows). Nil-safe.
+func IncDelegateReassignment(action string) {
+	if DelegateReassignment != nil {
+		DelegateReassignment.WithLabelValues(action).Inc()
+	}
+}
+
+// IncInviteThrottled counts a P-6 invite refused by an abuse limit. Nil-safe.
+func IncInviteThrottled(reason string) {
+	if InviteThrottled != nil {
+		InviteThrottled.WithLabelValues(reason).Inc()
+	}
+}
+
+// IncSeatLimitReached counts a P-6 invite refused at the SEAT-1 cap, by the
+// tenant's plan. Nil-safe.
+func IncSeatLimitReached(plan string) {
+	if SeatLimitReached != nil {
+		SeatLimitReached.WithLabelValues(plan).Inc()
+	}
+}
+
+// IncSeatOverageStarted counts a tenant entering seat overage. Nil-safe.
+func IncSeatOverageStarted(cause string) {
+	if SeatOverageStarted != nil {
+		SeatOverageStarted.WithLabelValues(cause).Inc()
 	}
 }
 
@@ -365,6 +400,9 @@ type Recorder struct{}
 // IncRealmSyncFailed satisfies jobs.Metrics.
 func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
 
+// IncSeatOverageStarted satisfies jobs.Metrics.
+func (Recorder) IncSeatOverageStarted() { IncSeatOverageStarted(SeatOverageCauseReconciler) }
+
 // ObserveLifecycleEventLag records the seconds between event.time and the
 // moment this consumer applied the projection — the SLO-3 primary drift
 // signal. Nil-safe, see ObserveDependencyLatency.
@@ -374,82 +412,91 @@ func ObserveLifecycleEventLag(eventType string, seconds float64) {
 	}
 }
 
-// DependencyOutcome classifies a cross-service client transport error into
-// one of iam_org_membership_dependency_call_failures_total's two
-// client-observable outcomes
-// ("timeout" | "5xx"). The third outcome, "fallback_served", is recorded by
-// the calling service layer, not here — only it knows whether a stale/
-// last-known-good value was served instead of surfacing the error.
-func DependencyOutcome(err error) string {
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "timeout"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	return "5xx"
-}
-
-// serviceLabels returns the ConstLabels for a Tier-2 (iam_*) or Tier-3
-// (iam_org_membership_*) collector: gincommon's {domain, environment,
-// service} (MetricsConstLabels) — the same identity every gincommon,
-// platform-events and platform-pgcommon series carries, injected centrally
-// (rule 8) so no Inc()/Observe() call site can omit or misspell it.
-// environment (Register's argument) and domain="iam" are only a fallback
-// for unit tests that register metrics without initialising gincommon.
-func serviceLabels(environment string) prometheus.Labels {
-	if labels := gincommon.MetricsConstLabels(); len(labels) > 0 {
-		return labels
-	}
-	return prometheus.Labels{"domain": domain, "environment": environment}
-}
-
-var registerOnce sync.Once
-
-var (
-	sharedMu   sync.Mutex
-	sharedDone bool
+// Dependency failure reasons for iam_org_membership_dependency_call_failures_total.
+// The registry's reason vocabulary must start with a letter, so status
+// classes are spelled http_4xx/http_5xx rather than "5xx".
+const (
+	DependencyReasonTimeout        = "timeout"
+	DependencyReasonTransport      = "transport"
+	DependencyReasonFallbackServed = "fallback_served"
 )
 
-// Register wires business metrics onto gincommon's Prometheus registerer
-// (same registry as HTTP metrics). Call once at startup AFTER
-// ObservabilityMiddlewares has run, BEFORE events.InitMetrics (so
-// platform-events reuses the shared Tier-1 collectors instead of
-// registering its own) and BEFORE the /metrics endpoint is served.
-// Idempotent. The Tier-1 collectors need gincommon's identity: if gincommon
-// is not initialised yet (some unit tests), they are skipped and created
-// by the first later Register call that finds it initialised.
-func Register(environment string) {
-	registerOnce.Do(func() { registerMetrics(environment) })
-	registerShared()
+// DependencyErrorReason classifies a cross-service client transport error as
+// "timeout" or "transport". "fallback_served" is recorded by the calling
+// service layer, not here — only it knows whether a stale/last-known-good
+// value was served instead of surfacing the error.
+func DependencyErrorReason(err error) string {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return DependencyReasonTimeout
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return DependencyReasonTimeout
+	}
+	return DependencyReasonTransport
 }
 
-// registerShared builds the registry-owned Tier-1 collectors once
-// gincommon's identity is known. A collector platform-events (or an
-// earlier registration) already holds is adopted rather than duplicated,
-// so the call is order-tolerant; any other registration error panics, like
-// MustRegister.
-func registerShared() {
-	sharedMu.Lock()
-	defer sharedMu.Unlock()
-	if sharedDone || len(gincommon.MetricsConstLabels()) == 0 {
+// HTTPStatusReason maps a non-2xx response status onto the registry-safe
+// reason values http_4xx | http_5xx | http_other.
+func HTTPStatusReason(status int) string {
+	switch {
+	case status >= 400 && status < 500:
+		return "http_4xx"
+	case status >= 500 && status < 600:
+		return "http_5xx"
+	default:
+		return "http_other"
+	}
+}
+
+var (
+	registerMu   sync.Mutex
+	registerDone bool
+)
+
+// Register builds and registers every collector this service owns onto
+// gincommon's registerer (the same registry as the HTTP metrics). Call it
+// after ObservabilityMiddlewares (which fixes the {domain, service,
+// environment} identity), before events.InitMetrics (so platform-events
+// adopts the registry-shared collectors instead of registering its own)
+// and before /metrics is served.
+//
+// Every constructor is gincommon's: Tiers 1 and 2 from the Platform
+// Observability Registry (NewShared*Vec), Tier 3 through NewCounterVec /
+// NewGauge / NewHistogramVec, which validate the iam_org_membership_ prefix,
+// suffixes and prohibited labels and inject the identity const labels. They
+// need that identity, so until gincommon is initialised Register is a
+// no-op and the nil-safe helpers record nothing; the first call after
+// initialisation builds everything. Idempotent. environment is kept for
+// callers' sake; the identity comes from gincommon.
+func Register(_ string) {
+	registerMu.Lock()
+	defer registerMu.Unlock()
+	if registerDone || len(gincommon.MetricsConstLabels()) == 0 {
 		return
 	}
+	registerShared()
+	registerServiceMetrics()
+	prewarm()
+	registerDone = true
+}
+
+// registerShared builds the registry-owned Tier-1 and Tier-2 collectors. A
+// collector platform-events (or an earlier registration) already holds is
+// adopted rather than duplicated, so the call is order-tolerant; any other
+// registration error panics, like MustRegister.
+func registerShared() {
 	DuplicateMessages = mustShared(gincommon.NewSharedCounterVec(nil, "platform_duplicate_messages_total"))
 	DLQMessages = mustShared(gincommon.NewSharedCounterVec(nil, "platform_dlq_messages_total"))
 	DependencyRequestSeconds = mustShared(gincommon.NewSharedHistogramVec(nil, "platform_dependency_request_seconds"))
-	sharedDone = true
 
-	// DLQMessages — every handled event type crossed with both
-	// service-side reject reasons, so dashboards show 0 rather than "no
-	// data". event_type is the envelope type at the point of rejection
-	// (EVT-15 fires before the handler runs, schema_violation fires for any
-	// consumed type).
-	for _, et := range handledEventTypes {
-		DLQMessages.WithLabelValues(dlqOperationConsume, et, "future_time_clamp")
-		DLQMessages.WithLabelValues(dlqOperationConsume, et, "schema_violation")
-	}
+	// Tier 2 — domain-shared iam_* entries (platform-gincommon v1.5.0):
+	// name, help, labels and buckets come from the registry, so every IAM
+	// service emitting them stays identical.
+	RLSViolations = mustShared(gincommon.NewSharedCounterVec(nil, "iam_rls_violations_total"))
+	AuthSessionRevokeFailed = mustShared(gincommon.NewSharedCounterVec(nil, "iam_auth_session_revoke_failed_total"))
+	LifecycleEventSkipped = mustShared(gincommon.NewSharedCounterVec(nil, "iam_lifecycle_event_skipped_total"))
+	LifecycleEventLagSeconds = mustShared(gincommon.NewSharedHistogramVec(nil, "iam_lifecycle_event_lag_seconds"))
 }
 
 // mustShared returns the collector gincommon built, or — when an identical
@@ -468,6 +515,32 @@ func mustShared[C prometheus.Collector](c C, err error) C {
 	panic("metrics: register shared platform collector: " + err.Error())
 }
 
+// must panics on a Tier 3 construction error: a name, suffix or label the
+// standard rejects is a programming error caught at startup.
+func must[C any](c C, err error) C {
+	if err != nil {
+		panic("metrics: register service collector: " + err.Error())
+	}
+	return c
+}
+
+// rlsViolationTypes is the registry's fixed violation_type set for
+// iam_rls_violations_total.
+var rlsViolationTypes = []string{"cross_tenant_access", "missing_or_invalid_guc", "missing_primary_email", "other"}
+
+// AddRLSViolations adds n to iam_rls_violations_total{violation_type}.
+// A violation_type outside the registry's set is recorded as "other".
+// Nil-safe.
+func AddRLSViolations(violationType string, n float64) {
+	if RLSViolations == nil {
+		return
+	}
+	if !slices.Contains(rlsViolationTypes, violationType) {
+		violationType = "other"
+	}
+	RLSViolations.WithLabelValues(violationType).Add(n)
+}
+
 // handledEventTypes is every event type this consumer handles (and so may
 // reject to the DLQ), used to pre-warm label combinations.
 var handledEventTypes = []string{
@@ -479,202 +552,121 @@ var handledEventTypes = []string{
 	"DepartmentCatalogChanged",
 }
 
-func registerMetrics(environment string) {
-	sLabels := serviceLabels(environment)
+// registerServiceMetrics builds the Tier 3 iam_org_membership_* collectors.
+func registerServiceMetrics() {
+	// Tier 3 predecessors of the Proposed Tier 1 candidates: authoritative
+	// until ratification (PlatformRegistry, registry.go).
+	DependencyCallDurationSeconds = must(gincommon.NewHistogramVec(nil,
+		"iam_org_membership_dependency_call_duration_seconds",
+		"Latency of synchronous cross-service dependency calls, by target_service and endpoint. Authoritative alerting/SLO source until platform_dependency_request_seconds (Proposed, registry.go) is ratified.",
+		[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
+		"target_service", "endpoint"))
+	DependencyCallFailuresTotal = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_dependency_call_failures_total",
+		"Cross-service dependency call failures by target_service/endpoint/reason (timeout|transport|http_4xx|http_5xx|http_other|fallback_served). Authoritative failure counter; platform_dependency_request_seconds_count{outcome=\"error\"} is the registry concept.",
+		"target_service", "endpoint", "reason"))
+	ProcessedEventsDuplicatesTotal = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_processed_events_duplicates_total",
+		"SQS redeliveries filtered by the processed_events composite PK (IDEMP-4). Authoritative alerting source until platform_duplicate_messages_total (Proposed, registry.go) is ratified.",
+		"consumer"))
 
-	// Tier 1 — platform_* collectors are built by registerShared from the
-	// central registry, not here.
+	UnknownEventAcknowledged = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_unknown_event_acknowledged_total",
+		"Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type.",
+		"event_type"))
+	DelegateSuspendImpact = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_delegate_suspend_impact_total",
+		"P-7 suspensions where the user was a delegate on active workflows and the WFI-13 advisory fired (advisory, never a block).",
+		"checked"))
+	TenantOwnerlessEscalated = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_tenant_ownerless_escalated_total",
+		"Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page.",
+		"reason"))
+	SeatOverageStarted = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_seat_overage_started_total",
+		"Tenants entering seat overage (SEAT-5), by cause: occupancy (active members plus pending invitations above licensed_seats, detected by the seat-overage reconciler).",
+		"cause"))
+	SeatLimitReached = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_seat_limit_reached_total",
+		"P-6 invites refused because active members plus pending invitations reached licensed_seats (SEAT-1), by tenant plan.",
+		"plan"))
+	InviteThrottled = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_invite_throttled_total",
+		"P-6 invites refused by the abuse limits (§16 A41), by reason: reinvite_too_soon (PI-11), tenant_rate_limited and actor_rate_limited (PI-12).",
+		"reason"))
+	RealmSyncFailed = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_realm_sync_failed_total",
+		"realm-config-sync reconciler failures (T-15).",
+		"stage"))
+	DelegateRemovalBlocked = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_delegate_removal_blocked_total",
+		"Removals or demotions refused because the user is a delegate on active workflows (409 workflow_resolution_required), by scope: tenant_removal (P-8 WFI-3), dept_removal (P-11), dept_demotion (P-10 level decrease, WFI-9/12).",
+		"scope"))
+	DelegateReassignment = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_delegate_reassignment_total",
+		"P-26 removal-resolution completions by action (replace_delegate | stop_workflows).",
+		"action"))
+	MembershipExistsCheck = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_membership_exists_check_total",
+		"I-15 grant-time membership-existence checks served, by caller and result.",
+		"caller", "result"))
+	ConsumedEventRejected = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_consumed_event_rejected_total",
+		"Consumed events rejected as permanent failures (EVT-15 future-time clamp, consumed-schema violation) and forwarded to the DLQ, by event type and reason.",
+		"event_type", "reason"))
+	PublicTenantResolve = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_public_tenant_resolve_total",
+		"PUB-1 pre-login tenant/realm resolution lookups served, by result.",
+		"result"))
 
-	// ── Tier 3 predecessors, shadow-authoritative until ratification ────
-	DependencyCallDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "iam_org_membership_dependency_call_duration_seconds",
-		Help:        "Latency of synchronous cross-service dependency calls, by target_service and endpoint. Authoritative alerting/SLO source until platform_dependency_request_seconds (Proposed, registry.go) is ratified.",
-		Buckets:     []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
-		ConstLabels: sLabels,
-	}, []string{"target_service", "endpoint"})
+	TenantOwnerless = must(gincommon.NewGauge(nil,
+		"iam_org_membership_tenant_ownerless",
+		"Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages."))
+	RealmSyncPending = must(gincommon.NewGauge(nil,
+		"iam_org_membership_realm_sync_pending",
+		"Tenants with realm_sync_pending=true (T-15)."))
+	SeatOverageActive = must(gincommon.NewGauge(nil,
+		"iam_org_membership_seat_overage_active",
+		"Tenants with overage_since IS NOT NULL (SEAT-5)."))
+	PendingInvitationsStale = must(gincommon.NewGauge(nil,
+		"iam_org_membership_pending_invitations_stale",
+		"Pending invitations past expires_at that invitation-expiry hasn't flipped yet."))
+}
 
-	DependencyCallFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_dependency_call_failures_total",
-		Help:        "Cross-service dependency call failures by target_service/endpoint/outcome (5xx|timeout|fallback_served). Authoritative failure counter; platform_dependency_request_seconds_count{outcome=\"error\"} is the registry concept.",
-		ConstLabels: sLabels,
-	}, []string{"target_service", "endpoint", "outcome"})
-
-	ProcessedEventsDuplicatesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_processed_events_duplicates_total",
-		Help:        "SQS redeliveries filtered by the processed_events composite PK (IDEMP-4). Authoritative alerting source until platform_duplicate_messages_total (Proposed, registry.go) is ratified.",
-		ConstLabels: sLabels,
-	}, []string{"consumer"})
-
-	// ── Tier 2 — iam_* ───────────────────────────────────────────────────
-	RLSViolations = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_rls_violations_total",
-		Help:        "Row-level-security violations scraped from rls_violation_log, by violation_type.",
-		ConstLabels: sLabels,
-	}, []string{"violation_type"})
-
-	AuthSessionRevokeFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_auth_session_revoke_failed_total",
-		Help:        "RP RevokeUserSessions calls that returned non-2xx or errored (AUTH-8 fail-open).",
-		ConstLabels: sLabels,
-	}, []string{"reason"})
-
-	LifecycleEventSkipped = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_lifecycle_event_skipped_total",
-		Help:        "Lifecycle events skipped by the EVT-14 recency guard (event.time <= tenants.last_event_at).",
-		ConstLabels: sLabels,
-	}, []string{"event_type"})
-
-	LifecycleEventLagSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "iam_lifecycle_event_lag_seconds",
-		Help:        "Seconds between event.time and consumer apply time. Sustained high P99 flags backlog (SLO-3).",
-		Buckets:     []float64{0.05, 0.1, 0.5, 1, 5, 15, 60, 300, 1800},
-		ConstLabels: sLabels,
-	}, []string{"event_type"})
-
-	// ── Tier 3 — iam_org_membership_* ───────────────────────────────────
-	UnknownEventAcknowledged = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_unknown_event_acknowledged_total",
-		Help:        "Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type.",
-		ConstLabels: sLabels,
-	}, []string{"topic", "event_type"})
-
-	DelegateSuspendImpact = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_delegate_suspend_impact_total",
-		Help:        "P-7 suspensions where the user was a delegate on active workflows and the WFI-13 advisory fired (advisory, never a block).",
-		ConstLabels: sLabels,
-	}, []string{"checked"})
-
-	TenantOwnerlessEscalated = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_tenant_ownerless_escalated_total",
-		Help:        "Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page.",
-		ConstLabels: sLabels,
-	}, []string{"reason"})
-
-	SeatOverageStarted = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_seat_overage_started_total",
-		Help:        "Transitions from under-cap to over-cap on tenant seat consumption (SEAT-5).",
-		ConstLabels: sLabels,
-	}, []string{"cause"})
-
-	SeatLimitReached = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_seat_limit_reached_total",
-		Help:        "P-6 invite attempts blocked by SEAT-1 cap.",
-		ConstLabels: sLabels,
-	}, []string{"plan"})
-
-	InviteThrottled = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_invite_throttled_total",
-		Help:        "P-6 invites rate-limited (§16 A41).",
-		ConstLabels: sLabels,
-	}, []string{"reason"})
-
-	RealmSyncFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_realm_sync_failed_total",
-		Help:        "realm-config-sync reconciler failures (T-15).",
-		ConstLabels: sLabels,
-	}, []string{"stage"})
-
-	DelegateRemovalBlocked = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_delegate_removal_blocked_total",
-		Help:        "P-7 removals blocked by WFI-3 delegate-impact pre-check (409 workflow_resolution_required).",
-		ConstLabels: sLabels,
-	}, []string{"scope"})
-
-	DelegateReassignment = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_delegate_reassignment_total",
-		Help:        "P-26 removal-resolution completions by action (replace_delegate | stop_workflows).",
-		ConstLabels: sLabels,
-	}, []string{"action"})
-
-	MembershipExistsCheck = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_membership_exists_check_total",
-		Help:        "I-15 grant-time membership-existence checks served, by caller and result.",
-		ConstLabels: sLabels,
-	}, []string{"caller", "result"})
-
-	PublicTenantResolve = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name:        "iam_org_membership_public_tenant_resolve_total",
-		Help:        "PUB-1 pre-login tenant/realm resolution lookups served, by result.",
-		ConstLabels: sLabels,
-	}, []string{"result"})
-
-	TenantOwnerless = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name:        "iam_org_membership_tenant_ownerless",
-		Help:        "Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages.",
-		ConstLabels: sLabels,
-	})
-	RealmSyncPending = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name:        "iam_org_membership_realm_sync_pending",
-		Help:        "Tenants with realm_sync_pending=true (T-15).",
-		ConstLabels: sLabels,
-	})
-	SeatOverageActive = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name:        "iam_org_membership_seat_overage_active",
-		Help:        "Tenants with overage_since IS NOT NULL (SEAT-5).",
-		ConstLabels: sLabels,
-	})
-	PendingInvitationsStale = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name:        "iam_org_membership_pending_invitations_stale",
-		Help:        "Pending invitations past expires_at that invitation-expiry hasn't flipped yet.",
-		ConstLabels: sLabels,
-	})
-
-	gincommon.MetricsRegisterer().MustRegister(
-		DependencyCallDurationSeconds,
-		DependencyCallFailuresTotal,
-		ProcessedEventsDuplicatesTotal,
-		RLSViolations,
-		AuthSessionRevokeFailed,
-		LifecycleEventSkipped,
-		LifecycleEventLagSeconds,
-		UnknownEventAcknowledged,
-		DelegateSuspendImpact,
-		TenantOwnerlessEscalated,
-		SeatOverageStarted,
-		SeatLimitReached,
-		InviteThrottled,
-		RealmSyncFailed,
-		DelegateRemovalBlocked,
-		DelegateReassignment,
-		MembershipExistsCheck,
-		PublicTenantResolve,
-		TenantOwnerless,
-		RealmSyncPending,
-		SeatOverageActive,
-		PendingInvitationsStale,
-	)
-
-	// Pre-initialise labels so dashboards show 0 rather than "no data".
-	RLSViolations.WithLabelValues("missing_or_invalid_guc")
-	RLSViolations.WithLabelValues("cross_tenant_access")
-	AuthSessionRevokeFailed.WithLabelValues("transport")
+// prewarm initialises bounded label combinations so counters appear at 0
+// on startup rather than only after the first event (OBS-8).
+func prewarm() {
+	for _, vt := range rlsViolationTypes {
+		RLSViolations.WithLabelValues(vt)
+	}
+	for _, reason := range []string{"transport", "http_4xx", "http_5xx", "http_other"} {
+		AuthSessionRevokeFailed.WithLabelValues(reason)
+	}
+	for _, et := range handledEventTypes {
+		if et != "DepartmentCatalogChanged" { // not a lifecycle event: no recency guard
+			LifecycleEventSkipped.WithLabelValues(et)
+		}
+		ConsumedEventRejected.WithLabelValues(et, "future_time_clamp")
+		ConsumedEventRejected.WithLabelValues(et, "schema_violation")
+	}
 	RealmSyncFailed.WithLabelValues("patch_realm_config")
 	RealmSyncFailed.WithLabelValues("clear_marker")
-
-	// OBS-8: pre-initialise bounded label combinations so counters appear at
-	// 0 immediately on startup rather than only after the first event arrives.
-
-	// LifecycleEventSkipped — EVT-14 recency guard fires for any applied
-	// event type; pre-warm the same set of known handled types.
-	for _, et := range []string{
-		"TrialTenantProvisioned", "TenantRealmReady", "TenantConverted",
-		"DirectPaidSignup", "TrialExpired", "TrialReactivated",
-		"TenantSuspended", "TenantOffboarded",
-		"TenantPlanChanged", "TenantPaymentPastDue",
-		"TenantSubscriptionCancelled", "TenantReactivated", "TenantSeatsChanged",
-	} {
-		LifecycleEventSkipped.WithLabelValues(et)
+	for _, scope := range []string{DelegateBlockScopeTenantRemoval, DelegateBlockScopeDeptRemoval, DelegateBlockScopeDeptDemotion} {
+		DelegateRemovalBlocked.WithLabelValues(scope)
 	}
-
-	// MembershipExistsCheck — I-15 result can only be "active" or "inactive".
-	// caller is open-ended (any downstream service), so only the result axis
-	// is pre-warmed; caller labels warm on first call from each peer.
-	MembershipExistsCheck.WithLabelValues("tender-acl", "active")
-	MembershipExistsCheck.WithLabelValues("tender-acl", "inactive")
-	MembershipExistsCheck.WithLabelValues("delegation", "active")
-	MembershipExistsCheck.WithLabelValues("delegation", "inactive")
-
-	// PublicTenantResolve — PUB-1's result is bounded to two values.
+	for _, action := range []string{"replace_delegate", "stop_workflows"} {
+		DelegateReassignment.WithLabelValues(action)
+	}
+	for _, reason := range []string{InviteThrottleReinviteTooSoon, InviteThrottleTenantRate, InviteThrottleActorRate} {
+		InviteThrottled.WithLabelValues(reason)
+	}
+	SeatOverageStarted.WithLabelValues(SeatOverageCauseReconciler)
+	// I-15: result is "active" or "inactive"; caller is open-ended (any
+	// downstream service), so only the known peers are pre-warmed.
+	for _, caller := range []string{"tender-acl", "delegation"} {
+		MembershipExistsCheck.WithLabelValues(caller, "active")
+		MembershipExistsCheck.WithLabelValues(caller, "inactive")
+	}
 	PublicTenantResolve.WithLabelValues("found")
 	PublicTenantResolve.WithLabelValues("not_found")
 }

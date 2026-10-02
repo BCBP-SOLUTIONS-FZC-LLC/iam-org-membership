@@ -1,38 +1,32 @@
 package port
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
-// IdempotencyStore is the persistence port backing the processed_events
-// table (§9.2 IDEMP-2/4), named and shaped to mirror iam-user-profile's
-// port.IdempotencyStore.
+// Inbox is the exactly-once consumer port backing the processed_events
+// table (§9.2 IDEMP-1..4), implemented over platform-events' pkg/inbox.
 //
-// iam-user-profile's store is decoupled from the caller's transaction by
-// design: IsProcessed and MarkProcessed are two independent calls, and
-// MarkProcessed is invoked only after the business side effect has fully
-// succeeded (check-then-act, mark-last). That is safe there because the
-// only consumer's handler (ScrubTenant) is itself idempotent, so a crash
-// between the business write and the mark simply leaves the event
-// unmarked for a safe redelivery.
+// ProcessOnce claims (consumer, eventID) and runs fn in ONE transaction:
+// the claim (INSERT … ON CONFLICT DO NOTHING) is the first statement, so a
+// concurrent delivery of the same event blocks on the claim's row lock and
+// then sees it as a duplicate, instead of both deliveries passing a
+// pre-check and applying the projection twice. fn's ctx carries that
+// transaction (and the tx-bound event publisher), so every repository call
+// and outbox enqueue inside fn joins it; the EVT-14 recency guard's row lock,
+// the projection, the EVT-16 relay and the claim commit or roll back
+// together. If fn returns an error nothing is recorded and the message is
+// retried.
 //
-// This service's tenant-lifecycle consumer additionally runs the EVT-14
-// recency guard: a row-locked comparison of the event's timestamp against
-// tenants.last_event_at, which must observe a consistent view alongside
-// the projection update and the dedup write, or a concurrent/out-of-order
-// delivery could race past it. MarkProcessed therefore joins the caller's
-// already-open transaction (via TxRunner + withPool) so the dedup write
-// commits or rolls back atomically with the row lock and the projection
-// update — a decoupled, post-hoc mark is not sufficient here.
-type IdempotencyStore interface {
-	// IsProcessed reports whether eventID has already been recorded as
-	// processed by consumer. A standalone read, not tied to any caller
-	// transaction — used as a cheap pre-check to skip a lock acquisition
-	// on an obvious replay before the main transaction opens.
-	IsProcessed(ctx context.Context, consumer, eventID string) (bool, error)
+// duplicate is true when the event was already processed; fn was not run.
+// eventID must be a UUID (every platform-events envelope ID is).
+type Inbox interface {
+	ProcessOnce(ctx context.Context, consumer, eventID, eventType string, fn func(txCtx context.Context) error) (duplicate bool, err error)
+}
 
-	// MarkProcessed records eventID as processed by consumer. When called
-	// inside TxRunner.RunInTx the write joins that transaction so it
-	// commits or rolls back atomically with the projection. Safe to call
-	// more than once for the same (consumer, eventID) pair
-	// (ON CONFLICT DO NOTHING).
-	MarkProcessed(ctx context.Context, consumer, eventID string) error
+// InboxPruner deletes one consumer's processed_events rows older than
+// retention, in batches of batch rows until none are left (PE-1).
+type InboxPruner interface {
+	Prune(ctx context.Context, consumer string, retention time.Duration, batch int) (int64, error)
 }

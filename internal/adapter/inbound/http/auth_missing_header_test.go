@@ -43,7 +43,7 @@ var _ port.TenantRepository = (*authTestLapseRepo)(nil)
 func buildAuthTestRouter(lapseSvc *service.SubscriptionLapseService, memH *MembershipHandler) *Router {
 	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, lapseSvc)
 	return NewRouter(RouterConfig{
-		GinConfig:         gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"},
+		GinConfig:         gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		InternalHandler:   internalH,
 		MembershipHandler: memH,
 	})

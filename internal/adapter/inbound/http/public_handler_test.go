@@ -33,7 +33,7 @@ func (f *fakeResolver) Resolve(_ context.Context, identifier string) (domain.Ten
 
 func publicRouter(r TenantResolver) *Router {
 	return NewRouter(RouterConfig{
-		GinConfig:     gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"},
+		GinConfig:     gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		PublicHandler: NewPublicHandler(r),
 	})
 }
@@ -109,7 +109,7 @@ func TestPUB1_Handler_DBUnavailable_503(t *testing.T) {
 }
 
 func TestPUB1_Router_NilHandler_NotRegistered(t *testing.T) {
-	rt := NewRouter(RouterConfig{GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"}})
+	rt := NewRouter(RouterConfig{GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"}})
 	w, _ := doPublic(t, rt, "?identifier=acme")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -128,7 +128,7 @@ func TestPUB1_Router_ReachableWithZeroHeaders(t *testing.T) {
 // and a new endpoint accidentally registered outside it.
 func TestPUB1_Router_EveryOtherAPIRouteStill401sWithoutHeaders(t *testing.T) {
 	rt := NewRouter(RouterConfig{
-		GinConfig:             gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test"},
+		GinConfig:             gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		TenantHandler:         &TenantHandler{},
 		DepartmentHandler:     &DepartmentHandler{},
 		MembershipHandler:     &MembershipHandler{},

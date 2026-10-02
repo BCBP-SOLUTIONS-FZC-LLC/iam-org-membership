@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/httpx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 )
 
 func activeSpanContext(t *testing.T) (context.Context, string) {
@@ -75,4 +76,36 @@ func TestNewClient_WithoutAnActiveSpanStillSucceeds(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestNewTransport_ForwardsRequestID(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get(httpx.HeaderRequestID)
+	}))
+	defer srv.Close()
+	client := httpx.NewClient(time.Second)
+
+	ctx := requestctx.WithRequestID(context.Background(), "req-123")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, http.NoBody)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, "req-123", got)
+	assert.Empty(t, req.Header.Get(httpx.HeaderRequestID), "the caller's request must not be mutated")
+
+	// An explicit header wins; no ID in ctx sends none.
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, http.NoBody)
+	req.Header.Set(httpx.HeaderRequestID, "explicit")
+	resp, err = client.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, "explicit", got)
+
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, http.NoBody)
+	resp, err = client.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Empty(t, got)
 }

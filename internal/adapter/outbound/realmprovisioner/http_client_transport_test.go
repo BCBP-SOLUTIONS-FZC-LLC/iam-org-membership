@@ -166,7 +166,7 @@ func TestP20RPT05_RevokeUserSessions_Non2xx_NilMetric_ReturnsError(t *testing.T)
 // Feature:      RevokeUserSessions non-2xx response when metrics.AuthSessionRevokeFailed
 //
 //	IS non-nil (lines 249-251: the `if metrics.AuthSessionRevokeFailed != nil`
-//	TRUE arm — increments with the HTTP status code as label).
+//	TRUE arm — increments with the status class as label, http_5xx).
 //
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestP20RPT05b_RevokeUserSessions_Non2xx_NonNilMetric_IncrementsStatusLabel(t *testing.T) {
@@ -191,13 +191,15 @@ func TestP20RPT05b_RevokeUserSessions_Non2xx_NonNilMetric_IncrementsStatusLabel(
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "502")
 
-	// Verify the metric was incremented with the status code as label ("502").
+	// Verify the metric was incremented with the status class as label.
 	mfs, metricErr := reg.Gather()
 	require.NoError(t, metricErr)
 	require.Len(t, mfs, 1, "exactly one metric family expected")
 	require.Len(t, mfs[0].GetMetric(), 1, "exactly one label series expected")
 	assert.Equal(t, float64(1), mfs[0].GetMetric()[0].GetCounter().GetValue(),
-		"non-2xx must increment SessionRevokeFailed{reason=<status>} exactly once")
+		"non-2xx must increment SessionRevokeFailed{reason=<status class>} exactly once")
+	assert.Equal(t, "http_5xx", mfs[0].GetMetric()[0].GetLabel()[0].GetValue(),
+		"reason must be a registry value, not the raw status code")
 }
 
 // ─── ResetMFA — request build error (bad base URL) ───────────────────────────
@@ -217,4 +219,23 @@ func TestP20RPT06_ResetMFA_BadBaseURL_RequestBuildError(t *testing.T) {
 	err := c.ResetMFA(context.Background(), uuid.New(), uuid.New())
 	require.Error(t, err,
 		"invalid base URL must cause http.NewRequestWithContext to fail before any network I/O")
+}
+
+// TestRevokeFailureReason_MapsToRegistryVocabulary pins the status → reason
+// mapping onto the central registry's allowed values.
+func TestRevokeFailureReason_MapsToRegistryVocabulary(t *testing.T) {
+	cases := map[int]string{
+		http.StatusBadRequest:          "http_4xx",
+		http.StatusNotFound:            "http_4xx",
+		499:                            "http_4xx",
+		http.StatusInternalServerError: "http_5xx",
+		http.StatusServiceUnavailable:  "http_5xx",
+		599:                            "http_5xx",
+		http.StatusMultipleChoices:     "http_other",
+		http.StatusNotModified:         "http_other",
+		600:                            "http_other",
+	}
+	for status, want := range cases {
+		assert.Equal(t, want, revokeFailureReason(status), "status %d", status)
+	}
 }

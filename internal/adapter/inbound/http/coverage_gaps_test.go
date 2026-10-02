@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,17 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
-
-// ── middleware.go: isOperatorOrSystemErrorSQLState non-PgError branch ──
-
-// TestIsOperatorOrSystemErrorSQLState_NonPgError_ReturnsFalse covers the
-// non-PgError early-return — any non-Postgres error returns false.
-func TestIsOperatorOrSystemErrorSQLState_NonPgError_ReturnsFalse(t *testing.T) {
-	assert.False(t, isOperatorOrSystemErrorSQLState(errors.New("")),
-		"non-PgError must return false")
-	assert.False(t, isOperatorOrSystemErrorSQLState(errors.New("0")),
-		"non-PgError must return false")
-}
 
 // ── middleware.go: errorLogger != nil path in HandleError (407.24,409.3) ──
 
@@ -419,3 +409,27 @@ func TestRegisterDocsRoutes_Inactive_NoRoutes(t *testing.T) {
 
 // Additional: membership_handler.go Remove bad tenant UUID (76.16,79.3)
 // Actually line 76 is in List cursor json.Unmarshal path. Let me verify.
+
+// A request deadline (or a vanished client) is a timeout, not a 500 —
+// whether it arrives as domain.ErrRequestTimeout (wrapConnErr) or raw.
+func TestHandleError_RequestTimeout_Is503(t *testing.T) {
+	for name, err := range map[string]error{
+		"domain":   domain.NewError(domain.ErrRequestTimeout, "deadline"),
+		"raw":      fmt.Errorf("query: %w", context.DeadlineExceeded),
+		"canceled": context.Canceled,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, w := buildCtx(http.MethodGet, "/", "", systemCtx())
+			HandleError(c, err)
+			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+			assert.Contains(t, w.Body.String(), `"code":"request_timeout"`)
+		})
+	}
+}
+
+func TestHandleError_ConcurrentUpdate_Is409(t *testing.T) {
+	c, w := buildCtx(http.MethodGet, "/", "", systemCtx())
+	HandleError(c, domain.NewError(domain.ErrConflict, "concurrent update").WithDetails(map[string]any{"code": "concurrent_update"}))
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), `"code":"concurrent_update"`)
+}

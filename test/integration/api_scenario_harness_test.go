@@ -379,7 +379,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	publicH := httpadapter.NewPublicHandler(service.NewTenantResolutionService(pgadapter.NewTenantRepository(sysPool)))
 
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
-		GinConfig:             gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-test", BuildVersion: "test"},
+		GinConfig:             gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership", BuildVersion: "test"},
 		TenantRepo:            tenantRepo,
 		MembershipRepo:        membershipRepo,
 		TenantHandler:         tenantH,

@@ -20,6 +20,7 @@
         "sqs:ReceiveMessage",
         "sqs:DeleteMessage",
         "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
         "sqs:ChangeMessageVisibility",
         "sqs:SendMessage"
       ],
@@ -27,7 +28,9 @@
         "${tenant_orgm_queue_arn}",
         "${tenant_orgm_queue_dlq_arn}",
         "${billing_orgm_queue_arn}",
-        "${billing_orgm_queue_dlq_arn}"
+        "${billing_orgm_queue_dlq_arn}",
+        "${catalog_orgm_queue_arn}",
+        "${catalog_orgm_queue_dlq_arn}"
       ]
     },
     {

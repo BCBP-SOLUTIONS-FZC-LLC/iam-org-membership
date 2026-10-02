@@ -15,8 +15,10 @@ const defaultPruneBatchLimit = 500
 // OutboxPrune deletes published outbox_events rows older than the
 // retention window via platform-events' outbox.Runner.PrunePublished —
 // the library's own batched DELETE (same SQL the runner uses in-process).
-// Retention defaults to 8 days (OUTBOX_RETENTION_DAYS); batch size follows
-// RECONCILER_BATCH_LIMIT so a backlog converges over several ticks.
+// Retention defaults to 8 days (OUTBOX_RETENTION_DAYS). PrunePublished
+// deletes at most one batch (RECONCILER_BATCH_LIMIT) per call, so it is
+// called until a batch comes back short: a single call per daily run would
+// cap pruning at one batch a day and let the table grow without bound.
 func OutboxPrune(ctx context.Context, jctx *Context) (Result, error) {
 	var res Result
 	if jctx.OutboxRunner == nil {
@@ -31,12 +33,21 @@ func OutboxPrune(ctx context.Context, jctx *Context) (Result, error) {
 	if retentionDays <= 0 {
 		retentionDays = 8
 	}
-	n, err := jctx.OutboxRunner.PrunePublished(ctx, time.Duration(retentionDays)*24*time.Hour, batchLimit)
-	if err != nil {
-		return res, err
+	retention := time.Duration(retentionDays) * 24 * time.Hour
+	for {
+		n, err := jctx.OutboxRunner.PrunePublished(ctx, retention, batchLimit)
+		res.Attempted += int(n)
+		res.Succeeded += int(n)
+		if err != nil {
+			return res, err
+		}
+		if n < int64(batchLimit) {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
 	}
-	res.Attempted = int(n)
-	res.Succeeded = int(n)
 	jctx.Logger.Info("outbox-prune complete",
 		"deleted", res.Succeeded, "retention_days", retentionDays)
 	return res, nil

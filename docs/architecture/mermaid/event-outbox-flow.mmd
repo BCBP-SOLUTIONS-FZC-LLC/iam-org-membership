@@ -1,17 +1,17 @@
 sequenceDiagram
     participant SVC as core/service
-    participant TX as pgcommon.RunInTx
+    participant TX as TxRunner.RunInTx
     participant DB as PostgreSQL (business table)
     participant VC as ValidatingCodec (enqueue — validation only)
     participant OB as outbox_events
-    participant Runner as Outbox Runner (goroutine, poll 500 ms)
+    participant Runner as Outbox Runner (platform-events, poll 500 ms)
     participant Router as RoutingPublisher (own local type)
     participant Pub as SNS publisher + GlueCodec (per topic)
     participant SNS as SNS iam.membership.events / iam.tenant.events
     participant SQS as SQS subscribers (§7.3.2 fan-out)
     participant Q as Inbound SQS (tenant-orgm-q / billing-orgm-q / catalog-orgm-q)
-    participant PE as platform-events SQS consumer
-    participant Pipe as inboundHandler (DLQ router → metrics → validateConsumed)
+    participant PE as platform-events SQS consumer (sqspipeline.NewConsumer)
+    participant Pipe as sqspipeline.Handler (DLQ router → consumer span → validateConsumed)
     participant H as MembershipEventConsumer / CatalogConsumer
     participant DLQ as queue -dlq (per queue)
 
@@ -19,14 +19,15 @@ sequenceDiagram
 
     SVC ->>+ TX: RunInTx(ctx, func(txCtx))
     TX ->> DB: UPDATE / INSERT business row (record_version optimistic lock, TRG-1)
-    TX ->> VC: Encode(event.Type, jsonPayload)
+    TX ->> VC: Publisher.Enqueue → Encode(event.Type, jsonPayload)
     Note over VC: Validates against embedded schemas/*.json — fail-closed:<br/>invalid payload or type with no schema → error → whole TX rolls back.<br/>Wraps NoopCodec: no wire encoding here, bytes discarded.
     alt schema validation fails
         VC -->> TX: error
         TX ->> DB: ROLLBACK (no orphan business write, no orphan outbox row)
     else validation passes
         VC -->> TX: ok
-        TX ->> OB: INSERT outbox_events (id UUID v7, event_type,<br/>PLAIN-JSON envelope, tenant_id, trace_id, published_at=NULL)
+        TX ->> DB: event has a subject → pg_advisory_xact_lock(hashtextextended('outbox-order:{tenant_id}/{subject}', 0))<br/>so two writers for one key never interleave (held to commit)
+        TX ->> OB: outbox.EnqueueOrdered(key {tenant_id}/{subject}) — or outbox.Enqueue when no subject<br/>PLAIN-JSON envelope (id UUID v7, type, source=iam-org-membership, tenant_id, subject, actor, trace_id)
         TX ->> DB: COMMIT — business row + outbox row durable together
     end
     TX -->>- SVC: result
@@ -34,48 +35,49 @@ sequenceDiagram
     Note over Runner,SQS: Phase 2 — Outbox polling + routed SNS publish (at-least-once, FAIL-3)
 
     loop every OUTBOX_POLL_INTERVAL
-        Runner ->> OB: claim unpublished batch (FOR UPDATE SKIP LOCKED + lease)
+        Runner ->> OB: claim due batch (FOR UPDATE SKIP LOCKED + lease, OUTBOX_CLAIM_LEASE_DURATION)<br/>records of one ordering key publish one at a time, in enqueue order
         Runner ->>+ Router: PublishBatch(envelopes)
-        Note over Router: domain.TopicForEvent(env.Type) — event TYPE, not Envelope.Source.<br/>TenantCreated / TrialStarted → tenant lane, all 12 others → membership lane.
+        Note over Router: domain.TopicForEvent(env.Type) — event TYPE, not Envelope.Source.<br/>TenantCreated / TrialStarted → tenant lane, all 12 others → membership lane.<br/>Both lanes always publish, their failures merge into one *events.BatchError.
         Router ->>+ Pub: PublishBatch(lane envelopes)
         Note over Pub: GlueCodec.Encode — version UUID from an in-memory cache,<br/>resolved ONCE at startup via glue:GetSchemaByDefinition with this<br/>build's embedded schema (never "latest", no refresher, no per-event Glue call).<br/>Payload → [0x03][0x00][16-byte UUID] + JSON, base64 into data, dataschema = UUID.<br/>NoopCodec (plain JSON) when GLUE_REGISTRY_*_NAME is unset.
         Pub ->> SNS: Publish (MessageAttributes EventType, traceparent, …)
-        Pub -->>- Router: ok
-        Router -->>- Runner: published
-        Runner ->> OB: mark published_at
+        Pub -->>- Router: ok / failures
+        Router -->>- Runner: nil or *events.BatchError
+        Runner ->> OB: mark published_at for every record not listed as failed
         alt publish fails
-            Runner ->> OB: attempts++ — retry up to OUTBOX_MAX_ATTEMPTS, then dead letter<br/>(outbox_dead_letters_total pages)
+            Runner ->> OB: attempts++ with backoff — after OUTBOX_MAX_ATTEMPTS (5) the record moves to outbox_dead_letters<br/>(platform_dlq_messages_total{operation=outbox_publish} pages, replay via Runner.ReprocessDeadLetters)
         end
     end
     SNS ->> SQS: fan-out filtered by EventType (6 membership subscribers, 2 tenant)
+    Note over SNS,SQS: Delivery is NOT ordered end to end (standard topics/queues, concurrent consumers) —<br/>consumers keep their own recency guards (EVT-14).
 
     Note over Q,DLQ: Phase 3 — This service's own inbound pipeline (per queue, outermost first)
 
     Q ->>+ PE: ReceiveMessage (long poll)
-    PE ->> PE: unmarshal envelope — malformed → deleted
+    PE ->> PE: unmarshal envelope — malformed → original forwarded to DLQ (DLQPublisher), then deleted
     opt dataschema set (producer used a Glue codec)
-        PE ->> PE: GlueDecoder.Decode — strip 18-byte header, no registry lookup
+        PE ->> PE: events.GlueDecodeCodec.Decode — strip 18-byte header, no registry lookup
     end
     PE ->>+ Pipe: handler(env)
     Pipe ->> Pipe: validateConsumed — embedded consumed schema for env.Type<br/>(no schema → pass through to ackUnknown)
     alt schema violation
-        Pipe ->> DLQ: SendMessage (dataschema cleared,<br/>EventType + DLQReason=schema_violation)
-        Note over Pipe: platform_dlq_messages_total{reason="schema_violation"}++<br/>IAMConsumedEventSchemaViolation pages
+        Pipe ->> DLQ: DLQPublisher.SendToDLQ — original body + attributes,<br/>DLQReason=schema_violation
+        Note over Pipe: iam_org_membership_consumed_event_rejected_total{reason="schema_violation"}++<br/>IAMConsumedEventSchemaViolation pages
     else valid
-        Pipe ->>+ H: Handle(env) — dedup, EVT-14 recency, EVT-15 clamp, EVT-16 relay
+        Pipe ->>+ H: Handle(env) — EVT-15 clamp first, then processOnce: inbox claim on processed_events,<br/>then EVT-14 recency / projection / EVT-16 relay in the SAME tx
         alt EVT-15 future-time clamp (ErrPoisonPill)
-            H -->> Pipe: ErrPoisonPill (processed_events NOT recorded)
-            Pipe ->> DLQ: SendMessage (DLQReason=future_time_clamp)
-        else projected / stale-skipped / unknown type
-            H -->> Pipe: nil (processed_events recorded in the same tx)
+            H -->> Pipe: ErrPoisonPill (before any tx — processed_events NOT recorded)
+            Pipe ->> DLQ: DLQPublisher.SendToDLQ — original message, DLQReason=future_time_clamp
+        else projected / stale-skipped / unknown type / duplicate
+            H -->> Pipe: nil (claim committed with the writes, a duplicate waits on the claim's row lock, then skips)
         else transient error
-            H -->>- Pipe: error
+            H -->>- Pipe: error (tx rolled back, claim released)
         end
     end
     Pipe -->>- PE: nil (acked) or error (left visible)
     alt nil
         PE ->> Q: DeleteMessage
     else error — normal retry
-        Note over PE,DLQ: redelivered — after maxReceiveCount = 5 SQS redrives to -dlq (EVT-5).<br/>Same fallback if the DLQ URL can't be read from RedrivePolicy or SendMessage fails.
+        Note over PE,DLQ: redelivered — at receive count 4 (SQS_MAX_RECEIVE_COUNT) platform-events forwards the original to -dlq,<br/>SQS redrive at maxReceiveCount = 5 is the backstop (EVT-5). Same path if a forward fails.
     end
     deactivate PE

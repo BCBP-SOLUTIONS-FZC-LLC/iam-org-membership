@@ -253,7 +253,7 @@ func roleStrings(roles []interface{}) []string {
 // with a PublicHandler over the BYPASSRLS-bound TenantResolutionService.
 func pub1Router(fx *testFixtures) http.Handler {
 	return httpadapter.NewRouter(httpadapter.RouterConfig{
-		GinConfig:     gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership-contract"},
+		GinConfig:     gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		PublicHandler: httpadapter.NewPublicHandler(fx.TenantResolution),
 	}).Handler()
 }

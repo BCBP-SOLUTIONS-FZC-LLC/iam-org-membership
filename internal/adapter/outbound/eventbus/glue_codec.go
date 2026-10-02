@@ -133,29 +133,6 @@ func (g *GlueCodec) Decode(_ context.Context, _ string, encoded []byte) (json.Ra
 	return stripGlueHeader(encoded)
 }
 
-// GlueDecoder is the consumer-side events.Codec, injected on every inbound
-// SQS consumer via events.WithConsumerCodec. Upstream producers (Realm
-// Provisioner, Billing, Catalog) encode into their own Glue registries,
-// which this service never prefetches from — and doesn't need to, because
-// Decode only strips the self-describing 18-byte header. So unlike
-// GlueCodec this needs no Glue client or registry name. platform-events
-// only calls Decode when envelope.dataschema is non-empty, so plain-JSON
-// producers (NoopCodec, dev/test) bypass it entirely.
-type GlueDecoder struct{}
-
-var _ events.Codec = GlueDecoder{}
-
-// Encode always fails — GlueDecoder is never wired on a publisher. Use
-// GlueCodec (one per owned registry) for the SNS publish path.
-func (GlueDecoder) Encode(_ context.Context, schemaName string, _ json.RawMessage) ([]byte, string, error) {
-	return nil, "", fmt.Errorf("glue decoder: Encode(%q) called on a decode-only codec — use GlueCodec on publishers", schemaName)
-}
-
-// Decode strips the 18-byte Glue wire-format header, same as GlueCodec.Decode.
-func (GlueDecoder) Decode(_ context.Context, _ string, encoded []byte) (json.RawMessage, error) {
-	return stripGlueHeader(encoded)
-}
-
 // stripGlueHeader removes the 18-byte Glue wire-format header, returning the
 // remaining plain-JSON payload. Factored out of Decode so it can be tested
 // without constructing a *GlueCodec.

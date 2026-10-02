@@ -92,24 +92,24 @@ func TestMetricNamesStable(t *testing.T) {
 
 	// Force every label-bearing metric to emit at least one sample so
 	// Gather() reports it. The gauges + pre-seeded counters need no touch.
-	DuplicateMessages.WithLabelValues("stability-check", "stability-check").Inc()
-	DLQMessages.WithLabelValues("consume", "stability-check", "stability_check").Inc()
-	DependencyRequestSeconds.WithLabelValues("stability-check", "stability_check", "success").Observe(0.1)
-	DependencyCallDurationSeconds.WithLabelValues("stability-check", "stability-check").Observe(0.1)
-	DependencyCallFailuresTotal.WithLabelValues("stability-check", "stability-check", "stability-check").Inc()
-	ProcessedEventsDuplicatesTotal.WithLabelValues("stability-check").Inc()
-	UnknownEventAcknowledged.WithLabelValues("stability-check", "stability-check").Inc()
-	LifecycleEventSkipped.WithLabelValues("stability-check").Inc()
-	LifecycleEventLagSeconds.WithLabelValues("stability-check").Observe(0.1)
-	AuthSessionRevokeFailed.WithLabelValues("stability-check").Inc()
-	DelegateSuspendImpact.WithLabelValues("stability-check").Inc()
-	TenantOwnerlessEscalated.WithLabelValues("stability-check").Inc()
-	SeatOverageStarted.WithLabelValues("stability-check").Inc()
-	SeatLimitReached.WithLabelValues("stability-check").Inc()
-	InviteThrottled.WithLabelValues("stability-check").Inc()
-	RealmSyncFailed.WithLabelValues("stability-check").Inc()
-	DelegateRemovalBlocked.WithLabelValues("stability-check").Inc()
-	DelegateReassignment.WithLabelValues("stability-check").Inc()
+	DuplicateMessages.WithLabelValues("stability_check", "stability_check").Inc()
+	DLQMessages.WithLabelValues("consume", "stability_check", "stability_check").Inc()
+	DependencyRequestSeconds.WithLabelValues("stability_check", "stability_check", "success").Observe(0.1)
+	DependencyCallDurationSeconds.WithLabelValues("stability_check", "stability_check").Observe(0.1)
+	DependencyCallFailuresTotal.WithLabelValues("stability_check", "stability_check", "stability_check").Inc()
+	ProcessedEventsDuplicatesTotal.WithLabelValues("stability_check").Inc()
+	UnknownEventAcknowledged.WithLabelValues("stability_check").Inc()
+	LifecycleEventSkipped.WithLabelValues("stability_check").Inc()
+	LifecycleEventLagSeconds.WithLabelValues("stability_check").Observe(0.1)
+	AuthSessionRevokeFailed.WithLabelValues("stability_check").Inc()
+	DelegateSuspendImpact.WithLabelValues("stability_check").Inc()
+	TenantOwnerlessEscalated.WithLabelValues("stability_check").Inc()
+	SeatOverageStarted.WithLabelValues("stability_check").Inc()
+	SeatLimitReached.WithLabelValues("stability_check").Inc()
+	InviteThrottled.WithLabelValues("stability_check").Inc()
+	RealmSyncFailed.WithLabelValues("stability_check").Inc()
+	DelegateRemovalBlocked.WithLabelValues("stability_check").Inc()
+	DelegateReassignment.WithLabelValues("stability_check").Inc()
 
 	expected := []string{
 		// Tier 1 — platform_* (shared across domains).
@@ -276,8 +276,18 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 func TestConstLabels_MatchObservabilityConstLabels(t *testing.T) {
 	ensureRegistered(t)
 
-	got := serviceLabels("ignored")
-	assert.Equal(t, "iam-org-membership", got["service"])
+	mfs, err := gincommon.MetricsGatherer().Gather()
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, mf := range mfs {
+		if mf.GetName() != "iam_org_membership_tenant_ownerless" {
+			continue
+		}
+		for _, lp := range mf.GetMetric()[0].GetLabel() {
+			got[lp.GetName()] = lp.GetValue()
+		}
+	}
+	assert.Equal(t, "iam-org-membership", got["service"], "Tier 3 collectors carry gincommon's injected identity")
 	assert.Equal(t, "iam", got["domain"], "every collector carries the gincommon identity, domain included")
 	assert.Equal(t, "test", got["environment"])
 	_, hasVersion := got["version"]
@@ -331,9 +341,9 @@ func TestDependencyMetrics_RegistryLabels(t *testing.T) {
 func TestIncDependencyError_Tier3Only(t *testing.T) {
 	ensureRegistered(t)
 
-	before := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual-emit-check", "timeout"))
+	before := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual_emit_check", "timeout"))
 	IncDependencyError("delegation", "dual-emit-check", "timeout")
-	assert.Equal(t, before+1, testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual-emit-check", "timeout")))
+	assert.Equal(t, before+1, testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual_emit_check", "timeout")))
 
 	gathered, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)

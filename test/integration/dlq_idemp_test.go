@@ -173,7 +173,7 @@ func TestProcessedEventsDedupOnRedelivery(t *testing.T) {
 	tenantID := seedTenantForConsumer(t, e, "idemp-dup-wire")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)
@@ -243,7 +243,7 @@ func TestSecondConsumerReceivesIndependently(t *testing.T) {
 	tenantID := seedTenantForConsumer(t, e, "idemp-multi-consumer")
 
 	outbox := &noopOutbox{}
-	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	memConsumer := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	topic := e.createTopic(t, "iam-tenant-events")
 	q := e.createQueue(t, "tenant-orgm-q", "", 0)

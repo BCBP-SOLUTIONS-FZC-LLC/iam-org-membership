@@ -55,7 +55,7 @@ func TestHandle_TrialReactivated_FindByIDNonNotFoundError_Propagates(t *testing.
 		},
 	}
 	idemp := &htIdempotency{}
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, &trNoopCatalog{}, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, &trNoopCatalog{}, nil, 5*time.Minute, nil)
 
 	env := mkTrialReactivatedEnv(uuid.New().String())
 	err := c.Handle(context.Background(), env)
@@ -75,7 +75,7 @@ func TestHandle_TrialReactivated_NilCatalog_ReturnsError(t *testing.T) {
 	}
 	idemp := &htIdempotency{}
 	// catalog == nil: triggers "no PlanCatalogReader configured" error
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, nil, nil, 5*time.Minute, nil)
 
 	env := mkTrialReactivatedEnv(tenantID.String())
 	err := c.Handle(context.Background(), env)
@@ -95,7 +95,7 @@ func TestHandle_TrialReactivated_CatalogPlanByCodeError_Propagates(t *testing.T)
 		},
 	}
 	idemp := &htIdempotency{}
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, &trErrCatalog{err: catalogErr}, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, &trErrCatalog{err: catalogErr}, nil, 5*time.Minute, nil)
 
 	env := mkTrialReactivatedEnv(tenantID.String())
 	err := c.Handle(context.Background(), env)

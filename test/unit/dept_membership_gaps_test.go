@@ -285,3 +285,43 @@ func TestDeptMembership_Remove_EmitsRevokedEventWithIPAndUserAgent(t *testing.T)
 	assert.Equal(t, deptID, payload.DepartmentID)
 	assert.Equal(t, actorID, payload.ActorID)
 }
+
+// flaggingTxRunner records whether a transaction is open while fn runs.
+type flaggingTxRunner struct {
+	inTx   bool
+	opened int
+}
+
+func (r *flaggingTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
+	r.opened++
+	r.inTx = true
+	defer func() { r.inTx = false }()
+	return fn(ctx)
+}
+
+// The WFI-9/12 gate makes outbound HTTP calls (Delegation, Workflow): they
+// must run before the write transaction opens, never while it holds row
+// locks, and a block must not open a transaction at all.
+func TestDeptMembershipAssign_LevelDecrease_GateRunsOutsideTransaction(t *testing.T) {
+	tenantID, userID, deptID := uuid.New(), uuid.New(), uuid.New()
+	delegationID := uuid.New()
+	existing := &domain.DeptMembership{TenantID: tenantID, UserID: userID, DepartmentID: deptID, RoleLevel: domain.DeptApprover}
+	tx := &flaggingTxRunner{}
+	delClient := &fakeDelegationCheckClient{
+		deptDelegateFn: func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*uuid.UUID, error) {
+			assert.False(t, tx.inTx, "Delegation call must not run inside the transaction")
+			return &delegationID, nil
+		},
+	}
+	wf := &fakeWorkflowClient{
+		getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
+			assert.False(t, tx.inTx, "Workflow call must not run inside the transaction")
+			return &port.DelegateImpact{ActiveWorkflows: 2}, nil
+		},
+	}
+	svc := service.NewDeptMembershipService(&fullDeptMemRepo{existing: existing}, &activeMemberRepo{}, &fakeTenantDeptRepoAssign{isActive: true}, nil, delClient, wf, nil, tx)
+
+	_, err := svc.Assign(context.Background(), tenantID, userID, deptID, domain.DeptPreparator, uuid.New())
+	require.ErrorIs(t, err, domain.ErrWorkflowResolutionRequired)
+	assert.Zero(t, tx.opened, "a blocked demotion must not open a transaction")
+}

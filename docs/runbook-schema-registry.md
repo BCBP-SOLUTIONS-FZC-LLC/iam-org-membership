@@ -21,10 +21,10 @@ uploads (`registeredDefinition`). The version must be `AVAILABLE`.
   describe them is worse than not starting.
 
 On the consume side no Glue call is made at all: every inbound queue carries
-`eventbus.GlueDecoder` (`events.WithConsumerCodec`), which strips the
+platform-events' `events.GlueDecodeCodec` (`events.WithConsumerCodec`), which strips the
 self-describing 18-byte header (`[0x03][0x00][16-byte version UUID]`) without
 a registry. Consumed payloads are then validated against this service's own
-**embedded** consumed schemas (`cmd/server/inbound_schema.go`), not the
+**embedded** consumed schemas (`internal/adapter/inbound/sqspipeline/inbound_schema.go`), not the
 producer's Glue schema — see "Consumed-schema violations" below.
 
 ### Schema files and names
@@ -150,29 +150,62 @@ Do NOT set the registry env vars to empty strings to fall through to
 
 ## Consumed-schema violations and the DLQ
 
-Each inbound queue runs, outermost first: DLQ router (`cmd/server/dlq.go`) →
+Each inbound queue runs, outermost first: DLQ router (`internal/adapter/inbound/sqspipeline/dlq.go`) →
 `platform_messages_*` counters → consumed-schema validation → `Handle`.
-Permanent rejects are `SendMessage`'d straight to the queue's DLQ (DLQ URL
-read from the queue's own `RedrivePolicy`) with message attributes
-`EventType` and `DLQReason`, then acked:
+Every dead-letter goes through platform-events' `DLQPublisher`
+(`events.NewSQSDLQPublisherWithClient`), which reads the DLQ from the source
+queue's own `RedrivePolicy`. What lands in the DLQ is always the **original
+transport message**: raw body (Glue framing and `dataschema` intact) and its
+message attributes (`traceparent`, `TenantID`, ...), plus `DLQReason`,
+`OriginalQueue`, `FailedAt`, `ConsumerName` and `EventType`. The source
+message is deleted only after the forward succeeds.
 
-| `DLQReason` | Cause | Alert |
+Two kinds of message reach the DLQ.
+
+**This service's permanent rejects**, forwarded by the DLQ router and then
+acked:
+
+| `DLQReason` | Cause | Counted as | Alert |
+|---|---|---|---|
+| `future_time_clamp` | EVT-15: `event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `iam_org_membership_consumed_event_rejected_total{reason}` | `IAMFutureLifecycleEventRejected` |
+| `schema_violation` | Decoded payload fails its embedded consumed schema (EVT-17) | `iam_org_membership_consumed_event_rejected_total{reason}` | `IAMConsumedEventSchemaViolation` |
+
+**platform-events' own forwards** (`events.WithDLQForwarding`), for messages
+the handler never sees or could not settle:
+
+| `reason` label | Cause | Alert |
 |---|---|---|
-| `future_time_clamp` | EVT-15: `event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `IAMFutureLifecycleEventRejected` |
-| `schema_violation` | Decoded payload fails its embedded consumed schema (EVT-17) | `IAMConsumedEventSchemaViolation` |
+| `malformed` | Body is not a valid event envelope | `IAMMalformedInboundMessage` |
+| `decode_error` | Glue payload decode failed past the receive threshold | `IAMMalformedInboundMessage` |
+| `max_receive_count` | Handler kept failing for 4 deliveries (`SQS_MAX_RECEIVE_COUNT`, default 4, strictly below the queue's `maxReceiveCount=5`) | — |
 
-Both increment `platform_dlq_messages_total{event_type,reason}`. If the DLQ
-can't be resolved at startup (logged as `DLQ routing disabled`) or a send
-fails, the message falls back to normal SQS retry + redrive after
-`maxReceiveCount=5`. `catalog-orgm-q` is inert today and has no
-`deploy/iam/policy.json` grant, so it always takes the fallback.
+`platform_dlq_messages_total{operation="consume"}` counts every forward
+exactly once; this service's rejects appear there as `reason="explicit"`,
+and the specific reason is on the Tier-3 counter above.
+
+**Startup.** Each consumer checks its DLQ before it starts. A queue with no
+usable `RedrivePolicy` stops startup, because forwards would have nowhere to
+go. A transient failure (throttling, network) only logs `could not resolve
+DLQ at startup`; the publisher resolves again on the first forward. If a
+forward fails, the message stays on the queue for retry, and SQS redrive is
+the final backstop.
+
+**Investigating.** The library never logs message bodies; the malformed log
+line carries the message ID and `body_sha256` only. Read the DLQ copy itself
+(for example `aws sqs receive-message --queue-url <dlq> --message-attribute-names All`).
+Its `DLQReason` and `OriginalQueue` attributes tell you what happened and
+where it came from.
 
 On a `schema_violation` page: inspect a DLQ message, decide which side is
 wrong — the producer broke its contract, or this repo's `api/asyncapi.yaml`
 is stale/stricter than what the producer sends — fix it (for the latter:
 edit `api/asyncapi.yaml`, `make extract-schemas`, `make schema-validate`),
-then redrive. A redriven message is decoded as plain JSON (the router clears
-`dataschema`) and re-validated.
+then redrive. The DLQ copy is the original message, so a redrive is decoded
+and validated exactly like a first delivery.
+
+On an `IAMMalformedInboundMessage` page: the producer sent something that is
+not an event envelope (or not decodable Glue). Find the producer from the DLQ
+copy's attributes, fix it, and redrive or discard the copies.
 
 ## Local development
 
@@ -250,9 +283,9 @@ No env var configures DLQs — they come from each queue's `RedrivePolicy`.
   stale event still passes schema validation and is recorded in
   `processed_events`.
 - **EVT-15** future-time reject happens inside `Handle` too; the payload has
-  already passed consumed-schema validation, and the DLQ router moves the
-  message straight to the DLQ (`DLQReason=future_time_clamp`) without
-  recording `processed_events`.
+  already passed consumed-schema validation, and the DLQ router forwards the
+  original message straight to the DLQ (`DLQReason=future_time_clamp`)
+  without recording `processed_events`.
 - **EVT-16** `TenantStateChanged` relay writes go through the same
   `ValidatingCodec` enqueue path — a relay payload that fails its produced
   schema fails the outbox insert and rolls back the consumer transaction
