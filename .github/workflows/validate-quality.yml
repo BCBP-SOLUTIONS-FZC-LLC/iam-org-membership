@@ -96,6 +96,12 @@ jobs:
       - name: Metrics registry ratification check
         run: bash .github/scripts/metrics-registry-lint.sh
 
+      # platform-gincommon's own metricslint: registry compliance and label
+      # vocabulary on a real scrape, plus legacy/unregistered names in alert
+      # rules, dashboards and runbooks.
+      - name: Observability standard lint (metricslint)
+        run: bash .github/scripts/metricslint.sh
+
       # Every SNS publish / SQS consume must go through platform-events
       # (events.NewSNSPublisher / events.NewSQSConsumerWithClient), never a
       # raw aws-sdk-go-v2 SNS/SQS call or a hand-built events.Envelope{}.

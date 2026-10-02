@@ -2,11 +2,6 @@
 -- order. Extensions intentionally left in place (may be used by other DBs
 -- on the same instance; DROP EXTENSION requires ownership and is destructive).
 
--- ── outbox_events customization (reverse first — added last in up.sql) ──
-DROP TRIGGER IF EXISTS trg_outbox_normalize_payload ON outbox_events;
-DROP FUNCTION IF EXISTS outbox_normalize_payload();
-ALTER TABLE outbox_events ALTER COLUMN payload TYPE jsonb USING payload::jsonb;
-
 -- ── Domain tables (reverse FK order) ─────────────────────────────────────
 DROP TABLE IF EXISTS public.processed_events;
 DROP TABLE IF EXISTS public.pending_invitations;

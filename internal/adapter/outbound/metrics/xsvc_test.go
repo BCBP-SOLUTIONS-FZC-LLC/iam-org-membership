@@ -19,15 +19,15 @@ import (
 func TestObserveDependencyLatency_RecordsAfterRegister(t *testing.T) {
 	ensureRegistered(t)
 	ObserveDependencyLatency("catalog", "departments", 0.042)
-	count := testutil.CollectAndCount(DependencyRequestSeconds)
+	count := testutil.CollectAndCount(DependencyCallDurationSeconds)
 	assert.Positive(t, count)
 }
 
 func TestIncDependencyError_RecordsAfterRegister(t *testing.T) {
 	ensureRegistered(t)
-	before := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
+	before := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dept_delegate", "timeout"))
 	IncDependencyError("delegation", "dept-delegate", "timeout")
-	after := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dept-delegate", "timeout"))
+	after := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dept_delegate", "timeout"))
 	assert.Equal(t, before+1, after)
 }
 
@@ -58,22 +58,31 @@ func TestRecorder_IncRealmSyncFailed_RecordsAfterRegister(t *testing.T) {
 	assert.Equal(t, before+1, after)
 }
 
-// IncMessagesReceived/Processed/Failed back platform_messages_*_total —
-// verify each records against the right collector and label.
-func TestIncMessages_RecordAfterRegister(t *testing.T) {
+// IncConsumedEventRejected backs iam_org_membership_consumed_event_rejected_
+// total{event_type,reason}; IncDuplicate the Tier-3
+// iam_org_membership_processed_events_duplicates_total{consumer}.
+// The service no longer writes platform_dlq_messages_total itself:
+// platform-events counts each DLQ forward exactly once.
+func TestIncConsumedEventRejectedAndDuplicate_RecordAfterRegister(t *testing.T) {
 	ensureRegistered(t)
 
-	before := testutil.ToFloat64(MessagesReceived.WithLabelValues("tenant-orgm-q"))
-	IncMessagesReceived("tenant-orgm-q")
-	assert.Equal(t, before+1, testutil.ToFloat64(MessagesReceived.WithLabelValues("tenant-orgm-q")))
+	before := testutil.ToFloat64(ConsumedEventRejected.WithLabelValues("TenantSuspended", "future_time_clamp"))
+	dlqBefore := testutil.ToFloat64(DLQMessages.WithLabelValues("consume", "TenantSuspended", "future_time_clamp"))
+	IncConsumedEventRejected("TenantSuspended", "future_time_clamp")
+	assert.Equal(t, before+1, testutil.ToFloat64(ConsumedEventRejected.WithLabelValues("TenantSuspended", "future_time_clamp")))
+	assert.Equal(t, dlqBefore, testutil.ToFloat64(DLQMessages.WithLabelValues("consume", "TenantSuspended", "future_time_clamp")),
+		"a reject must not also be counted on the shared DLQ collector")
+	IncConsumedEventRejected("", "schema_violation")
+	assert.Equal(t, 1.0, testutil.ToFloat64(ConsumedEventRejected.WithLabelValues("unknown", "schema_violation")))
 
-	before = testutil.ToFloat64(MessagesProcessed.WithLabelValues("tenant-orgm-q"))
-	IncMessagesProcessed("tenant-orgm-q")
-	assert.Equal(t, before+1, testutil.ToFloat64(MessagesProcessed.WithLabelValues("tenant-orgm-q")))
-
-	before = testutil.ToFloat64(MessagesFailed.WithLabelValues("billing-orgm-q"))
-	IncMessagesFailed("billing-orgm-q")
-	assert.Equal(t, before+1, testutil.ToFloat64(MessagesFailed.WithLabelValues("billing-orgm-q")))
+	// IncDuplicate records only the Tier-3 counter: platform-events' inbox
+	// records platform_duplicate_messages_total for the same duplicate.
+	dupBefore := testutil.ToFloat64(DuplicateMessages.WithLabelValues("tenant-orgm-q", "TenantSuspended"))
+	tier3 := testutil.ToFloat64(ProcessedEventsDuplicatesTotal.WithLabelValues("membership"))
+	IncDuplicate(context.Background(), "membership", "TenantSuspended")
+	assert.Equal(t, tier3+1, testutil.ToFloat64(ProcessedEventsDuplicatesTotal.WithLabelValues("membership")))
+	assert.Equal(t, dupBefore, testutil.ToFloat64(DuplicateMessages.WithLabelValues("tenant-orgm-q", "TenantSuspended")),
+		"the Tier-1 duplicate counter is the library's, not counted twice")
 }
 
 type timeoutNetError struct{}
@@ -84,19 +93,38 @@ func (timeoutNetError) Temporary() bool { return true }
 
 var _ net.Error = timeoutNetError{}
 
-func TestDependencyOutcome_NetTimeoutError(t *testing.T) {
-	assert.Equal(t, "timeout", DependencyOutcome(timeoutNetError{}))
+func TestDependencyErrorReason_NetTimeoutError(t *testing.T) {
+	assert.Equal(t, "timeout", DependencyErrorReason(timeoutNetError{}))
 }
 
-func TestDependencyOutcome_ContextDeadlineExceeded(t *testing.T) {
-	assert.Equal(t, "timeout", DependencyOutcome(context.DeadlineExceeded))
+func TestDependencyErrorReason_ContextDeadlineExceeded(t *testing.T) {
+	assert.Equal(t, "timeout", DependencyErrorReason(context.DeadlineExceeded))
 }
 
-func TestDependencyOutcome_WrappedContextDeadlineExceeded(t *testing.T) {
+func TestDependencyErrorReason_WrappedContextDeadlineExceeded(t *testing.T) {
 	wrapped := errors.Join(errors.New("call failed"), context.DeadlineExceeded)
-	assert.Equal(t, "timeout", DependencyOutcome(wrapped))
+	assert.Equal(t, "timeout", DependencyErrorReason(wrapped))
 }
 
-func TestDependencyOutcome_GenericErrorFallsBackTo5xx(t *testing.T) {
-	assert.Equal(t, "5xx", DependencyOutcome(errors.New("connection refused")))
+func TestDependencyErrorReason_GenericErrorIsTransport(t *testing.T) {
+	assert.Equal(t, "transport", DependencyErrorReason(errors.New("connection refused")))
+}
+
+func TestHTTPStatusReason_MapsStatusClasses(t *testing.T) {
+	for status, want := range map[int]string{400: "http_4xx", 404: "http_4xx", 499: "http_4xx", 500: "http_5xx", 503: "http_5xx", 599: "http_5xx", 302: "http_other", 600: "http_other"} {
+		assert.Equal(t, want, HTTPStatusReason(status), "status %d", status)
+	}
+}
+
+// iam_rls_violations_total is built from the registry, whose violation_type
+// is a fixed set: anything else is recorded as "other".
+func TestAddRLSViolations_MapsUnknownTypeToOther(t *testing.T) {
+	ensureRegistered(t)
+	before := testutil.ToFloat64(RLSViolations.WithLabelValues("other"))
+	AddRLSViolations("something_new", 2)
+	assert.Equal(t, before+2, testutil.ToFloat64(RLSViolations.WithLabelValues("other")))
+
+	cross := testutil.ToFloat64(RLSViolations.WithLabelValues("cross_tenant_access"))
+	AddRLSViolations("cross_tenant_access", 1)
+	assert.Equal(t, cross+1, testutil.ToFloat64(RLSViolations.WithLabelValues("cross_tenant_access")))
 }

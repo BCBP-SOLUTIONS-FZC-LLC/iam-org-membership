@@ -15,20 +15,25 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
+	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/config"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgmetrics"
-	"go.opentelemetry.io/otel"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgmetrics"
+	"github.com/prometheus/client_golang/prometheus/push"
 )
+
+// buildVersion is set at build time (-ldflags "-X main.buildVersion=...");
+// BUILD_VERSION in the environment overrides it.
+var buildVersion = "dev"
 
 var registry = map[string]jobs.Func{
 	"invitation-expiry":      jobs.InvitationExpiry,
@@ -54,14 +59,14 @@ func run() int {
 	flag.StringVar(&jobName, "job", os.Getenv("RECONCILER_JOB"), "reconciler job code")
 	flag.Parse()
 
-	appEnv := envOr("APP_ENV", "dev")
+	appEnv := resolveAppEnv()
 
 	// Build the gincommon-backed Zap logger first so ALL log output —
 	// including pre-dispatch usage errors — routes through platform-gincommon,
 	// never through fmt.Fprintf(os.Stderr). The one remaining fmt.Fprintln
 	// below is the bootstrapping exception: if the logger itself fails to
 	// initialize there is literally no platform sink to write to.
-	rawLog, err := logger.NewLogger(appEnv)
+	rawLog, err := logger.NewLogger(loggerEnv(appEnv))
 	if err != nil {
 		// Bootstrapping: logger unavailable — no alternative to stderr here.
 		fmt.Fprintln(os.Stderr, "init logger: "+err.Error())
@@ -92,15 +97,28 @@ func run() int {
 		return 1
 	}
 
-	// Distinct from cmd/server's "iam-org-membership" default so reconciler
-	// spans/metrics/logs are attributable to this binary, not the HTTP
-	// server, on a shared {service} dashboard.
-	serviceName := envOr("APP_NAME", "iam-org-membership-reconciler")
-	buildVersion := envOr("BUILD_VERSION", "dev")
+	// The same service identity as cmd/server: the observability standard
+	// requires service-specific metrics to be named <domain>_<service>_*, so
+	// iam_org_membership_* series must carry service="iam-org-membership".
+	// Reconciler runs stay distinguishable by the cronjob grouping label on
+	// pushed metrics, the reconciler.<job> span name, and the job log field.
+	serviceName := envOr("APP_NAME", "iam-org-membership")
+	buildVersion := envOr("BUILD_VERSION", buildVersion)
 
 	// Same TracerProvider as cmd/server so db.query spans from this job
 	// export through gincommon's OTLP pipeline when the collector is set.
-	shutdownTracing := gincommon.InitTracingFromEnv()
+	// Same identity as the metrics below (service, version, domain,
+	// environment), not read from the environment separately.
+	shutdownTracing, err := gincommon.InitTracingWithConfig(gincommon.TracingConfig{
+		ServiceName:  serviceName,
+		BuildVersion: buildVersion,
+		Domain:       "iam",
+		Environment:  appEnv,
+		Logger:       rawLog,
+	})
+	if err != nil {
+		panic("init tracing: " + err.Error())
+	}
 	// Registered in reverse of execution order (defers run LIFO): this
 	// gincommon.Shutdown defer, registered FIRST, fires LAST — so the
 	// TracerProvider shuts down (below) before the Zap flush, matching
@@ -116,16 +134,39 @@ func run() int {
 	// ObservabilityMiddlewares is gincommon's public metrics-init API —
 	// call it here (mirrors cmd/server/main.go) so business / events /
 	// pgcommon metrics land on gincommon.MetricsRegisterer with matching
-	// {service, version} const labels. This CronJob never serves /metrics;
-	// collectors still have to exist because jobs increment them.
+	// {domain, service, environment} const labels. This CronJob never
+	// serves /metrics; collectors still have to exist because jobs
+	// increment them. Domain is required (startup panics without it); the
+	// environment is resolveAppEnv's (local|dev|test|staging|prod), passed
+	// explicitly so it matches the tracing identity above.
 	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
+		Environment:  appEnv,
 		Logger:       rawLog,
 		ServiceName:  serviceName,
 		BuildVersion: buildVersion,
+		Domain:       "iam",
 	})
+	// Business metrics before events.InitMetrics so platform-events reuses
+	// the registry-shared platform_* collectors (see metrics.Register).
 	metrics.Register(appEnv)
-	events.InitWithRegisterer(serviceName, buildVersion, gincommon.MetricsRegisterer())
-	pgmetrics.InitWithRegisterer(serviceName, buildVersion, gincommon.MetricsRegisterer())
+	identity := gincommon.MetricsConstLabels()
+	evWarnings, err := events.InitMetrics(events.MetricsIdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range evWarnings {
+		log.Warn("platform-events metric disabled", "metric", w.Metric, "error", w.Error())
+	}
+	if err != nil {
+		log.Error("init platform-events metrics", "error", err.Error())
+		return 1
+	}
+	// Before NewPool below, so the pool connection gauges register.
+	pgMetricWarnings, err := pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range pgMetricWarnings {
+		log.Warn("platform-pgcommon metric disabled", "metric", w.Metric, "error", w.Error())
+	}
+	if err != nil {
+		log.Error("init platform-pgcommon metrics", "error", err.Error())
+		return 1
+	}
 
 	log.Info("reconciler starting", "job", jobName)
 
@@ -138,7 +179,7 @@ func run() int {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	ctx, jobSpan := otel.Tracer(serviceName).Start(ctx, "reconciler."+jobName)
+	ctx, jobSpan := gincommon.NewTracer(serviceName).Start(ctx, "reconciler."+jobName)
 	defer jobSpan.End()
 
 	// pgcommon.ConfigFromEnv reads DATABASE_URL/PG_* directly — same source
@@ -149,9 +190,15 @@ func run() int {
 		log.Warn("postgres config warning", "key", w.Key, "reason", w.Reason)
 	}
 	pgCfg.DSN = pgadapter.DSNFromEnv()
+	// Batch sweeps (trial-cleanup's cascading DELETE of up to
+	// RECONCILER_BATCH_LIMIT tenants, the prune loops) legitimately run far
+	// longer than the API's PG_STATEMENT_TIMEOUT, which the CronJobs inherit
+	// from the shared Helm env. The job's own deadline is RECONCILER_TIMEOUT.
+	stmtTimeout := envDuration("RECONCILER_STATEMENT_TIMEOUT", defaultReconcilerStatementTimeout)
+	pgCfg.StatementTimeout = stmtTimeout
 	pgCfg.GUCProvider = pgcommon.GUCSetFromContext
 	pgCfg.Logger = pgadapter.NewLoggerAdapter(rawLog)
-	pgCfg.Tracer = pgadapter.NewOTelTracer(serviceName)
+	pgCfg.Tracer = gincommon.NewSpanTracer(serviceName)
 	pool, err := pgcommon.NewPool(ctx, pgCfg)
 	if err != nil {
 		log.Error("connect to postgres", "error", err.Error())
@@ -187,7 +234,8 @@ func run() int {
 	// sizing). Tracer is wired separately so db.query spans export
 	// through gincommon's TracerProvider.
 	sysCfg := pgadapter.SystemPoolConfig(pgadapter.SystemDSNFromEnv(), rawLog)
-	sysCfg.Tracer = pgadapter.NewOTelTracer(serviceName)
+	sysCfg.StatementTimeout = stmtTimeout
+	sysCfg.Tracer = gincommon.NewSpanTracer(serviceName)
 	sysPool, err = pgcommon.NewPool(ctx, sysCfg)
 	if err != nil {
 		log.Error("connect sysPool", "error", err.Error())
@@ -200,7 +248,7 @@ func run() int {
 		log.Error("init validating codec", "error", err.Error())
 		return 1
 	}
-	outboxPublisher := eventbusadapter.New("iam-org-membership-reconciler", codec).WithLogger(rawLog)
+	outboxPublisher := eventbusadapter.New(eventbusadapter.EventSource, codec).WithLogger(rawLog)
 
 	// Prune-only runner: LoadOutbox + RunnerConfigFromEnv is the
 	// platform-events composition contract. Publisher is NoopPublisher
@@ -221,6 +269,8 @@ func run() int {
 		Invitations:            pgadapter.NewInvitationRepository(sysPool),
 		Reconciler:             pgadapter.NewReconcilerStore(sysPool),
 		OutboxRunner:           outboxRunner,
+		Inbox:                  pgadapter.NewInboxRepository(sysPool, nil),
+		InboxConsumers:         consumeradapter.ProcessedEventsConsumers(),
 		RealmProvisioner:       realmprovisionerclient.New(rawLog),
 		Logger:                 log,
 		Metrics:                metrics.Recorder{},
@@ -232,6 +282,9 @@ func run() int {
 	}
 
 	res, err := fn(ctx, jctx)
+	// A CronJob is never scraped: push what the run recorded (e.g.
+	// iam_org_membership_realm_sync_failed_total), success or failure.
+	pushMetrics(ctx, jobName, log)
 	if err != nil {
 		log.Error("reconciler job failed", "job", jobName, "error", err.Error())
 		return 1
@@ -239,6 +292,26 @@ func run() int {
 	log.Info("reconciler complete", "job", jobName,
 		"attempted", res.Attempted, "succeeded", res.Succeeded, "failed", res.Failed, "skipped", res.Skipped)
 	return 0
+}
+
+// pushMetrics pushes this run's metrics to the Prometheus Pushgateway at
+// PROMETHEUS_PUSHGATEWAY_URL, grouped by cronjob, replacing the previous
+// run's group. Unset URL skips the push (local runs). A failed push is
+// logged, never fails the job.
+func pushMetrics(ctx context.Context, jobName string, log port.SlogStyleLogger) {
+	url := os.Getenv("PROMETHEUS_PUSHGATEWAY_URL")
+	if url == "" {
+		return
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	err := push.New(url, "iam-org-membership-reconciler").
+		Grouping("cronjob", jobName).
+		Gatherer(gincommon.MetricsGatherer()).
+		PushContext(pushCtx)
+	if err != nil {
+		log.Warn("pushgateway push failed — this run's metrics are lost", "job", jobName, "error", err.Error())
+	}
 }
 
 func registryNames() []string {
@@ -252,6 +325,21 @@ func registryNames() []string {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// defaultReconcilerStatementTimeout bounds one statement in a reconciler
+// job (RECONCILER_STATEMENT_TIMEOUT overrides it).
+const defaultReconcilerStatementTimeout = 2 * time.Minute
+
+// envDuration parses key as a Go duration, or returns def when unset or
+// invalid.
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
 	}
 	return def
 }
@@ -271,7 +359,7 @@ func envInt(key string, def int) int {
 // identically in both binaries.
 func isDevLikeEnv(appEnv string) bool {
 	switch appEnv {
-	case "dev", "development", "local", "test":
+	case "dev", "local", "test":
 		return true
 	default:
 		return false

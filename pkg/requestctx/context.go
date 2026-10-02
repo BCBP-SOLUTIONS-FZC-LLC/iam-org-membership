@@ -61,3 +61,21 @@ func (rc *RequestContext) IsOperator() bool {
 func (rc *RequestContext) IsSystem() bool {
 	return rc.HasRole("iam-system")
 }
+
+type requestIDKey struct{}
+
+// WithRequestID returns ctx carrying the request's correlation ID
+// (x-request-id), so outbound calls made with a plain context.Context can
+// forward it without reaching back into gin.Context.
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	if requestID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDKey{}, requestID)
+}
+
+// RequestIDFromContext returns the ID set by WithRequestID, or "".
+func RequestIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}

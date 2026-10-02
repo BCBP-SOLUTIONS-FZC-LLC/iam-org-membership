@@ -6,50 +6,64 @@ sequenceDiagram
     participant Delegation as Delegation Service
     participant WFC as WorkflowClient
     participant Workflow as Workflow Service
-    participant TX as pgcommon.RunInTx
+    participant TX as TxRunner.RunInTx
     participant DB as PostgreSQL
 
-    Note over Admin,DB: Core owns NO delegation table any more (ADR-0008) — the `delegations` row,<br/>its lifecycle, and the OOO/User-Profile coordination flow that used to live here<br/>moved entirely to the standalone Delegation Service. This diagram shows Core's<br/>only two remaining delegation-adjacent touchpoints, both read-only lookups.
+    Note over Admin,DB: Core owns NO delegation table any more (ADR-0008) — the delegations row,<br/>its lifecycle, and the OOO/User-Profile coordination flow that used to live here<br/>moved entirely to the standalone Delegation Service. This diagram shows Core's<br/>only remaining delegation-adjacent touchpoints, all read-only lookups made before any tx.
 
     rect rgb(240, 240, 250)
-    Note over Admin,DB: §8.8 — full removal (P-8/I-5): tenant-wide delegate-impact gate
+    Note over Admin,DB: §8.8 — full removal (P-8): tenant-wide delegate-impact gate (fail-closed on Workflow).<br/>I-5 (ProvisioningService.DeleteMember, IdP-driven) runs the same cascade + TM-12 with no Workflow gate.
     Admin ->>+ H: DELETE /tenants/:id/members/:user_id
     H ->>+ SVC: RemoveUser(ctx, tenantID, userID)
     SVC ->>+ WFC: GetDelegateImpact(tenantID, userID, delegationID=nil)
     WFC ->>+ Workflow: GET /internal/workflows/delegate-impact?tenant_id=&delegate_user_id=
-    Workflow -->>- WFC: {active_workflows, workflow_ids[]}
-    WFC -->>- SVC: DelegateImpact
-    alt active_workflows > 0
-        SVC -->>- H: 409 workflow_resolution_required<br/>{active_workflows, workflow_ids, allowed_actions:[replace_delegate, stop_workflows]}
-        H -->>- Admin: 409 (no DB write, no event — WFI-3)
+    Workflow -->>- WFC: {active_workflows, workflow_ids[]} or 5xx/timeout
+    WFC -->>- SVC: DelegateImpact or error
+    alt Workflow unavailable (WFI-8)
+        SVC -->> H: 503 workflow_service_unavailable (no change)
+    else active_workflows > 0
+        SVC -->> H: 409 workflow_resolution_required<br/>{active_workflows, workflow_ids, allowed_actions:[replace_delegate, stop_workflows]}<br/>(no DB write, no event — WFI-3, resolved via P-26)
     else active_workflows == 0
-        SVC ->>+ TX: RunInTx — §15.2.2 cascade
-        TX ->>+ DB: soft-delete tenant_memberships/tenant_roles/dept_memberships<br/>+ outbox.Enqueue(MembershipRevoked{tenant_id, user_id, actor_id})
+        SVC ->>+ TX: RunInTx — TM-13 SELECT … FOR UPDATE on tenants, TM-8 last-owner check
+        TX ->>+ DB: soft-delete tenant_roles / dept_memberships / tenant_memberships (§15.2.2)<br/>+ Enqueue TenantRoleRevoked / DepartmentMembershipRevoked per row<br/>+ Enqueue MembershipRevoked{tenant_id, user_id, actor_id}
         DB -->>- TX: committed
         TX -->>- SVC: ok
-        Note over TX,DB: MembershipRevoked is consumed asynchronously by BOTH the Delegation<br/>Service (ends the user's delegation rows) and Tender ACL Service —<br/>Core never touches either table.
-        SVC -->>- H: 204
-        H -->>- Admin: 204 removed
+        Note over SVC: post-commit: AUTH-8 RevokeUserSessions via Realm Provisioner (best-effort, fail-open).<br/>MembershipRevoked is consumed asynchronously by the Delegation Service, the<br/>Tender ACL Service and AuthZ Enrichment (om:memberships eviction) — Core never touches their tables.
+        SVC -->> H: 204
     end
+    deactivate SVC
+    H -->>- Admin: 503 / 409 / 204
     end
 
     rect rgb(250, 245, 235)
-    Note over Admin,DB: §8.8.4 — department demotion/removal (P-10 decrease / P-11): dept-scope precision lookup
-    Admin ->>+ H: PUT/DELETE .../departments/:dept_id/members/:user_id
-    H ->>+ SVC: AssignDeptMembership / RemoveDeptMembership(ctx, tenantID, deptID, userID)
+    Note over Admin,DB: §8.8.4 — department removal (P-11): dept-scope precision lookup
+    Admin ->>+ H: DELETE .../departments/:dept_id/members/:user_id
+    H ->>+ SVC: DeptMembershipService.Remove(ctx, tenantID, userID, deptID)
     SVC ->>+ DCC: DeptDelegate(ctx, tenantID, userID, deptID)
     DCC ->>+ Delegation: GET /internal/delegations/dept-delegate?tenant_id=&user_id=&dept_id=
-    alt Delegation Service reachable
-        Delegation -->>- DCC: active scope=department delegation.id, or null
-        DCC -->>- SVC: *uuid.UUID (delegationID) or nil
-    else Delegation Service 5xx/timeout
-        Delegation -->>- DCC: error
-        DCC -->>- SVC: error
-        Note over SVC: Fails OPEN (WFI-11) — degrade to tenant-wide impact scoping,<br/>i.e. call GetDelegateImpact with delegationID=nil instead of failing the request.<br/>Over-blocks/over-acts at worst — never under-blocks, never a hard failure.
-    end
+    Delegation -->>- DCC: active scope=department delegation id, null, or 5xx/timeout
+    DCC -->>- SVC: *uuid.UUID, nil, or error
+    Note over SVC: Delegation error fails OPEN — delegationID = nil, i.e. tenant-wide impact scoping<br/>(over-blocks at worst, never a hard failure)
     SVC ->>+ WFC: GetDelegateImpact(tenantID, userID, delegationID)
-    WFC ->>+ Workflow: GET /internal/workflows/delegate-impact (scoped by delegation_id if present)
+    WFC ->>+ Workflow: GET /internal/workflows/delegate-impact (scoped by delegation_id when present)
     Workflow -->>- WFC: {active_workflows, workflow_ids[]}
-    WFC -->>- SVC: DelegateImpact
-    Note over SVC: Same 409 workflow_resolution_required / proceed branching as §8.8 above,<br/>just precision-scoped to the one delegation instead of tenant-wide when available.
+    WFC -->>- SVC: DelegateImpact (a Workflow error lets the removal proceed)
+    Note over SVC: active_workflows > 0 → 409 workflow_resolution_required (dept_removal scope),<br/>else RunInTx soft-delete + DepartmentMembershipRevoked
+    SVC -->>- H: 409 / 200
+    H -->>- Admin: response
+    end
+
+    rect rgb(235, 245, 240)
+    Note over Admin,DB: §8.8.4 — department demotion (P-10 with a lower role_level): demotionGate, WFI-9/12
+    Admin ->>+ H: PUT .../departments/:dept_id/members/:user_id {role_level}
+    H ->>+ SVC: DeptMembershipService.Assign — demotionGate before RunInTx
+    Note over SVC: promotion or same level → no gate (WFI-12)
+    SVC ->>+ DCC: DeptDelegate(ctx, tenantID, userID, deptID)
+    DCC -->>- SVC: delegationID, or nil (no dept delegation / Delegation error)
+    Note over SVC: nil → the decrease is allowed (no tenant-wide fallback on this path)
+    SVC ->>+ WFC: GetDelegateImpact(tenantID, userID, delegationID)
+    WFC -->>- SVC: DelegateImpact (error → allow, WFI-9 fail-open, fallback_served counted)
+    Note over SVC: active_workflows > 0 → 409 workflow_resolution_required (dept_demotion scope)
+    SVC -->>- H: 409 / 200
+    H -->>- Admin: response
     end

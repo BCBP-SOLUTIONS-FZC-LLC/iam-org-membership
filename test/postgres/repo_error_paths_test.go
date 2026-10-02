@@ -27,6 +27,8 @@ package postgres_test
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1150,48 +1152,135 @@ func TestErrPaths_ReconcilerStore(t *testing.T) {
 	// ERRPATH-RECON-004 — removed 2026-09-20: PruneOutbox (and its hand-rolled
 	// DELETE against outbox_events) no longer exists — pruning goes entirely
 	// through platform-events' outbox.Runner.PrunePublished now.
-
-	// ERRPATH-RECON-005 — PruneProcessedEvents ctx cancelled (lines 120,128)
-	t.Run("PruneProcessedEvents_CtxCancelled", func(t *testing.T) {
-		t.Parallel()
-		ctx := context.Background()
-		cancelCtx, cancel := context.WithCancel(ctx)
-		cancel()
-		store := pgadapter.NewReconcilerStore(sysPool)
-		_, err := store.PruneProcessedEvents(cancelCtx, 8, 100)
-		assert.Error(t, err)
-	})
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // IdempotencyRepository — error paths  (one shared container, 2 subtests)
 // ═══════════════════════════════════════════════════════════════════════════
 
-func TestErrPaths_IdempotencyRepo(t *testing.T) {
+func TestErrPaths_InboxRepo(t *testing.T) {
 	t.Parallel()
 	appPool, _, _ := setupTestDB(t)
+	repo := pgadapter.NewInboxRepository(appPool, nil)
 
-	// ERRPATH-IDEMP-001 — IsProcessed ctx cancelled (lines 31,37)
-	t.Run("IsProcessed_CtxCancelled", func(t *testing.T) {
+	// ERRPATH-INBOX-001 — ProcessOnce with a cancelled ctx: error, fn not run.
+	t.Run("ProcessOnce_CtxCancelled", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		cancelCtx, cancel := context.WithCancel(ctx)
+		cancelCtx, cancel := context.WithCancel(context.Background())
 		cancel()
-		repo := pgadapter.NewIdempotencyRepository(appPool)
-		result, err := repo.IsProcessed(cancelCtx, "test-consumer", "test-event-id")
-		assert.False(t, result)
-		assert.Error(t, err, "cancelled context must propagate as error from IsProcessed")
+		ran := false
+		dup, err := repo.ProcessOnce(cancelCtx, "test-consumer", uuid.NewString(), "TenantSuspended",
+			func(context.Context) error { ran = true; return nil })
+		assert.Error(t, err)
+		assert.False(t, dup)
+		assert.False(t, ran)
 	})
 
-	// ERRPATH-IDEMP-002 — MarkProcessed ctx cancelled (line 47)
-	t.Run("MarkProcessed_CtxCancelled", func(t *testing.T) {
+	// ERRPATH-INBOX-002 — a non-UUID event id is rejected before any claim.
+	t.Run("ProcessOnce_InvalidEventID", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		cancelCtx, cancel := context.WithCancel(ctx)
-		cancel()
-		repo := pgadapter.NewIdempotencyRepository(appPool)
-		err := repo.MarkProcessed(cancelCtx, "test-consumer", "test-event-id")
+		_, err := repo.ProcessOnce(context.Background(), "test-consumer", "not-a-uuid", "TenantSuspended",
+			func(context.Context) error { return nil })
 		assert.Error(t, err)
+	})
+
+	// ERRPATH-INBOX-003 — Prune with a cancelled ctx.
+	t.Run("Prune_CtxCancelled", func(t *testing.T) {
+		t.Parallel()
+		cancelCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := repo.Prune(cancelCtx, "test-consumer", time.Hour, 0)
+		assert.Error(t, err)
+	})
+}
+
+// TestInbox_ExactlyOnce covers the port.Inbox contract against the real
+// processed_events table (platform-events' inbox.Store underneath).
+func TestInbox_ExactlyOnce(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	repo := pgadapter.NewInboxRepository(appPool, nil)
+	ctx := context.Background()
+
+	t.Run("SecondDeliveryIsDuplicate", func(t *testing.T) {
+		id := uuid.NewString()
+		runs := 0
+		fn := func(txCtx context.Context) error {
+			_, ok := port.TxFromContext(txCtx)
+			require.True(t, ok, "fn must run inside the claim's transaction")
+			runs++
+			return nil
+		}
+		dup, err := repo.ProcessOnce(ctx, "c1", id, "TenantSuspended", fn)
+		require.NoError(t, err)
+		assert.False(t, dup)
+		dup, err = repo.ProcessOnce(ctx, "c1", id, "TenantSuspended", fn)
+		require.NoError(t, err)
+		assert.True(t, dup)
+		assert.Equal(t, 1, runs)
+
+		dup, err = repo.ProcessOnce(ctx, "c2", id, "TenantSuspended", fn)
+		require.NoError(t, err)
+		assert.False(t, dup, "another consumer dedups independently")
+	})
+
+	t.Run("FnErrorRecordsNothing", func(t *testing.T) {
+		id := uuid.NewString()
+		_, err := repo.ProcessOnce(ctx, "c1", id, "TenantSuspended", func(context.Context) error { return assert.AnError })
+		require.ErrorIs(t, err, assert.AnError)
+		ran := false
+		dup, err := repo.ProcessOnce(ctx, "c1", id, "TenantSuspended", func(context.Context) error { ran = true; return nil })
+		require.NoError(t, err)
+		assert.False(t, dup)
+		assert.True(t, ran, "a failed attempt must leave the event claimable")
+	})
+
+	t.Run("ConcurrentDeliveriesRunOnce", func(t *testing.T) {
+		id := uuid.NewString()
+		var runs atomic.Int32
+		release := make(chan struct{})
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := repo.ProcessOnce(ctx, "c1", id, "TenantSuspended", func(context.Context) error {
+					runs.Add(1)
+					<-release // hold the claim while the other delivery arrives
+					return nil
+				})
+				assert.NoError(t, err)
+			}()
+		}
+		time.Sleep(200 * time.Millisecond)
+		close(release)
+		wg.Wait()
+		assert.Equal(t, int32(1), runs.Load(), "the claim's row lock must serialise a concurrent duplicate")
+	})
+
+	t.Run("PruneDeletesOnlyExpired", func(t *testing.T) {
+		oldID, newID := uuid.NewString(), uuid.NewString()
+		for _, id := range []string{oldID, newID} {
+			_, err := repo.ProcessOnce(ctx, "prune-c", id, "TenantSuspended", func(context.Context) error { return nil })
+			require.NoError(t, err)
+		}
+		_, err := rawPool.Exec(ctx, `UPDATE processed_events SET processed_at = now() - interval '9 days' WHERE event_id = $1`, oldID)
+		require.NoError(t, err)
+
+		n, err := repo.Prune(ctx, "prune-c", 8*24*time.Hour, 1)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, n)
+
+		var left []string
+		rows, err := rawPool.Query(ctx, `SELECT event_id FROM processed_events WHERE consumer = 'prune-c'`)
+		require.NoError(t, err)
+		for rows.Next() {
+			var id string
+			require.NoError(t, rows.Scan(&id))
+			left = append(left, id)
+		}
+		rows.Close()
+		assert.Equal(t, []string{newID}, left)
 	})
 }
 

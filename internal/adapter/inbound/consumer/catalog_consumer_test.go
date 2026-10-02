@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 // recordingDedup keys processed_events by (consumer, eventID) so swapped
@@ -80,7 +80,7 @@ func TestCatalogConsumer_Handle_ClearsCache_NoDedup(t *testing.T) {
 	// overhead for a cache-invalidation-only event.
 	dedup := &recordingDedup{}
 	cache := &stubCatalogCache{}
-	c := NewCatalogConsumer(cache, dedup, stubTx{}, nil)
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
 
 	env := catalogEnv(eventDepartmentCatalogChanged, "")
 	require.NoError(t, c.Handle(context.Background(), env))
@@ -95,7 +95,7 @@ func TestCatalogConsumer_Handle_Redelivery_ClearsCacheAgain(t *testing.T) {
 	// Redelivery of the same event must still clear the cache — no dedup gate.
 	dedup := &recordingDedup{}
 	cache := &stubCatalogCache{}
-	c := NewCatalogConsumer(cache, dedup, stubTx{}, nil)
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
 
 	env := catalogEnv(eventDepartmentCatalogChanged, uuid.New().String())
 	require.NoError(t, c.Handle(context.Background(), env))
@@ -107,7 +107,7 @@ func TestCatalogConsumer_Handle_Redelivery_ClearsCacheAgain(t *testing.T) {
 
 func TestCatalogConsumer_Handle_UnknownType_AckUnknownMarksProcessed(t *testing.T) {
 	dedup := &recordingDedup{}
-	c := NewCatalogConsumer(&stubCatalogCache{}, dedup, stubTx{}, nil)
+	c := NewCatalogConsumer(&stubCatalogCache{}, newFakeInbox(stubTx{}, dedup), nil)
 
 	env := catalogEnv("NeverHeardOfThis", uuid.New().String())
 	require.NoError(t, c.Handle(context.Background(), env))
@@ -117,7 +117,7 @@ func TestCatalogConsumer_Handle_UnknownType_AckUnknownMarksProcessed(t *testing.
 
 func TestCatalogConsumer_Handle_InvalidEventID_ErrorsWithoutMark(t *testing.T) {
 	dedup := &recordingDedup{}
-	c := NewCatalogConsumer(&stubCatalogCache{}, dedup, stubTx{}, nil)
+	c := NewCatalogConsumer(&stubCatalogCache{}, newFakeInbox(stubTx{}, dedup), nil)
 
 	err := c.Handle(context.Background(), catalogEnv(eventDepartmentCatalogChanged, "not-a-uuid"))
 	require.Error(t, err)
@@ -129,7 +129,7 @@ func TestCatalogConsumer_Handle_CacheDeleteError_ReturnsNil(t *testing.T) {
 	// message is acked and the 600s TTL self-heals. No processed_events write.
 	dedup := &recordingDedup{}
 	cache := &stubCatalogCache{err: errors.New("valkey down")}
-	c := NewCatalogConsumer(cache, dedup, stubTx{}, nil)
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
 
 	env := catalogEnv(eventDepartmentCatalogChanged, "")
 	require.NoError(t, c.Handle(context.Background(), env))

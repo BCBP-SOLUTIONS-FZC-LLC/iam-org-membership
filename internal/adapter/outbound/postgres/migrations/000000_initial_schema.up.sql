@@ -374,7 +374,9 @@ CREATE TABLE public.pending_invitations (
 -- (PE-1 strictly > 7-day SQS lifetime; IDEMP-4).
 -- ─────────────────────────────────────────────────────────────────────────
 CREATE TABLE public.processed_events (
-    event_id     text        NOT NULL,
+    -- uuid, the shape platform-events' inbox expects (pkg/inbox migration
+    -- 001): every envelope ID is a UUID, and inbox.Store rejects anything else.
+    event_id     uuid        NOT NULL,
     consumer     text        NOT NULL,
     processed_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT processed_events_pkey PRIMARY KEY (event_id, consumer)
@@ -753,30 +755,3 @@ BEGIN
         RAISE NOTICE 'Grants to org_membership_app skipped — current user (%) lacks GRANT privilege. In production the migrator role has this; in dev the app role is the owner.', current_user;
     END;
 END$$;
-
--- ─────────────────────────────────────────────────────────────────────────
--- outbox_events customization — platform-events creates outbox_events with
--- a JSONB payload column (via outbox.ApplySchema, which cmd/server/main.go
--- runs BEFORE this domain migration). pgx encodes []byte as bytea hex in
--- PgBouncer SimpleProtocol mode, which is invalid for jsonb; text accepts
--- the raw bytes as-is, and the outbox runner reads the value back via JSON
--- unmarshal, which works identically with text.
--- ─────────────────────────────────────────────────────────────────────────
-ALTER TABLE outbox_events ALTER COLUMN payload TYPE text USING payload::text;
-
--- pgx SimpleProtocol encodes []byte as bytea hex (\x...) even for text
--- columns. This trigger decodes it back to UTF-8 text on every INSERT so
--- the outbox runner can JSON-unmarshal the payload without errors.
-CREATE OR REPLACE FUNCTION outbox_normalize_payload()
-RETURNS trigger AS $$
-BEGIN
-  IF left(NEW.payload, 2) = '\x' THEN
-    NEW.payload = convert_from(decode(substring(NEW.payload FROM 3), 'hex'), 'UTF8');
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_outbox_normalize_payload
-BEFORE INSERT ON outbox_events
-FOR EACH ROW EXECUTE FUNCTION outbox_normalize_payload();

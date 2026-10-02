@@ -20,7 +20,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,7 +63,7 @@ func (s *htIdempotency) MarkProcessed(ctx context.Context, consumer, eventID str
 	return nil
 }
 
-var _ port.IdempotencyStore = (*htIdempotency)(nil)
+var _ dedupStore = (*htIdempotency)(nil)
 
 // htTenantRepo extends TenantRepositoryNoop with configurable fns for the
 // methods Handle() calls.
@@ -165,7 +165,7 @@ func mkHandleEnv(eventType string, tenantID string) events.Envelope[json.RawMess
 func TestHandle_KindUnknown_DedupsViaRunInTx(t *testing.T) {
 	idemp := &htIdempotency{}
 	txRunner := &htSyncTxRunner{}
-	c := NewMembershipEventConsumer(txRunner, nil, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(txRunner, idemp), nil, nil, nil, 5*time.Minute, nil)
 
 	env := mkHandleEnv("CompletelyUnknownEventType", uuid.New().String())
 	err := c.Handle(context.Background(), env)
@@ -189,7 +189,7 @@ func TestHandle_AlreadySeen_ReturnsNilWithoutRunInTx(t *testing.T) {
 
 	// Use a known event type (TrialExpired → kindTenantLifecycle) so the code
 	// reaches the IsProcessed probe; unknown types bypass it entirely.
-	c := NewMembershipEventConsumer(&spyRunnerDetect{called: &runInTxCalled}, nil, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&spyRunnerDetect{called: &runInTxCalled}, idemp), nil, nil, nil, 5*time.Minute, nil)
 
 	env := mkHandleEnv("TrialExpired", uuid.New().String())
 	err := c.Handle(context.Background(), env)
@@ -218,7 +218,7 @@ func TestHandle_NilLockedTenant_DropsSilentlyWithDedup(t *testing.T) {
 			return nil, nil // tenant absent
 		},
 	}
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, nil, nil, 5*time.Minute, nil)
 
 	env := mkHandleEnv("TrialExpired", uuid.New().String()) // known type → reaches LockForProjection
 	err := c.Handle(context.Background(), env)
@@ -245,7 +245,7 @@ func TestHandle_EVT14_StaleEvent_DropsSilentlyWithDedup(t *testing.T) {
 			}, nil
 		},
 	}
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, nil, nil, 5*time.Minute, nil)
 
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
@@ -289,7 +289,7 @@ func TestHandle_GDPRWipe_WipesTenantChildrenAndInvalidatesCache(t *testing.T) {
 		},
 	}
 
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, nil, cache, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, nil, cache, 5*time.Minute, nil)
 
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
@@ -341,7 +341,7 @@ func TestHandle_GDPRWipe_NilCache_SkipsCacheInvalidation(t *testing.T) {
 	}
 
 	// nil cache — the conditional `if gdprWipeRan && c.cache != nil` must guard cleanly.
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, nil, nil, 5*time.Minute, nil)
 
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
@@ -375,7 +375,7 @@ func TestHandle_EVT16_StatusChange_EnqueuesTenantStateChanged(t *testing.T) {
 	}
 
 	txRunner := &htSyncTxRunner{publisher: pub}
-	c := NewMembershipEventConsumer(txRunner, tenants, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(txRunner, idemp), tenants, nil, nil, 5*time.Minute, nil)
 
 	// "TenantSuspended" transitions trial→suspended (a genuine status change).
 	// Include source payload so the JSON unmarshal in applyProjection succeeds.
@@ -420,7 +420,7 @@ func TestHandle_OffboardWithPub_EnqueuesTenantMembershipsPurged(t *testing.T) {
 	}
 
 	txRunner := &htSyncTxRunner{publisher: pub}
-	c := NewMembershipEventConsumer(txRunner, tenants, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(txRunner, idemp), tenants, nil, nil, 5*time.Minute, nil)
 
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
@@ -464,7 +464,7 @@ func TestHandle_HappyPath_MarkProcessedCalled(t *testing.T) {
 		},
 	}
 
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, tenants, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, nil, nil, 5*time.Minute, nil)
 
 	// "TrialExpired" is a known event type with no required payload.
 	env := events.Envelope[json.RawMessage]{
@@ -491,7 +491,7 @@ func TestHandle_IsProcessedError_PropagatesError(t *testing.T) {
 		},
 	}
 	// Use a known event type so the code reaches the IsProcessed probe.
-	c := NewMembershipEventConsumer(&htSyncTxRunner{}, nil, idemp, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), nil, nil, nil, 5*time.Minute, nil)
 
 	env := mkHandleEnv("TrialExpired", uuid.New().String())
 	err := c.Handle(context.Background(), env)

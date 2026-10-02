@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,11 +25,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	_ "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/docs/swagger"
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/sqspipeline"
 	catalogadminclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/catalogadmin"
 	delegationcheckclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/delegationcheck"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
@@ -40,24 +41,50 @@ import (
 	valkeyadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/valkey"
 	workflowclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/workflow"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 
-	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/config"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/logger"
-	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgmetrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgmetrics"
 )
 
 // buildVersion is injected by -ldflags at build time (see Dockerfile / Makefile).
 var buildVersion = "dev"
 
+// requestTimeout is the hard per-request deadline (gincommon.Config.RequestTimeout).
+const requestTimeout = 30 * time.Second
+
+// initLibraryMetrics registers platform-events' and platform-pgcommon's
+// platform_* metrics on gincommon's registerer with gincommon's identity
+// (call after ObservabilityMiddlewares and metrics.Register, before any
+// pgcommon.NewPool). A metric that cannot be registered is disabled by the
+// library and reported as a warning; an invalid identity aborts startup.
+func initLibraryMetrics(log port.Logger) {
+	identity := gincommon.MetricsConstLabels()
+	evWarnings, err := events.InitMetrics(events.MetricsIdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range evWarnings {
+		log.Warn("platform-events metric disabled", map[string]interface{}{"metric": w.Metric, "error": w.Error()})
+	}
+	if err != nil {
+		panic(fmt.Sprintf("init platform-events metrics: %v", err))
+	}
+	pgWarnings, err := pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(identity), gincommon.MetricsRegisterer())
+	for _, w := range pgWarnings {
+		log.Warn("platform-pgcommon metric disabled", map[string]interface{}{"metric": w.Metric, "error": w.Error()})
+	}
+	if err != nil {
+		panic(fmt.Sprintf("init platform-pgcommon metrics: %v", err))
+	}
+}
+
 func main() {
-	appEnv := envOr("APP_ENV", "dev")
-	if appEnv != "dev" {
+	appEnv := resolveAppEnv()
+	if !isDevLikeAppEnv(appEnv) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
@@ -67,36 +94,64 @@ func main() {
 	validateRequiredEnv(appEnv)
 
 	// ── 1. Logger — Zap via platform-gincommon (same sink as iam-user-profile)
-	log, err := logger.NewLogger(appEnv)
+	log, err := logger.NewLogger(loggerEnv(appEnv))
 	if err != nil {
 		panic("init logger: " + err.Error())
 	}
-
-	// ── 2. Tracing — always install gincommon's TracerProvider so in-process
-	// spans get valid trace IDs even when OTEL_EXPORTER_OTLP_ENDPOINT is unset
-	// (dev). ObservabilityMiddlewares' EnsureInitTelemetry is then a no-op.
-	shutdownTracing := gincommon.InitTracingFromEnv()
 
 	cfg := gincommon.Config{
 		Logger:       log,
 		ServiceName:  envOr("APP_NAME", "iam-org-membership"),
 		BuildVersion: envOr("BUILD_VERSION", buildVersion),
+		// Observability Standard identity: domain is fixed for this service
+		// (OBSERVABILITY_DOMAIN is also set in Helm/compose). Environment is
+		// passed explicitly (resolveAppEnv: local|dev|test|staging|prod —
+		// startup panics on anything else, e.g. "production") so metrics,
+		// traces and logs all carry the same value.
+		Domain:      "iam",
+		Environment: appEnv,
+		// RequestTimeout appends gincommon's TimeoutMiddleware as the
+		// innermost observability handler, so metrics, the access log and
+		// the server span record the same 503 the client receives. As an
+		// outer r.Use it ran before observability, which recorded 200.
+		RequestTimeout: requestTimeout,
+	}
+
+	// ── 2. Tracing — always install gincommon's TracerProvider so in-process
+	// spans get valid trace IDs even when OTEL_EXPORTER_OTLP_ENDPOINT is unset
+	// (dev), with the SAME identity as metrics (service, version, domain,
+	// environment). InitTracingFromEnv read domain/environment from the
+	// environment on its own, so traces could disagree with metrics.
+	// ObservabilityMiddlewares' EnsureInitTelemetry is then a no-op.
+	shutdownTracing, err := gincommon.InitTracingWithConfig(gincommon.TracingConfig{
+		ServiceName:  cfg.ServiceName,
+		BuildVersion: cfg.BuildVersion,
+		Domain:       cfg.Domain,
+		Environment:  cfg.Environment,
+		Logger:       log,
+	})
+	if err != nil {
+		panic("init tracing: " + err.Error())
 	}
 	// ObservabilityMiddlewares is gincommon's public metrics-init API. Call
 	// it here (before any collector registration or exporter goroutine) so
 	// business / events / pgcommon metrics land on gincommon.MetricsRegisterer
-	// with matching {service, version} const labels. NewRouter applies the
-	// same middleware slice to the Gin engine; metrics.Init is sync.Once.
+	// with matching {domain, service, environment} const labels. NewRouter
+	// applies the same middleware slice to the Gin engine; metrics.Init is
+	// sync.Once.
 	_ = gincommon.ObservabilityMiddlewares(cfg)
 
+	// Business metrics BEFORE events.InitMetrics: the registry-shared
+	// platform_* collectors (DLQ, duplicates, dependency calls) are created
+	// here and reused by platform-events instead of conflicting with it.
 	metrics.Register(appEnv)
 
 	// platform-events outbox/publish/consume metrics and platform-pgcommon
-	// query/pool metrics share gincommon's registerer so a single /metrics
-	// scrape (promhttp on METRICS_PORT) serves HTTP + business + outbox +
-	// pg collectors together.
-	events.InitWithRegisterer(cfg.ServiceName, cfg.BuildVersion, gincommon.MetricsRegisterer())
-	pgmetrics.InitWithRegisterer(cfg.ServiceName, cfg.BuildVersion, gincommon.MetricsRegisterer())
+	// query/pool metrics share gincommon's registerer and identity so a
+	// single /metrics scrape (gincommon.MetricsHandler on METRICS_PORT) serves HTTP +
+	// business + outbox + pg collectors together. pgmetrics must be
+	// initialised before NewPool so the pool connection gauges register.
+	initLibraryMetrics(log)
 
 	// ── 3. Database — pgcommon.ConfigFromEnv reads DATABASE_URL/PG_* directly
 	// so pool sizing, PgBouncer mode, and DSN assembly have exactly one
@@ -124,9 +179,9 @@ func main() {
 	// resolved by ConfigFromEnv above.
 	pgCfg.Logger = pgadapter.NewLoggerAdapter(log)
 	// db.query spans export through the TracerProvider
-	// gincommon.InitTracingFromEnv installed above — same OTLP pipeline as
+	// gincommon.InitTracingWithConfig installed above — same OTLP pipeline as
 	// HTTP spans from ObservabilityMiddlewares.
-	pgCfg.Tracer = pgadapter.NewOTelTracer(cfg.ServiceName)
+	pgCfg.Tracer = gincommon.NewSpanTracer(cfg.ServiceName)
 	pool, err := pgcommon.NewPool(context.Background(), pgCfg)
 	if err != nil {
 		panic(fmt.Sprintf("connect to postgres: %v", err))
@@ -146,7 +201,7 @@ func main() {
 	// through gincommon's TracerProvider.
 	sysDSN := pgadapter.SystemDSNFromEnv()
 	sysCfg := pgadapter.SystemPoolConfig(sysDSN, log)
-	sysCfg.Tracer = pgadapter.NewOTelTracer(cfg.ServiceName)
+	sysCfg.Tracer = gincommon.NewSpanTracer(cfg.ServiceName)
 	sysPool, err := pgcommon.NewPool(context.Background(), sysCfg)
 	if err != nil {
 		panic(fmt.Sprintf("connect sysPool: %v", err))
@@ -159,13 +214,16 @@ func main() {
 	ctx, cancelBackground := context.WithCancel(context.Background())
 	defer cancelBackground()
 
-	// outbox.ApplySchema must run first so platform-events creates outbox_events
-	// (with JSONB payload) before domain migration 10 converts it to TEXT.
-	if err := outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: migrationDSN}); err != nil {
-		panic(fmt.Sprintf("outbox schema: %v", err))
-	}
-	if err := pgadapter.RunMigrations(ctx, migrationDSN, log); err != nil {
-		panic(fmt.Sprintf("domain migrations: %v", err))
+	// Schema: in Kubernetes the migrate Job (cmd/migrate, a Helm
+	// pre-install/pre-upgrade hook) migrates once per release and every
+	// replica runs with RUN_MIGRATIONS=false. Unset or true (local dev,
+	// tests), the server migrates at startup itself.
+	if runMigrationsAtStartup() {
+		if err := pgadapter.MigrateSchema(ctx, migrationDSN, log); err != nil {
+			panic(fmt.Sprintf("migrate: %v", err))
+		}
+	} else {
+		log.Info("RUN_MIGRATIONS=false — schema is migrated by the migrate Job", nil)
 	}
 
 	// ── 4. Cache ──────────────────────────────────────────────────────────
@@ -196,11 +254,17 @@ func main() {
 	// EndpointURL) nor NewRoutingPublisher needs an SNS client constructed
 	// here — there is deliberately no sns.NewFromConfig call in this file.
 	sqsClient := sqs.NewFromConfig(awsCfg, sqsOpts...)
-	// sqsDLQAdapter adapts *sqs.Client to the dlqTransport interface (dlq.go)
-	// so dlq.go can stay AWS-SDK-free. This is the only sanctioned direct
-	// SQS transport call in this binary — platform-events has no DLQ-routing
-	// primitive (check-forbidden-events-bypass.sh Rule-2 exempts this file).
-	dlqAdapter := &sqsDLQAdapter{client: sqsClient}
+	// dlqPublisher is platform-events' DLQ forwarder over the same client. It
+	// resolves each queue's DLQ from its own RedrivePolicy (cached, re-read on
+	// expiry) and is used both by the consumers' automatic forwarding
+	// (WithDLQForwarding) and by routeRejectsToDLQ's explicit rejects.
+	dlqPublisher, err := events.NewSQSDLQPublisherWithClient(events.DLQConfig{
+		ConsumerName: envOr("APP_NAME", "iam-org-membership"),
+		Logger:       log,
+	}, sqsClient)
+	if err != nil {
+		panic(fmt.Sprintf("build DLQ publisher: %v", err))
+	}
 	glueClient := glue.NewFromConfig(awsCfg, glueOpts...)
 
 	// ── 6. Event codec + outbox publisher ─────────────────────────────────
@@ -215,7 +279,16 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintf("init validating codec: %v", err))
 	}
-	outboxPublisher := eventbusadapter.New(cfg.ServiceName, enqueueCodec).WithLogger(log)
+	outboxPublisher := eventbusadapter.New(eventbusadapter.EventSource, enqueueCodec).WithLogger(log)
+	// Consumed payloads are validated against the same embedded schemas; an
+	// event type with no schema (ErrNoSchema) passes through to the
+	// consumer's ackUnknown forward-compat path.
+	consumedValidator := sqspipeline.ValidatorFunc(func(eventType string, payload []byte) error {
+		if err := enqueueCodec.Validate(eventType, payload); !errors.Is(err, eventbusadapter.ErrNoSchema) {
+			return err
+		}
+		return nil
+	})
 	// txRunner injects a tx-bound ContextEventPublisher into the ctx so
 	// services can call port.EventPublisherFromContext(ctx).EnqueueCtx
 	// inside a RunInTx block — state write + event insert commit together
@@ -291,8 +364,10 @@ func main() {
 	// guards live inside the handler. Both queues share the same consumer
 	// identity in processed_events (§16 A33 / PE-1).
 	skew := envDuration("MAX_LIFECYCLE_EVENT_SKEW_SECONDS", 300*time.Second)
-	idempotencyStore := pgadapter.NewIdempotencyRepository(pool)
-	membershipConsumer := consumeradapter.NewMembershipEventConsumer(txRunner, pgadapter.NewTenantRepository(pool), idempotencyStore, catalogReader, cache, skew, log)
+	// processed_events dedup through platform-events' inbox: the claim, the
+	// projection and the relay events commit in one transaction (IDEMP-1..4).
+	inbox := pgadapter.NewInboxRepository(pool, outboxPublisher)
+	membershipConsumer := consumeradapter.NewMembershipEventConsumer(inbox, pgadapter.NewTenantRepository(pool), catalogReader, cache, skew, log)
 
 	// LoadSQS supplies region / endpoint / long-poll / visibility / max-receive
 	// from the library env contract. Per-queue URL + concurrency overlay
@@ -309,10 +384,14 @@ func main() {
 	}
 	var sqsConsumers []wiredConsumer
 	if url := os.Getenv("SQS_TENANT_ORGM_QUEUE_URL"); url != "" {
-		cons, err := buildSQSConsumer(
-			sqsEnvForQueue(sqsEnv, url, envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
+		if err := sqspipeline.RequireDLQ(ctx, dlqPublisher, url, log); err != nil {
+			panic(fmt.Sprintf("DLQ preflight: %v", err))
+		}
+		cons, err := sqspipeline.NewConsumer(
+			sqspipeline.EnvForQueue(sqsEnv, url, envInt("SQS_TENANT_ORGM_CONCURRENCY", 4)),
 			sqsClient,
-			inboundHandler(ctx, dlqAdapter, url, "tenant-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
+			sqspipeline.Handler("tenant-orgm-q", membershipConsumer.Handle, consumedValidator, dlqPublisher, log),
+			dlqPublisher,
 			log,
 		)
 		if err != nil {
@@ -324,10 +403,14 @@ func main() {
 		log.Warn("SQS_TENANT_ORGM_QUEUE_URL unset — tenant lifecycle consumer disabled", nil)
 	}
 	if url := os.Getenv("SQS_BILLING_ORGM_QUEUE_URL"); url != "" {
-		cons, err := buildSQSConsumer(
-			sqsEnvForQueue(sqsEnv, url, envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
+		if err := sqspipeline.RequireDLQ(ctx, dlqPublisher, url, log); err != nil {
+			panic(fmt.Sprintf("DLQ preflight: %v", err))
+		}
+		cons, err := sqspipeline.NewConsumer(
+			sqspipeline.EnvForQueue(sqsEnv, url, envInt("SQS_BILLING_ORGM_CONCURRENCY", 2)),
 			sqsClient,
-			inboundHandler(ctx, dlqAdapter, url, "billing-orgm-q", membershipConsumer.Handle, enqueueCodec, log),
+			sqspipeline.Handler("billing-orgm-q", membershipConsumer.Handle, consumedValidator, dlqPublisher, log),
+			dlqPublisher,
 			log,
 		)
 		if err != nil {
@@ -344,12 +427,16 @@ func main() {
 	// published by iam-catalog-admin, eliminating the 11-min TTL delay.
 	// Requires Catalog Service to publish DepartmentCatalogChanged events and
 	// infra to provision the catalog-orgm-q SQS queue + SNS subscription.
-	catalogConsumer := consumeradapter.NewCatalogConsumer(cache, idempotencyStore, txRunner, log)
+	catalogConsumer := consumeradapter.NewCatalogConsumer(cache, inbox, log)
 	if url := os.Getenv("SQS_CATALOG_ORGM_QUEUE_URL"); url != "" {
-		cons, err := buildSQSConsumer(
-			sqsEnvForQueue(sqsEnv, url, envInt("SQS_CATALOG_ORGM_CONCURRENCY", 2)),
+		if err := sqspipeline.RequireDLQ(ctx, dlqPublisher, url, log); err != nil {
+			panic(fmt.Sprintf("DLQ preflight: %v", err))
+		}
+		cons, err := sqspipeline.NewConsumer(
+			sqspipeline.EnvForQueue(sqsEnv, url, envInt("SQS_CATALOG_ORGM_CONCURRENCY", 2)),
 			sqsClient,
-			inboundHandler(ctx, dlqAdapter, url, "catalog-orgm-q", catalogConsumer.Handle, enqueueCodec, log),
+			sqspipeline.Handler("catalog-orgm-q", catalogConsumer.Handle, consumedValidator, dlqPublisher, log),
+			dlqPublisher,
 			log,
 		)
 		if err != nil {
@@ -490,7 +577,7 @@ func main() {
 	// SECURITY-10: DOCS_ENABLED=true without DOCS_AUTH_TOKEN in production/
 	// staging exposes the Swagger UI to unauthenticated callers. Hard-fail at
 	// startup so the misconfiguration is caught before any traffic is served.
-	if docsEnabled && docsAuthToken == "" && (appEnv == "production" || appEnv == "staging") {
+	if docsEnabled && docsAuthToken == "" && (appEnv == "prod" || appEnv == "staging") {
 		panic("startup aborted — DOCS_ENABLED requires DOCS_AUTH_TOKEN in production/staging (SECURITY-10)")
 	}
 
@@ -564,7 +651,7 @@ func main() {
 	// access without also granting it access to the tenant-facing/gateway
 	// API surface. Mirrors iam-tender-acl's identical split.
 	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsMux.Handle("/metrics", gincommon.MetricsHandler())
 	metricsServer := &http.Server{
 		Addr:              ":" + envOr("METRICS_PORT", "9090"),
 		Handler:           metricsMux,
@@ -595,30 +682,38 @@ func main() {
 	<-quit
 	log.Info("shutdown signal received — draining", nil)
 
-	// Order matters (sibling convention):
-	//   1. HTTP Shutdown  — stop accepting new requests, drain in-flight
-	//   2. outbox.Stop    — its DrainTimeout publishes committed events
-	//   3. cancelBg       — exporters + consumers stop
-	//   4. cache.Close    — flush connection pool
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Order, and the budget it must fit in terminationGracePeriodSeconds (75):
+	//   1. in parallel: HTTP Shutdown (≤ 30s, the request timeout) and every
+	//      SQS consumer's Stop (each ≤ SQS_DRAIN_TIMEOUT, 15s in Helm) — both
+	//      stop new work and drain what is in flight;
+	//   2. outbox.Stop (≤ OUTBOX_DRAIN_TIMEOUT, 30s) — publishes committed
+	//      events, after the consumers so none can enqueue past the drain;
+	//   3. cancelBackground — exporters stop;
+	//   4. pool drains on their own budget (poolDrainTimeout, 10s).
+	// max(30, 15) + 30 + 10 = 70s, leaving a 5s buffer.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpDrainTimeout)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("HTTP server shutdown error", map[string]interface{}{"error": err.Error()})
-	}
-	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-		log.Error("metrics server shutdown error", map[string]interface{}{"error": err.Error()})
-	}
-	// Consumers stop BEFORE the outbox drains: a consumer still mid-flight
-	// when the outbox drain window closes could commit a new outbox_events
-	// row after that window, stranding it until the next runner start picks
-	// it up. Stopping new work first, then draining what's already queued,
-	// is the safer order (not a data-loss fix — the outbox is durable and
-	// self-healing either way, just tidier under a rolling deploy).
-	for _, wc := range sqsConsumers {
-		if err := wc.cons.Stop(); err != nil {
-			log.Error("SQS consumer stop error", map[string]interface{}{"error": err.Error()})
+	var drain sync.WaitGroup
+	drain.Add(1)
+	go func() {
+		defer drain.Done()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error("HTTP server shutdown error", map[string]interface{}{"error": err.Error()})
 		}
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			log.Error("metrics server shutdown error", map[string]interface{}{"error": err.Error()})
+		}
+	}()
+	for _, wc := range sqsConsumers {
+		drain.Add(1)
+		go func() {
+			defer drain.Done()
+			if err := wc.cons.Stop(); err != nil {
+				log.Error("SQS consumer stop error", map[string]interface{}{"error": err.Error()})
+			}
+		}()
 	}
+	drain.Wait()
 	if err := outboxRunner.Stop(); err != nil {
 		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
 	}
@@ -628,15 +723,25 @@ func main() {
 	// goroutines to log context.Canceled at ERROR level during normal shutdown.
 	cancelBackground()
 	// DrainAndClose waits for in-flight WithConn/RunInTx callbacks then
-	// force-closes — pgcommon's documented graceful path. defer Close()
+	// force-closes — pgcommon's documented graceful path. It gets a fresh
+	// budget: the HTTP drain context is usually spent by now. defer Close()
 	// above remains a safety net for panic/early-return and is idempotent
 	// after DrainAndClose returns (must not run concurrently).
-	if err := pool.DrainAndClose(shutdownCtx); err != nil {
-		log.Error("app pool drain error", map[string]interface{}{"error": err.Error()})
+	// Both pools drain in parallel on the same budget, so a slow app pool
+	// cannot leave the system pool no time.
+	poolCtx, cancelPool := context.WithTimeout(context.Background(), poolDrainTimeout)
+	defer cancelPool()
+	var pools sync.WaitGroup
+	for name, p := range map[string]*pgcommon.Pool{"app": pool, "system": sysPool} {
+		pools.Add(1)
+		go func() {
+			defer pools.Done()
+			if err := p.DrainAndClose(poolCtx); err != nil {
+				log.Error("pool drain error", map[string]interface{}{"pool": name, "error": err.Error()})
+			}
+		}()
 	}
-	if err := sysPool.DrainAndClose(shutdownCtx); err != nil {
-		log.Error("sysPool drain error", map[string]interface{}{"error": err.Error()})
-	}
+	pools.Wait()
 	shutdownTracing()
 	if err := gincommon.Shutdown(log); err != nil {
 		log.Error("logger/tracer flush error", map[string]interface{}{"error": err.Error()})
@@ -644,6 +749,24 @@ func main() {
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
+
+// runMigrationsAtStartup reports whether this process migrates the schema
+// itself: RUN_MIGRATIONS unset or true. The Helm chart sets it to false and
+// runs cmd/migrate as a hook Job instead.
+func runMigrationsAtStartup() bool {
+	v := strings.TrimSpace(os.Getenv("RUN_MIGRATIONS"))
+	if v == "" {
+		return true
+	}
+	run, err := strconv.ParseBool(v)
+	return err != nil || run
+}
+
+// Shutdown budgets (see the ordering comment in main).
+const (
+	httpDrainTimeout = 30 * time.Second
+	poolDrainTimeout = 10 * time.Second
+)
 
 // pingerFunc adapts a plain func to httpadapter.Pinger so /readyz's three
 // dependencies (Postgres, cache, outbox runner) — each with a different
@@ -684,11 +807,11 @@ func envDuration(key string, def time.Duration) time.Duration {
 func validateRequiredEnv(appEnv string) {
 	type req struct {
 		key         string
-		devOK       bool // skip silently in dev/development/local/test
+		devOK       bool // skip silently in dev/local/test
 		stagingWarn bool // warn to stderr in staging instead of panicking (CONFIG-2 Option C)
 		reason      string
 	}
-	isDevLike := appEnv == "dev" || appEnv == "development" || appEnv == "local" || appEnv == "test"
+	isDevLike := appEnv == "dev" || appEnv == "local" || appEnv == "test"
 	isStaging := appEnv == "staging"
 
 	reqs := []req{
@@ -744,13 +867,17 @@ func validateRequiredEnv(appEnv string) {
 		(os.Getenv("PG_HOST") == "" || os.Getenv("PG_USER") == "" || os.Getenv("PG_PASSWORD") == "") {
 		missing = append(missing, "DATABASE_URL (or PG_HOST + PG_USER + PG_PASSWORD): PostgreSQL connection required")
 	}
-	// MIGRATION_DATABASE_URL required with PG_BOUNCER_MODE=true (advisory locks are session-scoped).
-	if os.Getenv("MIGRATION_DATABASE_URL") == "" && os.Getenv("PG_BOUNCER_MODE") == "true" &&
-		os.Getenv("DATABASE_URL") == "" {
+	// MIGRATION_DATABASE_URL is required with PG_BOUNCER_MODE=true, in every
+	// environment: migrations take a session-scoped advisory lock, which
+	// transaction pooling silently breaks, and the fallback would be the
+	// PgBouncer DSN. DATABASE_URL being set is no exemption — it is the app
+	// DSN and points at PgBouncer too (platform-pgcommon's own migrate CLI
+	// refuses the same fallback).
+	if bouncer, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("PG_BOUNCER_MODE"))); bouncer && os.Getenv("MIGRATION_DATABASE_URL") == "" {
 		missing = append(missing, "MIGRATION_DATABASE_URL: required when PG_BOUNCER_MODE=true — migrations must bypass PgBouncer")
 	}
 	// TLS Valkey in production.
-	isProd := appEnv == "production" || appEnv == "staging"
+	isProd := appEnv == "prod" || appEnv == "staging"
 	if isProd {
 		if v := os.Getenv("VALKEY_URL"); v != "" && !strings.HasPrefix(v, "rediss://") {
 			missing = append(missing, "VALKEY_URL: must use rediss:// in production/staging")

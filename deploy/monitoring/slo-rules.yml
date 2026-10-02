@@ -15,7 +15,15 @@
 #         overage_since) clear within 2 CronJob cycles (default 20 min).
 #
 # Recording rules pre-compute the SLI numerator/denominator so alert rules
-# can key off a scalar. Alerts follow the multi-window multi-burn-rate
+# can key off a scalar. SLIs aggregate by (domain, service, environment) —
+# the Observability Standard's identity labels — so each environment burns
+# its own budget.
+#
+# metric_status: proposed — the HTTP SLIs read platform_http_request_
+# duration_seconds / platform_http_requests_total (platform-gincommon). They
+# replace the removed http_* names and are still Proposed in the Platform
+# Observability Registry (awaiting governance), so every alert built on them
+# carries the label metric_status: proposed. Alerts follow the multi-window multi-burn-rate
 # pattern (SRE book Ch. 5): a slow burn signals an ongoing degradation,
 # a fast burn signals an outage worth paging on.
 
@@ -25,56 +33,58 @@ groups:
     interval: 30s
     rules:
       # I-8 latency histogram → error budget window.
-      # Assumes the gincommon middleware exposes http_request_duration_seconds
-      # bucketed histogram with a "path" label.
+      # metric_status: proposed (platform_http_request_duration_seconds).
+      # route is the Gin route template recorded by platform-gincommon.
+      # The registry's request_duration buckets have no 0.03 boundary
+      # (…0.015, 0.025, 0.05…), so the 30 ms target is measured
+      # conservatively at le="0.025" (the old le="0.030" matched no bucket).
       - record: iam:i8_latency_sli:ratio_rate_5m
         expr: |
-          sum(rate(http_request_duration_seconds_bucket{
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_bucket{
             service="iam-org-membership",
-            path="/api/v1/internal/users/:id/memberships",
-            le="0.030"
+            route="/api/v1/internal/users/:id/memberships",
+            le="0.025"
           }[5m]))
           /
-          sum(rate(http_request_duration_seconds_count{
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_count{
             service="iam-org-membership",
-            path="/api/v1/internal/users/:id/memberships"
+            route="/api/v1/internal/users/:id/memberships"
           }[5m]))
 
+      # metric_status: proposed (platform_http_request_duration_seconds).
       - record: iam:i8_latency_sli:ratio_rate_1h
         expr: |
-          sum(rate(http_request_duration_seconds_bucket{
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_bucket{
             service="iam-org-membership",
-            path="/api/v1/internal/users/:id/memberships",
-            le="0.030"
+            route="/api/v1/internal/users/:id/memberships",
+            le="0.025"
           }[1h]))
           /
-          sum(rate(http_request_duration_seconds_count{
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_count{
             service="iam-org-membership",
-            path="/api/v1/internal/users/:id/memberships"
+            route="/api/v1/internal/users/:id/memberships"
           }[1h]))
 
       # Write-path error rate (5xx only — 4xx are intentional).
+      # metric_status: proposed (platform_http_requests_total). The 5xx
+      # selector is status_class="5xx" (the label platform-gincommon emits).
       - record: iam:write_error_rate:ratio_rate_5m
         expr: |
-          sum(rate(http_requests_total{
+          sum by (domain, service, environment) (rate(platform_http_requests_total{
             service="iam-org-membership",
             method=~"POST|PUT|PATCH|DELETE",
-            status_code=~"5.."
+            status_class="5xx"
           }[5m]))
           /
-          clamp_min(sum(rate(http_requests_total{
+          clamp_min(sum by (domain, service, environment) (rate(platform_http_requests_total{
             service="iam-org-membership",
             method=~"POST|PUT|PATCH|DELETE"
           }[5m])), 0.001)
 
-      # Reconciler convergence — durable marker persistence.
-      # If a marker gauge is non-zero for longer than one CronJob cycle
-      # (10 min for our shortest schedule), the SLO is at risk.
-      - record: iam:reconciler_markers:sum
-        expr: |
-          iam_org_membership_realm_sync_pending
-          + iam_org_membership_pending_invitations_stale
-          + (iam_org_membership_tenant_ownerless * 5)  # weighted: ownerless is more serious
+      # Reconciler convergence — durable marker persistence: recorded as
+      # iam:reconciler_markers:sum in the iam_org_membership_slo3_fixed group
+      # below (OBS-5 replaced the earlier 5x-weighted duplicate of this
+      # record, which made promtool reject the file).
 
   # ── SLO burn-rate alerts (multi-window) ─────────────────────────────────
   - name: iam-org-membership.slo.burn
@@ -91,6 +101,7 @@ groups:
           severity: page
           slo: SLO-1
           service: iam-org-membership
+          metric_status: proposed
         annotations:
           summary: "SLO-1 fast-burn: I-8 P99 latency degraded"
           description: |
@@ -109,6 +120,7 @@ groups:
           severity: ticket
           slo: SLO-1
           service: iam-org-membership
+          metric_status: proposed
         annotations:
           summary: "SLO-1 slow-burn: I-8 latency below target for 15m+"
 
@@ -120,6 +132,7 @@ groups:
           severity: page
           slo: SLO-2
           service: iam-org-membership
+          metric_status: proposed
         annotations:
           summary: "SLO-2 fast-burn: write-path 5xx rate above target"
           description: |
@@ -145,43 +158,46 @@ groups:
               - invitation-expiry
               - operator O-7 reassign-owner (T-13)
 
-# ── OBS-4: 15ms cache-hit SLI recording rules ────────────────────────────────
-- name: iam_org_membership_i8_hit_sli
-  rules:
-    # 5m ratio of I-8 requests served within 15ms cache-hit SLO target.
-    - record: iam:i8_latency_hit_sli:ratio_rate_5m
-      expr: |
-        sum(rate(http_request_duration_seconds_bucket{service="iam-org-membership",handler="I-8",le="0.015"}[5m]))
-        /
-        sum(rate(http_request_duration_seconds_count{service="iam-org-membership",handler="I-8"}[5m]))
+  # ── OBS-4: 15ms cache-hit SLI recording rules ──────────────────────────────
+  - name: iam_org_membership_i8_hit_sli
+    rules:
+      # 5m ratio of I-8 requests served within 15ms cache-hit SLO target.
+      # metric_status: proposed (platform_http_request_duration_seconds).
+      - record: iam:i8_latency_hit_sli:ratio_rate_5m
+        expr: |
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_bucket{service="iam-org-membership",route="/api/v1/internal/users/:id/memberships",le="0.015"}[5m]))
+          /
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_count{service="iam-org-membership",route="/api/v1/internal/users/:id/memberships"}[5m]))
 
-    - record: iam:i8_latency_hit_sli:ratio_rate_1h
-      expr: |
-        sum(rate(http_request_duration_seconds_bucket{service="iam-org-membership",handler="I-8",le="0.015"}[1h]))
-        /
-        sum(rate(http_request_duration_seconds_count{service="iam-org-membership",handler="I-8"}[1h]))
+      # metric_status: proposed (platform_http_request_duration_seconds).
+      - record: iam:i8_latency_hit_sli:ratio_rate_1h
+        expr: |
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_bucket{service="iam-org-membership",route="/api/v1/internal/users/:id/memberships",le="0.015"}[1h]))
+          /
+          sum by (domain, service, environment) (rate(platform_http_request_duration_seconds_count{service="iam-org-membership",route="/api/v1/internal/users/:id/memberships"}[1h]))
 
-    # SLO-1b slow-burn: cache-hit rate below 90% for 1h signals Valkey degradation.
-    - alert: IAMSLO1b_CacheHitRateLow
-      expr: iam:i8_latency_hit_sli:ratio_rate_1h < 0.90
-      for: 5m
-      labels:
-        severity: warning
-        slo: SLO-1b
-        service: iam-org-membership
-      annotations:
-        summary: "SLO-1b: I-8 cache-hit rate below 90% (Valkey degraded?)"
-        description: |
-          I-8 requests served within 15ms = {{ $value | humanizePercentage }}.
-          Check Valkey connectivity, eviction rate, and om:memberships TTL.
-        runbook: "iam-org-membership/i8-latency"
+      # SLO-1b slow-burn: cache-hit rate below 90% for 1h signals Valkey degradation.
+      - alert: IAMSLO1b_CacheHitRateLow
+        expr: iam:i8_latency_hit_sli:ratio_rate_1h < 0.90
+        for: 5m
+        labels:
+          severity: warning
+          slo: SLO-1b
+          service: iam-org-membership
+          metric_status: proposed
+        annotations:
+          summary: "SLO-1b: I-8 cache-hit rate below 90% (Valkey degraded?)"
+          description: |
+            I-8 requests served within 15ms = {{ $value | humanizePercentage }}.
+            Check Valkey connectivity, eviction rate, and om:memberships TTL.
+          runbook: "iam-org-membership/i8-latency"
 
-# ── OBS-5: SLO-3 composite gauge fix (remove 5x weighting, add seat_overage) ─
-- name: iam_org_membership_slo3_fixed
-  rules:
-    - record: iam:reconciler_markers:sum
-      expr: |
-        iam_org_membership_tenant_ownerless
-        + iam_org_membership_realm_sync_pending
-        + iam_org_membership_seat_overage_active
-        + iam_org_membership_pending_invitations_stale
+  # ── OBS-5: SLO-3 composite gauge fix (remove 5x weighting, add seat_overage) ─
+  - name: iam_org_membership_slo3_fixed
+    rules:
+      - record: iam:reconciler_markers:sum
+        expr: |
+          iam_org_membership_tenant_ownerless
+          + iam_org_membership_realm_sync_pending
+          + iam_org_membership_seat_overage_active
+          + iam_org_membership_pending_invitations_stale

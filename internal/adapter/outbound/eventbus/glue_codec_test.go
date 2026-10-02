@@ -367,28 +367,6 @@ func TestGlueCodec_Encode_Decode_RoundTrip(t *testing.T) {
 	assert.Equal(t, string(original), string(decoded))
 }
 
-// ── GlueDecoder — consumer-side decode-only codec ─────────────────────────
-
-func TestGlueDecoder_Decode_StripsHeader(t *testing.T) {
-	payload := json.RawMessage(`{"event":"upstream"}`)
-	encoded, err := prependGlueHeader(deterministicVersionID, payload)
-	require.NoError(t, err)
-
-	decoded, err := GlueDecoder{}.Decode(context.Background(), deterministicVersionID, encoded)
-	require.NoError(t, err)
-	assert.Equal(t, string(payload), string(decoded))
-}
-
-func TestGlueDecoder_Decode_InvalidFrame_ReturnsError(t *testing.T) {
-	_, err := GlueDecoder{}.Decode(context.Background(), "any", []byte("short"))
-	assert.Error(t, err)
-}
-
-func TestGlueDecoder_Encode_AlwaysFails(t *testing.T) {
-	_, _, err := GlueDecoder{}.Encode(context.Background(), "TenantCreated", json.RawMessage(`{}`))
-	assert.ErrorContains(t, err, "decode-only")
-}
-
 // ── GetSchemaByDefinition resolution ──────────────────────────────────────
 
 // TestNewGlueCodec_SendsRegisteredDefinition verifies that the real embedded

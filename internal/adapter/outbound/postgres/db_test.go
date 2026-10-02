@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -13,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ── DSNFromEnv ─────────────────────────────────────────────────────────
@@ -91,35 +94,20 @@ func TestDSNFromEnv_DefaultsHostPortSSLModeWhenUnset(t *testing.T) {
 		"default sslmode is 'require' — safe default")
 }
 
-func TestDSNFromEnv_AppendsStatementTimeoutWhenSet(t *testing.T) {
+// PG_STATEMENT_TIMEOUT is applied per transaction by pgcommon
+// (Config.StatementTimeout), never as a DSN startup option: PgBouncer may
+// reject unknown startup parameters, and appending to a DSN with no query
+// string corrupted the database name.
+func TestDSNFromEnv_NeverCarriesStatementTimeout(t *testing.T) {
 	_ = os.Unsetenv("DATABASE_URL")
 	t.Setenv("PG_USER", "org_membership_app")
 	t.Setenv("PG_DBNAME", "org_membership")
 	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
-	dsn := DSNFromEnv()
-	// Encoded as options=-c statement_timeout=5000 (ms).
-	assert.Contains(t, dsn, "statement_timeout%3D5000",
-		"5s must translate to statement_timeout=5000 in URL-encoded options")
-}
+	assert.NotContains(t, DSNFromEnv(), "statement_timeout")
 
-func TestDSNFromEnv_InvalidStatementTimeoutIgnored(t *testing.T) {
-	_ = os.Unsetenv("DATABASE_URL")
-	t.Setenv("PG_USER", "org_membership_app")
-	t.Setenv("PG_DBNAME", "org_membership")
-	t.Setenv("PG_STATEMENT_TIMEOUT", "not-a-duration")
-	dsn := DSNFromEnv()
-	assert.NotContains(t, dsn, "statement_timeout",
-		"invalid duration must silently fall through, not crash the process")
-}
-
-func TestDSNFromEnv_ZeroStatementTimeoutIgnored(t *testing.T) {
-	_ = os.Unsetenv("DATABASE_URL")
-	t.Setenv("PG_USER", "org_membership_app")
-	t.Setenv("PG_DBNAME", "org_membership")
-	t.Setenv("PG_STATEMENT_TIMEOUT", "0s")
-	dsn := DSNFromEnv()
-	assert.NotContains(t, dsn, "statement_timeout",
-		"zero timeout is a no-op — the code requires d > 0")
+	t.Setenv("DATABASE_URL", "postgres://a:b@app.example:5432/omdb")
+	assert.Equal(t, "postgres://a:b@app.example:5432/omdb", DSNFromEnv(),
+		"a DATABASE_URL without a query string must stay intact")
 }
 
 // ── SystemDSNFromEnv ───────────────────────────────────────────────────
@@ -148,10 +136,12 @@ func TestMigrationDSNFromEnv_UsesMigrationVarWhenSet(t *testing.T) {
 		MigrationDSNFromEnv())
 }
 
-func TestMigrationDSNFromEnv_AppliesStatementTimeout(t *testing.T) {
+// Migrations get no statement timeout: long DDL and the advisory-lock wait
+// must not be killed after PG_STATEMENT_TIMEOUT.
+func TestMigrationDSNFromEnv_IgnoresStatementTimeout(t *testing.T) {
 	t.Setenv("MIGRATION_DATABASE_URL", "postgres://m:x@migrations.example:5432/omdb?sslmode=disable")
 	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
-	assert.Contains(t, MigrationDSNFromEnv(), "statement_timeout%3D5000")
+	assert.Equal(t, "postgres://m:x@migrations.example:5432/omdb?sslmode=disable", MigrationDSNFromEnv())
 }
 
 func TestMigrationDSNFromEnv_FallsBackToDSNFromEnv(t *testing.T) {
@@ -179,28 +169,42 @@ func TestSystemPoolConfig_ForcesPGBouncerMode(t *testing.T) {
 	assert.Equal(t, int32(20), cfg.MaxConns, "sysPool inherits pool sizing from ConfigFromEnv")
 }
 
+// ConfigFromEnv's direct-mode MinConns default (2) must not survive the
+// forced PgBouncer mode; an explicit PG_MIN_CONNS still wins.
+func TestSystemPoolConfig_MinConnsFollowsForcedPGBouncerMode(t *testing.T) {
+	t.Setenv("PG_BOUNCER_MODE", "false")
+	_ = os.Unsetenv("PG_MIN_CONNS")
+	assert.Zero(t, SystemPoolConfig("postgres://sys@host/db", nil).MinConns,
+		"unset PG_MIN_CONNS → NewPool's PgBouncer default, not direct mode's 2")
+
+	t.Setenv("PG_MIN_CONNS", "3")
+	assert.EqualValues(t, 3, SystemPoolConfig("postgres://sys@host/db", nil).MinConns, "an explicit PG_MIN_CONNS is kept")
+}
+
 func TestSystemPoolConfig_NonNilLoggerWiresAdapter(t *testing.T) {
 	_ = os.Unsetenv("PG_STATEMENT_TIMEOUT")
 	cfg := SystemPoolConfig("postgres://sys@host/db", &fakePortLogger{})
 	assert.NotNil(t, cfg.Logger, "non-nil port.Logger must be wrapped via NewLoggerAdapter")
 }
 
-func TestSystemPoolConfig_AppliesStatementTimeout(t *testing.T) {
+func TestSystemPoolConfig_StatementTimeoutFromConfigNotDSN(t *testing.T) {
 	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
 	cfg := SystemPoolConfig("postgres://sys@host/db?sslmode=disable", nil)
-	assert.Contains(t, cfg.DSN, "statement_timeout%3D5000")
+	assert.Equal(t, "postgres://sys@host/db?sslmode=disable", cfg.DSN)
+	assert.Equal(t, 5*time.Second, cfg.StatementTimeout, "pgcommon applies it per transaction")
 }
 
-func TestApplyStatementTimeout_Idempotent(t *testing.T) {
-	t.Setenv("PG_STATEMENT_TIMEOUT", "5s")
-	once := ApplyStatementTimeout("postgres://u@h/db?sslmode=disable")
-	assert.Equal(t, once, ApplyStatementTimeout(once))
+// Both pools emit platform_db_*{pool=...}; sharing "default" would merge
+// the BYPASSRLS pool's series into the app pool's.
+func TestSystemPoolConfig_HasItsOwnPoolName(t *testing.T) {
+	t.Setenv("PG_POOL_NAME", "default")
+	assert.Equal(t, SystemPoolName, SystemPoolConfig("postgres://sys@host/db", nil).PoolName)
 }
 
 // ── wrapConnErr ──────────────────────────────────────────────────────────
 
-// wrapConnErr remaps SQLSTATE class 08/53/57/58 (availability failures)
-// to domain.ErrDBUnavailable. Other PgErrors (e.g. 23505 unique_violation)
+// wrapConnErr remaps SQLSTATE class 08/53/57 (except 57014)/58
+// (availability failures) to domain.ErrDBUnavailable. Other PgErrors (e.g. 23505 unique_violation)
 // still pass through so the service layer can classify them.
 func TestWrapConnErr_AvailabilitySQLStateMapsToDBUnavailable(t *testing.T) {
 	for _, code := range []string{"08006", "53300", "57P01", "58030"} {
@@ -208,6 +212,49 @@ func TestWrapConnErr_AvailabilitySQLStateMapsToDBUnavailable(t *testing.T) {
 			pgErr := &pgconn.PgError{Code: code}
 			got := wrapConnErr(pgErr)
 			assert.ErrorIs(t, got, domain.ErrDBUnavailable)
+		})
+	}
+}
+
+// statement_timeout (57014) and lock_timeout (55P03) are slow-query
+// signals: request_timeout, not db_unavailable.
+func TestWrapConnErr_StatementOrLockTimeout_IsRequestTimeout(t *testing.T) {
+	for _, code := range []string{"57014", "55P03"} {
+		t.Run(code, func(t *testing.T) {
+			got := wrapConnErr(&pgconn.PgError{Code: code})
+			assert.ErrorIs(t, got, domain.ErrRequestTimeout)
+			assert.NotErrorIs(t, got, domain.ErrDBUnavailable)
+		})
+	}
+}
+
+// A deadline that cuts pgcommon's deadlock/serialization retry wait short
+// wraps BOTH errors ("retry wait … interrupted: %w (last error: %w)"); it is
+// a timeout (503), never a conflict.
+func TestWrapConnErr_DeadlineDuringRetryWait_IsRequestTimeout(t *testing.T) {
+	interrupted := fmt.Errorf("pgcommon: retry wait after attempt %d interrupted: %w (last error: %w)",
+		1, context.DeadlineExceeded, &pgconn.PgError{Code: "40P01"})
+	got := wrapConnErr(interrupted)
+	assert.ErrorIs(t, got, domain.ErrRequestTimeout)
+	assert.NotErrorIs(t, got, domain.ErrConflict)
+
+	assert.ErrorIs(t, wrapConnErr(context.DeadlineExceeded), domain.ErrRequestTimeout)
+	assert.ErrorIs(t, wrapConnErr(fmt.Errorf("begin tx: %w", context.Canceled)), domain.ErrRequestTimeout)
+}
+
+// Retries exhausted on a deadlock / serialization failure is a concurrent
+// write conflict the client can retry: 409 concurrent_update, not a 500.
+func TestWrapConnErr_RetriesExhausted_IsConcurrentUpdateConflict(t *testing.T) {
+	for _, code := range []string{"40P01", "40001"} {
+		t.Run(code, func(t *testing.T) {
+			pgErr := &pgconn.PgError{Code: code}
+			exhausted := fmt.Errorf("pgcommon: transaction failed after %d attempts: %w", 3, pgErr)
+			got := wrapConnErr(exhausted)
+			assert.ErrorIs(t, got, domain.ErrConflict)
+			assert.ErrorIs(t, got, pgErr, "the PgError stays inspectable")
+			var de *domain.DomainError
+			require.True(t, errors.As(got, &de))
+			assert.Equal(t, "concurrent_update", de.Details["code"])
 		})
 	}
 }
@@ -249,24 +296,26 @@ func TestWrapConnErr_UnrecognizedGenericErrorPassesThroughUnchanged(t *testing.T
 	assert.ErrorIs(t, got, businessErr)
 }
 
-// puddle.ErrClosedPool (surfaced by pgxpool.Pool.BeginTx/Acquire on a
-// closed pool) is the one non-PgError shape wrapConnErr does positively
-// recognize as a genuine connectivity failure — a closed pool is never a
-// SQL-protocol response, but is unambiguously "the database is
-// unavailable", not a caller's business error.
+// A closed pool is the one non-PgError shape wrapConnErr positively
+// recognizes as a connectivity failure (pgcommon.IsPoolClosed). pgcommon's
+// own closed-pool error, which needs a live pool to produce, is covered in
+// test/postgres.
 func TestWrapConnErr_ClosedPoolMapsToDBUnavailable(t *testing.T) {
-	got := wrapConnErr(puddle.ErrClosedPool)
-	assert.ErrorIs(t, got, domain.ErrDBUnavailable)
+	assert.ErrorIs(t, wrapConnErr(puddle.ErrClosedPool), domain.ErrDBUnavailable)
 }
 
-func TestWrapConnErr_ContextCanceledPassesThroughUnchanged(t *testing.T) {
+// A context error becomes request_timeout but stays in the chain, so
+// shutdown-aware callers can still match it.
+func TestWrapConnErr_ContextCanceledStaysMatchable(t *testing.T) {
 	got := wrapConnErr(context.Canceled)
 	assert.ErrorIs(t, got, context.Canceled)
+	assert.ErrorIs(t, got, domain.ErrRequestTimeout)
 }
 
-func TestWrapConnErr_DeadlineExceededPassesThroughUnchanged(t *testing.T) {
+func TestWrapConnErr_DeadlineExceededStaysMatchable(t *testing.T) {
 	got := wrapConnErr(context.DeadlineExceeded)
 	assert.ErrorIs(t, got, context.DeadlineExceeded)
+	assert.ErrorIs(t, got, domain.ErrRequestTimeout)
 }
 
 func TestWrapConnErr_NilPassesThrough(t *testing.T) {

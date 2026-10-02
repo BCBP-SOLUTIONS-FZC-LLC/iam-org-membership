@@ -477,6 +477,7 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 			return domain.NewError(domain.ErrWorkflowServiceUnavailable, "workflow service unavailable")
 		}
 		if impact.ActiveWorkflows > 0 {
+			metrics.IncDelegateRemovalBlocked(metrics.DelegateBlockScopeTenantRemoval)
 			return domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").
 				WithDetails(map[string]any{
 					"active_workflows": impact.ActiveWorkflows,
@@ -638,6 +639,7 @@ func (s *MembershipService) RemovalResolution(ctx context.Context, tenantID, use
 	default:
 		return domain.NewError(domain.ErrInvalidAction, "action must be replace_delegate or stop_workflows")
 	}
+	metrics.IncDelegateReassignment(string(action))
 	return nil
 }
 

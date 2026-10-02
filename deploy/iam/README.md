@@ -34,7 +34,7 @@ the wrong repo (User Profile owns signature storage + KMS).
 | Sid | AWS service | Actions | Purpose | LLD ref |
 |---|---|---|---|---|
 | `PublishMembershipEvents` | SNS | `Publish`, `GetTopicAttributes` | RoutingPublisher fans out to `iam-membership-events` AND `iam-tenant-events` based on the event type (`domain.TopicForEvent`), not `Envelope.Source`. Both topic ARNs are required. | §7.3 |
-| `ConsumeTenantAndBillingQueues` | SQS | `ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`, `ChangeMessageVisibility`, `SendMessage` | Two SQS consumers (`tenant-orgm-q`, `billing-orgm-q`) subscribe to upstream tenant/billing topics. `SendMessage` is needed on the DLQs for the EVT-15 future-time reject path and for manual DLQ redrive. | §7.1 |
+| `ConsumeTenantAndBillingQueues` | SQS | `ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`, `GetQueueUrl`, `ChangeMessageVisibility`, `SendMessage` | Three SQS consumers (`tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q`) and their DLQs. platform-events' DLQPublisher reads each source queue's RedrivePolicy (`GetQueueAttributes`), resolves the DLQ (`GetQueueUrl`) and forwards to it (`SendMessage`): malformed bodies, Glue decode failures, over-threshold messages, EVT-15 and schema-violation rejects, plus manual redrive. | §7.1 |
 | `GlueSchemaRegistryReadOnly` | Glue | `GetRegistry`, `GetSchema`, `GetSchemaVersion`, `GetSchemaByDefinition`, `ListSchemas`, `QuerySchemaVersionMetadata` | The Glue codec pre-fetches schema version IDs on startup and validates every published envelope. Two registries: `iam-membership-events` and `iam-tenant-events`. Schema-registration is CI-only and lives on a separate role. | §7.3.1 |
 | `CloudWatchMetricsForExporterGoroutines` | CloudWatch | `PutMetricData` (scoped to namespace `BCBP/OrgMembership`) | The four exporter goroutines started alongside the outbox runner (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`) emit gauges. Prometheus scrapes them via ServiceMonitor; CloudWatch mirroring is optional and namespace-scoped for cardinality safety. | §11.2 |
 | `CloudWatchLogs` | Logs | `CreateLogStream`, `PutLogEvents` | Container stdout when the OTel collector is not in the log pipeline. | — |
@@ -65,7 +65,7 @@ Order of operations for production:
        --metric-name TestMetric --value 1                                      # expect no output
    ```
 3. Deploy the new image + Helm chart.
-4. Watch `outbox_dead_letters_total` — a rising rate immediately after rollout
+4. Watch `platform_dlq_messages_total{operation="outbox_publish"}` — a rising rate immediately after rollout
    means the policy did not apply (SNS Publish denied). Roll back if so.
 
 ## Least-privilege scoping

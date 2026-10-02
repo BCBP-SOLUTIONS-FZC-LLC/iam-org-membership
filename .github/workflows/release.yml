@@ -329,7 +329,11 @@ jobs:
             exit 1
           fi
           # status_class="5xx" matches the label emitted by platform-gincommon.
-          QUERY='sum(rate(http_requests_total{job=~".*iam-org-membership.*",status_class="5xx"}[2m]))/sum(rate(http_requests_total{job=~".*iam-org-membership.*"}[2m]))'
+          # platform_http_requests_total is the Observability Standard name
+          # (metric_status: proposed in the Platform Observability Registry).
+          # The gate needs one scalar, so it sums across every series of the
+          # service rather than grouping by domain/service/environment.
+          QUERY='sum(rate(platform_http_requests_total{job=~".*iam-org-membership.*",status_class="5xx"}[2m]))/sum(rate(platform_http_requests_total{job=~".*iam-org-membership.*"}[2m]))'
           # Sleep AFTER confirming Prometheus is configured so the 2-minute window
           # only runs when there is actually something to measure.
           sleep 120

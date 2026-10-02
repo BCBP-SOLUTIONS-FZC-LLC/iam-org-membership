@@ -106,7 +106,7 @@ func TestRequireActiveMembership_ActiveMember_Proceeds(t *testing.T) {
 
 func TestGUCBridgeMiddleware_MalformedUserIDHeader_Returns401ViaRouter(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 	})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
@@ -123,7 +123,7 @@ func TestGUCBridgeMiddleware_MalformedUserIDHeader_Returns401ViaRouter(t *testin
 
 func TestGUCBridgeMiddleware_MalformedTenantIDHeader_Returns401ViaRouter(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 	})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
@@ -175,7 +175,8 @@ func TestBufferedWriter_WriteSetsStatusOKWhenUnset(t *testing.T) {
 	n, err := bw.Write([]byte("hello"))
 	require.NoError(t, err)
 	assert.Equal(t, 5, n)
-	assert.Equal(t, http.StatusOK, bw.status)
+	assert.True(t, bw.passthrough, "a write with no status is an implicit 200, written through")
+	assert.Equal(t, http.StatusOK, bw.Status())
 }
 
 func TestBufferedWriter_StatusFallsBackToWrappedWriterWhenUnset(t *testing.T) {
@@ -204,6 +205,7 @@ func TestBufferedWriter_WrittenReflectsBufferedState(t *testing.T) {
 func TestBufferedWriter_WriteString(t *testing.T) {
 	bw := newBufferedWriterForTest()
 
+	bw.WriteHeader(http.StatusUnauthorized)
 	n, err := bw.WriteString("hi")
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)

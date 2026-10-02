@@ -157,48 +157,20 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	if m.Status != domain.MembershipActive {
 		return nil, domain.NewError(domain.ErrMemberNotActive, "grantee must be an active tenant member")
 	}
+	// WFI-9/12 delegate-impact gate, BEFORE the write transaction: it makes
+	// up to two outbound HTTP calls (Delegation dept-delegate, Workflow
+	// delegate-impact), which must never run while a transaction holds row
+	// locks and a pooled connection, and must not be repeated by a
+	// deadlock retry. The snapshot it reads is best-effort by design (the
+	// gate fails open on a race, WFI-9); it is NOT used to classify the
+	// Granted/LevelChanged/no-op event — that needs the atomically-accurate
+	// `previous` value Assign() returns inside the transaction (B15).
+	if err := s.demotionGate(ctx, tenantID, userID, deptID, level); err != nil {
+		return nil, err
+	}
+
 	var dm *domain.DeptMembership
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		// Best-effort snapshot for the WFI-9/12 delegate-impact gate below —
-		// this check fails open on a race (WFI-9) so a stale read here is
-		// acceptable. It must NOT be used to classify the Granted/LevelChanged/
-		// no-op event below: that decision needs the atomically-accurate
-		// `previous` value Assign() itself returns (see its doc comment / B15).
-		var preflightPrevious *domain.DeptMembership
-		snapshot, _ := s.deptMemberships.ListByUser(txCtx, tenantID, userID)
-		for i := range snapshot {
-			if snapshot[i].DepartmentID == deptID {
-				preflightPrevious = &snapshot[i]
-				break
-			}
-		}
-
-		// GAP-P10-3 fix: WFI-9/WFI-12 — if the new level is lower than the
-		// current level (a privilege decrease), check whether this user is an
-		// active delegate on any dept-scoped delegations for this dept.
-		// WFI-10: scope='all' delegations are excluded (handled by GetDelegateImpact
-		// taking an optional delegation_id; we pass the specific dept delegation).
-		// WFI-12: promotions (higher or equal level) never trigger.
-		if preflightPrevious != nil && level.Rank() < preflightPrevious.RoleLevel.Rank() && s.workflow != nil {
-			delegationID := s.deptDelegateOrDegrade(txCtx, tenantID, userID, deptID)
-			if delegationID != nil {
-				impact, err := s.workflow.GetDelegateImpact(txCtx, tenantID, userID, delegationID)
-				if err != nil {
-					// WFI-9 fail-open: workflow unavailable → allow level decrease
-					s.log.WarnContext(ctx, "WFI-9: workflow delegate-impact check failed — degrading to allow (fail-open)", "user_id", userID, "error", err.Error())
-					metrics.IncDependencyError("workflow", "get_delegate_impact", "fallback_served")
-				} else if impact.ActiveWorkflows > 0 {
-					return domain.NewError(domain.ErrWorkflowResolutionRequired,
-						"active workflows depend on this delegate at the current level").
-						WithDetails(map[string]any{
-							"active_workflows": impact.ActiveWorkflows,
-							"workflow_ids":     impact.WorkflowIDs,
-							"allowed_actions":  []string{"replace_delegate", "stop_workflows"},
-						})
-				}
-			}
-		}
-
 		out, previous, err := s.deptMemberships.Assign(txCtx, tenantID, userID, deptID, m.ID, level, actorID)
 		if err != nil {
 			return err
@@ -257,6 +229,7 @@ func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, de
 	delegationID := s.deptDelegateOrDegrade(ctx, tenantID, userID, deptID)
 	impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, delegationID)
 	if err == nil && impact.ActiveWorkflows > 0 {
+		metrics.IncDelegateRemovalBlocked(metrics.DelegateBlockScopeDeptRemoval)
 		return nil, domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").
 			WithDetails(map[string]any{
 				"active_workflows": impact.ActiveWorkflows,
@@ -306,4 +279,50 @@ func (s *DeptMembershipService) invalidate(ctx context.Context, tenantID uuid.UU
 		cacheKeyMembers(tenantID, 50),
 		cacheKeySeatUsage(tenantID),
 	)
+}
+
+// demotionGate is the WFI-9/12 check for a dept role-level decrease: if the
+// user is an active delegate on a dept-scoped delegation for deptID and
+// Workflow reports active workflows depending on it, the decrease is
+// refused (409 workflow_resolution_required). Promotions and same-level
+// assignments never trigger it (WFI-12); a Workflow outage allows the
+// decrease (WFI-9 fail-open). Runs outside any transaction.
+func (s *DeptMembershipService) demotionGate(ctx context.Context, tenantID, userID, deptID uuid.UUID, level domain.DeptRole) error {
+	if s.workflow == nil {
+		return nil
+	}
+	snapshot, _ := s.deptMemberships.ListByUser(ctx, tenantID, userID)
+	var current *domain.DeptMembership
+	for i := range snapshot {
+		if snapshot[i].DepartmentID == deptID {
+			current = &snapshot[i]
+			break
+		}
+	}
+	// WFI-10: scope='all' delegations are excluded (GetDelegateImpact takes
+	// the specific dept delegation).
+	if current == nil || level.Rank() >= current.RoleLevel.Rank() {
+		return nil
+	}
+	delegationID := s.deptDelegateOrDegrade(ctx, tenantID, userID, deptID)
+	if delegationID == nil {
+		return nil
+	}
+	impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, delegationID)
+	if err != nil {
+		s.log.WarnContext(ctx, "WFI-9: workflow delegate-impact check failed — degrading to allow (fail-open)", "user_id", userID, "error", err.Error())
+		metrics.IncDependencyError("workflow", "get_delegate_impact", metrics.DependencyReasonFallbackServed)
+		return nil
+	}
+	if impact.ActiveWorkflows == 0 {
+		return nil
+	}
+	metrics.IncDelegateRemovalBlocked(metrics.DelegateBlockScopeDeptDemotion)
+	return domain.NewError(domain.ErrWorkflowResolutionRequired,
+		"active workflows depend on this delegate at the current level").
+		WithDetails(map[string]any{
+			"active_workflows": impact.ActiveWorkflows,
+			"workflow_ids":     impact.WorkflowIDs,
+			"allowed_actions":  []string{"replace_delegate", "stop_workflows"},
+		})
 }

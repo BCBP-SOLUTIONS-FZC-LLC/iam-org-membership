@@ -1,5 +1,10 @@
 # Prometheus Adapter ConfigMap — maps Prometheus metrics to the Custom Metrics API
-# so the HPA can scale on http_requests_per_second.
+# so the HPA can scale on platform_http_requests_per_second.
+#
+# metric_status: proposed — platform_http_requests_total (platform-gincommon's
+# Observability Standard request counter) is still Proposed in the
+# Platform Observability Registry; the HPA carries the annotation
+# observability.platform/metric-status: proposed.
 #
 # Deploy into the namespace where prometheus-adapter runs (typically kube-system
 # or monitoring). Merge with any existing prometheus-adapter ConfigMap rather
@@ -18,14 +23,17 @@ metadata:
   labels:
     app.kubernetes.io/name: prometheus-adapter
     app.kubernetes.io/component: metrics
+  annotations:
+    observability.platform/metric-status: proposed
 data:
   config.yaml: |
     rules:
-      # Expose per-pod RPS as http_requests_per_second so the HPA can use
-      # type: Pods / metric: http_requests_per_second.
-      # Computed from the Prometheus counter http_requests_total scraped by
-      # the ServiceMonitor (serviceMonitor.enabled: true in Helm values).
-      - seriesQuery: 'http_requests_total{namespace!="",pod!=""}'
+      # Expose per-pod RPS as platform_http_requests_per_second so the HPA can
+      # use type: Pods / metric: platform_http_requests_per_second.
+      # Computed from the Prometheus counter platform_http_requests_total
+      # scraped by the ServiceMonitor (serviceMonitor.enabled: true in Helm
+      # values).
+      - seriesQuery: 'platform_http_requests_total{namespace!="",pod!=""}'
         resources:
           overrides:
             namespace:

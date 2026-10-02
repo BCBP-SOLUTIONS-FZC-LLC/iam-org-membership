@@ -28,7 +28,7 @@ func (p rcPinger) Health(context.Context) error { return p.err }
 
 func TestReadyz_AllDependenciesHealthy_Returns200(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
 
@@ -45,7 +45,7 @@ func TestReadyz_AllDependenciesHealthy_Returns200(t *testing.T) {
 
 func TestReadyz_DatabaseDown_Returns503(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Postgres:  rcPinger{err: errors.New("conn refused")}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
 
@@ -60,7 +60,7 @@ func TestReadyz_DatabaseDown_Returns503(t *testing.T) {
 
 func TestReadyz_SysPostgresHealthy_IncludedInBody(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 		SysPostgres: rcPinger{},
 	})
@@ -77,8 +77,8 @@ func TestReadyz_SysPostgresHealthy_IncludedInBody(t *testing.T) {
 
 func TestDocsRoutes_InactiveInProduction_NotRegistered(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Docs:      DocsConfig{Environment: "production", Enabled: false},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
+		Docs:      DocsConfig{Environment: "prod", Enabled: false},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
 
@@ -91,7 +91,7 @@ func TestDocsRoutes_InactiveInProduction_NotRegistered(t *testing.T) {
 
 func TestDocsRoutes_ActiveOutsideProduction_AsyncAPIServed(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Docs:      DocsConfig{Environment: "dev"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
@@ -109,7 +109,7 @@ func TestDocsRoutes_ActiveOutsideProduction_AsyncAPIServed(t *testing.T) {
 
 func TestDocsRoutes_ActiveOutsideProduction_YAMLServed(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Docs:      DocsConfig{Environment: "dev"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
@@ -126,8 +126,8 @@ func TestDocsRoutes_ActiveOutsideProduction_YAMLServed(t *testing.T) {
 
 func TestDocsRoutes_ProductionWithToken_RejectsMissingBearer(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Docs:      DocsConfig{Environment: "production", Enabled: true, AuthToken: "s3cr3t"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
+		Docs:      DocsConfig{Environment: "prod", Enabled: true, AuthToken: "s3cr3t"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
 
@@ -141,8 +141,8 @@ func TestDocsRoutes_ProductionWithToken_RejectsMissingBearer(t *testing.T) {
 
 func TestDocsRoutes_ProductionWithToken_RejectsWrongBearer(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Docs:      DocsConfig{Environment: "production", Enabled: true, AuthToken: "s3cr3t"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
+		Docs:      DocsConfig{Environment: "prod", Enabled: true, AuthToken: "s3cr3t"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
 
@@ -156,8 +156,8 @@ func TestDocsRoutes_ProductionWithToken_RejectsWrongBearer(t *testing.T) {
 
 func TestDocsRoutes_ProductionWithToken_AcceptsCorrectBearer(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
-		Docs:      DocsConfig{Environment: "production", Enabled: true, AuthToken: "s3cr3t"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
+		Docs:      DocsConfig{Environment: "prod", Enabled: true, AuthToken: "s3cr3t"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
 
@@ -175,8 +175,8 @@ func TestDocsRoutes_ProductionWithToken_AcceptsCorrectBearer(t *testing.T) {
 func TestDocsRoutes_ProductionWithoutToken_ServesUnauthenticatedAndWarns(t *testing.T) {
 	logger := &rcTestLogger{}
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test", Logger: logger},
-		Docs:      DocsConfig{Environment: "production", Enabled: true},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership", Logger: logger},
+		Docs:      DocsConfig{Environment: "prod", Enabled: true},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
 
@@ -192,7 +192,7 @@ func TestDocsRoutes_ProductionWithoutToken_ServesUnauthenticatedAndWarns(t *test
 
 func TestDocsRoutes_SwaggerIndexCSS_UsesThemeHandler(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Docs:      DocsConfig{Environment: "dev"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
@@ -207,7 +207,7 @@ func TestDocsRoutes_SwaggerIndexCSS_UsesThemeHandler(t *testing.T) {
 
 func TestDocsRoutes_SwaggerInitializerJS_UsesInitializerHandler(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Docs:      DocsConfig{Environment: "dev"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})
@@ -222,7 +222,7 @@ func TestDocsRoutes_SwaggerInitializerJS_UsesInitializerHandler(t *testing.T) {
 
 func TestDocsRoutes_SwaggerDefault_FallsThroughToStdHandler(t *testing.T) {
 	router := NewRouter(RouterConfig{
-		GinConfig: gincommon.Config{ServiceName: "iam-org-membership-test"},
+		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		Docs:      DocsConfig{Environment: "dev"},
 		Postgres:  rcPinger{}, Cache: rcPinger{}, Outbox: rcPinger{},
 	})

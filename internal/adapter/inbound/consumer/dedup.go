@@ -3,58 +3,37 @@ package consumer
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
-// skipDuplicate is the cheap processed_events probe every known-type
-// handler runs before opening a write transaction. A hit increments
-// iam_org_membership_processed_events_duplicates_total (IDEMP-4, this
-// repo's authoritative signal) and, in shadow, the Tier-1 candidate
-// platform_duplicate_messages_total pending ratification (registry.go) —
-// then short-circuits. platform-events has no processed-events API —
-// Envelope.ID + INSERT ON CONFLICT DO NOTHING is the library's documented
-// consumer pattern (same as iam-realm-provisioner).
-func skipDuplicate(ctx context.Context, dedup port.IdempotencyStore, eventID string) (bool, error) {
-	processed, err := dedup.IsProcessed(ctx, consumerName, eventID)
+// processOnce runs fn exactly once per (consumer, env.ID) through the
+// platform-events inbox (port.Inbox): the processed_events claim and fn's
+// writes commit in one transaction (IDEMP-1..4). A duplicate skips fn and
+// increments iam_org_membership_processed_events_duplicates_total, this
+// repo's authoritative signal; the inbox itself records the Tier-1
+// platform_duplicate_messages_total{queue,event_type}.
+func processOnce(ctx context.Context, inbox port.Inbox, consumer string, env events.Envelope[json.RawMessage], fn func(txCtx context.Context) error) error {
+	duplicate, err := inbox.ProcessOnce(ctx, consumer, env.ID, env.Type, fn)
 	if err != nil {
-		return false, err
+		return err
 	}
-	if processed {
-		if metrics.ProcessedEventsDuplicatesTotal != nil {
-			metrics.ProcessedEventsDuplicatesTotal.WithLabelValues(consumerName).Inc()
-		}
-		if metrics.DuplicateMessages != nil {
-			metrics.DuplicateMessages.WithLabelValues(consumerName).Inc()
-		}
-		return true, nil
+	if duplicate {
+		metrics.IncDuplicate(ctx, consumer, env.Type)
 	}
-	return false, nil
+	return nil
 }
 
 // ackUnknown is the forward-compat path: an event type with no wired
-// handler is logged, counted, and recorded in processed_events inside a
-// RunInTx so redelivery does not storm the same unknown type.
-func ackUnknown(ctx context.Context, tx port.TxRunner, dedup port.IdempotencyStore, log port.SlogStyleLogger, consumer string, env events.Envelope[json.RawMessage]) error {
+// handler is logged, counted, and recorded in processed_events so
+// redelivery does not storm the same unknown type.
+func ackUnknown(ctx context.Context, inbox port.Inbox, log port.SlogStyleLogger, consumer string, env events.Envelope[json.RawMessage]) error {
 	if metrics.UnknownEventAcknowledged != nil {
-		metrics.UnknownEventAcknowledged.WithLabelValues("unknown", env.Type).Inc()
+		metrics.UnknownEventAcknowledged.WithLabelValues(env.Type).Inc()
 	}
 	log.Info("unknown event type — silently acknowledging",
 		"event_id", env.ID, "event_type", env.Type)
-	return markProcessedInTx(ctx, tx, dedup, consumer, env.ID)
-}
-
-// markProcessedInTx records eventID on the caller's TxRunner so the dedup
-// insert joins withPool's ambient transaction (or opens its own when the
-// handler has no local write to be atomic with).
-func markProcessedInTx(ctx context.Context, tx port.TxRunner, dedup port.IdempotencyStore, consumer, eventID string) error {
-	return tx.RunInTx(ctx, func(txCtx context.Context) error {
-		if err := dedup.MarkProcessed(txCtx, consumer, eventID); err != nil {
-			return fmt.Errorf("mark processed: %w", err)
-		}
-		return nil
-	})
+	return processOnce(ctx, inbox, consumer, env, func(context.Context) error { return nil })
 }

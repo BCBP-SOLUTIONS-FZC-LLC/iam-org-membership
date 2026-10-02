@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	gluetypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	"github.com/google/uuid"
@@ -130,29 +130,6 @@ func (g *GlueCodec) Encode(ctx context.Context, schemaName string, payload json.
 // version UUID is self-contained in the encoded bytes at offset 2:18 — so it
 // isn't cross-checked against anything here.
 func (g *GlueCodec) Decode(_ context.Context, _ string, encoded []byte) (json.RawMessage, error) {
-	return stripGlueHeader(encoded)
-}
-
-// GlueDecoder is the consumer-side events.Codec, injected on every inbound
-// SQS consumer via events.WithConsumerCodec. Upstream producers (Realm
-// Provisioner, Billing, Catalog) encode into their own Glue registries,
-// which this service never prefetches from — and doesn't need to, because
-// Decode only strips the self-describing 18-byte header. So unlike
-// GlueCodec this needs no Glue client or registry name. platform-events
-// only calls Decode when envelope.dataschema is non-empty, so plain-JSON
-// producers (NoopCodec, dev/test) bypass it entirely.
-type GlueDecoder struct{}
-
-var _ events.Codec = GlueDecoder{}
-
-// Encode always fails — GlueDecoder is never wired on a publisher. Use
-// GlueCodec (one per owned registry) for the SNS publish path.
-func (GlueDecoder) Encode(_ context.Context, schemaName string, _ json.RawMessage) ([]byte, string, error) {
-	return nil, "", fmt.Errorf("glue decoder: Encode(%q) called on a decode-only codec — use GlueCodec on publishers", schemaName)
-}
-
-// Decode strips the 18-byte Glue wire-format header, same as GlueCodec.Decode.
-func (GlueDecoder) Decode(_ context.Context, _ string, encoded []byte) (json.RawMessage, error) {
 	return stripGlueHeader(encoded)
 }
 

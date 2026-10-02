@@ -5,6 +5,7 @@ flowchart TD
         k3["om:plans (+ om:plans:stale)\n→ Read-through from Catalog Service (catalogadmin client)\nPrimary TTL 600 s; :stale is a SEPARATE 24h-TTL key,\nrefreshed alongside primary, served only when both\nthe primary miss AND the live Catalog call fail"]
         k4["om:departments (+ om:departments:stale)\n→ Read-through from Catalog Service, same 600s/24h two-tier pattern as om:plans"]
         k5["om:grm / om:gdm / om:gtrm {tenant}\n(+ :stale variants)\n→ Read-through from Group Mapping Service (I-10 JIT resolution)\nSame 600s primary / 24h stale-if-error two-tier pattern"]
+        k6["om:seat_usage:{tenant}\n→ P-27 / I-11 SeatUsage projection (active + pending vs licensed_seats)\nTTL: 30 s (CACHE-5), evicted by every SEAT-1 mutator"]
     end
 
     subgraph declared["Declared but NOT populated — invalidated on write, never Get/Set (§6.1)"]
@@ -12,35 +13,34 @@ flowchart TD
         d2["om:roles:{tenant} — no read path checks this key"]
         d3["om:locale:{tenant} — I-9 reads through om:tenant instead; this key is vestigial"]
         d4["om:dept_members:{tenant}:{dept} — zero call sites anywhere, not even DEL"]
-        d5["om:seat_usage:{tenant} — P-27/I-11 compute usage straight from Postgres every call"]
     end
 
     subgraph read["Read Path (I-8 hot path shown; all other reads mirror)"]
         R1([GET /internal/users/:id/memberships]) --> R2{Cache hit?}
-        R2 -- yes --> R3[Decode JSON → inject derived 'member' role\nReturn immediately\nSLO 15 ms p99]
+        R2 -- yes --> R3[Decode JSON — the derived 'member' role was injected before caching\nReturn immediately\nSLO 15 ms p99]
         R2 -- no or 50 ms timeout --> R4[Four-table joined SELECT\ntenant_memberships + tenants + tenant_roles + dept_memberships\nRLS enforces tenant isolation on app.tenant_id]
         R4           --> R5[Back-fill cache with TTL jitter ±30 s\nprevents thundering herd on deploy restart]
         R5           --> R6[Return entity\nSLO 30 ms p99]
     end
 
     subgraph write["Write / Invalidation Path (post-commit only, CACHE-6)"]
-        W1([P-6 invite / P-8 remove / P-10 dept assign / P-28 role reconcile]) --> W2["RunInTx {\n  UPDATE business row\n  INSERT outbox_events\n}"]
+        W1([P-6 invite / P-8 remove / P-10·P-11 dept assign·remove / P-28 role reconcile / I-4 status / O-7]) --> W2["RunInTx {\n  UPDATE business row\n  INSERT outbox_events\n}"]
         W2 --> W3{Committed?}
         W3 -- no → rollback --> W4[No cache operation\ntransaction error returned]
-        W3 -- yes --> W5["DEL affected keys (CACHE-7):\nDEL om:memberships:{t}:{user}   (working cache — real effect)\nDEL om:members:{t}:50 / om:dept_members:{t}:{dept} / om:seat_usage:{t}\n  (declared-only keys — this DEL currently evicts nothing that was ever set)\nbest-effort — failure logged, TTL heals"]
+        W3 -- yes --> W5["DEL affected keys (CACHE-7):\nDEL om:memberships:{t}:{user} — P-28 role reconcile, I-4 status, O-7 new owner only\n  (P-8 relies on AuthZ Enrichment evicting on MembershipRevoked; P-10/P-11 rely on the 300s TTL)\nDEL om:seat_usage:{t} (working cache, 30 s)\nDEL om:members:{t}:50 / om:dept_members:{t}:{dept}\n  (declared-only keys — this DEL currently evicts nothing that was ever set)\nbest-effort — failure logged, TTL heals"]
         W5 --> W6[Return updated entity\nNext read repopulates the working caches only]
     end
 
     subgraph tenantwipe["Tenant Offboarding Cache Wipe (CACHE-8, §15.5)"]
-        O1([TenantOffboarded consumed on tenant-orgm-q]) --> O2["Read set: tenant_memberships → user list before soft-delete"]
-        O2 --> O3["Post-commit DEL om:memberships:{tenant}:{u}  ∀ users\nDEL om:tenant:{tenant}"]
-        O3 --> O4["Emit TenantMembershipsPurged{tenant_id, actor_id} on iam.membership.events\n(consumed by Delegation/Tender-ACL/Group-Mapping for THEIR OWN tenant-scoped cascade-deletes\nin their separate databases — Core's own cascade is already done by this point)"]
+        O1([TenantOffboarded consumed on tenant-orgm-q]) --> O2["One tx: GDPR wipe of Core's own rows (soft-delete + scrub)\n+ Enqueue TenantMembershipsPurged{tenant_id, actor_id} on iam.membership.events\n(consumed by Delegation/Tender-ACL/Group-Mapping for THEIR OWN tenant-scoped cascades)"]
+        O2 --> O3["Post-commit, best-effort DEL of the bounded tenant keys:\nom:tenant · om:locale · om:roles · om:seat_usage · om:members:{t}:50\nom:grm / om:gdm / om:gtrm (+ :stale)"]
+        O3 --> O4["NOT enumerated: om:memberships:{t}:{user} and om:dept_members:{t}:{dept}\n(unbounded families — they expire on their own TTL, no SCAN-based prefix delete)"]
     end
 
     subgraph ttl["TTL Self-Healing (CACHE-9, FAIL-2)"]
         T1[Cache unavailable / DEL fails / 50 ms timeout] --> T2["Advisory — Postgres (or, for read-through keys, the owning service) is source of truth"]
         T2 --> T3["Stale entry expires at TTL boundary\nNext read fetches from source and re-populates"]
-        T3 --> T4["/readyz reports degraded, stays ready while Postgres healthy"]
+        T3 --> T4["/readyz fails on a Valkey outage, pulling the pod from rotation;\nrequests already in flight still fall through to Postgres"]
     end
 
     note1["CACHE-1 — All tenant-scoped keys are tenant-prefixed (mirrors RLS boundary); om:plans/om:departments are deliberately tenant-agnostic global catalogs\nCACHE-2 — Cache advisory only; miss/timeout falls through to Postgres or the owning service\nCACHE-4 — Jitter ±30 s prevents thundering herd on many-key expiry\nNo Valkey timeout env var — 50ms read/write / 100ms dial hardcoded in valkey.New's client options"]

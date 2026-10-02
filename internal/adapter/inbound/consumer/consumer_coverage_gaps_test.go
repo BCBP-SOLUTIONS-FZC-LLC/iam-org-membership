@@ -1,7 +1,7 @@
 // consumer_coverage_gaps_test.go — covers branches in Handle() that are
 // reachable without a real pgx pool or idempotency store:
 //
-//   - Lines 103-105: metrics.DLQMessages != nil branch
+//   - Lines 103-105: metrics.ConsumedEventRejected != nil branch
 //     (EVT-15 future-time clamp with metrics registered)
 //   - Lines 161-164: TrialReactivated peekErr != nil (non-ErrNoRows Peek error)
 //   - Lines 163-164: TrialReactivated c.catalog == nil path
@@ -21,7 +21,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,14 +49,14 @@ func futureEnv(eventType string) events.Envelope[json.RawMessage] {
 }
 
 // TestHandle_EVT15_WithMetrics_IncrementsCounter verifies that when
-// metrics.DLQMessages is non-nil (i.e., Register() has been
+// metrics.ConsumedEventRejected is non-nil (i.e., Register() has been
 // called), Handle returns ErrPoisonPill and the metrics counter is incremented
 // without requiring any pool access.
 func TestHandle_EVT15_WithMetrics_IncrementsCounter(t *testing.T) {
 	ensureConsumerMetrics()
 
 	// pool=nil, outbox=nil — Handle must return before reaching the pool.
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 1*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, nil, nil, 1*time.Second, nil)
 
 	env := futureEnv("TrialExpired")
 	err := c.Handle(context.Background(), env)
@@ -66,14 +66,14 @@ func TestHandle_EVT15_WithMetrics_IncrementsCounter(t *testing.T) {
 }
 
 // TestHandle_EVT15_NilMetrics_StillReturnsPoisonPill verifies that the nil
-// guard on metrics.DLQMessages is safe — even when Register()
+// guard on metrics.ConsumedEventRejected is safe — even when Register()
 // has not been called (metrics == nil), Handle returns ErrPoisonPill.
 // This exercises the nil-check branch (line 103) when metrics IS nil (else branch).
 // Since Register() may have already been called (ordering with the test above
 // is undefined), we test the poison-pill return directly: the nil check is a
 // guard, not the termination condition; the return at line 108 always fires.
 func TestHandle_EVT15_AlwaysReturnsPoisonPillRegardlessOfMetrics(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 1*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, nil, nil, 1*time.Second, nil)
 
 	env := futureEnv("TenantOffboarded")
 	err := c.Handle(context.Background(), env)
@@ -104,7 +104,7 @@ var _ port.PlanCatalogReader = (*fakePlanReader)(nil)
 // TrialReactivated.
 func TestNewMembershipEventConsumer_WithCatalog_Stored(t *testing.T) {
 	cat := &fakePlanReader{}
-	c := NewMembershipEventConsumer(nil, nil, nil, cat, nil, 300*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, cat, nil, 300*time.Second, nil)
 	require.NotNil(t, c)
 	// The catalog is stored; we can't access it directly (unexported), but
 	// NewMembershipEventConsumer returns a valid struct with skew defaulted.

@@ -50,7 +50,16 @@ resources:
 # Non-secret env — mirrors .env-example. Anything with a URL/ARN/credential
 # lives in envFromSecret below.
 env:
-  APP_ENV: "production"
+  # The service label on every metric and span (gincommon.Config.ServiceName
+  # / TracingConfig.ServiceName, set from APP_NAME in both binaries). The one
+  # source of the service name — OTEL_SERVICE_NAME is not read.
+  APP_NAME: "iam-org-membership"
+  # APP_ENV is also the observability environment label: it must be one of
+  # local|dev|test|staging|prod (no aliases — "production" fails startup).
+  APP_ENV: "prod"
+  # Observability Standard domain (gincommon/pgcommon/events const label).
+  # Also set in code (gincommon.Config.Domain); startup fails without one.
+  OBSERVABILITY_DOMAIN: "iam"
   APP_PORT: "8080"
   METRICS_PORT: "9090"
 
@@ -66,6 +75,13 @@ env:
   PG_BOUNCER_MODE: "true"
   PG_SLOW_QUERY_THRESHOLD: "200ms"
   PG_STATEMENT_TIMEOUT: "5s"
+  # Bounds a row-lock wait (TM-13 / SEAT-1 SELECT … FOR UPDATE) so it
+  # surfaces as 503 request_timeout (55P03) instead of burning the whole
+  # statement timeout.
+  PG_LOCK_TIMEOUT: "2s"
+  # Reconciler CronJobs share this env; their batch sweeps get their own
+  # per-statement bound instead of the API's 5s.
+  RECONCILER_STATEMENT_TIMEOUT: "120s"
 
   # AWS region / Glue registry names (ARNs live in secret refs).
   AWS_REGION: "ap-south-1"
@@ -77,6 +93,12 @@ env:
   OUTBOX_BATCH_SIZE: "50"
   OUTBOX_MAX_ATTEMPTS: "5"
   OUTBOX_DRAIN_TIMEOUT: "30s"
+  # SQS consumers (platform-events). Drain runs in parallel with the HTTP
+  # drain at shutdown; the handler timeout stays below the 30s visibility.
+  SQS_DRAIN_TIMEOUT: "15s"
+  SQS_HANDLER_TIMEOUT: "20s"
+  # platform_queue_depth / platform_dlq_depth sampling (IAMOrgMembershipDLQBacklog).
+  SQS_QUEUE_DEPTH_INTERVAL: "60s"
   OUTBOX_PUBLISH_CONCURRENCY: "4"
   OUTBOX_PUBLISH_TIMEOUT: "10s"
   OUTBOX_STARTUP_JITTER: "2s"
@@ -125,10 +147,25 @@ env:
   TOKEN_SERVICE_BASE_URL: ""
   TOKEN_SERVICE_TIMEOUT_MS: "1000"
 
-  # OpenTelemetry.
-  OTEL_SERVICE_NAME: "iam-org-membership"
+  # OpenTelemetry — read by platform-gincommon (InitTracingWithConfig takes
+  # the identity from code, the exporter and sampler from here).
   OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
   OTEL_EXPORTER_OTLP_INSECURE: "false"
+  # Head sampling ratio in [0,1] (gincommon's default outside dev is 0.1).
+  OTEL_TRACES_SAMPLER_RATIO: "0.1"
+  # W3C baggage propagation (off).
+  OTEL_PROPAGATOR_BAGGAGE: "false"
+  # false: a sampled remote parent (the gateway / an upstream service) keeps
+  # its trace whole. Edge services that accept untrusted traceparent set true.
+  OTEL_TRACES_IGNORE_REMOTE_PARENT_SAMPLED: "false"
+
+  # Logging — read by platform-gincommon's logger (all binaries).
+  LOG_LEVEL: "info"          # debug | info | warn | error
+  LOG_SAMPLING: "false"      # zap sampling of repetitive entries
+
+  # Reconciler CronJobs are never scraped; each run pushes its metrics here
+  # (grouped by cronjob). Empty skips the push.
+  PROMETHEUS_PUSHGATEWAY_URL: ""
 
   # Docs surface (optional).
   DOCS_ENABLED: "false"
@@ -181,7 +218,7 @@ secretValues:
   AWS_SECRET_ACCESS_KEY: ""
   DOCS_AUTH_TOKEN: ""
 
-terminationGracePeriodSeconds: 75   # 30 s HTTP drain + 30 s outbox drain + 15 s buffer
+terminationGracePeriodSeconds: 75   # max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain + 10 s pool drain + 5 s buffer
 
 # podDisruptionBudget — ensures at least 1 pod survives voluntary disruptions
 # (node drains, cluster upgrades). With minReplicas: 2 we keep minAvailable=1
@@ -244,6 +281,15 @@ readinessProbe:
 # cmd/server/main.go per our Option A decision, not as CronJobs). Each entry
 # dispatches the same reconciler binary with a different --job flag.
 # See templates/cronjobs.yaml.
+# Schema migrations: a pre-install / pre-upgrade hook Job (cmd/migrate) runs
+# them once per release; the Deployment runs with RUN_MIGRATIONS=false.
+migrations:
+  job:
+    enabled: true
+    backoffLimit: 1
+    timeout: "10m"              # MIGRATE_TIMEOUT, lock wait included
+    activeDeadlineSeconds: 900  # > timeout
+
 cronjobs:
   invitation-expiry:
     schedule: "*/5 * * * *"

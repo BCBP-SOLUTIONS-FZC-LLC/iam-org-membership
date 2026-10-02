@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -16,12 +18,14 @@ import (
 
 func TestMain(m *testing.M) {
 	// ObservabilityMiddlewares is gincommon's public metrics-init API.
-	// Call it before Register so collectors pick up {service, version}
-	// const labels and land on gincommon's registerer — the same order
-	// cmd/server/main.go uses.
+	// Call it before Register so collectors pick up {domain, service,
+	// environment} const labels and land on gincommon's registerer — the
+	// same order cmd/server/main.go uses.
 	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
 		ServiceName:  "iam-org-membership",
 		BuildVersion: "test",
+		Domain:       "iam",
+		Environment:  "test",
 	})
 	os.Exit(m.Run())
 }
@@ -44,14 +48,10 @@ func ensureRegistered(t testing.TB) {
 func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	ensureRegistered(t)
 
-	// Tier 1 — platform_*.
-	assert.NotNil(t, MessagesReceived, "MessagesReceived must be initialised")
-	assert.NotNil(t, MessagesProcessed, "MessagesProcessed must be initialised")
-	assert.NotNil(t, MessagesFailed, "MessagesFailed must be initialised")
+	// Tier 1 — platform_* (registry-built, shared with platform-events).
 	assert.NotNil(t, DuplicateMessages, "DuplicateMessages must be initialised")
 	assert.NotNil(t, DLQMessages, "DLQMessages must be initialised")
 	assert.NotNil(t, DependencyRequestSeconds, "DependencyRequestSeconds must be initialised")
-	assert.NotNil(t, DependencyErrors, "DependencyErrors must be initialised")
 
 	// Tier 3 predecessors (shadow-authoritative until ratification).
 	assert.NotNil(t, DependencyCallDurationSeconds, "DependencyCallDurationSeconds must be initialised")
@@ -92,38 +92,30 @@ func TestMetricNamesStable(t *testing.T) {
 
 	// Force every label-bearing metric to emit at least one sample so
 	// Gather() reports it. The gauges + pre-seeded counters need no touch.
-	MessagesReceived.WithLabelValues("stability-check").Inc()
-	MessagesProcessed.WithLabelValues("stability-check").Inc()
-	MessagesFailed.WithLabelValues("stability-check").Inc()
-	DuplicateMessages.WithLabelValues("stability-check").Inc()
-	DLQMessages.WithLabelValues("stability-check", "stability-check").Inc()
-	DependencyRequestSeconds.WithLabelValues("stability-check", "stability-check").Observe(0.1)
-	DependencyErrors.WithLabelValues("stability-check", "stability-check", "stability-check").Inc()
-	DependencyCallDurationSeconds.WithLabelValues("stability-check", "stability-check").Observe(0.1)
-	DependencyCallFailuresTotal.WithLabelValues("stability-check", "stability-check", "stability-check").Inc()
-	ProcessedEventsDuplicatesTotal.WithLabelValues("stability-check").Inc()
-	UnknownEventAcknowledged.WithLabelValues("stability-check", "stability-check").Inc()
-	LifecycleEventSkipped.WithLabelValues("stability-check").Inc()
-	LifecycleEventLagSeconds.WithLabelValues("stability-check").Observe(0.1)
-	AuthSessionRevokeFailed.WithLabelValues("stability-check").Inc()
-	DelegateSuspendImpact.WithLabelValues("stability-check").Inc()
-	TenantOwnerlessEscalated.WithLabelValues("stability-check").Inc()
-	SeatOverageStarted.WithLabelValues("stability-check").Inc()
-	SeatLimitReached.WithLabelValues("stability-check").Inc()
-	InviteThrottled.WithLabelValues("stability-check").Inc()
-	RealmSyncFailed.WithLabelValues("stability-check").Inc()
-	DelegateRemovalBlocked.WithLabelValues("stability-check").Inc()
-	DelegateReassignment.WithLabelValues("stability-check").Inc()
+	DuplicateMessages.WithLabelValues("stability_check", "stability_check").Inc()
+	DLQMessages.WithLabelValues("consume", "stability_check", "stability_check").Inc()
+	DependencyRequestSeconds.WithLabelValues("stability_check", "stability_check", "success").Observe(0.1)
+	DependencyCallDurationSeconds.WithLabelValues("stability_check", "stability_check").Observe(0.1)
+	DependencyCallFailuresTotal.WithLabelValues("stability_check", "stability_check", "stability_check").Inc()
+	ProcessedEventsDuplicatesTotal.WithLabelValues("stability_check").Inc()
+	UnknownEventAcknowledged.WithLabelValues("stability_check").Inc()
+	LifecycleEventSkipped.WithLabelValues("stability_check").Inc()
+	LifecycleEventLagSeconds.WithLabelValues("stability_check").Observe(0.1)
+	AuthSessionRevokeFailed.WithLabelValues("stability_check").Inc()
+	DelegateSuspendImpact.WithLabelValues("stability_check").Inc()
+	TenantOwnerlessEscalated.WithLabelValues("stability_check").Inc()
+	SeatOverageStarted.WithLabelValues("stability_check").Inc()
+	SeatLimitReached.WithLabelValues("stability_check").Inc()
+	InviteThrottled.WithLabelValues("stability_check").Inc()
+	RealmSyncFailed.WithLabelValues("stability_check").Inc()
+	DelegateRemovalBlocked.WithLabelValues("stability_check").Inc()
+	DelegateReassignment.WithLabelValues("stability_check").Inc()
 
 	expected := []string{
 		// Tier 1 — platform_* (shared across domains).
-		"platform_messages_received_total",
-		"platform_messages_processed_total",
-		"platform_messages_failed_total",
 		"platform_duplicate_messages_total",
 		"platform_dlq_messages_total",
 		"platform_dependency_request_seconds",
-		"platform_dependency_errors_total",
 		// Tier 3 predecessors, shadow-authoritative until ratification.
 		"iam_org_membership_dependency_call_duration_seconds",
 		"iam_org_membership_dependency_call_failures_total",
@@ -262,13 +254,13 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 	// Small sampling of invariant IDs that MUST appear in the Help text
 	// of the metric that owns them.
 	need := map[string]string{
-		"iam_lifecycle_event_skipped_total":                   "EVT-14",
-		"platform_dlq_messages_total":                         "pages",
-		"iam_org_membership_seat_overage_started_total":       "SEAT-5",
-		"iam_org_membership_seat_limit_reached_total":         "SEAT-1",
-		"iam_org_membership_tenant_ownerless_escalated_total": "TM-12",
-		"platform_duplicate_messages_total":                   "IDEMP-4",
-		"iam_org_membership_realm_sync_pending":               "T-15",
+		"iam_lifecycle_event_skipped_total":                    "EVT-14",
+		"platform_dlq_messages_total":                          "dead-letter",
+		"iam_org_membership_seat_overage_started_total":        "SEAT-5",
+		"iam_org_membership_seat_limit_reached_total":          "SEAT-1",
+		"iam_org_membership_tenant_ownerless_escalated_total":  "TM-12",
+		"iam_org_membership_processed_events_duplicates_total": "IDEMP-4",
+		"iam_org_membership_realm_sync_pending":                "T-15",
 	}
 	for _, mf := range gathered {
 		want, ok := need[mf.GetName()]
@@ -284,78 +276,82 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 func TestConstLabels_MatchObservabilityConstLabels(t *testing.T) {
 	ensureRegistered(t)
 
-	got := serviceLabels("test")
-	assert.Equal(t, "iam-org-membership", got["service"])
-	assert.Equal(t, "test", got["version"])
+	mfs, err := gincommon.MetricsGatherer().Gather()
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, mf := range mfs {
+		if mf.GetName() != "iam_org_membership_tenant_ownerless" {
+			continue
+		}
+		for _, lp := range mf.GetMetric()[0].GetLabel() {
+			got[lp.GetName()] = lp.GetValue()
+		}
+	}
+	assert.Equal(t, "iam-org-membership", got["service"], "Tier 3 collectors carry gincommon's injected identity")
+	assert.Equal(t, "iam", got["domain"], "every collector carries the gincommon identity, domain included")
 	assert.Equal(t, "test", got["environment"])
-	_, hasDomain := got["domain"]
-	assert.False(t, hasDomain, "Tier 2/3 collectors must not carry a 'domain' label — the iam_ namespace already encodes it")
-
-	p := platformLabels("test")
-	assert.Equal(t, "iam", p["domain"], "Tier 1 collectors must carry domain=iam")
-	assert.Equal(t, "iam-org-membership", p["service"])
-	assert.Equal(t, "test", p["environment"])
+	_, hasVersion := got["version"]
+	assert.False(t, hasVersion, "version lives only on platform_build_info")
 }
 
-// TestDependencyMetrics_CarryServiceConstLabel_AndTargetServiceVariableLabel —
-// IAM Platform Observability Standard: the emitting service is the
-// "service" const label (shared with every other collector in this
-// package); the downstream peer being called is the "target_service"
-// variable label, never "service" — that name is reserved platform-wide
-// for "who emitted this metric". Also asserts the Tier-1 domain="iam"
-// const label is present.
-func TestDependencyMetrics_CarryServiceConstLabel_AndTargetServiceVariableLabel(t *testing.T) {
+// TestDependencyMetrics_RegistryLabels — platform_dependency_request_
+// seconds uses the registry's {dependency, operation, outcome} labels (the
+// downstream peer is "dependency", never "service", which is reserved for
+// the emitter), while the Tier-3 histogram keeps {target_service,
+// endpoint}.
+func TestDependencyMetrics_RegistryLabels(t *testing.T) {
 	ensureRegistered(t)
 
-	ObserveDependencyLatency("catalog", "GetPlans", 0.01)
-	IncDependencyError("catalog", "GetPlans", "5xx")
+	ObserveDependencyCall("catalog", "group-resolution", 0.01, &http.Response{StatusCode: 503}, nil)
+	ObserveDependencyCall("catalog", "plans", 0.01, &http.Response{StatusCode: 200}, nil)
+	ObserveDependencyCall("catalog", "plans", 0.01, nil, errors.New("dial tcp: refused"))
+
+	assert.Equal(t, 1, testutil.CollectAndCount(DependencyRequestSeconds.WithLabelValues("catalog", "group_resolution", "error").(prometheus.Collector)))
+	h := DependencyRequestSeconds.WithLabelValues("catalog", "plans", "error").(prometheus.Histogram)
+	var m dto.Metric
+	require.NoError(t, h.Write(&m))
+	assert.Equal(t, uint64(1), m.GetHistogram().GetSampleCount(), "transport error is outcome=error")
+	ok := DependencyRequestSeconds.WithLabelValues("catalog", "plans", "success").(prometheus.Histogram)
+	require.NoError(t, ok.Write(&m))
+	assert.Equal(t, uint64(1), m.GetHistogram().GetSampleCount())
+	assert.Positive(t, testutil.CollectAndCount(DependencyCallDurationSeconds), "Tier-3 latency histogram must record too")
 
 	gathered, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
-
 	for _, mf := range gathered {
-		if mf.GetName() != "platform_dependency_request_seconds" && mf.GetName() != "platform_dependency_errors_total" {
+		if mf.GetName() != "platform_dependency_request_seconds" {
 			continue
 		}
 		for _, m := range mf.GetMetric() {
-			labelNames := make(map[string]string, len(m.GetLabel()))
+			labels := map[string]string{}
 			for _, lp := range m.GetLabel() {
-				labelNames[lp.GetName()] = lp.GetValue()
+				labels[lp.GetName()] = lp.GetValue()
 			}
-			assert.Equal(t, "iam-org-membership", labelNames["service"],
-				"%s must carry the emitting service as its 'service' const label", mf.GetName())
-			assert.Equal(t, "iam", labelNames["domain"],
-				"%s must carry domain=iam (Tier 1 required label)", mf.GetName())
-			_, hasTarget := labelNames["target_service"]
-			assert.True(t, hasTarget,
-				"%s must label the downstream peer as 'target_service', not 'service'", mf.GetName())
+			assert.Equal(t, "iam", labels["domain"])
+			_, hasTarget := labels["target_service"]
+			assert.False(t, hasTarget, "registry shape has no target_service")
+			assert.Contains(t, []string{"success", "error"}, labels["outcome"])
 		}
 	}
 }
 
-// TestDependencyMetrics_DualEmitToTier3Predecessor — a single
-// ObserveDependencyLatency/IncDependencyError call must land on both the
-// Tier-1 candidate (shadow, pending ratification — registry.go) and its
-// Tier-3 predecessor (this repo's actual alerting/SLO source), matching
-// iam-realm-provisioner's shadow-emission pattern.
-func TestDependencyMetrics_DualEmitToTier3Predecessor(t *testing.T) {
+// TestIncDependencyError_Tier3Only — failures land on the authoritative
+// iam_org_membership_dependency_call_failures_total; no unregistered
+// platform_* shadow counter is emitted for them any more.
+func TestIncDependencyError_Tier3Only(t *testing.T) {
 	ensureRegistered(t)
 
-	tier1Before := testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dual-emit-check", "timeout"))
-	tier3Before := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual-emit-check", "timeout"))
-
+	before := testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual_emit_check", "timeout"))
 	IncDependencyError("delegation", "dual-emit-check", "timeout")
+	assert.Equal(t, before+1, testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual_emit_check", "timeout")))
 
-	assert.Equal(t, tier1Before+1, testutil.ToFloat64(DependencyErrors.WithLabelValues("delegation", "dual-emit-check", "timeout")),
-		"Tier-1 candidate platform_dependency_errors_total must record the call")
-	assert.Equal(t, tier3Before+1, testutil.ToFloat64(DependencyCallFailuresTotal.WithLabelValues("delegation", "dual-emit-check", "timeout")),
-		"Tier-3 predecessor iam_org_membership_dependency_call_failures_total must record the same call")
-
-	require.NotPanics(t, func() {
-		ObserveDependencyLatency("delegation", "dual-emit-check", 0.05)
-	})
-	assert.Positive(t, testutil.CollectAndCount(DependencyRequestSeconds), "Tier-1 latency histogram must have a sample")
-	assert.Positive(t, testutil.CollectAndCount(DependencyCallDurationSeconds), "Tier-3 predecessor latency histogram must have a sample")
+	gathered, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, mf := range gathered {
+		if strings.HasPrefix(mf.GetName(), "platform_dependency_") {
+			assert.Equal(t, "platform_dependency_request_seconds", mf.GetName(), "only the registry dependency metric may be emitted")
+		}
+	}
 }
 
 // TestPlatformRegistry_EveryEntryHasATier3Predecessor — the standard's

@@ -16,10 +16,11 @@ import (
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
-	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
+	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -47,6 +48,14 @@ const (
 //	              *pgcommon.Pool in production, deliberately without RLS GUC
 //	              injection so a BYPASSRLS-equivalent role sees every tenant).
 func setupTestDB(t testing.TB) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
+	t.Helper()
+	return setupTestDBWithAppConfig(t, nil)
+}
+
+// setupTestDBWithAppConfig is setupTestDB with a hook to adjust the app
+// pool's pgcommon.Config before it is built (e.g. production's PgBouncer
+// mode).
+func setupTestDBWithAppConfig(t testing.TB, adjustApp func(*pgcommon.Config)) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping postgres integration test in short mode")
@@ -104,11 +113,10 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
 	require.NoError(t, err)
 
 	// Apply platform-events outbox schema FIRST (creates outbox_events +
-	// outbox_dead_letters, with a JSONB payload column) — the domain
-	// migration ALTERs that same column to TEXT, so the outbox schema must
-	// exist before domain migrations run (mirrors cmd/server/main.go's own
-	// ordering comment). Phase 4 service-integration tests query
-	// outbox_events directly to verify event emission.
+	// outbox_dead_letters): the domain migration grants the app role access
+	// to them only if they exist (mirrors cmd/server/main.go's ordering).
+	// Phase 4 service-integration tests query outbox_events directly to
+	// verify event emission.
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 
 	// Apply migrations as superuser (needs CREATE EXTENSION, CREATE TYPE, etc).
@@ -134,11 +142,15 @@ func setupTestDB(t testing.TB) (*pgcommon.Pool, *dbseed.Pool, *pgcommon.Pool) {
 	// GUCProvider wires the same transaction-local `SET LOCAL app.tenant_id`
 	// binding used in production (RLS-6).
 	appDSN := strings.Replace(superDSN, "postgres:testpassword@", "org_membership_app:"+appRolePassword+"@", 1)
-	appPool, err := newPoolWithRetry(ctx, pgcommon.Config{
+	appCfg := pgcommon.Config{
 		DSN:           appDSN,
 		PGBouncerMode: false, // testcontainer talks to Postgres directly
 		GUCProvider:   pgcommon.GUCSetFromContext,
-	})
+	}
+	if adjustApp != nil {
+		adjustApp(&appCfg)
+	}
+	appPool, err := newPoolWithRetry(ctx, appCfg)
 	require.NoError(t, err, "app pool connection failed after retries")
 	t.Cleanup(appPool.Close)
 
@@ -390,6 +402,53 @@ func TestRLS_Case5_NoCrossTenantLeakAcrossPool(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 0, count, "RLS-6: tenant B must not see any of tenant A's rows on a pooled backend")
+}
+
+// TestRLS_Case5_PGBouncerMode_TransactionLocalBinding runs Case 5 the way
+// production runs: PGBouncerMode on, so pgcommon binds app.tenant_id with
+// transaction-local set_config(..., true) (RLS-6) instead of the session-
+// level binding direct mode uses. One connection forces every transaction
+// onto the same backend, and the binding must not survive the transaction.
+func TestRLS_Case5_PGBouncerMode_TransactionLocalBinding(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDBWithAppConfig(t, func(cfg *pgcommon.Config) {
+		cfg.PGBouncerMode = true
+		cfg.MaxConns = 1
+	})
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, ctx, rawPool, "acme")
+	tenantB := seedTenant(t, ctx, rawPool, "beta")
+
+	var seenA string
+	require.NoError(t, pgcommon.RunInTx(withTenant(ctx, tenantA), appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx, `SELECT slug FROM tenants WHERE id = $1`, tenantA).Scan(&seenA)
+	}))
+	assert.Equal(t, "acme", seenA)
+
+	// Same backend, after A's transaction: no tenant may still be bound.
+	var leftover string
+	require.NoError(t, appPool.WithConn(ctx, func(ctx context.Context, conn *pgxpool.Conn) error {
+		return conn.QueryRow(ctx, `SELECT coalesce(current_setting('app.tenant_id', true), '')`).Scan(&leftover)
+	}))
+	assert.Empty(t, leftover, "RLS-6: app.tenant_id must be transaction-local in PgBouncer mode")
+
+	var count int
+	require.NoError(t, pgcommon.RunInTx(withTenant(ctx, tenantB), appPool, pgxTxOpts(), func(ctx context.Context, tx pgxTx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM tenants WHERE id = $1`, tenantA).Scan(&count)
+	}))
+	assert.Equal(t, 0, count, "RLS-6: tenant B must not see tenant A's rows on the reused backend")
+}
+
+// After Close, pgcommon returns its own closed-pool error (not pgxpool's);
+// the repository layer must still classify it as db_unavailable.
+func TestPool_ClosedPoolErrorIsDBUnavailable(t *testing.T) {
+	t.Parallel()
+	appPool, _, _ := setupTestDB(t)
+	appPool.Close()
+	err := pgcommon.RunInTx(context.Background(), appPool, pgxTxOpts(), func(context.Context, pgxTx) error { return nil })
+	require.Error(t, err)
+	assert.True(t, pgadapter.IsDBUnavailable(err), "closed pool must map to db_unavailable: %v", err)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

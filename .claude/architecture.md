@@ -1,6 +1,6 @@
 # Architecture
 
-Refines HLD §5.6, §15.3. Clean Architecture / Ports-and-Adapters — dependencies point inward; `core/domain` imports nothing external; `cmd/server/main.go` (HTTP server) and `cmd/reconciler/main.go` (CronJob dispatcher, `--job=<name>`) are the two composition roots.
+Refines HLD §5.6, §15.3. Clean Architecture / Ports-and-Adapters — dependencies point inward; `core/domain` imports nothing external; `cmd/server/main.go` (HTTP server), `cmd/reconciler/main.go` (CronJob dispatcher, `--job=<name>`) and `cmd/migrate/main.go` (schema migration hook Job) are the three composition roots.
 
 ## Package Layout
 
@@ -8,10 +8,18 @@ Refines HLD §5.6, §15.3. Clean Architecture / Ports-and-Adapters — dependenc
 iam-org-membership/
 ├── cmd/
 │   ├── server/
-│   │   └── main.go                     # HTTP composition root, pool + middleware wiring, graceful shutdown
+│   │   ├── main.go                     # HTTP composition root, pool + middleware wiring, 3 SQS consumers, outbox runner, graceful shutdown; runMigrationsAtStartup() (RUN_MIGRATIONS)
+│   │   ├── wiring.go                   # buildTopicPublisher / buildTopicCodec (one SNS publisher + Glue codec per topic)
+│   │   ├── exporters.go                # runBusinessExporters — the 5 metric-exporter goroutines over pgadapter.GaugeRepository
+│   │   ├── consumer_heartbeat.go       # per-queue ConsumerHeartbeat health check
+│   │   ├── identity.go                 # APP_ENV/ENVIRONMENT resolution
+│   │   └── swagger_info.go
+│   ├── migrate/
+│   │   └── main.go                     # pgadapter.MigrateSchema (outbox.ApplySchema, then domain migrations); MIGRATE_TIMEOUT (10m); explainMigrationError hints; run once per release by the Helm pre-install/pre-upgrade hook Job
 │   └── reconciler/
-│       ├── main.go                     # CronJob dispatcher, --job=<name> flag
-│       └── jobs/                       # invitation-expiry, invitation-kc-cleanup, realm-config-sync, seat-overage-reconcile, trial-cleanup, outbox-prune, processed-events-prune (7 jobs; delegation-expiry/delegation-review removed)
+│       ├── main.go                     # CronJob dispatcher, --job=<name> (or RECONCILER_JOB); RECONCILER_TIMEOUT (5m), RECONCILER_STATEMENT_TIMEOUT (2m) on both pools; Pushgateway push
+│       ├── identity.go
+│       └── jobs/                       # invitation-expiry, invitation-kc-cleanup, realm-config-sync, seat-overage-reconcile, trial-cleanup, outbox-prune, processed-events-prune (7 jobs) + context.go (jobs.Context)
 ├── internal/
 │   ├── core/
 │   │   ├── domain/                     # entities, value objects, DomainError; NO external deps
@@ -19,40 +27,44 @@ iam-org-membership/
 │   │   │   ├── department.go           # Department, TenantDepartment
 │   │   │   ├── membership.go           # TenantMembership, DeptMembershipView, MembershipListPage
 │   │   │   ├── role.go                 # TenantRole, TenantRoleCode, DeptMembership, DeptRoleLabel
-│   │   │   ├── group_mapping.go        # GroupDeptRoleMapping, GroupTenantRoleMapping, GroupDeptMapping
+│   │   │   ├── group_mapping.go        # GroupDeptRoleMapping, GroupTenantRoleMapping, GroupDeptMapping (resolution shapes; Group Mapping Service owns the tables)
 │   │   │   ├── plan.go                 # Plan, PlanPatch, BrandingLevel — client-side cache representation; Catalog Service owns the table
 │   │   │   ├── invitation.go           # PendingInvitation, InvitationDeptMapping, SeatUsage
-│   │   │   ├── event.go                # DomainEvent envelope
+│   │   │   ├── event.go                # DomainEvent envelope, TopicForEvent
 │   │   │   ├── event_payloads.go       # per-event payload structs
-│   │   │   └── errors.go               # ErrNotFound, ErrConflict, ErrWorkflowResolutionRequired, ErrSeatLimitReached, ErrInvitationAlreadyExists, ErrInvalidReplacement
+│   │   │   └── errors.go               # ErrNotFound, ErrConflict, ErrWorkflowResolutionRequired, ErrSeatLimitReached, ErrInvitationAlreadyExists, ErrInvalidReplacement, ErrDBUnavailable
 │   │   │                               # NO delegation.go, NO acl.go — moved to Delegation Service / Tender ACL Service
 │   │   ├── port/                       # interfaces required by the core
 │   │   │   ├── tenant_repository.go    # incl. ListSubscriptionLapses (I-16) and ResolveByIdentifier (PUB-1) — both sysPool-only (BYPASSRLS)
-│   │   │   ├── authz_repository.go     # NEW. AuthZRepository — the I-8 four-table join, moved out of authz_service.go so core/service depends on a port, not *pgcommon.Pool directly
+│   │   │   ├── authz_repository.go     # AuthZRepository — the I-8 four-table join, moved out of authz_service.go so core/service depends on a port, not *pgcommon.Pool directly
 │   │   │   ├── department_repository.go # TenantDepartmentRepository — per-tenant activation junction only; the global catalog itself is external
 │   │   │   ├── membership_repository.go # MembershipRepository, TenantRoleRepository, DeptMembershipRepository, DeptRoleLabelRepository
 │   │   │   ├── invitation_repository.go
-│   │   │   ├── catalog_reader.go       # NEW (ADR-0007). DepartmentCatalogReader, PlanCatalogReader — narrow read interfaces backing CatalogService
-│   │   │   ├── group_mapping_client.go # NEW (ADR-0007). GroupMappingClient — replaces the old local group_mapping_repository.go
-│   │   │   ├── outbound_clients.go     # WorkflowClient (§8.8), RealmProvisionerClient, CatalogAdminClient (NEW), DelegationCheckClient (NEW, ADR-0008) — NO UserProfileClient
+│   │   │   ├── reconciler_store.go     # ReconcilerStore — sysPool-bound cross-tenant reconciler queries
+│   │   │   ├── idempotency.go          # Inbox (ProcessOnce) + InboxPruner (Prune) — consumer dedup over platform-events pkg/inbox
+│   │   │   ├── catalog_reader.go       # (ADR-0007) DepartmentCatalogReader, PlanCatalogReader — narrow read interfaces backing CatalogService
+│   │   │   ├── group_mapping_client.go # (ADR-0007) GroupMappingClient — replaces the old local group_mapping_repository.go
+│   │   │   ├── outbound_clients.go     # WorkflowClient (§8.8), RealmProvisionerClient, DelegationCheckClient (ADR-0008), TokenServiceClient (AUTH-9), CatalogAdminClient (ADR-0007) — NO UserProfileClient
 │   │   │   ├── cache.go                # Valkey interface (advisory)
 │   │   │   ├── event_publisher.go
-│   │   │   └── tx_runner.go
+│   │   │   ├── logger.go
+│   │   │   └── tx_runner.go            # TxRunner + WithTx/TxFromContext (context-carried tx)
 │   │   │                               # NO delegation_repository.go, NO acl_repository.go, NO user_profile_client.go, NO standalone workflow_client.go/realm_provisioner_client.go (folded into outbound_clients.go)
 │   │   └── service/                    # use cases
 │   │       ├── tenant_service.go
 │   │       ├── department_service.go
-│   │       ├── membership_service.go   # RemoveUser — delegate-impact pre-check + resolution (§8.8); Invite (§8.10); AcceptInvitation (I-3 branch); tenant_roles cascade (TR-9)
-│   │       ├── dept_membership_service.go # dept-level assign/remove gating; calls DelegationCheckClient for dept-scoped precision, degrades to tenant-wide on outage
-│   │       ├── invitation_service.go
+│   │       ├── membership_service.go   # RemoveUser — delegate-impact pre-check + resolution (§8.8); AcceptInvitation (I-3 branch); tenant_roles cascade (TR-9)
+│   │       ├── dept_membership_service.go # dept-level assign/remove gating (demotion gate runs before RunInTx); calls DelegationCheckClient for dept-scoped precision; on outage Remove degrades to tenant-wide, a demotion proceeds ungated
+│   │       ├── invitation_service.go   # Invite (§8.10), RequiredActions, PI-11/PI-12 throttles, SEAT-1
 │   │       ├── role_label_service.go
-│   │       ├── provisioning_service.go
+│   │       ├── provisioning_service.go # I-1 TrialSignup, slug/locale validation, I-5 cascade (ownerless counter after commit)
 │   │       ├── operator_service.go
-│   │       ├── authz_service.go        # I-8 hot path; depends on port.AuthZRepository (NEW), not *pgcommon.Pool — the four-table join itself lives in the postgres adapter, this owns TR-7/PLAN-6 composition
-│   │       ├── catalog_service.go      # NEW (ADR-0007). Read-through + stale-if-error cache over CatalogAdminClient — NOT a table owner
+│   │       ├── authz_service.go        # I-8 hot path; depends on port.AuthZRepository, not *pgcommon.Pool — the four-table join itself lives in the postgres adapter, this owns TR-7/PLAN-6 composition
+│   │       ├── catalog_service.go      # (ADR-0007) Read-through + stale-if-error cache over CatalogAdminClient — NOT a table owner
 │   │       ├── group_mapping_service.go # client-side resolve over GroupMappingClient — NOT a table owner, fails open
-│   │       ├── subscription_lapse_service.go # NEW (I-16, §16 OQ-9/RP-C3). Cross-tenant read; its TenantRepository MUST be sysPool-bound (BYPASSRLS), not the RLS-scoped app pool
-│   │       └── tenant_resolution_service.go # NEW (PUB-1, LLD §5.4/§8.11). Pre-login slug/pending-invite-email → realm lookup; sysPool-bound like I-16 (no GUC on this route); no cache, no event
+│   │       ├── subscription_lapse_service.go # (I-16, §16 OQ-9/RP-C3) Cross-tenant read; its TenantRepository MUST be sysPool-bound (BYPASSRLS), not the RLS-scoped app pool
+│   │       ├── tenant_resolution_service.go # (PUB-1, LLD §5.4/§8.11) Pre-login slug/pending-invite-email → realm lookup; sysPool-bound like I-16 (no GUC on this route); no cache, no event
+│   │       └── cache_keys.go           # om:* key builders
 │   │                                   # NO delegation_service.go, NO acl_service.go, NO role_service.go (renamed role_label_service.go — tenant_roles grants now live in membership_service.go)
 │   └── adapter/
 │       ├── inbound/
@@ -60,41 +72,59 @@ iam-org-membership/
 │       │   │   ├── router.go           # single source of truth for the route table, shared by cmd/server/main.go and the e2e test harness
 │       │   │   ├── tenant_handler.go
 │       │   │   ├── department_handler.go
-│       │   │   ├── membership_handler.go # DELETE pre-check; POST .../removal-resolution (P-26); invite lifecycle
+│       │   │   ├── membership_handler.go # DELETE pre-check; POST .../removal-resolution (P-26); seat-usage (P-27); reset-mfa (P-34)
 │       │   │   ├── dept_membership_handler.go
 │       │   │   ├── role_label_handler.go
-│       │   │   ├── invitation_handler.go
+│       │   │   ├── invitation_handler.go # invite lifecycle (P-6/P-30/P-31)
 │       │   │   ├── operator_handler.go
-│       │   │   ├── internal_handler.go # I-1..I-16, incl. I-15 GET .../members/:user_id/exists (grant-time check for Delegation/Tender-ACL services) and NEW I-16 GET /subscription-lapses (RP-C3 bulk read)
-│       │   │   ├── public_handler.go   # NEW. PUB-1 GET /api/v1/public/tenants/resolve — the one unauthenticated route; registered by registerPublicRoutes on the engine, outside the protected group (PUBRES-1)
-│       │   │   ├── middleware.go
+│       │   │   ├── internal_handler.go # I-1..I-16, incl. I-15 GET .../members/:user_id/exists (grant-time check for Delegation/Tender-ACL services) and I-16 GET /subscription-lapses (RP-C3 bulk read)
+│       │   │   ├── public_handler.go   # PUB-1 GET /api/v1/public/tenants/resolve — the one unauthenticated route; registered by registerPublicRoutes on the engine, outside the protected group (PUBRES-1)
+│       │   │   ├── middleware.go       # GUCBridgeMiddleware, NormalizeAuthErrors, RequireActiveTenant/Membership, RequireOperatorRole/SystemRole, HandleError (DomainError/pg error → status + code)
+│       │   │   ├── errors.go           # ErrorResponse construction
+│       │   │   ├── docs.go / asyncapi.go / swagger_*.go # gated Swagger UI + AsyncAPI viewer (DOCS_ENABLED)
 │       │   │   └── dto.go
 │       │   │                           # NO delegation_handler.go, NO acl_handler.go, NO group_mapping_handler.go (admin group-mapping CRUD moved to Group Mapping Service)
-│       │   └── consumer/
-│       │       ├── membership_event_consumer.go # SQS handler: iam.tenant.events, billing.events (EVT-14 recency, EVT-15 clamp, EVT-16 relay)
-│       │       ├── dedup.go            # skipDuplicate/ackUnknown/markProcessedInTx — shared IDEMP-1..4 helpers, used by both consumers below
-│       │       └── catalog_consumer.go # SQS handler: catalog-orgm-q ← DepartmentCatalogChanged (Gap 12 org-membership half) — clears om:departments/om:departments:stale; now unit-tested and uses the shared dedup.go helpers (previously ad hoc); still inert until iam-catalog-admin's publisher side + SQS_CATALOG_ORGM_QUEUE_URL exist
+│       │   ├── consumer/
+│       │   │   ├── membership_event_consumer.go # SQS handler: iam.tenant.events, billing.events (EVT-14 recency, EVT-15 clamp, EVT-16 relay)
+│       │   │   ├── dedup.go            # processOnce/ackUnknown over port.Inbox (platform-events inbox.Store) — shared IDEMP-1..4 helpers, used by both consumers
+│       │   │   └── catalog_consumer.go # SQS handler: catalog-orgm-q ← DepartmentCatalogChanged (Gap 12 org-membership half) — clears om:departments/om:departments:stale; unit-tested, unknown types through dedup.go's ackUnknown; still inert until iam-catalog-admin's publisher side + SQS_CATALOG_ORGM_QUEUE_URL exist
+│       │   └── sqspipeline/            # the inbound pipeline every queue runs (moved out of cmd/server; the old cmd/server/dlq.go, dlq_adapter.go, inbound_schema.go are gone) — importable so test/integration runs it against floci
+│       │       ├── consumer.go         # EnvForQueue (defaults: SQS_MAX_RECEIVE_COUNT 4, SQS_DRAIN_TIMEOUT 15s, SQS_HANDLER_TIMEOUT 20s, SQS_QUEUE_DEPTH_INTERVAL 60s), NewConsumer (events.GlueDecodeCodec + events.WithDLQForwarding), consumer span
+│       │       ├── dlq.go              # RequireDLQ (startup preflight), routeRejectsToDLQ (permanent-reject shortcut)
+│       │       └── inbound_schema.go   # Validator/ValidatorFunc, validateConsumed, Handler (DLQ router → consumer span → validateConsumed → Handle)
 │       └── outbound/
-│           ├── postgres/               # repository impls + migrations/ (consolidated 000000_initial_schema — never deployed, so the decomposition history was squashed — plus additive 000001 checks and 000002 idx_pi_email_pending for PUB-1); tenant_repository.go's ResolveByIdentifier is PUB-1's single UNION ALL lookup
+│           ├── postgres/               # repository impls + db.go (pools, wrapConnErr), migrate.go (MigrateSchema/RunMigrations), idempotency_repository.go (InboxRepository), gauge_repository.go, reconciler_store.go, authz_repository.go; tenant_repository.go's ResolveByIdentifier is PUB-1's single UNION ALL lookup
+│           │   └── migrations/         # 000000_initial_schema (consolidated — never deployed, so the decomposition history was squashed), 000001_check_constraints, 000002_pub1_pending_invitations_email_idx (idx_pi_email_pending for PUB-1)
 │           ├── valkey/                 # cache impl (go-redis/v9)
-│           ├── eventbus/               # RoutingPublisher (2 topics); GlueCodec (publish, version by definition) + GlueDecoder (consume); ValidatingCodec over embedded schemas/*.json
-│           ├── metrics/                # cross-cutting Prometheus counters/histograms (business.go) — the "observability" component in .go-arch-lint.yml
+│           ├── eventbus/               # Publisher (outbox enqueue, ordered per <tenant_id>/<subject>), RoutingPublisher (2 topics); GlueCodec (publish, version by definition); ValidatingCodec over embedded schemas/*.json; consumers use the library's events.GlueDecodeCodec (no local decoder)
+│           │   └── schemas/            # schema-governance workspace, //go:embed-ed
+│           ├── metrics/                # business.go (Register, every collector) + registry.go (PlatformRegistry ratification status) — the "observability" component in .go-arch-lint.yml
+│           ├── httpx/                  # httpx.NewClient(timeout) — shared otelhttp-instrumented http.Client, forwards x-request-id
 │           ├── workflow/               # HTTP client for Workflow Service — retained, unrelated to the delegation extraction
 │           ├── realmprovisioner/       # HTTP client for Realm Provisioner
-│           ├── catalogadmin/           # NEW (ADR-0007). HTTP client for Catalog / Admin Config Service (departments, plans — read-only)
-│           ├── groupmappingclient/     # NEW (ADR-0007). HTTP client for Group Mapping / JIT Config Service
-│           └── delegationcheck/        # NEW (ADR-0008). HTTP client for Delegation Service's dept-delegate lookup
+│           ├── catalogadmin/           # (ADR-0007) HTTP client for Catalog / Admin Config Service (departments, plans — read-only)
+│           ├── groupmappingclient/     # (ADR-0007) HTTP client for Group Mapping / JIT Config Service
+│           ├── delegationcheck/        # (ADR-0008) HTTP client for Delegation Service's dept-delegate lookup
+│           └── tokenservice/           # (AUTH-9/IB-3) HTTP client for Token Service's TS-5 service-account lookup
 │                                       # NO userprofile/ package — dead code once delegation's OOO coordination moved out, deleted (LLD §16 OQ-5)
+├── pkg/requestctx/                     # context.go (RequestContext, WithRequestID/RequestIDFromContext), guc.go (WithSystemTenant/WithTenant)
 ├── api/
-│   └── asyncapi.yaml                   # AsyncAPI 3.0 — iam.membership.events + iam.tenant.events channels (design-time source of truth)
+│   ├── asyncapi.yaml                   # AsyncAPI 3.0 — iam.membership.events + iam.tenant.events channels (design-time source of truth)
+│   └── embed.go                        # embeds asyncapi.yaml (the "apispec" arch-lint component)
 │                                       # openapi.yaml DELETED — REST contract is now docs/swagger/* (generated via `make swag` from handler annotations), not hand-authored
 ├── docs/
-│   ├── swagger/                        # generated by `make swag` — swagger.yaml/swagger.json/docs.go; regenerated in this pass to drop retired routes/DTOs
-│   ├── schema-archive/                 # archived Glue versions (schema-gov prune --mode archive)
-│   └── schema-changelog.md             # schema-gov changelog output
-├── deploy/helm/                        # Helm chart (7 CronJobs — see operations.md; delegation-expiry/delegation-review/delegation-cleanup/acl-cleanup removed)
-├── test/{unit,postgres,integration,e2e}/
-├── Dockerfile  docker-compose.yml  Makefile  go.mod  .golangci.yml
+│   ├── swagger/                        # generated by `make swag` — swagger.yaml/swagger.json/docs.go
+│   ├── lld/                            # iam-lld-org-membership-service.md (LLD v2.18)
+│   ├── observability/                  # README.md, metric-registry.md (generated, `make metrics-inventory`), migration.md, runbooks.md
+│   ├── architecture/                   # README + mermaid diagrams
+│   └── runbook-*.md                    # i8-latency, outbox-dead-letter, rls-cross-tenant, schema-registry
+│                                       # docs/schema-changelog.md and docs/schema-archive/ are written by schema-registry.yml / schema-prune.yml on main — not present yet
+├── deploy/
+│   ├── helm/                           # Helm chart: deployment, migrate-job (pre-install/pre-upgrade hook), cronjobs (7), hpa, pdb, networkpolicy, prometheusrule, secret, servicemonitor, …
+│   ├── monitoring/                     # app-alerts.yml, slo-rules.yml, schema-registry-alerts.yml, prometheus-adapter-rule.yaml, dashboards/ (business-health, data-integrity, i8-latency)
+│   └── iam/                            # IAM policy (policy.json, policy.tf.example)
+├── test/{unit,postgres,integration,e2e,dbseed}/   # dbseed/pool.go = shared pgcommon pool for tests; integration/pipeline_dlq_test.go runs sqspipeline against floci
+├── Dockerfile  docker-compose.yml  Makefile  go.mod  .golangci.yml  .go-arch-lint.yml
 ```
 
 `internal/adapter/outbound/eventbus/schemas/` **is the one schema-governance workspace** — there is no separate `internal/eventschema/` directory. `schema-gov extract --schema-dir internal/adapter/outbound/eventbus/schemas` generates the Draft-07 files directly from `asyncapi.yaml` into this location, which doubles as the runtime copy embedded via `//go:embed schemas/*.json` in the `ValidatingCodec`; `.github/workflows/schema-registry.yml` validates/diffs/registers against this same path; `schema-gov register` uploads to AWS Glue Schema Registry. There is no separate design-time-vs-runtime split.
@@ -103,9 +133,9 @@ iam-org-membership/
 
 ```go
 require (
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon    v1.3.0
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events        v1.4.0
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon      v1.3.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon    v1.5.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2        v2.0.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2      v2.0.0
 )
 ```
 
@@ -115,28 +145,28 @@ require (
 
 ### `platform-gincommon` integration
 
-`router.go` (`NewRouter`) chains, in order: a 1 MB body cap → `gincommon.TimeoutMiddleware(30s)` → `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging`) → `NormalizeAuthErrors()` (G-13, adds a `code` field to gincommon's bare 401 body) — then, per `/api/v1` sub-group, `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → this repo's own `GUCBridgeMiddleware` → `RequireJSONContentType`, followed by route-specific gates (`RequireActiveTenant`/`RequireActiveMembership` on public `/tenants/*`, `RequireOperatorRole` on `/operator/*`, `RequireSystemRole` on `/internal/*`). `ServiceName = "iam-org-membership"`. **No gRPC server** — Gin HTTP only. Each of the six outbound clients (Workflow, Realm Provisioner, Catalog Admin, Group Mapping, Delegation Check, Token Service — no User Profile client any more, that adapter was deleted as dead code) builds its `http.Client` via `httpx.NewClient(timeout)`, whose `otelhttp`-wrapped transport injects W3C `traceparent` and emits a client span automatically — not a hand-rolled `propagateTraceparent` helper, and not `gincommon.PropagateHeaders` either (that's the inbound-focused helper; this is the outbound leg). (A prior revision of this doc described a manual per-package `propagateTraceparent` helper as the current mechanism and `httpx` as unadopted scaffolding — verified stale via direct grep, corrected here.)
+`router.go` (`NewRouter`) chains, in order: a 1 MB body cap → `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → Timeout`; the timeout comes from `Config.RequestTimeout`, 30s default, and runs innermost so a deadline 503 is the status that gets logged and counted) → `NormalizeAuthErrors()` (G-13: buffers only a 400 or 401 and adds a `code` to gincommon's bare body — `invalid_request_context` on ContextMiddleware's 400, `missing_identity_headers` or `ambiguous_identity_headers` on RequireAuth's 401; a body that already has a `code` and every other status pass straight through). On a request-deadline error `HandleError` aborts without writing, so the library's timeout middleware writes its 503 and counts `platform_http_request_timeouts_total`; a client disconnect is recorded as 499 — then, per `/api/v1` sub-group, `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → this repo's own `GUCBridgeMiddleware` → `RequireJSONContentType`, followed by route-specific gates (`RequireActiveTenant`/`RequireActiveMembership` on public `/tenants/*`, `RequireOperatorRole` on `/operator/*`, `RequireSystemRole` on `/internal/*`). `ServiceName` comes from `APP_NAME` (default `iam-org-membership`) — the single source of the service name for logs, traces, metrics and the SQS consumer name; `OTEL_SERVICE_NAME` is not read. `/metrics` is served on `METRICS_PORT` by `gincommon.MetricsHandler()`. **No gRPC server** — Gin HTTP only. Each of the six outbound clients (Workflow, Realm Provisioner, Catalog Admin, Group Mapping, Delegation Check, Token Service — no User Profile client any more, that adapter was deleted as dead code) builds its `http.Client` via `httpx.NewClient(timeout)`, whose `otelhttp`-wrapped transport injects W3C `traceparent` and emits a client span automatically — not a hand-rolled `propagateTraceparent` helper, and not `gincommon.PropagateHeaders` either (that's the inbound-focused helper; this is the outbound leg). (A prior revision of this doc described a manual per-package `propagateTraceparent` helper as the current mechanism and `httpx` as unadopted scaffolding — verified stale via direct grep, corrected here.)
 
 ### `platform-pgcommon` integration
 
 - `NewPool` + `ConfigFromEnv`, `PGBouncerMode` env-driven.
 - **`GUCProvider = GUCSetFromContext`** — binds `app.tenant_id` **transaction-locally** via `set_config(..., is_local => true)` on **every** checkout, reads included. Never a session-scoped `SET` (would persist on a pooled backend and leak across tenants; RLS-6). This is the security-critical invariant that makes RLS safe under PgBouncer transaction pooling.
-- `RunInTx` for all writes AND all reads — no bare non-transactional query path exists.
-- `RunInSavepoint` for sub-step rollbacks.
+- Writes run in `pgcommon.RunInTxWithRetryOpts` (`TxRunner`, retries 40P01/40001), reads in `pgcommon.RunInTx` (`withPool`); consumer dedup runs in `inbox.Store.Process`'s own transaction — no bare non-transactional query path exists. Outbound HTTP calls are never made inside a transaction (the WFI-9/12 demotion gate runs before it).
 - Error mapping: `IsUniqueViolation` / `IsForeignKeyViolation` / `IsCheckViolation` / `IsDeadlock` / `IsSerializationFailure`.
-- `Pool.Health`, `migrate.Runner`, `pgmetrics.Init`, `NewOTelQueryTracer`, `SlowQueryTracer`.
-- **`Config.SlowQueryThreshold = 200 ms`** (WARN log with `tenant_id` redacted).
-- Production: `SetLogTenantID(false)`, `SetAllowFullStatements(false)`.
+- `Pool.Health`, `migrate.Runner` (domain migrations and `outbox.ApplySchema`, both with the logger; the library's default 30s migration `lock_timeout`), `pgmetrics.InitWithIdentity`, `gincommon.NewSpanTracer` as `Config.Tracer` (pgcommon wraps it in its query tracer).
+- `Config.StatementTimeout` from `PG_STATEMENT_TIMEOUT`, applied per transaction by pgcommon (never a DSN startup option, which PgBouncer may reject); migrations get none. The BYPASSRLS system pool has `PoolName = "system"`, so its `platform_db_*` series stay separate from the app pool's `default`.
+- Error classification via `IsConnectionException`/`IsInsufficientResources`/`IsOperatorIntervention`/`IsSystemError`/`IsPoolClosed` (503 `db_unavailable`), `IsQueryCanceled`/`IsLockNotAvailable` (503 `request_timeout`) and `IsDeadlock`/`IsSerializationFailure` (409 `concurrent_update`) — no SQLSTATE string matching.
+- **`Config.SlowQueryThreshold`** from `PG_SLOW_QUERY_THRESHOLD` (200 ms in `.env-example`/Helm), logged at WARN through the same Zap sink via `pgadapter.NewLoggerAdapter`.
 
 ### `platform-events` integration — RoutingPublisher
 
 Unlike `iam-user-profile` (single-topic producer), O&M wires its own local **`eventbus.RoutingPublisher`** (HLD §9.2) — not a `platform-events` type; that library only exposes `NewSNSPublisher` for a single topic. It holds two pre-built `events.Publisher` fields (`membership`, `tenant`), not a topic-ARN map, and routes each envelope via **`domain.TopicForEvent(env.Type)`** — keyed on event **type**, not `Envelope.Source`: `TenantCreated`/`TrialStarted` → `tenant`, everything else → `membership`. This is the one meaningful wiring difference from User Profile.
 
-**Substantive consumer of two topics** at MVP:
+**Substantive consumer of two topics** at MVP (a third queue, `catalog-orgm-q` ← `DepartmentCatalogChanged`, is wired but inert until `SQS_CATALOG_ORGM_QUEUE_URL` is set and `iam-catalog-admin` publishes):
 - **`iam.tenant.events`** via `tenant-orgm-q` — Realm Provisioner tenant-lifecycle events (`TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated{source=operator}` — new, resolves F1 of the RP↔O&M alignment review, RP-10 reversing RP-14). O&M **never self-consumes** its own `TenantCreated`/`TrialStarted` (HLD §9.1.1 "No self-consumption" — produce/consume sets are disjoint).
 - **`billing.events`** via `billing-orgm-q` — Billing Service events (`TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantSeatsChanged`).
 
-Queue naming: `<topic-short>-<consumer-short>-q` (HLD §9.1). Consumer short-name `orgm`. Both DLQs `tenant-orgm-q-dlq` / `billing-orgm-q-dlq`, `maxReceiveCount = 5`. Idempotency via `processed_events`.
+Queue naming: `<topic-short>-<consumer-short>-q` (HLD §9.1). Consumer short-name `orgm`. Each queue has a `-dlq` (`tenant-orgm-q-dlq` / `billing-orgm-q-dlq` / `catalog-orgm-q-dlq`) with RedrivePolicy `maxReceiveCount = 5`; platform-events forwards at `SQS_MAX_RECEIVE_COUNT` 4, one below it. Idempotency via `processed_events` (platform-events inbox).
 
 ## Database Access Rule (enforced in CI via `golangci-lint`'s `forbidigo`, see `.golangci.yml`)
 
@@ -146,24 +176,25 @@ Every DB connection/pool — production and test alike — must go through `pgco
 
 All three surfaces go through `platform-events` (and, for consumer-side dedup, this service's own `processed_events`/IDEMP-1..4 — see below) with no hand-rolled equivalent:
 
-- **Publish** — `RoutingPublisher` (`internal/adapter/outbound/eventbus/routing_publisher.go`) holds two `events.Publisher` fields, each built via `events.NewSNSPublisher(eventcfg.SNSConfigFromEnv(...), events.WithCodec(codec))` (`cmd/server/wiring.go`'s `buildTopicPublisher`) — no direct `aws-sdk-go-v2/service/sns` calls anywhere in this repo (`cmd/server/main.go`'s `aws-sdk-go-v2/service/sqs` import constructs the raw client `events.NewSQSConsumerWithClient` requires as a dependency-injection parameter, and `cmd/server/dlq.go` uses the same client for its two DLQ calls, below — the library builds its own SNS client internally, hence "deliberately no `sns.NewFromConfig` call in this file", per that file's own comment).
-- **Enqueue** — `Publisher.Enqueue` (`internal/adapter/outbound/eventbus/publisher.go`) writes to `outbox_events` via `outbox.Enqueue(ctx, tx, env)` — the library's own package-level function — never a hand-rolled `INSERT`.
-- **Consume** — every SQS consumer is built via `events.NewSQSConsumerWithClient` (`cmd/server/wiring.go`'s `buildSQSConsumer`, always with `events.WithConsumerCodec(eventbus.GlueDecoder{})`); no hand-rolled `ReceiveMessage`/`DeleteMessage` polling loop anywhere. Each queue's handler is `inboundHandler` (`cmd/server/inbound_schema.go`): DLQ router → `platform_messages_*` → consumed-schema validation → `Handle`. The one deliberate addition on top of platform-events is `cmd/server/dlq.go`: platform-events has no "permanent failure" signal, so permanent rejects (EVT-15 poison pill, consumed-schema violation) are `SendMessage`'d straight to the queue's DLQ (URL read once from its `RedrivePolicy` via `GetQueueAttributes`) and acked; everything else keeps platform-events' normal retry/redrive.
-- **Prune** — `outbox.Runner.PrunePublished` (`cmd/reconciler/jobs/outbox_prune.go`) is now the *only* code that deletes from `outbox_events`. A hand-rolled equivalent, `port.ReconcilerStore.PruneOutbox` (`internal/adapter/outbound/postgres/reconciler_store.go`), predated this migration and was confirmed to have zero production callers once the migration landed — **removed 2026-09-21** (interface method, implementation, and all its dedicated test blocks/fakes deleted, not just left as reachable dead code).
-- **Consumer-side dedup (`processed_events`, IDEMP-1..4)** — deliberately **not** migrated to anything, because `platform-events` has no consumer-side idempotency/dedup store to migrate to (checked directly: only publish-side SNS FIFO `MessageDeduplicationID` support exists in the library, nothing consumer-facing). `processed_events` + `internal/adapter/inbound/consumer/dedup.go`'s `skipDuplicate`/`markProcessedInTx` remain a legitimately locally-owned concept, same as `PruneProcessedEvents` (`ReconcilerStore`) — not a bypass of anything the library provides.
+- **Publish** — `RoutingPublisher` (`internal/adapter/outbound/eventbus/routing_publisher.go`) holds two `events.Publisher` fields, each built via `events.NewSNSPublisher(eventcfg.SNSConfigFromEnv(...), events.WithCodec(codec))` (`cmd/server/wiring.go`'s `buildTopicPublisher`) — no direct `aws-sdk-go-v2/service/sns` calls anywhere in this repo (`cmd/server/main.go`'s `aws-sdk-go-v2/service/sqs` import constructs the raw client `events.NewSQSConsumerWithClient` requires as a dependency-injection parameter, and `events.NewSQSDLQPublisherWithClient` uses the same client for the DLQ forwards, below — the library builds its own SNS client internally, hence "deliberately no `sns.NewFromConfig` call in this file", per that file's own comment).
+- **Enqueue** — `Publisher.Enqueue` (`internal/adapter/outbound/eventbus/publisher.go`) writes to `outbox_events` via the library's own `outbox.EnqueueOrdered(ctx, tx, env, "<tenant_id>/<subject>")` (or `outbox.Enqueue` for an event with no subject) — never a hand-rolled `INSERT`. Before an ordered enqueue the transaction takes `pg_advisory_xact_lock(hashtextextended('outbox-order:<key>', 0))`, so two transactions for one key never interleave (the library's precondition; an opposite-order deadlock is retried as 40P01) and one user's events publish in commit order. Delivery is not ordered end to end (SNS/SQS), so consumers keep their recency guards. `outbox_events` keeps the library's schema (jsonb payload); the v1-era TEXT column and hex-decode trigger are gone.
+- **Consume** — every SQS consumer is built via `events.NewSQSConsumerWithClient` (`sqspipeline.NewConsumer`, always with `events.WithConsumerCodec(events.GlueDecodeCodec{})`); no hand-rolled `ReceiveMessage`/`DeleteMessage` polling loop anywhere. Each queue's handler is `sqspipeline.Handler` (`internal/adapter/inbound/sqspipeline/inbound_schema.go`): DLQ router → consumer span + queue context → consumed-schema validation (`validateConsumed`) → `Handle` (platform-events' consumer counts every delivery in `platform_messages_*` itself). DLQ handling is platform-events v2's own: every consumer gets `events.WithDLQForwarding(dlqPublisher)` (an `events.NewSQSDLQPublisherWithClient`), so undecodable bodies and messages that reach `SQS_MAX_RECEIVE_COUNT` (default 4, one below the RedrivePolicy's 5) are forwarded by the library and counted once on `platform_dlq_messages_total`. `internal/adapter/inbound/sqspipeline/dlq.go` adds only the permanent-reject shortcut: on EVT-15's `ErrPoisonPill` or a consumed-schema violation, `routeRejectsToDLQ` forwards the original message (`events.SourceMessageFromContext`) via `SendToDLQ` and acks; if that send fails the error is returned so the message stays on the queue. At startup `sqspipeline.RequireDLQ` resolves each queue's DLQ: a missing/invalid RedrivePolicy is fatal, a transient lookup failure only warns.
+- **Prune** — `outbox.Runner.PrunePublished` (`cmd/reconciler/jobs/outbox_prune.go`, called until a batch comes back short — one call deletes at most `RECONCILER_BATCH_LIMIT` rows) is the *only* code that deletes from `outbox_events`; `inbox.Store.Prune` (`processed_events_prune.go` via `port.InboxPruner`, once per consumer name) the only code that deletes from `processed_events`.
+- **Consumer-side dedup (`processed_events`, IDEMP-1..4)** — platform-events v2's `pkg/inbox`. `postgres.InboxRepository` (`port.Inbox`) wraps `inbox.Store.Process`: the claim (`INSERT … ON CONFLICT DO NOTHING`) is the first statement of the one transaction that also runs the consumer's projection, EVT-14 row lock and relay enqueues (fn's ctx carries the tx and the tx-bound publisher), so a concurrent duplicate waits on the claim and is then skipped — the old probe-then-insert left that race open. The library also counts `platform_duplicate_messages_total`. CI check #4 rejects hand-written SQL against `processed_events`.
 
-**Enforced in CI** (added 2026-09-21, `.github/scripts/check-forbidden-events-bypass.sh`, wired into `validate-quality.yml`, ported from `iam-delegation`'s identically-named script): (1) `aws-sdk-go-v2/service/sns`/`service/sqs` may only be imported in `cmd/server/main.go` (the one place allowed to construct a raw `*sqs.Client`, solely to hand it to `events.NewSQSConsumerWithClient`); (2) outside `internal/adapter/outbound/eventbus/`, no code may call an SNS/SQS transport method (`Publish`/`SendMessage`/`ReceiveMessage`/`DeleteMessage`/`ChangeMessageVisibility`/`Subscribe`) directly — `eventbus/` itself is exempt from this one check because `RoutingPublisher.Publish`/`PublishBatch` legitimately call through to the wrapped `events.Publisher` interface, which happens to share method names with the raw SDK; (3) `events.Envelope{...}` may never be constructed as a struct literal, only via `events.NewEnvelope(...)`. Verified against three deliberate sanity-check violations (one per rule, created, confirmed each fired, cleaned up) before trusting it, and re-verified zero false positives against the real repo, including the `eventbus/` exemption's one otherwise-matching call site (`routing_publisher.go`'s `pub.Publish(ctx, env)`).
+**Enforced in CI** (added 2026-09-21, `.github/scripts/check-forbidden-events-bypass.sh`, wired into `validate-quality.yml`, ported from `iam-delegation`'s identically-named script): (1) `aws-sdk-go-v2/service/sns`/`service/sqs` (and their subpackages) may only be imported in `cmd/server/main.go` (the one place allowed to construct a raw `*sqs.Client`, solely to hand it to `events.NewSQSConsumerWithClient`); (2) outside `internal/adapter/outbound/eventbus/`, no code may call an SNS/SQS transport method (`Publish`/`PublishBatch`/`SendMessage`/`SendMessageBatch`/`ReceiveMessage`/`DeleteMessage`/`ChangeMessageVisibility`/`GetQueueAttributes`/`GetQueueUrl`/`Subscribe`) directly — `eventbus/` itself is exempt from this one check because `RoutingPublisher.Publish`/`PublishBatch` legitimately call through to the wrapped `events.Publisher` interface, which happens to share method names with the raw SDK; (3) `events.Envelope{...}` may never be constructed as a struct literal, only via `events.NewEnvelope(...)` (except the `{ID, Type}` claim key `idempotency_repository.go` hands to `inbox.Store.Process`, which is never published); (4) no hand-written SQL against `processed_events`. `check-outbox-access.sh` likewise rejects hand-written SQL against `outbox_events`/`outbox_dead_letters` anywhere. Verified against three deliberate sanity-check violations (one per rule, created, confirmed each fired, cleaned up) before trusting it, and re-verified zero false positives against the real repo, including the `eventbus/` exemption's one otherwise-matching call site (`routing_publisher.go`'s `pub.Publish(ctx, env)`).
 
 ## Dependency Rules (enforced in CI via `go-arch-lint`, see `.go-arch-lint.yml`)
 
 - `core/domain` — imports **nothing** outside itself (`anyVendorDeps: true`, no internal deps)
 - `core/port` — imports only `core/domain`
-- `core/service` — imports only `core/domain`, `core/port`, and `pkg/requestctx`
+- `core/service` — imports only `core/domain`, `core/port`, `pkg/requestctx`, and the `observability` metrics package (see below)
 - `adapter/*` implements `core/port`; **nothing in `core/` imports `adapter/`**
-- `internal/adapter/outbound/metrics` is its own cross-cutting **`observability`** component (plain Prometheus instrumentation, no internal deps). `.go-arch-lint.yml` lists it as importable by `adapters_inbound`, `adapters_outbound`, and the composition root `cmd` — and its own `service` component's `mayDependOn` list **does** explicitly enumerate `observability` (confirmed directly against `.go-arch-lint.yml`, not just inferred), which is why `core/service` importing it directly in several files (`membership_service.go`, `catalog_service.go`, `provisioning_service.go`, `group_mapping_service.go`) to record business-outcome counters at the point of the outcome is a declared, sanctioned dependency, not a lint gap.
+- `internal/adapter/outbound/metrics` is its own cross-cutting **`observability`** component (collectors built with platform-gincommon's constructors, no raw `prometheus.New*`; no internal deps). `.go-arch-lint.yml` lists it as importable by `adapters_inbound`, `inbound_pipeline`, `adapters_outbound`, `reconciler_jobs`, and the composition root `cmd` — and its own `service` component's `mayDependOn` list **does** explicitly enumerate `observability` (confirmed directly against `.go-arch-lint.yml`, not just inferred), which is why `core/service` importing it directly in several files (`membership_service.go`, `dept_membership_service.go`, `invitation_service.go`, `catalog_service.go`, `provisioning_service.go`, `group_mapping_service.go`) to record business-outcome counters at the point of the outcome is a declared, sanctioned dependency, not a lint gap.
 - `eventschema` (`internal/adapter/outbound/eventbus/schemas`) and `apispec` (`api/`, embedding `api/asyncapi.yaml`) are standalone `anyVendorDeps: true` leaves — `eventbus` may depend on `eventschema`; `adapters_inbound` may depend on `apispec` (`docs.go`/`asyncapi.go` serve the embedded spec directly).
-- `adapters_outbound` (`postgres`, `valkey`, `eventbus`, `workflow`, `realmprovisioner`, `catalogadmin`, `groupmappingclient`, `delegationcheck`, `tokenservice`) — no `userprofile` component any more, and no delegation/tender-ACL adapters. `eventbus/publisher.go` used to import `postgres` directly (for `pgadapter.TxFromContext`) — a cross-adapter dependency `adapters_outbound`'s own `mayDependOn` list forbids. Fixed by moving `WithTx`/`TxFromContext` (and the underlying context key) into `internal/core/port/tx_runner.go`; `postgres.WithTx`/`postgres.TxFromContext` remain as thin re-export wrappers for existing test call sites. This fix has needed reapplying once already — it lives only in the working tree (never committed), and got silently reverted when unrelated external commits landed mid-session and reintroduced the direct `postgres` import. `go-arch-lint check --project-path .` currently reports **zero violations**; re-verify this specific import before assuming it still holds after the next rebase.
-- `httptransport` (`internal/adapter/outbound/httpx`) — a shared, otelhttp-instrumented `http.Client` factory (`httpx.NewClient(timeout)`), replacing every outbound client's former manual `http.Client` construction + per-package `propagateTraceparent` helper. **Adopted**: verified by direct grep, all six outbound clients (`workflow`, `realmprovisioner`, `catalogadmin`, `groupmappingclient`, `delegationcheck`, `tokenservice`) build their client via `httpx.NewClient(timeout)`; zero leftover manual `traceparent`/`propagateTraceparent` code anywhere in that package set — `otelhttp.NewTransport` handles injection + client-span emission. Declared in `.go-arch-lint.yml` as its own component (`anyVendorDeps: true`) so `adapters_outbound` may depend on it.
+- `adapters_outbound` (`postgres`, `valkey`, `eventbus`, `workflow`, `realmprovisioner`, `catalogadmin`, `groupmappingclient`, `delegationcheck`, `tokenservice`) — no `userprofile` component any more, and no delegation/tender-ACL adapters. `eventbus/publisher.go` used to import `postgres` directly (for `pgadapter.TxFromContext`) — a cross-adapter dependency `adapters_outbound`'s own `mayDependOn` list forbids. Fixed by moving `WithTx`/`TxFromContext` (and the underlying context key) into `internal/core/port/tx_runner.go`; `postgres.WithTx`/`postgres.TxFromContext` remain as thin re-export wrappers for existing test call sites. The fix is committed; only `eventbus/publisher_test.go` still imports `postgres` (tests are excluded from arch-lint).
+- `httptransport` (`internal/adapter/outbound/httpx`) — a shared, otelhttp-instrumented `http.Client` factory (`httpx.NewClient(timeout)`), replacing every outbound client's former manual `http.Client` construction + per-package `propagateTraceparent` helper. **Adopted**: verified by direct grep, all six outbound clients (`workflow`, `realmprovisioner`, `catalogadmin`, `groupmappingclient`, `delegationcheck`, `tokenservice`) build their client via `httpx.NewClient(timeout)`; zero leftover manual `traceparent`/`propagateTraceparent` code anywhere in that package set — `otelhttp.NewTransport` handles injection + client-span emission, and an inner round-tripper forwards the inbound `x-request-id` from `requestctx.RequestIDFromContext`. Declared in `.go-arch-lint.yml` as its own component (`anyVendorDeps: true`, may depend on `requestctx` only) so `adapters_outbound` may depend on it.
+- `inbound_pipeline` (`internal/adapter/inbound/sqspipeline`) — wraps `adapters_inbound`'s consumers; may depend on `adapters_inbound`/`port`/`domain`/`observability` (`inbound_schema.go` counts schema rejects). Its own component because arch-lint does not allow one package of a component to import another. The composition root adapts `eventbus.ValidatingCodec` (`ErrNoSchema` → valid) so it never imports an outbound adapter.
 - `reconciler_jobs` (`cmd/reconciler/jobs`) — one file per CronJob dispatched by `cmd/reconciler --job=<name>`; may depend on `domain`/`port`/`observability`/`requestctx`. Declared as its own component (not folded into `cmd`) so arch-lint can scope its dependency set independently of `cmd/server`'s.
 - `docs_swagger` (`docs/swagger`, the `make swag`-generated output blank-imported in `cmd/server/main.go`) is a pure `anyVendorDeps: true` leaf, declared solely so arch-lint doesn't flag that import.
-- `cmd` (`cmd/server`, `cmd/reconciler`) is the composition root; may import everything else, including `httptransport`, `reconciler_jobs`, and the generated `docs_swagger` assets
+- `cmd` (`cmd/server`, `cmd/reconciler`, `cmd/migrate`) is the composition root; may import everything else (`domain`, `port`, `service`, `requestctx`, `eventschema`, `observability`, `adapters_inbound`, `inbound_pipeline`, `adapters_outbound`, `httptransport`, `reconciler_jobs`, `docs_swagger`) — not `apispec`, which only `adapters_inbound` serves

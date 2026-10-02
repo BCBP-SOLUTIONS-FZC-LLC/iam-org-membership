@@ -12,9 +12,10 @@ package jobs
 
 import (
 	"context"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 )
 
 // Metrics is the minimal recorder seam reconciler jobs need for counters
@@ -24,7 +25,16 @@ import (
 // don't wire it keep working.
 type Metrics interface {
 	IncRealmSyncFailed(stage string)
+	IncSeatOverageStarted()
 }
+
+// OutboxPruner is the slice of platform-events' *outbox.Runner OutboxPrune
+// uses: one bounded batch delete per call.
+type OutboxPruner interface {
+	PrunePublished(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
+}
+
+var _ OutboxPruner = (*outbox.Runner)(nil)
 
 // Context is the dependency bag every reconciler function accepts.
 // Populated by cmd/reconciler/main.go from env + Postgres/AWS clients.
@@ -35,7 +45,9 @@ type Context struct {
 	Tenants          port.TenantRepository       // SEAT-5 occupancy lock + overage_since (app pool)
 	Invitations      port.InvitationRepository   // invitation-expiry / kc-cleanup (sysPool)
 	Reconciler       port.ReconcilerStore        // cross-tenant sweeps (sysPool)
-	OutboxRunner     *outbox.Runner              // platform-events prune (OutboxPrune)
+	OutboxRunner     OutboxPruner                // platform-events outbox.Runner (OutboxPrune)
+	Inbox            port.InboxPruner            // platform-events inbox prune (ProcessedEventsPrune)
+	InboxConsumers   []string                    // consumer names recorded in processed_events
 	RealmProvisioner port.RealmProvisionerClient // PI-9 DeleteUser, T-15 PatchRealmConfig
 	// Logger is the shared gincommon-backed Logger, wrapped for slog-style
 	// call sites (Warn/Info(msg, "key", val, ...)) — every job file calls it
@@ -61,3 +73,9 @@ type Result struct {
 
 // Func is the signature every job satisfies.
 type Func func(ctx context.Context, jctx *Context) (Result, error)
+
+// CronJob-originated events carry these envelope sentinels (§16 A69) in
+// place of a caller's IP address and user agent.
+const cronIPAddress = "system"
+
+func cronUserAgent(job string) string { return "iam-org-membership/" + job + "-cron" }

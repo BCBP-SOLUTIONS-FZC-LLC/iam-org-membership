@@ -1,0 +1,77 @@
+{{- /*
+Schema migration Job — runs cmd/migrate once per release, before the new
+replicas start (Helm pre-install / pre-upgrade hook). The Deployment then
+runs with RUN_MIGRATIONS=false, so its 2–8 replicas never contend for the
+migration advisory lock at startup, and a failed migration fails the
+release instead of crash-looping pods. Disable with migrations.job.enabled
+=false to fall back to migrate-at-startup.
+*/ -}}
+{{- if .Values.migrations.job.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}-migrate
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      # Deliberately NOT the chart's selectorLabels: the Service, PDB and
+      # NetworkPolicy select on those, and must never pick up this pod.
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/migrate"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: APP_ENV
+              value: {{ .Values.env.APP_ENV | default "prod" | quote }}
+            - name: MIGRATE_TIMEOUT
+              value: {{ .Values.migrations.job.timeout | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.env.LOG_LEVEL | default "info" | quote }}
+            - name: LOG_SAMPLING
+              value: {{ .Values.env.LOG_SAMPLING | default "false" | quote }}
+            {{- $secretName := default (printf "%s-secrets" (include "iam-org-membership.fullname" .)) .Values.existingSecret }}
+            - name: MIGRATION_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: MIGRATION_DATABASE_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

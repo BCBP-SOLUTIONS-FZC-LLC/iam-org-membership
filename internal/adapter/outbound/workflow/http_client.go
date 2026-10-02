@@ -99,15 +99,15 @@ func (c *HTTPClient) GetDelegateImpact(ctx context.Context, tenantID, userID uui
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, "get_delegate_impact", time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, "get_delegate_impact", time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, "get_delegate_impact", metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, "get_delegate_impact", metrics.DependencyErrorReason(err))
 		c.warn("workflow: GetDelegateImpact transport error", "user_id", userID, "error", err.Error())
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
-		metrics.IncDependencyError(xsvcService, "get_delegate_impact", "5xx")
+		metrics.IncDependencyError(xsvcService, "get_delegate_impact", metrics.HTTPStatusReason(resp.StatusCode))
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("workflow: GetDelegateImpact returned %d: %s", resp.StatusCode, string(msg))
 	}
@@ -171,9 +171,9 @@ func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, endpo
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
-	metrics.ObserveDependencyLatency(xsvcService, endpoint, time.Since(start).Seconds())
+	metrics.ObserveDependencyCall(xsvcService, endpoint, time.Since(start).Seconds(), resp, err)
 	if err != nil {
-		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyOutcome(err))
+		metrics.IncDependencyError(xsvcService, endpoint, metrics.DependencyErrorReason(err))
 		c.warn("workflow: transport error", "path", path, "error", err.Error())
 		return err
 	}
@@ -181,7 +181,7 @@ func (c *HTTPClient) postInternal(ctx context.Context, tenantID uuid.UUID, endpo
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	metrics.IncDependencyError(xsvcService, endpoint, "5xx")
+	metrics.IncDependencyError(xsvcService, endpoint, metrics.HTTPStatusReason(resp.StatusCode))
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("workflow: %s returned %d: %s", path, resp.StatusCode, string(msg))
 }

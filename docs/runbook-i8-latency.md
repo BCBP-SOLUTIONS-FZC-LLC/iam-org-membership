@@ -5,7 +5,7 @@
 
 ## Symptoms
 - `iam:i8_latency_hit_sli:ratio_rate_5m` below 0.90
-- `http_request_duration_seconds` P99 for `handler="I-8"` above budget
+- `platform_http_request_duration_seconds` P99 for `route="/api/v1/internal/users/:id/memberships"` (I-8) above budget
 - AuthZ Enrichment reporting elevated latency on its org-membership calls
 
 ## Immediate Actions

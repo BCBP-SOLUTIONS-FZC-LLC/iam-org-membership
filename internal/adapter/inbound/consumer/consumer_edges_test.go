@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +43,7 @@ func TestGdprWipeCacheKeys_ReturnsBoundedTenantScopedKeys(t *testing.T) {
 // EVT-15: env.Timestamp > now() + skew → ErrPoisonPill (returns BEFORE
 // touching the pool, so a nil pool is fine).
 func TestP19Consumer_EVT15_FutureTimestamp_ReturnsPoisonPill(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, nil, nil, 5*time.Minute, nil)
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
 		Type:      "TenantSuspended",
@@ -58,7 +58,7 @@ func TestP19Consumer_EVT15_FutureTimestamp_ReturnsPoisonPill(t *testing.T) {
 // classify() step happens first — use a known event type so classify picks
 // kindTenantLifecycle and we then hit the uuid.Parse call.
 func TestP19Consumer_Handle_BadTenantID_ReturnsParseError(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 5*time.Minute, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, nil, nil, 5*time.Minute, nil)
 	env := events.Envelope[json.RawMessage]{
 		ID:        uuid.New().String(),
 		Type:      "TenantSuspended", // known → kindTenantLifecycle

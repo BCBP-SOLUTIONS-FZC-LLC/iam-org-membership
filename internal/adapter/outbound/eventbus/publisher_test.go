@@ -2,12 +2,15 @@ package eventbus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -204,3 +207,49 @@ func (l *glueTestLogger) Warn(string, map[string]any)  {}
 func (l *glueTestLogger) Error(string, map[string]any) {}
 
 var _ port.Logger = (*glueTestLogger)(nil)
+
+func TestOrderingKey_TenantAndSubject(t *testing.T) {
+	assert.Equal(t, "t-1/u-1", orderingKey(events.Envelope[json.RawMessage]{TenantID: "t-1", Subject: "u-1"}))
+	assert.Empty(t, orderingKey(events.Envelope[json.RawMessage]{TenantID: "t-1"}), "no subject: unordered")
+}
+
+// An event with a subject takes the per-key advisory lock before its
+// ordered INSERT, so two transactions for one key cannot interleave; an
+// event without one is enqueued unordered and takes no lock.
+func TestPublisher_Enqueue_LocksOrderingKeyBeforeInsert(t *testing.T) {
+	var sqls []string
+	var lockArg any
+	tx := &fakeTx{execFn: func(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+		sqls = append(sqls, sql)
+		if strings.Contains(sql, "pg_advisory_xact_lock") {
+			lockArg = args[0]
+		}
+		return pgconn.CommandTag{}, nil
+	}}
+	tenantID := uuid.New()
+	p := New("iam-org-membership", NoopCodec{})
+	require.NoError(t, p.Enqueue(pgadapter.WithTx(context.Background(), tx), &domain.DomainEvent{
+		Type: "TenantRoleGranted", TenantID: tenantID, Subject: "user-1", Data: map[string]any{"a": 1},
+	}))
+	require.Len(t, sqls, 2)
+	assert.Contains(t, sqls[0], "pg_advisory_xact_lock")
+	assert.Equal(t, "outbox-order:"+tenantID.String()+"/user-1", lockArg)
+	assert.Contains(t, sqls[1], "outbox_events")
+
+	sqls = nil
+	require.NoError(t, p.Enqueue(pgadapter.WithTx(context.Background(), tx), &domain.DomainEvent{
+		Type: "TenantCreated", TenantID: tenantID, Data: map[string]any{"a": 1},
+	}))
+	require.Len(t, sqls, 1)
+	assert.NotContains(t, sqls[0], "pg_advisory_xact_lock")
+}
+
+func TestPublisher_Enqueue_LockErrorAbortsEnqueue(t *testing.T) {
+	tx := &fakeTx{execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
+		return pgconn.CommandTag{}, errors.New("lock timeout")
+	}}
+	err := New("iam-org-membership", NoopCodec{}).Enqueue(pgadapter.WithTx(context.Background(), tx), &domain.DomainEvent{
+		Type: "TenantRoleGranted", TenantID: uuid.New(), Subject: "u", Data: map[string]any{"a": 1},
+	})
+	require.ErrorContains(t, err, "lock ordering key")
+}
