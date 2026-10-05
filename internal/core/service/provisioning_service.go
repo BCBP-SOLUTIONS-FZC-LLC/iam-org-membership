@@ -316,10 +316,13 @@ func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID,
 	// stale membership status after a KC lifecycle event (e.g. suspended user
 	// still appearing active to AuthZ Enrichment).
 	if s.cache != nil {
-		_ = s.cache.Delete(gucCtx,
+		if err := s.cache.Delete(gucCtx,
 			cacheKeyMemberships(tenantID, userID),
 			cacheKeyMembers(tenantID, 50),
-		)
+		); err != nil {
+			s.log.WarnContext(gucCtx, "SetMembershipStatus: cache eviction failed — I-8 may serve stale status until TTL expiry",
+				"tenant_id", tenantID, "user_id", userID, "error", err)
+		}
 	}
 	return mem, nil
 }

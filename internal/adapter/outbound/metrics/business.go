@@ -225,6 +225,12 @@ var (
 	// result, found|not_found (§11.2).
 	PublicTenantResolve *prometheus.CounterVec
 
+	// CatalogCacheInvalidated counts DepartmentCatalogChanged events that
+	// successfully cleared om:departments + om:departments:stale via the
+	// catalog-orgm-q consumer (Gap-12 fix). Provides a Prometheus signal for
+	// the cache-propagation path that otherwise has only log visibility.
+	CatalogCacheInvalidated prometheus.Counter
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -402,6 +408,14 @@ func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
 
 // IncSeatOverageStarted satisfies jobs.Metrics.
 func (Recorder) IncSeatOverageStarted() { IncSeatOverageStarted(SeatOverageCauseReconciler) }
+
+// IncCatalogCacheInvalidated records one successful om:departments cache
+// clear by the catalog-orgm-q consumer. Nil-safe.
+func IncCatalogCacheInvalidated() {
+	if CatalogCacheInvalidated != nil {
+		CatalogCacheInvalidated.Inc()
+	}
+}
 
 // ObserveLifecycleEventLag records the seconds between event.time and the
 // moment this consumer applied the projection — the SLO-3 primary drift
@@ -618,6 +632,9 @@ func registerServiceMetrics() {
 		"iam_org_membership_public_tenant_resolve_total",
 		"PUB-1 pre-login tenant/realm resolution lookups served, by result.",
 		"result"))
+	CatalogCacheInvalidated = must(gincommon.NewCounter(nil,
+		"iam_org_membership_catalog_cache_invalidated_total",
+		"DepartmentCatalogChanged events that successfully cleared the om:departments cache (Gap-12 fix). Currently inert — increments only once iam-catalog-admin publishes this event type."))
 
 	TenantOwnerless = must(gincommon.NewGauge(nil,
 		"iam_org_membership_tenant_ownerless",

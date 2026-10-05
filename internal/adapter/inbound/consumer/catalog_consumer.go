@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	events "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
@@ -88,6 +89,7 @@ func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.R
 		c.log.WarnContext(ctx, "catalog consumer: failed to clear om:departments cache — will self-heal on TTL expiry",
 			"event_id", env.ID, "error", err)
 	} else {
+		metrics.IncCatalogCacheInvalidated()
 		c.log.InfoContext(ctx, "catalog consumer: cleared om:departments + om:departments:stale caches",
 			"event_id", env.ID)
 	}
