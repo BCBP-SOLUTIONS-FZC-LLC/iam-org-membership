@@ -23,7 +23,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	events "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	events "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 const (
@@ -42,22 +42,26 @@ const (
 
 // CatalogConsumer handles catalog-orgm-q messages from iam-catalog-admin.
 type CatalogConsumer struct {
-	cache       port.Cache
-	idempotency port.IdempotencyStore
-	txRunner    port.TxRunner
-	log         port.SlogStyleLogger
+	cache port.Cache
+	inbox port.Inbox
+	log   port.SlogStyleLogger
 }
 
-// NewCatalogConsumer builds a CatalogConsumer. idempotency and txRunner are
-// retained for ackUnknown (unknown event types are recorded in processed_events);
+// ProcessedEventsConsumers returns every consumer name this service records
+// in processed_events, for the processed-events-prune job.
+func ProcessedEventsConsumers() []string {
+	return []string{consumerName, catalogConsumerName}
+}
+
+// NewCatalogConsumer builds a CatalogConsumer. inbox is used only by
+// ackUnknown (unknown event types are recorded in processed_events);
 // DepartmentCatalogChanged itself does not dedup — clearing the cache twice
 // is always safe and the DB round-trip is unnecessary for a cache-invalidation signal.
-func NewCatalogConsumer(cache port.Cache, idempotency port.IdempotencyStore, txRunner port.TxRunner, log port.Logger) *CatalogConsumer {
+func NewCatalogConsumer(cache port.Cache, inbox port.Inbox, log port.Logger) *CatalogConsumer {
 	return &CatalogConsumer{
-		cache:       cache,
-		idempotency: idempotency,
-		txRunner:    txRunner,
-		log:         port.NewSlogStyleLogger(log),
+		cache: cache,
+		inbox: inbox,
+		log:   port.NewSlogStyleLogger(log),
 	}
 }
 
@@ -69,7 +73,7 @@ func NewCatalogConsumer(cache port.Cache, idempotency port.IdempotencyStore, txR
 //  3. Clear om:departments + om:departments:stale from Valkey (best-effort).
 func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	if env.Type != eventDepartmentCatalogChanged {
-		return ackUnknown(ctx, c.txRunner, c.idempotency, c.log, catalogConsumerName, env)
+		return ackUnknown(ctx, c.inbox, c.log, catalogConsumerName, env)
 	}
 
 	eventID, err := uuid.Parse(env.ID)

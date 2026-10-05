@@ -240,3 +240,35 @@ func TestReconcileRoles(t *testing.T) {
 	assert.Equal(t, []string{"tender_admin"}, got,
 		"P13-FLOW-007: tenant_roles must contain exactly the reconciled set")
 }
+
+// ── PUB-1 (LLD §5.4/§8.11, IAM HLD §8.2.7) ──────────────────────────────────
+
+// TestPublicTenantResolve_RoundTrip provisions a tenant through the real
+// I-1 flow (§8.1), then resolves it by slug the way the pre-login screen
+// does: a bare request with no headers at all.
+func TestPublicTenantResolve_RoundTrip(t *testing.T) {
+	e := newE2EEnv(t)
+	tenantID := uuid.New()
+	code, _, body := e.do(t, reqOpts{
+		method:  http.MethodPost,
+		path:    "/api/v1/internal/tenants",
+		headers: systemHeaders(tenantID),
+		body: map[string]any{
+			"tenant_id": tenantID.String(), "slug": "pub1-roundtrip", "name": "PUB-1 Round Trip",
+			"plan": "starter", "owner_user_id": uuid.New().String(),
+		},
+	})
+	require.Equal(t, http.StatusCreated, code, string(body))
+
+	code, _, body = e.do(t, reqOpts{method: http.MethodGet, path: "/api/v1/public/tenants/resolve?identifier=pub1-roundtrip"})
+	require.Equal(t, http.StatusOK, code, string(body))
+	var got map[string]any
+	unmarshalBody(t, body, &got)
+	assert.Equal(t, map[string]any{
+		"found": true, "realm": "trial", "strategy": "shared", "tenant_id": tenantID.String(),
+	}, got, "a freshly provisioned tenant is trial-shaped (§8.1): shared realm, tenant_id hint (PUBRES-4)")
+
+	code, _, body = e.do(t, reqOpts{method: http.MethodGet, path: "/api/v1/public/tenants/resolve?identifier=no-such-workspace"})
+	require.Equal(t, http.StatusOK, code)
+	assert.JSONEq(t, `{"found":false}`, string(body))
+}

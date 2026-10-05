@@ -50,8 +50,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 )
 
@@ -63,45 +63,42 @@ const consumerName = "iam-org-membership"
 // is NOT recorded, and the message must go to the DLQ rather than be
 // retried. platform-events treats every handler error as retryable, so the
 // immediate DLQ move is done by the composition root's handler wrapper
-// (cmd/server/dlq.go routePoisonPillsToDLQ), not by the SQS runner itself.
+// (cmd/server/dlq.go routeRejectsToDLQ), not by the SQS runner itself.
 var ErrPoisonPill = errors.New("event rejected as poison pill (EVT-15 future-time clamp)")
 
 type MembershipEventConsumer struct {
-	txRunner    port.TxRunner
-	tenants     port.TenantRepository
-	idempotency port.IdempotencyStore
-	catalog     port.PlanCatalogReader
-	cache       port.Cache
-	skew        time.Duration
-	logger      port.SlogStyleLogger
+	inbox   port.Inbox
+	tenants port.TenantRepository
+	catalog port.PlanCatalogReader
+	cache   port.Cache
+	skew    time.Duration
+	logger  port.SlogStyleLogger
 }
 
 // NewMembershipEventConsumer builds a MembershipEventConsumer. logger may be
 // nil — see MembershipService's constructor doc comment for the fallback/
-// production-wiring contract, which applies identically here. idempotency
-// may be nil only in tests that never reach a live dedup check/write (e.g.
-// constructor-validation tests); production wiring always supplies a real
-// port.IdempotencyStore (postgres.IdempotencyRepository). catalog may be nil
+// production-wiring contract, which applies identically here. inbox may be
+// nil only in tests that never reach the dedup claim (e.g. constructor-
+// validation tests); production wiring always supplies a real port.Inbox
+// (postgres.InboxRepository, platform-events' inbox.Store). catalog may be nil
 // only in tests that never exercise a TrialReactivated event — it resolves
 // the reactivated plan's trial_duration_days from the Catalog Service
 // (Plans moved out of this service's own database under ADR-0007). cache may
 // be nil — the TenantOffboarded GDPR wipe's cache-invalidation step (§15.5)
 // is best-effort and skipped entirely when cache is nil, consistent with
 // CACHE-2/9 (advisory-only, never a correctness dependency).
-func NewMembershipEventConsumer(txRunner port.TxRunner, tenants port.TenantRepository, idempotency port.IdempotencyStore, catalog port.PlanCatalogReader, cache port.Cache, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
+func NewMembershipEventConsumer(inbox port.Inbox, tenants port.TenantRepository, catalog port.PlanCatalogReader, cache port.Cache, skew time.Duration, logger port.Logger) *MembershipEventConsumer {
 	if skew <= 0 {
 		skew = 300 * time.Second
 	}
-	return &MembershipEventConsumer{txRunner: txRunner, tenants: tenants, idempotency: idempotency, catalog: catalog, cache: cache, skew: skew, logger: port.NewSlogStyleLogger(logger)}
+	return &MembershipEventConsumer{inbox: inbox, tenants: tenants, catalog: catalog, cache: cache, skew: skew, logger: port.NewSlogStyleLogger(logger)}
 }
 
 // Handle is the entry point for platform-events SQS consumer.
 func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	// ── EVT-15 future-time clamp ─────────────────────────────────────────
 	if !env.Timestamp.IsZero() && env.Timestamp.After(time.Now().UTC().Add(c.skew)) {
-		if metrics.DLQMessages != nil {
-			metrics.DLQMessages.WithLabelValues(env.Type, "future_time_clamp").Inc()
-		}
+		metrics.IncConsumedEventRejected(env.Type, "future_time_clamp")
 		c.logger.Warn("EVT-15 future-time clamp — DLQ",
 			"event_id", env.ID, "event_type", env.Type, "event_time", env.Timestamp)
 		return ErrPoisonPill
@@ -109,21 +106,12 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 
 	kind := classify(env.Type)
 	if kind == kindUnknown {
-		return ackUnknown(ctx, c.txRunner, c.idempotency, c.logger, consumerName, env)
+		return ackUnknown(ctx, c.inbox, c.logger, consumerName, env)
 	}
 
 	tenantID, err := uuid.Parse(env.TenantID)
 	if err != nil {
 		return fmt.Errorf("parse tenant_id from envelope: %w", err)
-	}
-
-	// Cheap dedup probe outside the tx to save a lock acquisition on replay.
-	seen, err := skipDuplicate(ctx, c.idempotency, env.ID)
-	if err != nil {
-		return err
-	}
-	if seen {
-		return nil
 	}
 
 	// Set the RLS GUC to the target tenant so RLS lets us see + update the
@@ -163,7 +151,10 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	var gdprWipeRan bool
-	txErr := c.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+	// One transaction: the processed_events claim (first, so a concurrent
+	// duplicate waits on it and is then skipped), the EVT-14 row lock, the
+	// projection and the relay events (port.Inbox).
+	txErr := processOnce(gucCtx, c.inbox, consumerName, env, func(txCtx context.Context) error {
 		locked, err := c.tenants.LockForProjection(txCtx, tenantID)
 		if err != nil {
 			return err
@@ -171,7 +162,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		if locked == nil {
 			// Tenant absent (already offboarded / never provisioned) —
 			// record dedup and drop silently.
-			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
+			return nil
 		}
 
 		// ── EVT-14 recency guard ─────────────────────────────────────────
@@ -180,7 +171,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 				metrics.LifecycleEventSkipped.WithLabelValues(env.Type).Inc()
 			}
 			c.logger.Info("EVT-14 stale — projection unchanged", "event_id", env.ID, "event_type", env.Type)
-			return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
+			return nil
 		}
 
 		prevStatus := locked.Status
@@ -274,7 +265,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			}
 		}
 
-		return c.idempotency.MarkProcessed(txCtx, consumerName, env.ID)
+		return nil
 	})
 	if txErr != nil {
 		return txErr

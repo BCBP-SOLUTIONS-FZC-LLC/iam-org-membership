@@ -31,8 +31,9 @@ import sys
 from pathlib import Path
 
 ROOTS = ["internal", "cmd", "pkg"]
-ALLOWED_DIR = "internal/adapter/outbound/eventbus"
-SQL_RE = re.compile(r'\b(from|into|update)\s+outbox_events\b', re.IGNORECASE)
+# No exemptions: the eventbus adapter writes through outbox.Enqueue /
+# EnqueueOrdered like everything else, and the library owns both tables.
+SQL_RE = re.compile(r'\b(from|into|update|join|truncate)\s+(public\.)?outbox_(events|dead_letters)\b', re.IGNORECASE)
 BACKTICK_RE = re.compile(r'`([^`]*)`', re.DOTALL)
 
 violations = []
@@ -40,8 +41,6 @@ for root in ROOTS:
     for path in Path(root).rglob("*.go"):
         posix = path.as_posix()
         if posix.endswith("_test.go"):
-            continue
-        if posix.startswith(ALLOWED_DIR):
             continue
         text = path.read_text(encoding="utf-8")
         for m in BACKTICK_RE.finditer(text):
@@ -52,9 +51,9 @@ for root in ROOTS:
 
 if violations:
     for v in violations:
-        print(f"::error file={v}::hand-rolled SQL against outbox_events outside {ALLOWED_DIR} — use platform-events (outbox.Enqueue / outbox.Runner.PrunePublished), not a local INSERT/UPDATE/DELETE/SELECT")
+        print(f"::error file={v}::hand-rolled SQL against platform-events' outbox tables (outbox_events / outbox_dead_letters) — use the library (outbox.Enqueue / EnqueueOrdered / Runner.PrunePublished / ReprocessDeadLetters), not a local INSERT/UPDATE/DELETE/SELECT")
     print(f"\n{len(violations)} violation(s). See .github/scripts/check-outbox-access.sh for rationale.")
     sys.exit(1)
 
-print("  ✔  no hand-rolled SQL against outbox_events outside platform-events")
+print("  ✔  no hand-rolled SQL against outbox_events / outbox_dead_letters outside platform-events")
 PYEOF

@@ -6,7 +6,9 @@ sequenceDiagram
     participant PGB as PgBouncer (tx pooling)
     participant DB as PostgreSQL (RLS)
 
-    Note over MW,GUC: On every protected request — runs after ContextMiddleware<br/>gincommon.DefaultMiddlewares chain: ... → RequireAuth → ContextMiddleware → GUCBridge
+    Note over MW,DB: PUB-1 (GET /api/v1/public/tenants/resolve) never enters this flow: it is registered outside the protected group,<br/>so GUCBridgeMiddleware never runs and no app.tenant_id is bound. Its one query runs on the BYPASSRLS sysPool —<br/>on this RLS-scoped pool it would fail closed and return no rows (see public-tenant-resolve-flow.mmd).
+
+    Note over MW,GUC: On every protected request — runs after ContextMiddleware<br/>gincommon.ProtectedMiddlewares chain: ... → RequireAuth → ContextMiddleware → GUCBridge
 
     MW ->>+ RC: requestctx.FromContext(ctx)
     RC -->>- MW: {UserID, TenantID, Roles, ClientIP, UserAgent}
@@ -14,9 +16,9 @@ sequenceDiagram
     MW ->>+ GUC: pgcommon.GUCSetFromContext(ctx)
     GUC -->>- MW: zero-value GUCSet
 
-    MW ->> GUC: g.TenantID = rc.TenantID.String()
+    MW ->> GUC: g.UserID, g.TenantID, g.TenantRoles = bridged identity
     MW ->> GUC: pgcommon.WithGUCSet(ctx, g)
-    Note over MW: GUCSet stored in context — available to every downstream RunInTx call.<br/>O&M binds only app.tenant_id (no app.user_id or app.roles GUC — RLS policies key on tenant_id only).
+    Note over MW: GUCSet stored in context — available to every downstream RunInTx call.<br/>pgcommon binds app.user_id, app.tenant_id and app.tenant_roles — the RLS policies key on app.tenant_id only.
 
     Note over Pool,DB: On every pool checkout — pgcommon.NewPool configured with GUCProvider = GUCSetFromContext<br/>Binding happens BEFORE the app query, inside the SAME transaction (RLS-6).
 
@@ -24,7 +26,7 @@ sequenceDiagram
     PGB -->>- Pool: pooled connection (may be shared with prior tenants)
 
     Pool ->>+ DB: BEGIN
-    Pool ->>+ DB: SELECT set_config(app.tenant_id, {tenantID}, true)
+    Pool ->>+ DB: SELECT set_config(app.user_id, …, true), set_config(app.tenant_id, {tenantID}, true),<br/>set_config(app.tenant_roles, …, true)
     Note over DB: is_local => true ⇒ SET LOCAL semantics.<br/>Value scoped to THIS transaction only.<br/>Never a session-scoped SET — would persist on pooled PgBouncer<br/>backend and leak across tenants (canonical RLS-6 hazard).
 
     Pool ->>+ DB: SELECT / UPDATE / INSERT (application query)
@@ -40,4 +42,4 @@ sequenceDiagram
 
     Note over DB,PGB: Canonical RLS Case 5 test (test/postgres/rls_test.go — MaxConns=1):<br/>tenant A tx → commit → return conn → tenant B tx on SAME backend →<br/>assert B sees 0 of A's rows. Even a mis-written non-transactional read must fail closed —<br/>never inherit A's stale session GUC. CI additionally greps for non-LOCAL SET app.tenant_id as forbidden pattern.
 
-    Note over MW,DB: Threat model summary:<br/>Layer 1 — Keycloak realm boundary.<br/>Layer 2 — RLS + app.tenant_id GUC (this diagram, RLS-1..RLS-6, T-1..T-15).<br/>Layer 3 — rls_violation_log + CloudWatch alarms for defence-in-depth telemetry.
+    Note over MW,DB: Threat model summary:<br/>Layer 1 — Keycloak realm boundary.<br/>Layer 2 — RLS + app.tenant_id GUC (this diagram, RLS-1..RLS-6, T-1..T-16).<br/>Layer 3 — rls_violation_log + CloudWatch alarms for defence-in-depth telemetry.

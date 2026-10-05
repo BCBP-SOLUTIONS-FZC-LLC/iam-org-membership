@@ -9,7 +9,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,18 +34,18 @@ func (r *recordingTenants) ApplyLifecyclePatch(ctx context.Context, id uuid.UUID
 // ── NewMembershipEventConsumer — default fields ────────────────────────
 
 func TestNewMembershipEventConsumer_NilLoggerAndZeroSkewGetDefaults(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 0, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, nil, nil, 0, nil)
 	require.NotNil(t, c)
 	assert.Equal(t, 300*time.Second, c.skew, "zero skew defaults to 300s")
 }
 
 func TestNewMembershipEventConsumer_NegativeSkewAlsoGetsDefault(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, -5*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, nil, nil, -5*time.Second, nil)
 	assert.Equal(t, 300*time.Second, c.skew, "negative skew defaults to 300s")
 }
 
 func TestNewMembershipEventConsumer_PositiveSkewPreserved(t *testing.T) {
-	c := NewMembershipEventConsumer(nil, nil, nil, nil, nil, 42*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), nil, nil, nil, 42*time.Second, nil)
 	assert.Equal(t, 42*time.Second, c.skew)
 }
 
@@ -66,7 +66,7 @@ func applyOn(c *MembershipEventConsumer, env events.Envelope[json.RawMessage], p
 
 func newConsumer() (*MembershipEventConsumer, *recordingTenants) {
 	tenants := &recordingTenants{}
-	return NewMembershipEventConsumer(nil, tenants, nil, nil, nil, 300*time.Second, nil), tenants
+	return NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil), tenants
 }
 
 func lastPatch(t *testing.T, tenants *recordingTenants) port.TenantLifecyclePatch {
@@ -176,7 +176,7 @@ func TestApplyProjection_TrialReactivated_ZeroRowsAffectedIsNoop(t *testing.T) {
 			return 0, nil
 		},
 	}
-	c := NewMembershipEventConsumer(nil, tenants, nil, nil, nil, 300*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil)
 	st, pl, err := applyOn(c,
 		mkEnv("TrialReactivated", struct{}{}),
 		domain.StatusTrialExpired, domain.TenantPlan("starter"))
@@ -201,7 +201,7 @@ func TestApplyProjection_TrialReactivated_ExecErrorPropagates(t *testing.T) {
 			return 0, execErr
 		},
 	}
-	c := NewMembershipEventConsumer(nil, tenants, nil, nil, nil, 300*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil)
 	_, _, err := applyOn(c,
 		mkEnv("TrialReactivated", struct{}{}),
 		domain.StatusTrialExpired, domain.TenantPlan("starter"))
@@ -343,7 +343,7 @@ func TestApplyProjection_TenantReactivated_NeverConvertedTrial_ReturnsToTrial(t 
 			return 1, nil
 		},
 	}
-	c := NewMembershipEventConsumer(nil, tenants, nil, nil, nil, 300*time.Second, nil)
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil)
 	st, _, err := applyOn(c,
 		mkEnv("TenantReactivated", struct{}{}),
 		domain.StatusSuspended, domain.TenantPlan("starter"))

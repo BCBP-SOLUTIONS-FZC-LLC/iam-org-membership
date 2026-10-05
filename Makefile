@@ -42,6 +42,7 @@ ALL_TEST_TAGS := integration,e2e
 # White-box (package-internal) tests included in unit runs.
 TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/inbound/consumer/... \
+                      ./internal/adapter/inbound/sqspipeline/... \
                       ./internal/adapter/outbound/eventbus/... \
                       ./internal/adapter/outbound/postgres/... \
                       ./internal/adapter/outbound/workflow/... \
@@ -123,7 +124,7 @@ help:
 	@echo "  make test-smoke      - CI-only image gate: size <=200MB + startup-gate check (requires a local docker image tagged iam-org-membership-ci-test)"
 	@echo "  make race            - all tests with -race flag"
 	@echo "  make run             - run the server locally (go run)"
-	@echo "  make build           - compile both binaries to bin/"
+	@echo "  make build           - compile server, reconciler and migrate to bin/"
 	@echo "  make cover           - coverage HTML report"
 	@echo "  make cover-func      - coverage summary by function"
 	@echo "  make ci              - tidy + fmt-check + vet + lint + arch-lint + test-ci + build"
@@ -191,6 +192,18 @@ lint:
 	@echo "Running linter..."
 	$(GO) tool golangci-lint run ./...
 	$(GO) tool golangci-lint run --build-tags=$(ALL_TEST_TAGS) ./...
+
+# metrics-lint: platform-gincommon's metricslint over a real /metrics scrape
+# and the alert/dashboard/runbook references (same script CI runs).
+.PHONY: metrics-lint
+metrics-lint:
+	bash .github/scripts/metricslint.sh
+
+# metrics-inventory: regenerate docs/observability/metric-registry.md from the
+# pinned registry and a real scrape (metrics-lint fails when it is stale).
+.PHONY: metrics-inventory
+metrics-inventory:
+	METRICS_INVENTORY_WRITE=1 bash .github/scripts/metricslint.sh
 
 # arch-lint: enforce .go-arch-lint.yml component boundaries — the same script
 # CI's validate-test.yml runs (matches iam-delegation / iam-realm-provisioner).
@@ -314,6 +327,7 @@ build:
 	@mkdir -p bin
 	$(GO) build -ldflags "-X main.buildVersion=$(BUILD_VERSION)" -o bin/$(APP_NAME) ./cmd/server
 	$(GO) build -ldflags "-X main.buildVersion=$(BUILD_VERSION)" -o bin/reconciler ./cmd/reconciler
+	$(GO) build -o bin/migrate ./cmd/migrate
 	@echo "Verifying library packages compile..."
 	$(GO) build ./internal/... ./pkg/...
 

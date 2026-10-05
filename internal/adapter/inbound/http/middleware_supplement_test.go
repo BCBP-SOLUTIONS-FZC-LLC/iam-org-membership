@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
@@ -22,13 +22,12 @@ import (
 )
 
 // isDBUnavailableSQLState reports whether a raw SQLSTATE code indicates a
-// DB-unavailable condition. Wraps the three helpers used by HandleError
-// (IsConnectionException for class 08, IsInsufficientResources for class 53,
-// isOperatorOrSystemErrorSQLState for classes 57/58) so that existing tests
-// that call isDBUnavailableSQLState(code) continue to work after the rename.
+// DB-unavailable condition, using the same pgcommon helpers HandleError
+// uses (classes 08, 53, 57 except 57014, and 58).
 func isDBUnavailableSQLState(code string) bool {
 	err := &pgconn.PgError{Code: code}
-	return pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) || isOperatorOrSystemErrorSQLState(err)
+	return pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) ||
+		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err)
 }
 
 // newBufferedWriter creates a bufferedWriter backed by a gin.CreateTestContext
@@ -54,8 +53,12 @@ func TestBufferedWriter_Written_FalseWhenEmpty(t *testing.T) {
 // true once WriteHeader has been called (status != 0).
 func TestBufferedWriter_Written_TrueAfterWriteHeader(t *testing.T) {
 	bw := newBufferedWriter(t)
+	bw.WriteHeader(http.StatusUnauthorized)
+	assert.True(t, bw.Written(), "a buffered 401 counts as written")
+
+	bw = newBufferedWriter(t)
 	bw.WriteHeader(http.StatusOK)
-	assert.True(t, bw.Written(), "Written must be true after WriteHeader")
+	assert.Equal(t, bw.ResponseWriter.Written(), bw.Written(), "a non-401 status is the real writer's")
 }
 
 // TestBufferedWriter_Written_TrueAfterWrite verifies Written() returns true
@@ -77,7 +80,11 @@ func TestBufferedWriter_WriteString_DelegatesToWrite(t *testing.T) {
 	n, err := bw.WriteString("test string")
 	require.NoError(t, err)
 	assert.Equal(t, 11, n, "WriteString must return len of the string")
-	assert.Equal(t, "test string", bw.buf.String(), "WriteString must write to the buffer")
+	assert.Zero(t, bw.buf.Len(), "a body with no 401 status goes straight to the real writer")
+	bw = newBufferedWriter(t)
+	bw.WriteHeader(http.StatusUnauthorized)
+	_, _ = bw.WriteString("test string")
+	assert.Equal(t, "test string", bw.buf.String(), "a 401 body is buffered for rewriting")
 }
 
 // ── bufferedWriter.Write sets status to 200 if not set ───────────────────

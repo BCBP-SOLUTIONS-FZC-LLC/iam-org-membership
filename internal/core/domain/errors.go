@@ -90,6 +90,10 @@ var (
 	ErrCacheUnavailable            = errors.New("cache_unavailable")
 	ErrWorkflowServiceUnavailable  = errors.New("workflow_service_unavailable")
 	ErrRealmProvisionerUnavailable = errors.New("realm_provisioner_unavailable")
+	// ErrRequestTimeout: the request's deadline expired (or the caller went
+	// away) while a database operation, including a deadlock/serialization
+	// retry wait, was still in progress. Retryable by the client (503).
+	ErrRequestTimeout = errors.New("request_timeout")
 	// ErrCatalogUnavailable is returned by service.CatalogService when both
 	// the om:plans/om:departments primary cache AND the stale-if-error
 	// fallback are empty and the live call to catalog-admin-config also

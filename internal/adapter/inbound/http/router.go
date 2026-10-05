@@ -34,7 +34,7 @@ type Pinger interface {
 }
 
 // DocsConfig controls whether — and how — the interactive docs surface
-// (Swagger UI, AsyncAPI catalog) is exposed. Outside production it's
+// (Swagger UI, AsyncAPI catalog) is exposed. Outside production (APP_ENV=prod) it's
 // always on; in production it's opt-in via Enabled and, if AuthToken is
 // set, gated behind a bearer token so the API surface isn't exposed to
 // the open internet by default. Mirrors group-mapping-jit-config's
@@ -46,7 +46,7 @@ type DocsConfig struct {
 }
 
 func (d DocsConfig) active() bool {
-	return d.Environment != "production" || d.Enabled
+	return d.Environment != "prod" || d.Enabled
 }
 
 // RouterConfig bundles every dependency NewRouter needs: the already-built
@@ -68,6 +68,9 @@ type RouterConfig struct {
 	InvitationHandler     *InvitationHandler
 	OperatorHandler       *OperatorHandler
 	InternalHandler       *InternalHandler
+	// PublicHandler serves /api/v1/public/* (PUB-1). Optional: left nil,
+	// no public route is registered.
+	PublicHandler *PublicHandler
 
 	Postgres Pinger
 	// SysPostgres is optional — the BYPASSRLS *pgcommon.Pool used by
@@ -88,6 +91,10 @@ type RouterConfig struct {
 	// URLs are unset in a dev environment).
 	Consumers []Pinger
 }
+
+// defaultRequestTimeout is the per-request deadline when RouterConfig's
+// GinConfig leaves RequestTimeout unset.
+const defaultRequestTimeout = 30 * time.Second
 
 // Router owns the Gin engine for this service.
 type Router struct {
@@ -116,16 +123,23 @@ func NewRouter(cfg RouterConfig) *Router {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 		c.Next()
 	})
-	// 30 s hard deadline on every request.
-	r.Use(gincommon.TimeoutMiddleware(30 * time.Second))
-	// Panic recovery, request-ID, tracing, correlation, metrics, logging.
-	r.Use(gincommon.ObservabilityMiddlewares(cfg.GinConfig)...)
+	// Panic recovery, request-ID, tracing, correlation, metrics, logging —
+	// and, innermost, the request deadline (GinConfig.RequestTimeout,
+	// defaulted to defaultRequestTimeout). Inside observability, a timeout is
+	// recorded as the 503 the client gets; registered outside it (the old
+	// r.Use(TimeoutMiddleware) first), metrics and logs recorded 200.
+	ginCfg := cfg.GinConfig
+	if ginCfg.RequestTimeout <= 0 {
+		ginCfg.RequestTimeout = defaultRequestTimeout
+	}
+	r.Use(gincommon.ObservabilityMiddlewares(ginCfg)...)
 	// G-13: normalize platform-gincommon 401 responses to include code field.
 	r.Use(NormalizeAuthErrors())
 
 	registerInfraRoutes(r, cfg)
 	registerDocsRoutes(r, cfg)
 	registerAPIRoutes(r, cfg)
+	registerPublicRoutes(r, cfg)
 
 	RegisterValidators()
 
@@ -273,7 +287,7 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 	}
 
 	var authMiddleware gin.HandlerFunc = func(c *gin.Context) { c.Next() }
-	if cfg.Docs.Environment == "production" {
+	if cfg.Docs.Environment == "prod" {
 		if cfg.Docs.AuthToken != "" {
 			// Constant-time compare (crypto/subtle) rather than != — a plain
 			// string compare short-circuits on the first differing byte, a
@@ -283,10 +297,9 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 			authMiddleware = func(c *gin.Context) {
 				got := []byte(c.GetHeader("Authorization"))
 				if len(got) != len(want) || subtle.ConstantTimeCompare(got, want) != 1 {
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-						"code":    "unauthorized",
-						"message": "docs require Authorization: Bearer <DOCS_AUTH_TOKEN>",
-					})
+					er := newErrorResponse(c, "unauthorized", "docs require Authorization: Bearer <DOCS_AUTH_TOKEN>", nil)
+					er.Status = http.StatusUnauthorized
+					c.AbortWithStatusJSON(http.StatusUnauthorized, er)
 					return
 				}
 				c.Next()
@@ -312,6 +325,24 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 }
 
 // ── Business API routes ──────────────────────────────────────────────────
+
+// ── Public, unauthenticated routes (/api/v1/public/*, PUB-1) ─────────────
+//
+// Registered directly on the engine, NOT under registerAPIRoutes' protected
+// /api/v1 group: that group's gincommon.ProtectedMiddlewares 401s on a
+// missing x-tenant-id/x-user-id, and PUB-1 serves an anonymous pre-login
+// browser that has neither (PUBRES-1). These routes still get the
+// engine-level stack (body cap, timeout, request-id/tracing/metrics/logging)
+// but never GUCBridgeMiddleware, RequireAuth or any role gate. With no
+// app.tenant_id GUC bound, the handler's repository runs on the BYPASSRLS
+// sysPool (see port.TenantRepository.ResolveByIdentifier).
+func registerPublicRoutes(r *gin.Engine, cfg RouterConfig) {
+	if cfg.PublicHandler == nil {
+		return
+	}
+	pub := r.Group("/api/v1/public")
+	pub.GET("/tenants/resolve", cfg.PublicHandler.ResolveTenant) // PUB-1
+}
 
 func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	tenantH := cfg.TenantHandler

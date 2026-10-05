@@ -255,7 +255,7 @@ func (s *GroupMappingService) resolveMappings(ctx context.Context, tenantID uuid
 	res, err := s.groupMappingClient.ResolveGroups(ctx, tenantID, groupNames)
 	if err != nil {
 		if dm, dr, tr, ok := s.getCachedResolution(ctx, tenantID, true); ok {
-			metrics.IncDependencyError("group_mapping", "group-resolution", "fallback_served")
+			metrics.IncDependencyError("group_mapping", "group-resolution", metrics.DependencyReasonFallbackServed)
 			s.log.WarnContext(ctx, "groupmapping: ResolveGroups live call failed — serving stale-if-error fallback",
 				"tenant_id", tenantID, "error", err.Error())
 			return dm, dr, tr

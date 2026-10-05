@@ -26,7 +26,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,7 +89,7 @@ func TestConsumerEVT15_FutureTimeClamp(t *testing.T) {
 	tenantA := seedTenant(t, ctx, rawPool, "evt15-clamp")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	future := time.Now().UTC().Add(10 * time.Minute) // > 5min skew
 	env := mkEnvelope(t, "TrialExpired", tenantA, future, map[string]string{})
@@ -123,7 +123,7 @@ func TestConsumerEVT15_WithinSkewApplied(t *testing.T) {
 	tenantA := seedTenant(t, ctx, rawPool, "evt15-boundary")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	// 4m59s in the future — inside the 5-min skew window.
 	ts := time.Now().UTC().Add(5*time.Minute - time.Second)
@@ -154,7 +154,7 @@ func TestConsumerEVT14_FirstEventApplied(t *testing.T) {
 	require.Nil(t, pre, "precondition: last_event_at must start NULL")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-1 * time.Minute)
 	env := mkEnvelope(t, "TrialExpired", tenantA, ts, map[string]string{})
@@ -196,7 +196,7 @@ func TestConsumerEVT14_StaleEventSkipped(t *testing.T) {
 	require.NoError(t, err)
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	// Stale event: timestamp BEFORE last_event_at.
 	staleTS := high.Add(-1 * time.Minute)
@@ -243,7 +243,7 @@ func TestConsumerEVT14_EqualTimeSkipped(t *testing.T) {
 	require.NoError(t, err)
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	env := mkEnvelope(t, "TrialExpired", tenantA, high, map[string]string{})
 	require.NoError(t, c.Handle(ctx, env))
@@ -265,7 +265,7 @@ func TestConsumerEVT16_StatusChangeEnqueuesRelay(t *testing.T) {
 	tenantA := seedTenant(t, ctx, rawPool, "evt16-status")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-10 * time.Second)
 	env := mkEnvelope(t, "TrialExpired", tenantA, ts, map[string]string{})
@@ -291,7 +291,7 @@ func TestConsumerEVT16_NoRelayOnNoStateChange(t *testing.T) {
 	tenantA := seedTenant(t, ctx, rawPool, "evt16-noop")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-10 * time.Second)
 	env := mkEnvelope(t, "TenantSeatsChanged", tenantA, ts, map[string]int{"licensed_seats": 50})
@@ -313,7 +313,7 @@ func TestConsumerEVT16_PlanChangeEnqueuesRelay(t *testing.T) {
 	tenantA := seedTenant(t, ctx, rawPool, "evt16-plan")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-5 * time.Second)
 	env := mkEnvelope(t, "TenantPlanChanged", tenantA, ts, map[string]string{"plan": "enterprise"})
@@ -342,7 +342,7 @@ func TestConsumerIdempotency(t *testing.T) {
 	tenantA := seedTenant(t, ctx, rawPool, "idemp-dup")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-10 * time.Second)
 	env := mkEnvelope(t, "TrialExpired", tenantA, ts, map[string]string{})
@@ -369,7 +369,7 @@ func TestConsumerUnknownEventSilentAck(t *testing.T) {
 	tenantA := seedTenant(t, ctx, rawPool, "unknown-ack")
 
 	outbox := &captureOutbox{}
-	c := consumer.NewMembershipEventConsumer(pgadapter.NewTxRunner(appPool, outbox), pgadapter.NewTenantRepository(appPool), pgadapter.NewIdempotencyRepository(appPool), nil, nil, 5*time.Minute, nil)
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	ts := time.Now().UTC().Add(-1 * time.Second)
 	env := mkEnvelope(t, "FutureEventTypeThatWeShouldHandleSomeday", tenantA, ts, map[string]any{"anything": "goes"})

@@ -102,7 +102,7 @@ func TestIsServiceAccount_Non2xx_ClientError_Errors(t *testing.T) {
 }
 
 func TestIsServiceAccount_Non2xx_ServerError_Errors(t *testing.T) {
-	// 5xx also triggers the IncDependencyError("5xx") metrics path + returns error.
+	// 5xx also triggers the IncDependencyError(http_5xx) metrics path + returns error.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"code":"internal_error"}`))

@@ -97,7 +97,7 @@ erDiagram
         timestamptz updated_at
     }
     processed_events {
-        text event_id PK "envelope id, SQS dedup"
+        uuid event_id PK "envelope id (UUID, platform-events inbox shape), SQS dedup"
         text consumer PK "iam-org-membership or catalog — two independent dedup buckets"
         timestamptz processed_at
     }

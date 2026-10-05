@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 )
 
 // Publisher implements port.EventPublisher. It JSON-marshals the event
@@ -29,8 +30,14 @@ type Publisher struct {
 	log    port.Logger
 }
 
-// New creates a Publisher with the given source label (e.g.
-// "iam-org-membership") and Codec. The Codec is used for JSON schema
+// EventSource is the envelope Source every event this service produces
+// carries, from either binary. platform-events requires one stable Source
+// per service, and it is also sent as the SNS Source attribute that
+// downstream subscription filter policies match on.
+const EventSource = "iam-org-membership"
+
+// New creates a Publisher with the given source label (EventSource) and
+// Codec. The Codec is used for JSON schema
 // validation only; it must wrap a NoopCodec (not a Glue codec) so that
 // outbox_events always stores plain JSON.
 func New(source string, codec Codec) *Publisher {
@@ -89,11 +96,47 @@ func (p *Publisher) Enqueue(ctx context.Context, event *domain.DomainEvent) erro
 	if !ok {
 		return errors.New("event enqueue requires an open RunInTx transaction")
 	}
-	if err := outbox.Enqueue(ctx, tx, env); err != nil {
+	if err := enqueue(ctx, tx, env); err != nil {
 		if p.log != nil {
 			p.log.Error("outbox.Enqueue failed", map[string]any{"type": event.Type, "error": err.Error(), "envelope": string(envBytes)})
 		}
 		return err
 	}
 	return nil
+}
+
+// orderingKey is the outbox ordering key for env: its tenant and subject
+// (the user for membership events, the tenant for tenant events). The outbox
+// publishes records of one key one at a time, in enqueue order, so the SNS
+// publish order of one user's events matches their commit order. Delivery
+// is NOT ordered end to end: the topics and queues are standard (not FIFO)
+// and consumers run concurrently, so consumers still need their own recency
+// guards (EVT-14). "" (no subject) leaves the event unordered.
+func orderingKey(env events.Envelope[json.RawMessage]) string {
+	if env.Subject == "" {
+		return ""
+	}
+	return env.TenantID + "/" + env.Subject
+}
+
+// orderingLockSQL takes a transaction-scoped advisory lock on the ordering
+// key. EnqueueOrdered requires that two transactions enqueuing for one key
+// never interleave their inserts; not every write path locks a row that
+// identifies the key (I-13 writes nothing, and the user-keyed paths lock
+// different rows), so the lock is taken here, on every path, by
+// construction. It is held until commit or rollback. Two transactions
+// locking the same two keys in opposite order deadlock; Postgres detects it
+// and TxRunner retries 40P01.
+const orderingLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+
+// enqueue writes env to the outbox, ordered by orderingKey when it has one.
+func enqueue(ctx context.Context, tx pgx.Tx, env events.Envelope[json.RawMessage]) error {
+	key := orderingKey(env)
+	if key == "" {
+		return outbox.Enqueue(ctx, tx, env)
+	}
+	if _, err := tx.Exec(ctx, orderingLockSQL, "outbox-order:"+key); err != nil {
+		return fmt.Errorf("lock ordering key: %w", err)
+	}
+	return outbox.EnqueueOrdered(ctx, tx, env, key)
 }

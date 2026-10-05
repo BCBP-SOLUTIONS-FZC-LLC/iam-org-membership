@@ -1,81 +1,59 @@
 sequenceDiagram
-    participant RP as Realm Provisioner
-    participant SNS_T as SNS (iam.tenant.events)
-    participant SQS_T as SQS (tenant-orgm-q)
-    participant EC as MembershipEventConsumer
+    participant Caller as Signup BFF / Realm Provisioner
+    participant H as InternalHandler.ProvisionTenant (I-1)
     participant TSVC as ProvisioningService.TrialSignup
-    participant Catalog as Catalog Service
-    participant TX as pgcommon.RunInTx
+    participant Catalog as CatalogService (read-through to Catalog Service)
+    participant TX as TxRunner.RunInTx
     participant DB as PostgreSQL (org_membership)
     participant OB as outbox_events
     participant Router as RoutingPublisher
-    participant SNS_M as SNS (iam.membership.events / iam.tenant.events)
+    participant SNS_T as SNS iam.tenant.events
+    participant SNS_M as SNS iam.membership.events
+    participant EC as MembershipEventConsumer (tenant-orgm-q)
 
-    Note over RP,SNS_T: Trial signup path (§8.1) — RP creates realm + owner in Keycloak,<br/>then emits TrialTenantProvisioned on iam.tenant.events
+    Note over Caller,H: Trial signup path (§8.1) — the caller has created the realm + owner in Keycloak,<br/>then calls I-1 over the internal mesh (iam-system role). Every tenant is created trial-shaped.
 
-    RP ->>+ SNS_T: Publish TrialTenantProvisioned<br/>{tenant_id, slug, plan, owner_user_id, trial_ends_at, ...}
-    SNS_T ->>+ SQS_T: fan-out (subscription filter matches tenant-orgm-q)
-    SQS_T -->>- EC: message
-
-    EC ->>+ EC: Check processed_events(event_id, consumer=iam-org-membership) → dedup (EVT-4/IDEMP-2)
-    Note over EC: EVT-15 clamp: event.time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS (300)<br/>→ NACK to DLQ, platform_dlq_messages_total++<br/>NOT recorded in processed_events (any nonzero pages)
-
-    EC ->>+ TSVC: TrialSignup(ctx, envelope)
+    Caller ->>+ H: POST /api/v1/internal/tenants {tenant_id, slug, name, plan, owner_user_id, default_locale}
+    Note over H: required fields + plan whitelist (422 invalid_plan)
+    H ->>+ TSVC: TrialSignup(ctx, TrialSignupInput)
+    Note over TSVC: slug / name / locale validation (GAP-I1-*)
 
     TSVC ->>+ Catalog: PlanByCode(plan) — trial_duration_days
     Catalog -->>- TSVC: plan
-    TSVC ->>+ Catalog: Departments() — the 5-system-dept trial activation set
+    TSVC ->>+ Catalog: Departments() — filter to the 5 system depts (is_active)
     Catalog -->>- TSVC: departments
-    Note over TSVC,Catalog: Both calls happen BEFORE the tx opens — an HTTP call has no<br/>business running while a Postgres tx is open (mesh call, ≤30ms p99,<br/>but still a failure mode that didn't exist when this was a local repo.List call)
+    Note over TSVC,Catalog: Both calls happen BEFORE the tx opens — an HTTP call has no<br/>business running while a Postgres tx is open. Catalog is NOT fail-open:<br/>cold cache + Catalog down → 503 catalog_unavailable, nothing written.
 
-    TSVC ->>+ TX: RunInTx(ctx, func(txCtx))
-
-    TX ->>+ DB: BEGIN (SET LOCAL app.tenant_id = tenant_id, RLS-6)<br/>SELECT ... FOR UPDATE on tenants row (EVT-14 recency check)
-    DB -->> TX: last_event_at
-    Note over TX,DB: EVT-14 recency guard (§16 A33 last-writer-wins):<br/>event.time <= last_event_at → skip state change, still record processed_events<br/>(iam_lifecycle_event_skipped_total{event_type}++) — return early
+    TSVC ->>+ TX: RunInTx(gucCtx) — GUC bound to the new tenant + iam-system (RLS-5)
 
     TX ->>+ DB: (1) INSERT tenants (id, slug, plan, status=trial, trial_ends_at, ...)<br/>ON CONFLICT (id) DO NOTHING
-    Note over DB: Idempotent — safe on redelivery — ON CONFLICT DO NOTHING per §9.2
-    DB -->>- TX: inserted (or existed)
+    DB -->>- TX: inserted, or existed
+    alt tenant already existed (idempotent replay)
+        Note over TX,DB: no re-seed, no events — short-circuit, handler answers 200
+    else fresh insert
+        TX ->>+ DB: (2) tenant_departments — activate Engineering · Design · Procurement · Finance · Legal
+        DB -->>- TX: 5 rows
+        TX ->>+ DB: (3) dept_role_labels.Seed — preparator · reviewer · approver
+        DB -->>- TX: 3 rows
+        TX ->>+ DB: (4) INSERT tenant_memberships (owner, status=active)
+        DB -->>- TX: 1 row
+        TX ->>+ DB: (5) INSERT tenant_roles (owner, role_code=tenant_owner,<br/>granted_by = owner_user_id) — I1-3, TM-8, TR-8
+        DB -->>- TX: 1 row
+        TX ->>+ OB: (6a) Enqueue TenantCreated {tenant_id, slug, plan, status} — key {tenant_id}/{tenant_id}
+        OB -->>- TX: inserted
+        TX ->>+ OB: (6b) Enqueue TrialStarted {tenant_id, plan, trial_ends_at} — key {tenant_id}/{tenant_id}
+        OB -->>- TX: inserted
+        TX ->>+ OB: (6c) Enqueue TenantRoleGranted {owner grant} — key {tenant_id}/{owner_user_id}
+        OB -->>- TX: inserted
+    end
+    TX ->> DB: COMMIT — all steps atomic (FAIL-1)
+    TX -->>- TSVC: ok
 
-    TX ->>+ DB: (2) INSERT tenant_departments — activate 5 system depts over global catalog<br/>Engineering · Design · Procurement · Finance · Legal (§8.1)
-    DB -->>- TX: 5 rows
+    TSVC -->>- H: tenant, wasCreated
+    H -->>- Caller: 201 (created) / 200 (replay)
 
-    TX ->>+ DB: (3) INSERT dept_role_labels — 3 default labels<br/>preparator · reviewer · approver
-    DB -->>- TX: 3 rows
+    Note over Router,SNS_M: Outbox runner publishes, RoutingPublisher routes by domain.TopicForEvent(type)
+    Router ->> SNS_T: TenantCreated, TrialStarted (Core's only two produced events on this topic, §7.3)
+    Router ->> SNS_M: TenantRoleGranted
 
-    TX ->>+ DB: (4) INSERT tenant_memberships (owner, status=active)
-    DB -->>- TX: 1 row
-
-    TX ->>+ DB: (5) INSERT tenant_roles (owner, tenant_membership_id, role_code=tenant_owner,<br/>granted_by = owner_user_id)  — I1-3, TM-8, TR-8
-    DB -->>- TX: 1 row
-
-    TX ->>+ OB: (6a) outbox.Enqueue(TenantCreated {tenant_id, slug, plan, status})<br/>source = iam.tenant.events
-    OB -->>- TX: inserted
-    TX ->>+ OB: (6b) outbox.Enqueue(TrialStarted {tenant_id, plan, trial_ends_at})<br/>source = iam.tenant.events
-    OB -->>- TX: inserted
-    TX ->>+ OB: (6c) outbox.Enqueue(TenantRoleGranted {owner grant}, §16 A14)<br/>source = iam.membership.events — granted_by = owner_user_id itself
-    OB -->>- TX: inserted
-
-    TX ->>+ DB: UPDATE tenants SET last_event_at = envelope.time (EVT-14 advance)
-    DB -->>- TX: updated
-
-    TX ->>+ DB: (7) COMMIT
-    DB -->>- TX: committed — all 7 steps atomic (FAIL-1)
-    deactivate TX
-
-    TSVC -->>- EC: ok
-
-    EC ->>+ DB: INSERT processed_events(event_id, consumer=iam-org-membership, processed_at)<br/>ON CONFLICT DO NOTHING (8-day retention, PE-1)
-    DB -->>- EC: recorded
-
-    EC ->>+ SQS_T: DeleteMessage (ACK)
-    SQS_T -->>- EC: deleted
-    deactivate EC
-
-    Note over Router,SNS_M: Outbox runner picks up all three events — RoutingPublisher routes by Source →<br/>TenantCreated/TrialStarted go to iam.tenant.events (O&M's only two produced events on that topic — §7.3)<br/>TenantRoleGranted goes to iam.membership.events
-    Router ->> SNS_M: Publish TenantCreated
-    Router ->> SNS_M: Publish TrialStarted
-    Router ->> SNS_M: Publish TenantRoleGranted
-
-    Note over EC,DB: No self-consumption — O&M's tenant-orgm-q subscription filter excludes<br/>TenantCreated / TrialStarted (HLD §9.1.1 disjoint produce/consume sets)
+    Note over EC: A TrialTenantProvisioned consumed later on tenant-orgm-q is an idempotent<br/>no-op reconcile (processed_events claim + EVT-14 guard, no state change) —<br/>never the creation trigger. Core does not consume its own TenantCreated/TrialStarted<br/>(tenant-orgm-q's filter excludes them, HLD §9.1.1 disjoint produce/consume sets).

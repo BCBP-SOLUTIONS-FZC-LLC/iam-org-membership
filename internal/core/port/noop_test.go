@@ -40,6 +40,10 @@ func TestTenantRepositoryNoop_AllMethods(t *testing.T) {
 	assert.Nil(t, v4)
 	assert.NoError(t, err)
 
+	res, err := n.ResolveByIdentifier(ctx, "acme")
+	assert.False(t, res.Found)
+	assert.NoError(t, err)
+
 	assert.NoError(t, n.LockByID(ctx, id))
 
 	seats, err := n.LicensedSeatsForUpdate(ctx, id)

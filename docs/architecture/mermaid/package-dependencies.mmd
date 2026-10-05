@@ -1,9 +1,12 @@
 graph LR
-    main(["cmd/server/main.go"])
-    reconciler(["cmd/reconciler/main.go\n--job=<name> dispatcher (7 CronJobs)"])
+    main(["cmd/server"])
+    reconciler(["cmd/reconciler\n--job=<name> dispatcher (7 CronJobs)"])
+    jobs(["cmd/reconciler/jobs\n(reconciler_jobs)"])
+    migrate(["cmd/migrate\n(Helm pre-install/pre-upgrade hook)"])
 
     http_h(["adapter/inbound/http"])
     consumer(["adapter/inbound/consumer"])
+    sqspipeline(["adapter/inbound/sqspipeline\n(inbound_pipeline)"])
 
     postgres(["adapter/outbound/postgres"])
     valkey(["adapter/outbound/valkey"])
@@ -13,27 +16,34 @@ graph LR
     catalogadmin(["adapter/outbound/catalogadmin"])
     groupmappingclient(["adapter/outbound/groupmappingclient"])
     delegationcheck(["adapter/outbound/delegationcheck"])
+    tokenservice(["adapter/outbound/tokenservice\n(AUTH-9/IB-3, fails OPEN)"])
+    httpx(["adapter/outbound/httpx\n(httptransport)"])
     metrics(["adapter/outbound/metrics\n(observability)"])
 
     tenant_svc(["core/service — TenantService"])
     dept_svc(["core/service — DepartmentService"])
     deptmem_svc(["core/service — DeptMembershipService\n(§8.8.4 dept-scope gating)"])
-    mem_svc(["core/service — MembershipService\n(§8.8 RemoveUser, §8.10 Invite/Accept, SEAT-1)"])
+    mem_svc(["core/service — MembershipService\n(§8.8 RemoveUser, SEAT-1, P-34)"])
     rolelabel_svc(["core/service — RoleLabelService"])
-    invitation_svc(["core/service — InvitationService"])
-    provisioning_svc(["core/service — ProvisioningService\n(§8.1 trial signup)"])
+    invitation_svc(["core/service — InvitationService\n(§8.10 Invite/Accept)"])
+    provisioning_svc(["core/service — ProvisioningService\n(§8.1 trial signup, I-1)"])
     operator_svc(["core/service — OperatorService (O-4/O-7)"])
     authz_svc(["core/service — AuthZService (I-8)"])
     catalog_svc(["core/service — CatalogService\n(client-side read-through, not table owner)"])
     gm_svc(["core/service — GroupMappingService\n(client-side resolve, not table owner)"])
+    lapse_svc(["core/service — SubscriptionLapseService (I-16)"])
+    resolve_svc(["core/service — TenantResolutionService (PUB-1)"])
 
     port(["core/port"])
     domain(["core/domain"])
-    eventschema(["adapter/outbound/eventbus/schemas\n(embedded JSON Schema, CLOSED — additionalProperties:false)"])
+    eventschema(["adapter/outbound/eventbus/schemas\n(embedded JSON Schema)"])
+    apispec(["api\n(embedded asyncapi.yaml)"])
+    docs_swagger(["docs/swagger\n(make swag output)"])
     requestctx(["pkg/requestctx"])
 
     main        --> http_h
     main        --> consumer
+    main        --> sqspipeline
     main        --> postgres
     main        --> valkey
     main        --> eventbus
@@ -42,7 +52,11 @@ graph LR
     main        --> catalogadmin
     main        --> groupmappingclient
     main        --> delegationcheck
+    main        --> tokenservice
     main        --> metrics
+    main        --> docs_swagger
+    main        --> port
+    main        --> domain
     main        --> tenant_svc
     main        --> dept_svc
     main        --> deptmem_svc
@@ -54,6 +68,20 @@ graph LR
     main        --> authz_svc
     main        --> catalog_svc
     main        --> gm_svc
+    main        --> lapse_svc
+    main        --> resolve_svc
+
+    reconciler  --> jobs
+    reconciler  --> consumer
+    reconciler  --> postgres
+    reconciler  --> eventbus
+    reconciler  --> realmprovisioner
+    reconciler  --> metrics
+    reconciler  --> port
+    jobs        --> port
+    jobs        --> domain
+
+    migrate     --> postgres
 
     http_h      --> tenant_svc
     http_h      --> dept_svc
@@ -61,20 +89,25 @@ graph LR
     http_h      --> mem_svc
     http_h      --> rolelabel_svc
     http_h      --> invitation_svc
+    http_h      --> provisioning_svc
     http_h      --> operator_svc
     http_h      --> authz_svc
+    http_h      --> gm_svc
+    http_h      --> lapse_svc
+    http_h      --> resolve_svc
     http_h      --> port
     http_h      --> domain
     http_h      --> requestctx
     http_h      --> metrics
+    http_h      --> apispec
 
-    consumer    --> provisioning_svc
+    sqspipeline --> consumer
+    sqspipeline --> port
+    sqspipeline --> metrics
+
     consumer    --> port
-
-    reconciler  --> postgres
-    reconciler  --> eventbus
-    reconciler  --> realmprovisioner
-    reconciler  --> metrics
+    consumer    --> domain
+    consumer    --> metrics
 
     tenant_svc  --> port
     tenant_svc  --> domain
@@ -83,33 +116,61 @@ graph LR
     dept_svc    --> domain
     deptmem_svc --> port
     deptmem_svc --> domain
+    deptmem_svc --> requestctx
+    deptmem_svc --> metrics
     mem_svc     --> port
     mem_svc     --> domain
     mem_svc     --> requestctx
+    mem_svc     --> metrics
     rolelabel_svc --> port
     rolelabel_svc --> domain
     invitation_svc --> port
     invitation_svc --> domain
+    invitation_svc --> metrics
     provisioning_svc --> port
     provisioning_svc --> domain
+    provisioning_svc --> metrics
     operator_svc --> port
     operator_svc --> domain
     authz_svc   --> port
     authz_svc   --> domain
     catalog_svc --> port
     catalog_svc --> domain
+    catalog_svc --> metrics
     gm_svc      --> port
     gm_svc      --> domain
+    gm_svc      --> metrics
+    lapse_svc   --> port
+    lapse_svc   --> domain
+    resolve_svc --> port
+    resolve_svc --> domain
 
     postgres    --> port
     postgres    --> domain
     valkey      --> port
     eventbus    --> port
-    eventbus    --> eventschema
+    eventbus    --> domain
+    eventbus    -.->|"//go:embed"| eventschema
     workflow    --> port
     realmprovisioner --> port
     catalogadmin --> port
+    catalogadmin --> domain
     groupmappingclient --> port
+    groupmappingclient --> domain
     delegationcheck --> port
+    tokenservice --> port
+    workflow    --> httpx
+    realmprovisioner --> httpx
+    catalogadmin --> httpx
+    groupmappingclient --> httpx
+    delegationcheck --> httpx
+    tokenservice --> httpx
+    workflow    --> metrics
+    realmprovisioner --> metrics
+    catalogadmin --> metrics
+    groupmappingclient --> metrics
+    delegationcheck --> metrics
+    tokenservice --> metrics
+    httpx       --> requestctx
 
     port        --> domain

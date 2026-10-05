@@ -36,6 +36,18 @@ const (
 	RealmDedicated RealmType = "dedicated"
 )
 
+// TenantResolution is PUB-1's result (LLD §5.4, IAM HLD §8.2.7): which
+// Keycloak realm an anonymous, pre-login browser should authenticate
+// against. Found=false carries no other field (PUBRES-2). TenantID is set
+// only for a shared-realm (trial) tenant, whose realm name alone can't
+// identify it (PUBRES-4); a dedicated-realm tenant's realm name is enough.
+type TenantResolution struct {
+	Found     bool
+	Realm     string
+	RealmType RealmType
+	TenantID  *uuid.UUID
+}
+
 // SuspensionSource mirrors the suspension_source enum (T-16, new — resolves
 // RP-11). Non-empty iff Status == StatusSuspended.
 type SuspensionSource string

@@ -15,12 +15,14 @@ import (
 // outbox_prune.go), never hand-rolled SQL. A prior PruneOutbox method here
 // duplicated that logic; removed 2026-09-20 once confirmed it had zero
 // production callers (the migration to PrunePublished predates this).
+// processed_events pruning is not here either: it is platform-events'
+// inbox.Store.Prune (port.InboxPruner, cmd/reconciler/jobs/
+// processed_events_prune.go).
 type ReconcilerStore interface {
 	ListSeatOverageCandidates(ctx context.Context, limit int) ([]uuid.UUID, error)
 	ListRealmSyncPending(ctx context.Context, limit int) ([]RealmSyncCandidate, error)
 	ClearRealmSyncPending(ctx context.Context, tenantID uuid.UUID) error
 	HardDeleteExpiredTrials(ctx context.Context, graceDays, limit int) (int, error)
-	PruneProcessedEvents(ctx context.Context, ttlDays, limit int) (int, error)
 }
 
 // RealmSyncCandidate is one tenants row waiting for T-15 realm-config push.

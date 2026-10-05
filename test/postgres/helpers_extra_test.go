@@ -28,7 +28,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -70,6 +70,10 @@ type testFixtures struct {
 	Department        *service.DepartmentService
 	RoleLabel         *service.RoleLabelService
 	SubscriptionLapse *service.SubscriptionLapseService
+	// SysTenants is the BYPASSRLS-bound tenant repo (sysPool), the only
+	// instance that may serve I-16 and PUB-1; TenantResolution wraps it.
+	SysTenants       port.TenantRepository
+	TenantResolution *service.TenantResolutionService
 
 	// Overridable stubs — tests can reach in and swap behaviour (e.g.
 	// fx.RP.PatchRealmConfigFailNext = true to simulate an RP outage).
@@ -211,6 +215,8 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	fx.Department = service.NewDepartmentService(catalogDepts, tenantDepts, nil)
 	fx.RoleLabel = service.NewRoleLabelService(labels, nil)
 	fx.SubscriptionLapse = service.NewSubscriptionLapseService(sysTenants, 30) // SUBSCRIPTION_GRACE_DAYS default
+	fx.SysTenants = sysTenants
+	fx.TenantResolution = service.NewTenantResolutionService(sysTenants) // PUB-1
 
 	return fx
 }

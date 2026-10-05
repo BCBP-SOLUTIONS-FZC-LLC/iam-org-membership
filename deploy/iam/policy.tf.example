@@ -29,6 +29,14 @@ resource "aws_iam_role" "iam_org_membership" {
   assume_role_policy = data.aws_iam_policy_document.iam_org_membership_trust.json
 }
 
+data "aws_sqs_queue" "catalog_orgm" {
+  name = "catalog-orgm-q"
+}
+
+data "aws_sqs_queue" "catalog_orgm_dlq" {
+  name = "catalog-orgm-q-dlq"
+}
+
 # 2. Permission policy — templated from deploy/iam/policy.json.
 #
 # Two SNS topics + two SQS queues (+ DLQs) + two Glue registries — this
@@ -46,6 +54,10 @@ resource "aws_iam_policy" "iam_org_membership" {
     tenant_orgm_queue_dlq_arn   = aws_sqs_queue.tenant_orgm_dlq.arn
     billing_orgm_queue_arn      = aws_sqs_queue.billing_orgm.arn
     billing_orgm_queue_dlq_arn  = aws_sqs_queue.billing_orgm_dlq.arn
+    # catalog-orgm-q is provisioned by iam-catalog-admin's messaging
+    # Terraform; looked up here so the consumer and its DLQ forwarding work.
+    catalog_orgm_queue_arn      = data.aws_sqs_queue.catalog_orgm.arn
+    catalog_orgm_queue_dlq_arn  = data.aws_sqs_queue.catalog_orgm_dlq.arn
 
     # Two Glue Schema Registries — one per outbound topic (LLD §7.3.1).
     membership_registry_arn        = aws_glue_registry.iam_membership_events.arn

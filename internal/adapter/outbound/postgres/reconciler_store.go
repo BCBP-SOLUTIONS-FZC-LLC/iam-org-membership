@@ -4,14 +4,14 @@ import (
 	"context"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 // ReconcilerStore implements port.ReconcilerStore against the BYPASSRLS
 // sysPool. Cross-tenant sweeps (seat-overage candidates, realm-sync,
-// trial hard-delete, outbox / processed_events prune) live here so
+// trial hard-delete) live here so
 // cmd/reconciler/jobs never issues SQL.
 type ReconcilerStore struct {
 	pool *pgcommon.Pool
@@ -93,25 +93,6 @@ func (s *ReconcilerStore) HardDeleteExpiredTrials(ctx context.Context, graceDays
 				  AND deleted_at IS NULL
 				LIMIT $2
 			)`, graceDays, limit)
-		if err != nil {
-			return err
-		}
-		n = int(tag.RowsAffected())
-		return nil
-	})
-	return n, err
-}
-
-func (s *ReconcilerStore) PruneProcessedEvents(ctx context.Context, ttlDays, limit int) (int, error) {
-	var n int
-	err := withPool(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			DELETE FROM processed_events
-			WHERE (event_id, consumer) IN (
-				SELECT event_id, consumer FROM processed_events
-				WHERE processed_at < now() - make_interval(days => $1)
-				LIMIT $2
-			)`, ttlDays, limit)
 		if err != nil {
 			return err
 		}

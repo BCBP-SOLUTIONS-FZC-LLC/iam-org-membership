@@ -71,7 +71,7 @@ func runBusinessExporters(ctx context.Context, gauges *pgadapter.GaugeRepository
 		}
 		for vType, n := range counts {
 			if n > 0 {
-				metrics.RLSViolations.WithLabelValues(vType).Add(float64(n))
+				metrics.AddRLSViolations(vType, float64(n))
 			}
 		}
 		return nil

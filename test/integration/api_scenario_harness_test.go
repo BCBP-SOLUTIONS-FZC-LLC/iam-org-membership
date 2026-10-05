@@ -29,10 +29,10 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/outbox"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
-	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/migrate"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
 // ── Fixed department IDs — match the mockserver so seeded dept IDs are stable ──
@@ -375,10 +375,11 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		provisioningSvc, authzSvc, membershipSvc, invitationSvc, gmSvc, tenantSvc, subscriptionLapseSvc,
 	)
 
-	_ = sysPool // available for future system-level ops in tests
+	// PUB-1: bound to sysPool (BYPASSRLS), exactly as cmd/server/main.go does.
+	publicH := httpadapter.NewPublicHandler(service.NewTenantResolutionService(pgadapter.NewTenantRepository(sysPool)))
 
 	router := httpadapter.NewRouter(httpadapter.RouterConfig{
-		GinConfig:             gincommon.Config{ServiceName: "iam-org-membership-test", BuildVersion: "test"},
+		GinConfig:             gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership", BuildVersion: "test"},
 		TenantRepo:            tenantRepo,
 		MembershipRepo:        membershipRepo,
 		TenantHandler:         tenantH,
@@ -389,6 +390,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 		InvitationHandler:     inviteH,
 		OperatorHandler:       operatorH,
 		InternalHandler:       internalH,
+		PublicHandler:         publicH,
 	})
 
 	srv := httptest.NewServer(router.Handler())

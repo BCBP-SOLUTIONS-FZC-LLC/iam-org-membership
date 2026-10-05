@@ -1,10 +1,12 @@
 //go:build integration
 
-// Package postgres_test — contract tests for I-8 and I-15 (TEST-7).
+// Package postgres_test — contract tests for I-8, I-15 and PUB-1 (TEST-7).
 //
 // These tests pin the exact JSON response shape of:
-//   - I-8  GET /api/v1/internal/users/:id/memberships
-//   - I-15 GET /api/v1/internal/tenants/:id/members/:user_id/exists
+//   - I-8   GET /api/v1/internal/users/:id/memberships
+//   - I-15  GET /api/v1/internal/tenants/:id/members/:user_id/exists
+//   - PUB-1 GET /api/v1/public/tenants/resolve (plus PUBRES-2's
+//     anti-enumeration shape/timing contract)
 //
 // A breaking change to either response (renamed field, dropped field, wrong
 // type) will fail here before it reaches any downstream consumer. The tests
@@ -17,7 +19,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -27,6 +32,7 @@ import (
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 )
 
 // ── I-8 contract ─────────────────────────────────────────────────────────────
@@ -239,4 +245,167 @@ func roleStrings(roles []interface{}) []string {
 		out[i], _ = r.(string)
 	}
 	return out
+}
+
+// ── PUB-1 contract (LLD §5.4, PUBRES-2/PUBRES-4) ───────────────────────────────
+
+// pub1Router is the production composition for PUB-1: the real NewRouter
+// with a PublicHandler over the BYPASSRLS-bound TenantResolutionService.
+func pub1Router(fx *testFixtures) http.Handler {
+	return httpadapter.NewRouter(httpadapter.RouterConfig{
+		GinConfig:     gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
+		PublicHandler: httpadapter.NewPublicHandler(fx.TenantResolution),
+	}).Handler()
+}
+
+// callPUB1 sends a request with no headers at all, as an anonymous
+// pre-login browser would.
+func callPUB1(t testing.TB, h http.Handler, identifier string) (int, map[string]interface{}, string) {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/v1/public/tenants/resolve?identifier="+url.QueryEscape(identifier), http.NoBody)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body), w.Body.String())
+	return w.Code, body, w.Body.String()
+}
+
+func keySet(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestContract_PUB1_ResponseShape_Match pins every field of both 200 match
+// variants: dedicated never carries tenant_id, shared always does (PUBRES-4).
+func TestContract_PUB1_ResponseShape_Match(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	h := pub1Router(fx)
+
+	paid := uniqSlug("contract-paid")
+	seedDedicatedTenant(t, ctx, fx, paid)
+	code, body, _ := callPUB1(t, h, paid)
+	require.Equal(t, http.StatusOK, code)
+	assert.Equal(t, []string{"found", "realm", "strategy"}, keySet(body))
+	assert.Equal(t, true, body["found"])
+	assert.Equal(t, "tenant-"+paid, body["realm"])
+	assert.Equal(t, "dedicated", body["strategy"])
+
+	trial := uniqSlug("contract-trial")
+	trialID := seedTenant(t, ctx, fx.rawPool, trial)
+	code, body, _ = callPUB1(t, h, trial)
+	require.Equal(t, http.StatusOK, code)
+	assert.Equal(t, []string{"found", "realm", "strategy", "tenant_id"}, keySet(body))
+	assert.Equal(t, "trial", body["realm"])
+	assert.Equal(t, "shared", body["strategy"])
+	assert.Equal(t, trialID.String(), body["tenant_id"])
+}
+
+// TestContract_PUB1_ResponseShape_NoMatch pins the no-match body exactly:
+// {"found":false}, no extra fields, no null placeholders, never a 404.
+func TestContract_PUB1_ResponseShape_NoMatch(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	code, _, raw := callPUB1(t, pub1Router(fx), "nobody-"+uuid.NewString()+"@example.com")
+	require.Equal(t, http.StatusOK, code)
+	assert.JSONEq(t, `{"found":false}`, raw)
+}
+
+// TestContract_PUB1_AntiEnumeration_ShapeAndTiming is PUBRES-2's dedicated
+// contract test (LLD §5.3/§14.3): a match and a no-match must be
+// indistinguishable to a caller except for the documented body fields.
+//
+// Shape: every response is 200, a match always has the same key set, a
+// no-match always has exactly {found}. Never a 404, never a field on one
+// path's responses that varies from call to call.
+//
+// Timing: both paths run the same single SQL statement, and Postgres has to
+// evaluate both UNION halves either way because of the ORDER BY. So there
+// is no structural latency difference to find, and the test's job is to
+// catch one being introduced (an early return, a second query, a cache on
+// one path). Match and no-match requests are interleaved, one each per
+// iteration, so drift in the machine's load hits both samples equally.
+// Medians and p95s are compared with a tolerance rather than equality,
+// because in-process timings over loopback Postgres are noisy (GC, CI
+// neighbours):
+//   - median: |Δ| ≤ max(250µs, 25% of the larger median). Locally both
+//     medians sit around 0.6ms and differ by under 5%, while one extra DB
+//     round trip on one path adds a whole query (~0.5ms, roughly doubling
+//     that median). That clears both bars; a looser 1ms floor would not.
+//     Verified when this test was written: a resolver re-querying on the
+//     match path only failed it 3/3 (match ≈1.1–1.6ms vs no-match ≈0.6ms).
+//   - p95: |Δ| ≤ max(5ms, 100% of the larger p95). The tail is dominated
+//     by noise, so this only guards against a gross divergence.
+//
+// This test is not t.Parallel(): Go runs non-parallel top-level tests
+// before releasing the parallel ones, so it measures without contention
+// from the rest of the package.
+func TestContract_PUB1_AntiEnumeration_ShapeAndTiming(t *testing.T) {
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	h := pub1Router(fx)
+	slug := uniqSlug("timing-paid")
+	seedDedicatedTenant(t, ctx, fx, slug)
+
+	const warmup, n = 20, 200
+	for i := 0; i < warmup; i++ {
+		callPUB1(t, h, slug)
+		callPUB1(t, h, "warm-"+uuid.NewString())
+	}
+
+	matchT := make([]time.Duration, 0, n)
+	missT := make([]time.Duration, 0, n)
+	var matchKeys, missKeys []string
+	for i := 0; i < n; i++ {
+		start := time.Now()
+		code, body, _ := callPUB1(t, h, slug)
+		matchT = append(matchT, time.Since(start))
+		require.Equal(t, http.StatusOK, code)
+		if matchKeys == nil {
+			matchKeys = keySet(body)
+		}
+		require.Equal(t, matchKeys, keySet(body), "match response shape must be constant")
+
+		start = time.Now()
+		code, body, _ = callPUB1(t, h, "miss-"+uuid.NewString()+"@example.com")
+		missT = append(missT, time.Since(start))
+		require.Equal(t, http.StatusOK, code, "a no-match is never a 404 (PUBRES-2)")
+		if missKeys == nil {
+			missKeys = keySet(body)
+		}
+		require.Equal(t, missKeys, keySet(body), "no-match response shape must be constant")
+	}
+	assert.Equal(t, []string{"found", "realm", "strategy"}, matchKeys)
+	assert.Equal(t, []string{"found"}, missKeys)
+
+	pct := func(d []time.Duration, p float64) time.Duration {
+		s := append([]time.Duration(nil), d...)
+		sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+		return s[int(p*float64(len(s)-1))]
+	}
+	within := func(a, b, floor time.Duration, rel float64) bool {
+		diff, larger := a-b, a
+		if diff < 0 {
+			diff = -diff
+		}
+		if b > larger {
+			larger = b
+		}
+		allowed := time.Duration(rel * float64(larger))
+		if allowed < floor {
+			allowed = floor
+		}
+		return diff <= allowed
+	}
+	mMed, xMed := pct(matchT, 0.5), pct(missT, 0.5)
+	mP95, xP95 := pct(matchT, 0.95), pct(missT, 0.95)
+	t.Logf("PUB-1 latency: match median=%v p95=%v | no-match median=%v p95=%v (n=%d each)", mMed, mP95, xMed, xP95, n)
+	assert.True(t, within(mMed, xMed, 250*time.Microsecond, 0.25), "median latency diverges: match=%v no-match=%v", mMed, xMed)
+	assert.True(t, within(mP95, xP95, 5*time.Millisecond, 1.0), "p95 latency diverges: match=%v no-match=%v", mP95, xP95)
 }

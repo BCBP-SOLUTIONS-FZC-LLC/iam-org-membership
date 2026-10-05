@@ -1,0 +1,23 @@
+sequenceDiagram
+    %% PUB-1 cold-start path (LLD §8.11, IAM HLD §8.2.7). Mirrors the LLD's diagram.
+    participant Browser
+    participant Envoy
+    participant OrgMembership as Org & Membership (PUB-1)
+    participant DB as org_membership DB (sysPool, BYPASSRLS)
+
+    Browser->>Envoy: GET /api/v1/public/tenants/resolve?identifier=acme
+    Note over Envoy: no jwt_authn/ext_authz - routed straight through, same carve-out as Keycloak's own /auth, /token (HLD §4.2). Gateway rate-limit/CAPTCHA, PUBRES-3
+    Envoy->>OrgMembership: GET /api/v1/public/tenants/resolve?identifier=acme (no x-user-id / x-tenant-id / x-tenant-roles)
+    Note over OrgMembership: registerPublicRoutes - outside the protected /api/v1 group: no RequireAuth, no GUCBridge, no app.tenant_id
+    OrgMembership->>DB: one statement - tenants WHERE slug = identifier UNION ALL pending_invitations (pending, unexpired) WHERE email = identifier
+    alt match - dedicated realm
+        DB-->>OrgMembership: tenant-acme, dedicated
+        OrgMembership-->>Browser: 200 {found:true, realm:"tenant-acme", strategy:"dedicated"}
+    else match - shared (trial) realm
+        DB-->>OrgMembership: trial, shared, tenant_id
+        OrgMembership-->>Browser: 200 {found:true, realm:"trial", strategy:"shared", tenant_id} (PUBRES-4)
+    else no match (incl. an active member's email - LLD §16 OQ-11)
+        DB-->>OrgMembership: (no row)
+        OrgMembership-->>Browser: 200 {found:false} - identical shape and latency class to a match (PUBRES-2)
+    end
+    Browser->>Browser: build the HLD §8.2.3/§8.2.4 Keycloak authorization-endpoint redirect from the response

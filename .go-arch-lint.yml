@@ -66,6 +66,12 @@ components:
       - internal/adapter/inbound/http
       - internal/adapter/inbound/consumer
 
+  # The inbound SQS pipeline wrapped around every consumer's Handle (DLQ
+  # shortcut, consumed-schema validation, consumer span, consumer
+  # construction). Its own component because it wraps adapters_inbound.
+  inbound_pipeline:
+    in: internal/adapter/inbound/sqspipeline
+
   adapters_outbound:
     in:
       - internal/adapter/outbound/postgres
@@ -87,6 +93,7 @@ components:
     in:
       - cmd/server
       - cmd/reconciler
+      - cmd/migrate
 
 deps:
   # domain: no internal imports at all — pure value types only.
@@ -136,6 +143,13 @@ deps:
       - observability
       - apispec
 
+  inbound_pipeline:
+    mayDependOn:
+      - adapters_inbound
+      - port
+      - domain
+      - observability
+
   # outbound adapters: port + domain + eventschema + observability +
   # httptransport (shared otelhttp client used by all outbound HTTP clients).
   adapters_outbound:
@@ -146,9 +160,12 @@ deps:
       - observability
       - httptransport
 
-  # httptransport: pure http.Client construction, no internal deps.
+  # httptransport: http.Client construction; requestctx only for the
+  # request ID it forwards (x-request-id).
   httptransport:
     anyVendorDeps: true
+    mayDependOn:
+      - requestctx
 
   # reconciler_jobs: domain + port + observability + requestctx (GUC
   # rebinding for cross-tenant reads, mirrors internal/core/service).
@@ -173,6 +190,7 @@ deps:
       - eventschema
       - observability
       - adapters_inbound
+      - inbound_pipeline
       - adapters_outbound
       - docs_swagger
       - httptransport

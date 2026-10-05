@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ── P13-ERR-001 ─────────────────────────────────────────────────────────────
@@ -115,4 +116,20 @@ func TestCrossTenantForbidden(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusForbidden, code,
 		"P13-ERR-004: cross-tenant read must be 403 (got %d body=%s)", code, string(body))
+}
+
+// TestPublicResolveInvalidIdentifierShape: PUB-1's 400 uses the same error
+// envelope as every other 400 here, including request_id/trace_id, even
+// though the route runs with no auth middleware at all.
+func TestPublicResolveInvalidIdentifierShape(t *testing.T) {
+	e := newE2EEnv(t)
+	code, _, body := e.do(t, reqOpts{method: http.MethodGet, path: "/api/v1/public/tenants/resolve?identifier="})
+	require.Equal(t, http.StatusBadRequest, code, string(body))
+
+	var envelope map[string]any
+	unmarshalBody(t, body, &envelope)
+	assert.Equal(t, "invalid_identifier", envelope["code"])
+	assert.NotEmpty(t, envelope["message"])
+	assert.NotEmpty(t, envelope["request_id"], "error body must carry request_id")
+	assert.NotEmpty(t, envelope["trace_id"], "error body must carry trace_id")
 }

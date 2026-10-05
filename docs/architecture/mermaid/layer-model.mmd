@@ -1,49 +1,55 @@
 graph TD
-    subgraph cmd["Composition Roots  —  cmd/"]
-        main["server/main.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6)\nrouter registration + gincommon.DefaultMiddlewares\n4 in-process metric exporters (ticker goroutines):\n  iam_org_membership_tenant_ownerless · iam_org_membership_realm_sync_pending\n  iam_org_membership_seat_overage_active · iam_org_membership_pending_invitations_stale\nRoutingPublisher (2 SNS topics, each with its own GlueCodec) + outbox runner\ngraceful shutdown: SIGTERM → gincommon.Shutdown, terminationGracePeriodSeconds=75"]
+    subgraph cmd["Composition Roots  —  cmd/ (three binaries, one image)"]
+        main["server/main.go + wiring.go + exporters.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6) + BYPASSRLS sysPool (PoolName=system)\nRUN_MIGRATIONS unset/true → MigrateSchema at startup (Helm sets false — the migrate hook Job owns it)\nrouter registration + gincommon.ObservabilityMiddlewares\n/metrics = gincommon.MetricsHandler() on METRICS_PORT (9090)\n3 SQS consumers via sqspipeline (tenant-orgm-q · billing-orgm-q · catalog-orgm-q)\n5 in-process metric exporters (ticker goroutines, 5 min):\n  iam_org_membership_tenant_ownerless · iam_org_membership_realm_sync_pending\n  iam_org_membership_seat_overage_active · iam_org_membership_pending_invitations_stale\n  iam_rls_violations_total (counter, rls_violation_log scrape)\nRoutingPublisher (2 SNS topics, each with its own GlueCodec) + outbox runner\ngraceful shutdown: SIGTERM → HTTP + SQS drain (parallel, ≤30s) → outbox (30s) → both pools (parallel, fresh 10s)\nterminationGracePeriodSeconds=75"]
         swagger_info["server/swagger_info.go\nSwaggo API metadata annotations"]
-        reconciler["reconciler/main.go\nsingle binary, --job=<name> dispatch\nselects one of 7 CronJobs (§13.1):\n  invitation-expiry · invitation-kc-cleanup\n  realm-config-sync · seat-overage-reconcile\n  trial-cleanup · outbox-prune · processed-events-prune"]
+        reconciler["reconciler/main.go\nsingle binary, --job=<name> dispatch\nselects one of 7 CronJobs (§13.1):\n  invitation-expiry · invitation-kc-cleanup\n  realm-config-sync · seat-overage-reconcile\n  trial-cleanup · outbox-prune · processed-events-prune\nRECONCILER_STATEMENT_TIMEOUT (2m) on both pools\nmetrics pushed to PROMETHEUS_PUSHGATEWAY_URL, grouped by cronjob"]
+        jobs["reconciler/jobs/\none file per CronJob, depends on port/domain only"]
+        migrate["migrate/main.go\npostgres.MigrateSchema: outbox.ApplySchema → domain RunMigrations\nMIGRATION_DATABASE_URL (direct, non-PgBouncer), MIGRATE_TIMEOUT=10m\nHelm pre-install/pre-upgrade hook Job, exits 0/1"]
     end
 
     subgraph adapters_in["Inbound Adapters  —  internal/adapter/inbound/"]
-        http_h["http/\nTenantHandler · DepartmentHandler · DeptMembershipHandler\nMembershipHandler (DELETE pre-check; P-26 removal-resolution;\n  P-6/P-30/P-31 invite lifecycle; P-27 seat-usage)\nRoleLabelHandler · InvitationHandler · OperatorHandler · InternalHandler\nrouter.go · dto.go · docs.go / asyncapi.go (serves embedded api/asyncapi.yaml)"]
-        consumer["consumer/\nMembershipEventConsumer\ntenant-orgm-q ← iam.tenant.events (RP lifecycle)\nbilling-orgm-q ← billing.events (Billing lifecycle)\nEVT-14 recency guard · EVT-15 future-time clamp\nEVT-16 TenantStateChanged relay (§16 A61)\nport.IdempotencyStore — MarkProcessedInTx joins the same tx as EVT-14"]
+        http_h["http/\nTenantHandler · DepartmentHandler · DeptMembershipHandler\nMembershipHandler (DELETE pre-check; P-26 removal-resolution;\n  P-6/P-30/P-31 invite lifecycle; P-27 seat-usage; P-34 reset-mfa)\nRoleLabelHandler · InvitationHandler · OperatorHandler · InternalHandler\nPublicHandler (PUB-1, no auth — registerPublicRoutes, outside the protected group)\nrouter.go · middleware.go (NormalizeAuthErrors, GUCBridgeMiddleware, HandleError)\ndto.go · docs.go / asyncapi.go (serves embedded api/asyncapi.yaml)"]
+        sqspipeline["sqspipeline/\nNewConsumer + EnvForQueue (platform-events consumer, events.GlueDecodeCodec,\n  events.WithDLQForwarding; SQS_MAX_RECEIVE_COUNT 4 · DRAIN 15s · HANDLER 20s)\nHandler: DLQ router → consumer span → validateConsumed → Handle\nRequireDLQ (missing RedrivePolicy is fatal at startup)"]
+        consumer["consumer/\nMembershipEventConsumer + CatalogConsumer (depend on ports only)\ntenant-orgm-q ← iam.tenant.events (RP lifecycle)\nbilling-orgm-q ← billing.events (Billing lifecycle)\ncatalog-orgm-q ← iam-catalog-admin (DepartmentCatalogChanged — Gap 12, inert)\nEVT-14 recency guard · EVT-15 future-time clamp\nEVT-16 TenantStateChanged relay (§16 A61)\ndedup.go processOnce/ackUnknown over port.Inbox — claim first, same tx as the projection"]
     end
 
     subgraph adapters_out["Outbound Adapters  —  internal/adapter/outbound/"]
-        postgres["postgres/\nTenantRepository · TenantDepartmentRepository\nMembershipRepository · TenantRoleRepository\nDeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · IdempotencyRepository · TxRunner\nOptimistic locking (record_version) on 7 of 8 domain tables (TRG-1)\nmigrations/ — single consolidated 000000_initial_schema"]
-        valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only (CACHE-2/CACHE-9)\n50ms read/write timeout hardcoded, no env var\nWorking caches: om:memberships · om:tenant · om:plans/departments (+:stale)\nom:grm/gdm/gtrm (+:stale)\nDeclared, not populated: om:members · om:roles · om:locale · om:dept_members · om:seat_usage"]
-        eventbus["eventbus/\nRoutingPublisher (own local type, not platform-events)\n  routes by domain.TopicForEvent(env.Type) →\n    iam.membership.events (12 events)\n    iam.tenant.events (2 events: TenantCreated, TrialStarted)\nOutbox runner · ValidatingCodec (enqueue-time) · GlueCodec ×2 (publish-time, v1.4.0 events.WithCodec)\nschemas/*.json embedded via //go:embed"]
-        workflow["workflow/\nport.WorkflowClient impl (HTTP, §8.8 — talks to Workflow Service,\n  unrelated to the delegation-domain extraction)\nGetDelegateImpact · ReassignDelegate · CancelByDelegate\nAll accept optional delegationID *uuid.UUID (WFI-11)\nWORKFLOW_TIMEOUT_MS=3000"]
-        rp["realmprovisioner/\nport.RealmProvisionerClient impl (HTTP)\nCreateInvitedUser (§8.10) · DeleteUser (idempotent, PI-9)\nPatchRealmConfig (T-15) · RevokeUserSessions (AUTH-8 fail-open)\nREALM_PROVISIONER_TIMEOUT_MS=3000"]
+        postgres["postgres/\nTenantRepository · TenantDepartmentRepository\nMembershipRepository · TenantRoleRepository\nDeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · InboxRepository (platform-events inbox.Store Process/Prune)\nAuthZRepository · ReconcilerStore · GaugeRepository\nTenantRepository on the BYPASSRLS sysPool: I-16 ListSubscriptionLapses + PUB-1 ResolveByIdentifier\nTxRunner (RunInTxWithRetryOpts + wrapConnErr) · MigrateSchema (outbox schema + domain migrations)\nOptimistic locking (record_version) on 7 of 8 domain tables (TRG-1)\nmigrations/ — 000000_initial_schema + 000001_check_constraints + 000002_pub1_pending_invitations_email_idx"]
+        valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only (CACHE-2/CACHE-9)\n50ms read/write timeout hardcoded, no env var\nWorking caches: om:memberships · om:tenant · om:seat_usage · om:plans/departments (+:stale)\nom:grm/gdm/gtrm (+:stale)\nDeclared, not populated: om:members · om:roles · om:locale · om:dept_members"]
+        eventbus["eventbus/\nPublisher.Enqueue — outbox.EnqueueOrdered keyed {tenant_id}/{subject}\n  under pg_advisory_xact_lock (outbox.Enqueue when no subject)\nRoutingPublisher (own local type, not platform-events)\n  routes by domain.TopicForEvent(env.Type) →\n    iam.membership.events (12 events)\n    iam.tenant.events (2 events: TenantCreated, TrialStarted)\nOutbox runner · ValidatingCodec (enqueue-time) · GlueCodec ×2 (publish-time, events.WithCodec)\nschemas/*.json embedded via //go:embed"]
+        httpx["httpx/\nNewClient(timeout) — shared otelhttp transport\nW3C traceparent + x-request-id forwarding"]
+        workflow["workflow/\nport.WorkflowClient impl (HTTP, §8.8 — talks to Workflow Service,\n  unrelated to the delegation-domain extraction)\nGetDelegateImpact · ReassignDelegate · CancelByDelegate\nWORKFLOW_TIMEOUT_MS=3000"]
+        rp["realmprovisioner/\nport.RealmProvisionerClient impl (HTTP)\nCreateInvitedUser (§8.10) · DeleteUser (idempotent, PI-9)\nPatchRealmConfig (T-15) · RevokeUserSessions (AUTH-8 fail-open) · ResetMFA (RP-9 fail-closed)\nREALM_PROVISIONER_TIMEOUT_MS=3000"]
         catalogadmin["catalogadmin/\nport.CatalogAdminClient impl (HTTP)\nGET /internal/plans · GET /internal/departments\nADR-0007 Wave 1, NOT fail-open — catalog_unavailable on cold-cache+failure\nCATALOG_ADMIN_TIMEOUT_MS=3000"]
         groupmappingclient["groupmappingclient/\nport.GroupMappingClient impl (HTTP)\nPOST /internal/tenants/:id/group-resolution (I-10 JIT)\nADR-0007 Wave 2, fails OPEN (empty resolution)\nGROUP_MAPPING_TIMEOUT_MS=300"]
-        delegationcheck["delegationcheck/\nport.DelegationCheckClient impl (HTTP)\nGET /internal/delegations/dept-delegate (§8.8.4 precision lookup)\nADR-0008, fails OPEN to tenant-wide impact scoping\nDELEGATION_TIMEOUT_MS=300"]
-        metrics["metrics/\nbusiness.go — 21 counters, 3 histograms, 4 gauges, three-tier IAM Platform\nObservability Standard (platform_*/iam_*/iam_org_membership_*):\nplatform_messages_received/processed/failed_total{queue} · platform_duplicate_messages_total{consumer} (Proposed, shadow)\niam_org_membership_delegate_removal_blocked_total{scope} · iam_org_membership_seat_limit_reached_total{plan}\niam_lifecycle_event_skipped_total (EVT-14) · platform_dlq_messages_total (EVT-15, canonical)\niam_org_membership_tenant_ownerless (gauge) · iam_org_membership_realm_sync_pending (gauge) · iam_org_membership_seat_overage_active (gauge)\niam_org_membership_pending_invitations_stale (gauge) · iam_lifecycle_event_lag_seconds (histogram)\nplatform_dependency_request_seconds/_errors_total{target_service,endpoint} — Proposed, shadow-emitted\n(registry.go PlatformRegistry) alongside authoritative Tier-3 iam_org_membership_dependency_call_duration_seconds/\n_call_failures_total and iam_org_membership_processed_events_duplicates_total\n(iam_org_membership_membership_lookup_latency_seconds / _memberships_cache_hit_ratio — Phase-6, not implemented)"]
+        delegationcheck["delegationcheck/\nport.DelegationCheckClient impl (HTTP)\nGET /internal/delegations/dept-delegate (§8.8.4 precision lookup)\nADR-0008, fails OPEN\nDELEGATION_TIMEOUT_MS=1000 (raised from 300, Gap-8 fix)"]
+        tokenservice["tokenservice/\nport.TokenServiceClient impl (HTTP)\nGET /service-accounts?principal_sub= (Token Service TS-5)\nAUTH-9/IB-3, fails OPEN — degrades to allowing the membership-create\n(P-6/I-3) / role-grant (P-10/P-28) operation\nTOKEN_SERVICE_TIMEOUT_MS=1000"]
+        metrics["metrics/\nbusiness.go + registry.go — 19 counters, 3 histograms, 4 gauges, three-tier IAM Platform\nObservability Standard (platform_*/iam_*/iam_org_membership_*):\nTier 1 (gincommon.NewShared*Vec): platform_duplicate_messages_total{queue,event_type}\n  platform_dlq_messages_total{operation,event_type,reason} · platform_dependency_request_seconds{dependency,operation,outcome}\nTier 2 (gincommon.NewShared*Vec): iam_rls_violations_total · iam_auth_session_revoke_failed_total\n  iam_lifecycle_event_skipped_total · iam_lifecycle_event_lag_seconds\nTier 3 (gincommon.NewCounterVec/NewGauge/NewHistogramVec): 14 iam_org_membership_* counters,\n  4 gauges (tenant_ownerless · realm_sync_pending · seat_overage_active · pending_invitations_stale),\n  iam_org_membership_dependency_call_duration_seconds\nRegister is a no-op until gincommon is initialised"]
     end
 
     subgraph eventschema_grp["Embedded Schemas  —  eventbus/schemas/"]
-        eventschema["schemas/*.json\nJSON Schema Draft-07, one file per event type (13)\nCLOSED schemas — additionalProperties:false, deliberate (§16 OQ-6)\nDerived via schema-gov extract from api/asyncapi.yaml\n//go:embed → ValidatingCodec fail-closed on invalid payload"]
+        eventschema["schemas/*.json (28: 14 produced + 14 consumed)\nJSON Schema Draft-07, one file per event type\nDerived via schema-gov extract from api/asyncapi.yaml\n//go:embed → ValidatingCodec fail-closed on invalid payload"]
     end
 
     subgraph core["Core  —  internal/core/"]
-        service["service/\nTenantService · DepartmentService · RoleLabelService\nMembershipService (§8.8 RemoveUser + delegate-impact pre-check;\n  §8.10 Invite / AcceptInvitation; SEAT-1; TM-8/TM-12/TM-13)\nDeptMembershipService (§8.8.4 dept-scope gating)\nProvisioningService (§8.1 trial signup) · OperatorService (O-4/O-7) · AuthZService (I-8)\nCatalogService — CLIENT-SIDE read-through, NOT a table owner\nGroupMappingService — CLIENT-SIDE resolve, NOT a table owner"]
-        port["port/\nTenantRepository · TenantDepartmentRepository · MembershipRepository\nTenantRoleRepository · DeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · Cache · EventPublisher · TxRunner · IdempotencyStore · Logger\nWorkflowClient · RealmProvisionerClient · CatalogAdminClient\nDepartmentCatalogReader · PlanCatalogReader · GroupMappingClient · DelegationCheckClient\n(no UserProfileClient — removed as dead code, §16 OQ-5)"]
-        domain["domain/\nTenant · Department · Plan · TenantMembership · DeptMembership\nTenantRoleCode · DeptRole · GroupDeptMapping/GroupDeptRoleMapping/GroupTenantRoleMapping\n  (read-through cache result types, not local tables)\nPendingInvitation · DomainEvent payload types\nDomainError catalogue (49 sentinels) — ErrWorkflowResolutionRequired · ErrSeatLimitReached\n  ErrInvitationAlreadyExists · ErrInvalidReplacement · ErrOptimisticLockConflict · ...\n(no Delegation, no TenderACLEntry — tables moved to sibling services)"]
+        service["service/\nTenantService · DepartmentService · RoleLabelService\nMembershipService (§8.8 RemoveUser + delegate-impact pre-check;\n  SEAT-1; TM-8/TM-12/TM-13; P-34 ResetMFA)\nInvitationService (§8.10 Invite / AcceptInvitation, PI-11/PI-12 throttles)\nDeptMembershipService (§8.8.4 dept-scope gating)\nProvisioningService (§8.1 trial signup, I-1) · OperatorService (O-4/O-7)\nAuthZService (I-8, depends on port.AuthZRepository, not *pgcommon.Pool)\nCatalogService — CLIENT-SIDE read-through, NOT a table owner\nGroupMappingService — CLIENT-SIDE resolve, NOT a table owner\nSubscriptionLapseService (I-16) · TenantResolutionService (PUB-1) — both sysPool-bound"]
+        port["port/\nTenantRepository (incl. ResolveByIdentifier, PUB-1) · TenantDepartmentRepository · MembershipRepository\nTenantRoleRepository · DeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · AuthZRepository · ReconcilerStore\nCache · EventPublisher · TxRunner (+ WithTx/TxFromContext) · Inbox · InboxPruner · Logger\nWorkflowClient · RealmProvisionerClient · CatalogAdminClient · TokenServiceClient\nDepartmentCatalogReader · PlanCatalogReader · GroupMappingClient · DelegationCheckClient\n(no UserProfileClient — removed as dead code, §16 OQ-5)"]
+        domain["domain/\nTenant · Department · Plan · TenantMembership · DeptMembership\nTenantRoleCode · DeptRole · GroupDeptMapping/GroupDeptRoleMapping/GroupTenantRoleMapping\n  (read-through cache result types, not local tables)\nPendingInvitation · DomainEvent payload types · TopicForEvent\nDomainError catalogue (sentinels grouped by §17 status family)\n(no Delegation, no TenderACLEntry — tables moved to sibling services)"]
     end
 
     subgraph pkg["Shared Packages  —  pkg/"]
-        requestctx["requestctx/\nRequestContext{UserID, TenantID, Roles, ClientIP, UserAgent}\nWithContext · FromContext · HasRole · IsAdmin · IsPlatformOperator · IsSystemPrincipal"]
+        requestctx["requestctx/\nRequestContext{UserID, TenantID, Roles, ClientIP, UserAgent}\nWithContext · FromContext · HasRole · IsAdmin · IsOperator · IsSystem\nWithSystemTenant · WithTenant (RLS GUC rebinding) · WithRequestID"]
     end
 
-    subgraph tests["Tests  —  test/"]
-        unit["unit/\nmembership_removeuser_test.go / membership_removal_test.go (§8.8 delegate-impact)\ninvitation_service_test.go / invitation_scenarios_test.go (§8.10)\nvalidator · domain · port mocks (testify/mock)\nNo fixtures/ directory — test doubles live inline in the test files that use them"]
-        postgres_t["postgres/\nrls_test.go — Case 5 (RLS-6, pooled backend, no GUC leak)\nconsumer_evt_test.go — EVT-14/15/16 · services_test.go — TM-12/T-15\nconcurrency_test.go — SEAT-1/TM-13 races"]
-        integration["integration/\ncross-layer testcontainers (PG + Valkey + LocalStack SNS/SQS)\nrelay_test.go — EVT-16 wire path · dlq_idemp_test.go — DLQ + dedup"]
-        e2e["e2e/\nretired_routes_test.go — former group-mapping/delegation/tender-ACL routes stay 404, never reused"]
+    subgraph tests["Tests  —  test/ (+ in-package _test.go under internal/, pkg/, cmd/)"]
+        unit["unit/\nmembership_removeuser_test.go / membership_removal_test.go (§8.8 delegate-impact)\ninvitation_service_test.go / invitation_scenarios_test.go (§8.10)\nauthz_service_test.go (I-8, fully Docker-free — fakes port.AuthZRepository)\nvalidator · domain · port mocks (testify/mock)"]
+        postgres_t["postgres/\nrls_test.go — Case 5 (RLS-6, pooled backend, no GUC leak)\nsubscription_lapse_test.go (I-16, cross-tenant BYPASSRLS read)\nconsumer_evt_test.go — EVT-14/15/16 · services_test.go — TM-12/T-15\nconcurrency_extra_test.go — SEAT-1/TM-13 races · contract_test.go — PUB-1 PUBRES-2"]
+        integration["integration/\ncross-layer testcontainers (PG + Valkey + floci SNS/SQS/Glue)\nrelay_test.go — EVT-16 wire path · dlq_idemp_test.go — DLQ + dedup\npipeline_dlq_test.go — the real sqspipeline against floci\nglue_codec_test.go · wire_test.go · public_route_wiring_test.go"]
+        e2e["e2e/\nharness_test.go — full router wired through the real NewRouter, no route-table drift possible"]
     end
 
     main        --> http_h
+    main        --> sqspipeline
     main        --> consumer
     main        --> postgres
     main        --> valkey
@@ -53,32 +59,53 @@ graph TD
     main        --> catalogadmin
     main        --> groupmappingclient
     main        --> delegationcheck
+    main        --> tokenservice
     main        --> metrics
+    main        --> service
+    reconciler  --> jobs
+    reconciler  --> consumer
     reconciler  --> postgres
     reconciler  --> eventbus
     reconciler  --> rp
     reconciler  --> metrics
+    jobs        --> port
+    jobs        --> domain
+    migrate     --> postgres
     http_h      --> service
     http_h      --> port
     http_h      --> requestctx
     http_h      --> metrics
-    consumer    --> service
+    sqspipeline --> consumer
+    sqspipeline --> port
+    sqspipeline --> metrics
     consumer    --> port
+    consumer    --> domain
+    consumer    --> metrics
     service     --> port
     service     --> domain
     service     --> requestctx
+    service     --> metrics
     postgres    --> port
     postgres    --> domain
     valkey      --> port
     eventbus    --> port
     eventbus    --> eventschema
+    workflow    --> httpx
+    rp          --> httpx
+    catalogadmin --> httpx
+    groupmappingclient --> httpx
+    delegationcheck --> httpx
+    tokenservice --> httpx
+    httpx       --> requestctx
     workflow    --> port
     rp          --> port
     catalogadmin --> port
     groupmappingclient --> port
     delegationcheck --> port
+    tokenservice --> port
     port        --> domain
     unit        -.->|"imports"| service
     unit        -.->|"imports"| domain
     postgres_t  -.->|"imports"| postgres
     integration -.->|"imports"| http_h
+    integration -.->|"imports"| sqspipeline

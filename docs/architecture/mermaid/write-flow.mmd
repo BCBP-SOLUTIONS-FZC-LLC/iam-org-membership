@@ -1,9 +1,10 @@
 sequenceDiagram
-    participant H as MembershipHandler
-    participant SVC as MembershipService
-    participant TX as pgcommon.RunInTx
+    participant H as DeptMembershipHandler
+    participant SVC as DeptMembershipService
+    participant TX as TxRunner.RunInTx (pgcommon)
     participant DB as PostgreSQL (dept_memberships)
-    participant Codec as ValidatingCodec → GlueCodec (prod) / NoopCodec (dev)
+    participant Pub as eventbus.Publisher
+    participant VC as ValidatingCodec (validation only)
     participant OB as outbox_events
     participant Cache as Valkey
     participant Runner as Outbox Runner
@@ -12,54 +13,49 @@ sequenceDiagram
 
     Note over H,SVC: Example — PUT /tenants/:id/departments/:dept_id/members/:user_id (P-10)<br/>Assign user to department at role_level (§8.4)
 
-    H ->>+ SVC: AssignDeptMembership(ctx, tenantID, deptID, userID, level, expectedVersion)
-    Note over SVC: Validate: active tenant_membership (DM-2) + dept active for tenant (D-5/TD-6)<br/>Load current row (incl. soft-deleted) to decide event
+    H ->>+ SVC: Assign(ctx, tenantID, userID, deptID, level, actorID)
+    Note over SVC: Pre-tx checks (no tx, no row locks held):<br/>AUTH-9 TokenService.IsServiceAccount (fails open)<br/>D-5/TD-6 — dept active in Catalog (om:departments) and activated for the tenant<br/>DM-2 — active tenant_membership<br/>WFI-9/12 demotionGate — only on a level decrease (Delegation + Workflow, fails open)
 
     SVC ->>+ TX: RunInTx(ctx, func(txCtx))
+    TX ->> DB: BEGIN + set_config(app.tenant_id, …, true) via GUCProvider (RLS-6)<br/>+ PG_STATEMENT_TIMEOUT / PG_LOCK_TIMEOUT as SET LOCAL
 
-    TX ->>+ DB: BEGIN (SET LOCAL app.tenant_id = $1 injected by GUCProvider, RLS-6)
-    DB -->> TX: tx started
+    TX ->>+ DB: pg_advisory_xact_lock(tenant,user,dept)<br/>SELECT live row FOR UPDATE
+    alt same level already assigned
+        DB -->> TX: existing row (no write)
+        Note over SVC: TRG-3 no-op — NO EVENT
+    else new or level changed
+        DB -->>- TX: soft-delete old row (if any) + INSERT new row<br/>ON CONFLICT (tenant_id,user_id,department_id) WHERE deleted_at IS NULL DO NOTHING
+        Note over SVC: Event selection (state-dependent, §8.4):<br/>  no previous row → DepartmentMembershipGranted<br/>  previous level differs → DepartmentMembershipLevelChanged
 
-    TX ->>+ DB: UPSERT dept_memberships<br/>SET role_level = $1, deleted_at = NULL<br/>WHERE id = $2 AND record_version = $3
-    alt record_version mismatch (0 rows affected)
-        DB -->> TX: 0 rows
-        TX -->> SVC: ErrConflict
-        SVC -->> H: 409 optimistic_lock_conflict (echoes current record_version, API-3)
-    else upsert succeeds
-        DB -->>- TX: 1 row affected, new record_version returned (touch_row trigger, TRG-1)
-
-        Note over SVC: Event selection (state-dependent, §8.4):<br/>  new / reactivated → DepartmentMembershipGranted<br/>  active + level changed → DepartmentMembershipLevelChanged<br/>  active + level unchanged → NO EVENT (TRG-3 no-op)
-
-        TX ->>+ Codec: Encode(ctx, event.Type, jsonPayload)
-        Note over Codec: ValidatingCodec runs schema-gov Draft-07 validation<br/>against embedded schemas/*.json (fail-closed, CLOSED schemas — additionalProperties:false).<br/>On invalid/unknown type → error → TX rolls back (nothing persisted).<br/>GlueCodec prepends 18-byte header from Glue registry version ID.<br/>NoopCodec pass-through in dev (GLUE_REGISTRY_MEMBERSHIP_NAME/GLUE_REGISTRY_TENANT_NAME unset).
-        Codec -->>- TX: (encoded bytes, schemaVersionID)
-
-        TX ->>+ OB: INSERT outbox_events (<br/>  id UUID v7, event_type, payload JSONB envelope,<br/>  source (iam.membership.events for RoutingPublisher key),<br/>  tenant_id, trace_id, created_at, scheduled_at<br/>)
+        TX ->>+ Pub: Enqueue(txCtx, event) — tx from port.TxFromContext
+        Pub ->>+ VC: Encode(event.Type, jsonPayload)
+        Note over VC: schema-gov Draft-07 validation against embedded schemas/*.json (fail-closed).<br/>Wraps NoopCodec — the encoded bytes are discarded.<br/>Invalid payload / unknown type → error → whole TX rolls back.
+        VC -->>- Pub: ok
+        Pub ->> DB: pg_advisory_xact_lock(hashtextextended('outbox-order:{tenant_id}/{user_id}', 0))
+        Pub ->>+ OB: outbox.EnqueueOrdered(tx, envelope, key={tenant_id}/{user_id})<br/>PLAIN-JSON envelope: id UUID v7, type, source=iam-org-membership,<br/>tenant_id, subject, actor, trace_id, ip_address, user_agent
         Note over OB: Business row + outbox row commit atomically (EVT-10, CONS-1)<br/>No event without state — no state without event.
-        OB -->>- TX: inserted
-
-        TX ->>+ DB: COMMIT
-        DB -->>- TX: committed
+        OB -->>- Pub: inserted
+        Pub -->>- TX: ok
     end
 
-    TX -->>- SVC: nil (success)
+    TX ->> DB: COMMIT (40P01/40001 → whole callback retried, 3 attempts)
+    TX -->>- SVC: nil (success) — connection-class errors mapped by wrapConnErr
 
-    SVC ->>+ Cache: DEL om:memberships:{tenant}:{user},<br/>DEL om:dept_members:{tenant}:{dept}
-    Note over Cache: post-commit invalidation (CACHE-6)<br/>best-effort — TTL self-heals on failure (CACHE-9, FAIL-2)
+    SVC ->>+ Cache: DEL om:members:{tenant}:50, om:seat_usage:{tenant}
+    Note over Cache: post-commit, best-effort (CACHE-6/CACHE-9) — om:seat_usage is a working cache (30 s), om:members is declared-only.<br/>om:memberships is NOT evicted on this path, the I-8 entry heals at its 300s±30s TTL.
     Cache -->>- SVC: ok
 
-    SVC -->>- H: updated *domain.DeptMembership
+    SVC -->>- H: *domain.DeptMembership
 
-    Note over Runner: Outbox runner polls every OUTBOX_POLL_INTERVAL (500 ms, Go duration string)
-    Runner ->>+ OB: SELECT ... WHERE published_at IS NULL<br/>LIMIT OUTBOX_BATCH_SIZE (50) FOR UPDATE SKIP LOCKED
-    OB -->>- Runner: unpublished events batch
+    Note over Runner: platform-events outbox runner, every OUTBOX_POLL_INTERVAL (500ms)
+    Runner ->>+ OB: claim due batch (OUTBOX_BATCH_SIZE 50, FOR UPDATE SKIP LOCKED + lease)<br/>an ordered record waits behind an earlier unpublished record of its key
+    OB -->>- Runner: envelopes
 
-    Runner ->>+ Router: Route(envelope)
-    Note over Router: domain.TopicForEvent(env.Type) selects the tenant or<br/>membership publisher field (RoutingPublisher, own local type)
-    Router ->>+ SNS: Publish(TopicArn=iam.membership.events, MessageAttributes{EventType, TenantID, Source, EventID})
+    Runner ->>+ Router: PublishBatch(envelopes)
+    Note over Router: domain.TopicForEvent(env.Type) selects the tenant or<br/>membership lane, both lanes always publish, failures merge into one *events.BatchError
+    Router ->>+ SNS: Publish (GlueCodec frames the payload when GLUE_REGISTRY_MEMBERSHIP_NAME is set)
     SNS -->>- Router: MessageID
-    Router -->>- Runner: published
+    Router -->>- Runner: published / BatchError
 
-    Runner ->>+ OB: UPDATE outbox_events SET published_at = now() WHERE id = $1
-    OB -->>- Runner: marked published
-    Note over Runner: retry up to OUTBOX_MAX_ATTEMPTS (5) with backoff — DLQ on exceed (EVT-5, outbox_dead_letters_total pages)
+    Runner ->> OB: mark published_at (failed records retried with backoff)
+    Note over Runner: after OUTBOX_MAX_ATTEMPTS (5) a record moves to outbox_dead_letters<br/>platform_dlq_messages_total{operation=outbox_publish} — pages

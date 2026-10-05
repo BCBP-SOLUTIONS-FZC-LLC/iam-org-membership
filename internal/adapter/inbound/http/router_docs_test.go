@@ -108,7 +108,7 @@ func TestRegisterDocsRoutes_SwaggerDocJson_ProductionWithToken_BlocksUnauth(t *t
 	r := gin.New()
 	cfg := RouterConfig{
 		Docs: DocsConfig{
-			Environment: "production",
+			Environment: "prod",
 			Enabled:     true,
 			AuthToken:   "my-secret",
 		},
@@ -135,7 +135,7 @@ func TestRegisterDocsRoutes_SwaggerDocJson_ProductionWithToken_AllowsValidToken(
 	r := gin.New()
 	cfg := RouterConfig{
 		Docs: DocsConfig{
-			Environment: "production",
+			Environment: "prod",
 			Enabled:     true,
 			AuthToken:   "my-secret",
 		},

@@ -105,60 +105,67 @@ type RegistryEntry struct {
 }
 
 // PlatformRegistry lists every platform_*/domain-shared metric this
-// service emits or has proposed. All three entries here are this
-// service's own Registry Ratification Requirement submissions — none is
-// yet Canonical, so none is wired into this repo's alerts, recording
-// rules, SLOs, or HPA references (see each metric's doc comment in
-// business.go and every alert/SLO file's header comment for the same
-// note). Flip an entry's Status to StatusCanonical only once real
-// observability governance has actually approved it, and only then
-// proceed with the standard's Backward Compatibility migration steps
-// (dashboards → alerts → recording rules → SLOs → HPA → deprecate →
-// remove after sunset).
+// service itself writes. Their names, help texts, label sets and buckets are
+// owned by the central Platform Observability Registry (platform-gincommon
+// internal/obsregistry/registry.json) and built from it with
+// gincommon.NewShared*Vec (business.go registerShared) — this list mirrors
+// each entry's status and records the label values THIS service emits.
+// Proposed entries are not yet wired into this repo's alerts, recording
+// rules, SLOs, or HPA references; their Tier-3 counterparts stay
+// authoritative until real observability governance approves them
+// (.github/scripts/metrics-registry-lint.sh). Flip an entry's Status to
+// StatusCanonical only once the central registry does.
+//
+// platform_messages_{received,processed,failed}_total and the outbox /
+// SQS / SNS platform_* metrics are written by platform-events, not by this
+// service, and so are not listed. The former dependency-errors counter
+// submission was withdrawn: it never entered the registry; its concept is
+// platform_dependency_request_seconds_count{outcome="error"}.
 var PlatformRegistry = []RegistryEntry{
 	{
 		Name:               "platform_dependency_request_seconds",
 		Tier:               "platform",
 		Status:             StatusProposed,
-		SemanticDefinition: "Latency of one outbound call this service makes to a dependency it calls synchronously (a REST/gRPC/admin-API call — not a queue send/receive, which platform-events' own events_* metrics already cover). Named explicitly in the standard's own Registry-Proposed Examples.",
+		SemanticDefinition: "Client-observed wall time of one call to an external dependency, by outcome. This service records its synchronous REST calls to peer services; platform-events records SNS/SQS/codec calls on the same collector. The _count series counts calls.",
 		RequiredLabels:     []string{"domain", "service", "environment"},
-		ApprovedLabels:     []string{"target_service", "endpoint"},
+		ApprovedLabels:     []string{"dependency", "operation", "outcome"},
 		LabelValues: map[string][]string{
-			"target_service": {"catalog", "group_mapping", "delegation", "realm_provisioner", "workflow", "token_service"}, // all six synchronous outbound peers
-			"endpoint":       {"open — client method names used as endpoint label: departments/plans (catalog); group-resolution (group_mapping); dept-delegate (delegation); create_invited_user/delete_user/patch_realm_config/revoke_user_sessions/reset_mfa (realm_provisioner); get_delegate_impact/reassign_delegate/cancel_by_delegate (workflow); service-accounts (token_service)"},
+			"dependency": {"catalog", "group_mapping", "delegation", "realm_provisioner", "workflow", "token_service"}, // all six synchronous outbound peers (platform-events adds sns, sqs, codec)
+			"operation":  {"client endpoint in snake_case: departments/plans (catalog); group_resolution (group_mapping); dept_delegate (delegation); create_invited_user/delete_user/patch_realm_config/revoke_user_sessions/reset_mfa (realm_provisioner); get_delegate_impact/reassign_delegate/cancel_by_delegate (workflow); service_accounts (token_service)"},
+			"outcome":    {"success", "error"}, // error = transport failure or 5xx; a 4xx is the caller's own request being rejected
 		},
-		Cardinality:      "Bounded — target_service × endpoint is a small, enumerable set (6 peers × a handful of endpoints each); no request/session/tenant identifier is ever a label value.",
-		AggregationNotes: "Per-dependency failure rate: sum(rate(platform_dependency_request_seconds_count{target_service=\"X\"}[w])) joined against platform_dependency_errors_total. Cross-domain dependency-health board: sum by (domain, target_service) rate(..._count[w]). p99 latency per dependency: histogram_quantile(0.99, sum by (le, target_service) (rate(..._bucket[w]))).",
-		SupersedesTier3:  []string{"iam_org_membership_dependency_call_duration_seconds"},
+		Cardinality:      "Bounded — dependency × operation is a small, enumerable set (6 peers × a handful of endpoints each) × 2 outcomes; no request/session/tenant identifier is ever a label value.",
+		AggregationNotes: "Error ratio per dependency: sum by (domain, service, environment, dependency) (rate(platform_dependency_request_seconds_count{outcome=\"error\"}[w])) / sum by (domain, service, environment, dependency) (rate(platform_dependency_request_seconds_count[w])). p99 latency per dependency: histogram_quantile(0.99, sum by (le, domain, service, environment, dependency) (rate(platform_dependency_request_seconds_bucket[w]))).",
+		SupersedesTier3:  []string{"iam_org_membership_dependency_call_duration_seconds", "iam_org_membership_dependency_call_failures_total"},
 	},
 	{
 		Name:               "platform_duplicate_messages_total",
 		Tier:               "platform",
 		Status:             StatusProposed,
-		SemanticDefinition: "A message a consumer received that its own dedup store (however implemented — a processed-events table, an idempotency cache, etc.) had already marked processed: a redelivery, not a new logical message. Independent of transport (SQS/SNS/Kafka) or domain. Named explicitly in the standard's own Registry-Proposed Examples.",
+		SemanticDefinition: "A redelivered message acknowledged without running its handler because the consumer's dedup ledger (here: the processed_events table) had already recorded its event ID.",
 		RequiredLabels:     []string{"domain", "service", "environment"},
-		ApprovedLabels:     []string{"consumer"},
+		ApprovedLabels:     []string{"queue", "event_type"},
 		LabelValues: map[string][]string{
-			"consumer": {"membership"}, // this service's single MembershipEventConsumer, shared by tenant-orgm-q and billing-orgm-q
+			"queue":      {"tenant-orgm-q", "billing-orgm-q", "unknown"}, // the two subscribed queues; unknown when no queue is in the context
+			"event_type": {"the consumed envelope type (bounded by the event catalogue; unknown when empty)"},
 		},
-		Cardinality:      "Bounded — one value per consumer this service registers (currently 1); no message/event identifier is ever a label value.",
-		AggregationNotes: "Platform-wide redelivery-rate board: sum by (domain, service) rate(platform_duplicate_messages_total[w]). A sustained nonzero rate across many unrelated services signals a shared upstream cause (e.g. a producer retry storm or a broker redelivery-timeout misconfiguration), not a per-service bug — the reason this is worth a platform_* name rather than staying per-service.",
+		Cardinality:      "Bounded — 2 queues × the handled event catalogue; no message/event identifier is ever a label value.",
+		AggregationNotes: "Platform-wide redelivery-rate board: sum by (domain, service, environment) (rate(platform_duplicate_messages_total[w])).",
 		SupersedesTier3:  []string{"iam_org_membership_processed_events_duplicates_total"},
 	},
 	{
-		Name:               "platform_dependency_errors_total",
+		Name:               "platform_dlq_messages_total",
 		Tier:               "platform",
-		Status:             StatusProposed,
-		SemanticDefinition: "A synchronous cross-service dependency call that failed, classified by outcome (5xx|timeout|fallback_served — the last recorded by the calling service layer, not the client, since only the caller knows whether a stale/last-known-good value was served instead of surfacing the error). NOT one of the standard's own named canonical/registry-proposed examples — added by symmetry with platform_dependency_request_seconds (rule 7: prefer shared whenever reusable) since outcome-classified failure counts aren't recoverable from a latency histogram's buckets alone. This is why this entry needs its own justification distinct from the two above, which the standard already names as anticipated candidates.",
+		Status:             StatusCanonical, // approved in the central registry
+		SemanticDefinition: "A message moved to dead-letter storage. This service records the consumed events it rejects to the DLQ itself (operation=consume); platform-events records SQS redrive dead-letters (operation=consume) and outbox dead-letters (operation=outbox_publish, reason=max_attempts) on the same collector.",
 		RequiredLabels:     []string{"domain", "service", "environment"},
-		ApprovedLabels:     []string{"target_service", "endpoint", "outcome"},
+		ApprovedLabels:     []string{"operation", "event_type", "reason"},
 		LabelValues: map[string][]string{
-			"target_service": {"catalog", "group_mapping", "delegation", "realm_provisioner", "workflow", "token_service"},
-			"endpoint":       {"open — see platform_dependency_request_seconds's endpoint entry"},
-			"outcome":        {"5xx", "timeout", "fallback_served"},
+			"operation":  {"consume"},
+			"event_type": {"the consumed envelope type"},
+			"reason":     {"future_time_clamp", "schema_violation"}, // service-side reject reasons
 		},
-		Cardinality:      "Bounded — target_service × endpoint × outcome is a small, enumerable set; no request/session/tenant identifier is ever a label value.",
-		AggregationNotes: "increase(platform_dependency_errors_total{target_service=\"catalog\"}[5m]) > 0 warns regardless of which service emits it — the intended cross-service alert shape once ratified (catalog is this service's one NOT-fail-open dependency, §20.7). Platform-wide dependency-health board: sum by (domain, service, target_service, outcome) rate(...[w]).",
-		SupersedesTier3:  []string{"iam_org_membership_dependency_call_failures_total"},
+		Cardinality:      "Bounded — 1 operation × the handled event catalogue × 2 reasons (plus platform-events' own values).",
+		AggregationNotes: "Dead-letter inflow: sum by (domain, service, environment, operation, reason) (increase(platform_dlq_messages_total[15m])). Any sustained non-zero rate needs attention.",
 	},
 }

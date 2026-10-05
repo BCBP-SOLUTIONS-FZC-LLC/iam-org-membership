@@ -543,6 +543,24 @@ definitions:
         format: uuid
         type: string
     type: object
+  http.PublicTenantResolveResponse:
+    properties:
+      found:
+        example: true
+        type: boolean
+      realm:
+        example: tenant-acme
+        type: string
+      strategy:
+        enum:
+        - shared
+        - dedicated
+        example: dedicated
+        type: string
+      tenant_id:
+        format: uuid
+        type: string
+    type: object
   http.RemovalResolutionRequest:
     properties:
       action:
@@ -1407,6 +1425,38 @@ paths:
       summary: O-7 — Recover ownerless tenant (grants tenant_owner, clears ownerless_since)
       tags:
       - operator
+  /public/tenants/resolve:
+    get:
+      description: 'Given a company slug or the email of a still-pending invitation,
+        returns which Keycloak realm the frontend should redirect to. Reachable by
+        an anonymous, pre-authentication browser: no auth, no gateway-injected headers.
+        Always 200 for a well-formed identifier, never 404 (constant-shape anti-enumeration,
+        PUBRES-2). tenant_id is present only for a shared-realm (trial) tenant (PUBRES-4).
+        An already-active member''s email is not resolvable (LLD §16 OQ-11).'
+      parameters:
+      - description: Company slug or pending-invitation email (max 254 chars)
+        in: query
+        name: identifier
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.PublicTenantResolveResponse'
+        "400":
+          description: invalid_identifier
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "503":
+          description: db_unavailable
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      summary: Pre-login tenant/realm resolution (PUB-1)
+      tags:
+      - public
   /readyz:
     get:
       description: Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines.

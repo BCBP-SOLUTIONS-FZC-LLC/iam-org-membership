@@ -12,8 +12,14 @@ package unit_test
 
 import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 )
 
 func init() {
+	// The production identity (gincommon validates Tier 3 names against
+	// iam_org_membership_), fixed before Register as in cmd/server.
+	_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
+		ServiceName: "iam-org-membership", BuildVersion: "test", Domain: "iam", Environment: "test",
+	})
 	metrics.Register("test")
 }

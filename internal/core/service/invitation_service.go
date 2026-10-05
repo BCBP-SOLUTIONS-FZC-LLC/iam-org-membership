@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/google/uuid"
@@ -116,6 +118,30 @@ func (s *InvitationService) List(ctx context.Context, tenantID uuid.UUID) ([]dom
 // Returns 409 seat_limit_reached at/above cap. Returns 409
 // invitation_already_exists on duplicate email.
 func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req InvitationInput, actorID uuid.UUID) (*domain.PendingInvitation, error) {
+	inv, err := s.invite(ctx, tenantID, req, actorID)
+	if errors.Is(err, domain.ErrSeatLimitReached) {
+		// Counted once, here, whichever SEAT-1 check refused the invite
+		// (pre-flight or the transactional re-check) — never inside the
+		// retried transaction.
+		metrics.IncSeatLimitReached(s.planLabel(ctx, tenantID))
+	}
+	return inv, err
+}
+
+// planLabel is the tenant's plan for metric labels, "unknown" if it cannot
+// be read.
+func (s *InvitationService) planLabel(ctx context.Context, tenantID uuid.UUID) string {
+	if s.tenants == nil {
+		return "unknown"
+	}
+	t, err := s.tenants.FindByID(ctx, tenantID)
+	if err != nil || t == nil || t.Plan == "" {
+		return "unknown"
+	}
+	return string(t.Plan)
+}
+
+func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req InvitationInput, actorID uuid.UUID) (*domain.PendingInvitation, error) {
 	req.Email = normalizeEmail(req.Email)
 	if req.Email == "" {
 		return nil, domain.NewError(domain.ErrValidation, "email is required")
@@ -158,6 +184,7 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 			elapsed := time.Since(mostRecent)
 			if elapsed < s.reinviteCooldown {
 				remaining := s.reinviteCooldown - elapsed
+				metrics.IncInviteThrottled(metrics.InviteThrottleReinviteTooSoon)
 				return nil, domain.NewError(domain.ErrReinviteTooSoon, "re-invite too soon").
 					WithDetails(map[string]any{
 						"retry_after_seconds": int(remaining.Seconds()),
@@ -174,6 +201,7 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 			return nil, err
 		}
 		if count >= s.maxPerHour {
+			metrics.IncInviteThrottled(metrics.InviteThrottleTenantRate)
 			return nil, domain.NewError(domain.ErrInviteRateLimited, "invite rate limit reached").
 				WithDetails(map[string]any{
 					"retry_after_seconds": 3600,
@@ -191,6 +219,7 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 			return nil, err
 		}
 		if actorCount >= s.maxPerActorPerHour {
+			metrics.IncInviteThrottled(metrics.InviteThrottleActorRate)
 			return nil, domain.NewError(domain.ErrInviteRateLimited, "actor invite rate limit reached").
 				WithDetails(map[string]any{
 					"retry_after_seconds": 3600,

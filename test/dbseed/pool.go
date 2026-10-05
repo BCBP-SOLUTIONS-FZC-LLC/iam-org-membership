@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -134,9 +134,13 @@ type bufferedRows struct {
 	m      *pgtype.Map
 }
 
-func (r *bufferedRows) Close()                                       { r.closed = true }
-func (r *bufferedRows) Err() error                                   { return r.err }
-func (r *bufferedRows) CommandTag() pgconn.CommandTag                { return r.tag }
+func (r *bufferedRows) Close()                        { r.closed = true }
+func (r *bufferedRows) Err() error                    { return r.err }
+func (r *bufferedRows) CommandTag() pgconn.CommandTag { return r.tag }
+
+// TypeMap satisfies pgx.Rows as of pgx v5.11 (pulled in by newer
+// platform-pgcommon); harmless on earlier versions.
+func (r *bufferedRows) TypeMap() *pgtype.Map                         { return r.m }
 func (r *bufferedRows) FieldDescriptions() []pgconn.FieldDescription { return r.fields }
 func (r *bufferedRows) Conn() *pgx.Conn                              { return nil }
 

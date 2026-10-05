@@ -19,6 +19,7 @@ package postgres_test
 
 import (
 	"context"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
 	"sort"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/pkg/pgcommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 	pmodel "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
@@ -422,4 +423,16 @@ func counterValue(counter interface {
 // re-run.
 var phase4MetricsOnce sync.Once
 
-func phase4TestMetricsInit() { phase4MetricsOnce.Do(func() { metrics.Register("test") }) }
+func phase4TestMetricsInit() {
+	phase4MetricsOnce.Do(func() {
+		// gincommon's identity first (the constructors validate Tier 3
+		// names against it) — unless another test in this binary already
+		// fixed it: gincommon rejects a second, different identity.
+		if len(gincommon.MetricsConstLabels()) == 0 {
+			_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
+				ServiceName: "iam-org-membership", BuildVersion: "test", Domain: "iam", Environment: "test",
+			})
+		}
+		metrics.Register("test")
+	})
+}

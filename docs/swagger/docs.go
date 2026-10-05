@@ -1066,6 +1066,47 @@ const docTemplate = `{
                 ]
             }
         },
+        "/public/tenants/resolve": {
+            "get": {
+                "description": "Given a company slug or the email of a still-pending invitation, returns which Keycloak realm the frontend should redirect to. Reachable by an anonymous, pre-authentication browser: no auth, no gateway-injected headers. Always 200 for a well-formed identifier, never 404 (constant-shape anti-enumeration, PUBRES-2). tenant_id is present only for a shared-realm (trial) tenant (PUBRES-4). An already-active member's email is not resolvable (LLD §16 OQ-11).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "public"
+                ],
+                "summary": "Pre-login tenant/realm resolution (PUB-1)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company slug or pending-invitation email (max 254 chars)",
+                        "name": "identifier",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.PublicTenantResolveResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid_identifier",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "db_unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/readyz": {
             "get": {
                 "description": "Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines. Returns 503 if any dependency is not ready.",
@@ -3254,6 +3295,31 @@ const docTemplate = `{
                     "format": "uuid"
                 },
                 "user_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "http.PublicTenantResolveResponse": {
+            "type": "object",
+            "properties": {
+                "found": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "realm": {
+                    "type": "string",
+                    "example": "tenant-acme"
+                },
+                "strategy": {
+                    "type": "string",
+                    "enum": [
+                        "shared",
+                        "dedicated"
+                    ],
+                    "example": "dedicated"
+                },
+                "tenant_id": {
                     "type": "string",
                     "format": "uuid"
                 }

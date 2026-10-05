@@ -3,10 +3,11 @@ package eventbus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/pkg/events"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 // _ ensures encoding/json is treated as used — the type parameter
@@ -44,13 +45,17 @@ func (r *RoutingPublisher) Publish(ctx context.Context, env events.Envelope[json
 	return pub.Publish(ctx, env)
 }
 
-// PublishBatch dispatches each envelope independently. Batching across
-// topics is not supported by SNS; the outbox runner already publishes at
-// bounded concurrency, so a per-item Publish loop preserves ordering per
-// topic without adding a second batching layer.
+// PublishBatch splits envs by topic and publishes each lane through its
+// own publisher's batch API (SNS cannot batch across topics).
+//
+// Both lanes are always attempted. The outbox runner treats a returned
+// *events.BatchError as authoritative per message: every record NOT listed
+// in Failures is marked published. Returning early on the first lane's
+// error would therefore either mark the unattempted lane published (lost
+// events) or, for a plain error, re-send the lane that already went out.
+// When both lanes are present, their outcomes are merged into one
+// *events.BatchError; a single-lane batch returns that lane's error as is.
 func (r *RoutingPublisher) PublishBatch(ctx context.Context, envs []events.Envelope[json.RawMessage]) error {
-	// Group by topic so a batch of same-topic envelopes uses the underlying
-	// publisher's batch API (reduces SNS calls).
 	membershipBatch := make([]events.Envelope[json.RawMessage], 0, len(envs))
 	tenantBatch := make([]events.Envelope[json.RawMessage], 0, len(envs))
 	for _, e := range envs {
@@ -61,23 +66,50 @@ func (r *RoutingPublisher) PublishBatch(ctx context.Context, envs []events.Envel
 			membershipBatch = append(membershipBatch, e)
 		}
 	}
-	if len(membershipBatch) > 0 {
-		if r.membership == nil {
-			return fmt.Errorf("eventbus: no publisher wired for topic %q", domain.TopicMembership)
-		}
-		if err := r.membership.PublishBatch(ctx, membershipBatch); err != nil {
-			return err
-		}
+	switch {
+	case len(membershipBatch) == 0 && len(tenantBatch) == 0:
+		return nil
+	case len(tenantBatch) == 0:
+		return publishLane(ctx, r.membership, domain.TopicMembership, membershipBatch)
+	case len(membershipBatch) == 0:
+		return publishLane(ctx, r.tenant, domain.TopicTenant, tenantBatch)
 	}
-	if len(tenantBatch) > 0 {
-		if r.tenant == nil {
-			return fmt.Errorf("eventbus: no publisher wired for topic %q", domain.TopicTenant)
-		}
-		if err := r.tenant.PublishBatch(ctx, tenantBatch); err != nil {
-			return err
-		}
+
+	var failures []events.BatchFailure
+	failures = appendLaneFailures(failures, membershipBatch,
+		publishLane(ctx, r.membership, domain.TopicMembership, membershipBatch))
+	failures = appendLaneFailures(failures, tenantBatch,
+		publishLane(ctx, r.tenant, domain.TopicTenant, tenantBatch))
+	if len(failures) == 0 {
+		return nil
 	}
-	return nil
+	return &events.BatchError{Failures: failures}
+}
+
+func publishLane(ctx context.Context, pub events.Publisher, topic string, batch []events.Envelope[json.RawMessage]) error {
+	if pub == nil {
+		return fmt.Errorf("eventbus: no publisher wired for topic %q", topic)
+	}
+	return pub.PublishBatch(ctx, batch)
+}
+
+// appendLaneFailures adds one lane's outcome to failures. A *BatchError is
+// already per message. Any other error failed the whole lane, so each of its
+// envelopes is listed, retryable exactly when the runner would have treated
+// the plain error as transient.
+func appendLaneFailures(failures []events.BatchFailure, batch []events.Envelope[json.RawMessage], err error) []events.BatchFailure {
+	if err == nil {
+		return failures
+	}
+	var batchErr *events.BatchError
+	if errors.As(err, &batchErr) {
+		return append(failures, batchErr.Failures...)
+	}
+	retryable := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, events.ErrRetryable)
+	for _, e := range batch {
+		failures = append(failures, events.BatchFailure{ID: e.ID, Code: "LaneError", Message: err.Error(), Retryable: retryable})
+	}
+	return failures
 }
 
 func (r *RoutingPublisher) pubForType(eventType string) (events.Publisher, string) {
