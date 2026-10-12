@@ -1138,14 +1138,14 @@ func TestErrPaths_ReconcilerStore(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	// ERRPATH-RECON-003 — HardDeleteExpiredTrials ctx cancelled (lines 84,89)
-	t.Run("HardDeleteExpiredTrials_CtxCancelled", func(t *testing.T) {
+	// ERRPATH-RECON-003 — ListExpiredTrialTenants ctx cancelled
+	t.Run("ListExpiredTrialTenants_CtxCancelled", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		cancelCtx, cancel := context.WithCancel(ctx)
 		cancel()
 		store := pgadapter.NewReconcilerStore(sysPool)
-		_, err := store.HardDeleteExpiredTrials(cancelCtx, 30, 500)
+		_, err := store.ListExpiredTrialTenants(cancelCtx, 15, 500)
 		assert.Error(t, err)
 	})
 

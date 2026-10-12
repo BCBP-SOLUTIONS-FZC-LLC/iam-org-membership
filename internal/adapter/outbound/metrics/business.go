@@ -225,10 +225,11 @@ var (
 	// result, found|not_found (§11.2).
 	PublicTenantResolve *prometheus.CounterVec
 
-	// CatalogCacheInvalidated counts DepartmentCatalogChanged events that
-	// successfully cleared om:departments + om:departments:stale via the
-	// catalog-orgm-q consumer (Gap-12 fix). Provides a Prometheus signal for
-	// the cache-propagation path that otherwise has only log visibility.
+	// CatalogCacheInvalidated counts DepartmentCatalogChanged and
+	// PlanCatalogChanged events that successfully cleared their respective
+	// catalog cache keys (om:departments or om:plans, primary + stale) via
+	// the catalog-orgm-q consumer (Gap-12 / CAT-GAP-004 fix). Provides a
+	// Prometheus signal for the cache-propagation path.
 	CatalogCacheInvalidated prometheus.Counter
 
 	// Business-observability gauges populated by 5-min exporter goroutines
@@ -634,7 +635,7 @@ func registerServiceMetrics() {
 		"result"))
 	CatalogCacheInvalidated = must(gincommon.NewCounter(nil,
 		"iam_org_membership_catalog_cache_invalidated_total",
-		"DepartmentCatalogChanged events that successfully cleared the om:departments cache (Gap-12 fix). Currently inert — increments only once iam-catalog-admin publishes this event type."))
+		"Catalog cache invalidations via catalog-orgm-q: DepartmentCatalogChanged (om:departments) and PlanCatalogChanged (om:plans) events that successfully cleared their primary+stale cache keys (Gap-12/CAT-GAP-004)."))
 
 	TenantOwnerless = must(gincommon.NewGauge(nil,
 		"iam_org_membership_tenant_ownerless",

@@ -30,6 +30,7 @@ import (
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/sqspipeline"
+	auditlogclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditlog"
 	catalogadminclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/catalogadmin"
 	delegationcheckclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/delegationcheck"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
@@ -445,7 +446,7 @@ func main() {
 		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("catalog-orgm-q")})
 		log.Info("catalog-orgm-q consumer wired", map[string]interface{}{"queue_url": url})
 	} else {
-		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments cache TTL-only)", nil)
+		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments and plans caches TTL-only)", nil)
 	}
 
 	for _, wc := range sqsConsumers {
@@ -517,6 +518,7 @@ func main() {
 	// the operation, since the primary guarantee is structural (composite
 	// FK bar, TR-8/DM-4).
 	tokenServiceClient := tokenserviceclient.New(log)
+	auditLogClient := auditlogclient.New(log)
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	// I-16 (§16 RP-C3): bound against sysPool (BYPASSRLS), NOT pool — RP's
@@ -532,7 +534,7 @@ func main() {
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
-	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
+	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).WithAuditLog(auditLogClient)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays).
 		WithTokenServiceClient(tokenServiceClient)
@@ -545,7 +547,8 @@ func main() {
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour).
 		WithMaxInvitesPerActorPerHour(inviteMaxPerActorPerHour).
-		WithTokenServiceClient(tokenServiceClient)
+		WithTokenServiceClient(tokenServiceClient).
+		WithAuditLog(auditLogClient)
 	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(sysTenantRepo, subscriptionGraceDays)
 	// PUB-1 (LLD §5.4/§8.11): sysTenantRepo, NOT tenantRepo — the route is

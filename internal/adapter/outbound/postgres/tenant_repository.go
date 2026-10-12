@@ -553,6 +553,16 @@ func (r *TenantRepository) WipeTenantChildren(ctx context.Context, id uuid.UUID)
 	})
 }
 
+// HardDeleteTenant removes the tenant row for a trial_expired tenant.
+// ON DELETE CASCADE wipes all child tables in the same transaction.
+// Called by trial-cleanup via TxRunner so the outbox publish is atomic.
+func (r *TenantRepository) HardDeleteTenant(ctx context.Context, id uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, id)
+		return err
+	})
+}
+
 // optimisticConflictOrNotFound probes the row without a version predicate
 // so callers get the right error code (CONC-3 vs 404).
 func (r *TenantRepository) optimisticConflictOrNotFound(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {

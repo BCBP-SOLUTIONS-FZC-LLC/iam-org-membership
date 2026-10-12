@@ -77,27 +77,30 @@ func (s *ReconcilerStore) ClearRealmSyncPending(ctx context.Context, tenantID uu
 	})
 }
 
-// HardDeleteExpiredTrials hard-deletes at most limit trial_expired tenants
-// whose trial_ends_at is older than graceDays. The LIMIT is applied via a
-// subquery because PostgreSQL's DELETE does not support a LIMIT clause
-// directly; the CTE approach avoids a full table scan (PERF-8).
-func (s *ReconcilerStore) HardDeleteExpiredTrials(ctx context.Context, graceDays, limit int) (int, error) {
-	var n int
+// ListExpiredTrialTenants returns at most limit IDs of trial_expired tenants
+// whose trial_ends_at is older than graceDays. The caller hard-deletes each
+// tenant atomically with its TenantMembershipsPurged outbox entry.
+func (s *ReconcilerStore) ListExpiredTrialTenants(ctx context.Context, graceDays, limit int) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
 	err := withPool(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			DELETE FROM tenants
-			WHERE id IN (
-				SELECT id FROM tenants
-				WHERE status = 'trial_expired'
-				  AND trial_ends_at < now() - make_interval(days => $1)
-				  AND deleted_at IS NULL
-				LIMIT $2
-			)`, graceDays, limit)
+		rows, err := tx.Query(ctx, `
+			SELECT id FROM tenants
+			WHERE status = 'trial_expired'
+			  AND trial_ends_at < now() - make_interval(days => $1)
+			  AND deleted_at IS NULL
+			LIMIT $2`, graceDays, limit)
 		if err != nil {
 			return err
 		}
-		n = int(tag.RowsAffected())
-		return nil
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			ids = append(ids, id)
+		}
+		return rows.Err()
 	})
-	return n, err
+	return ids, err
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 )
@@ -125,27 +126,30 @@ func TestREC_OUTBOX_002_EmptyTableIsNoOp(t *testing.T) {
 
 // TestREC_TRIAL_001_HardDeletesExpiredPastGrace — a trial_expired
 // tenant with trial_ends_at past grace hard-deletes; one within grace and
-// one non-trial-expired both survive.
+// one non-trial-expired both survive. TenantMembershipsPurged is enqueued
+// atomically for the deleted tenant.
 func TestREC_TRIAL_001_HardDeletesExpiredPastGrace(t *testing.T) {
 	t.Parallel()
-	_, rawPool, sysPool := setupTestDB(t)
 	ctx := context.Background()
+	jctx, pub, rawPool := newJobContext(t, ctx)
+	jctx.TrialGraceDays = 15
+	jctx.BatchLimit = 100
 
 	past := seedTenantStatus(t, ctx, rawPool, "trial-past-018", "trial_expired", "-30 days")
 	within := seedTenantStatus(t, ctx, rawPool, "trial-within-018", "trial_expired", "-5 days")
 	activeTrial := seedTenantStatus(t, ctx, rawPool, "trial-active-018", "trial", "+15 days")
 
-	res, err := jobs.TrialCleanup(ctx, &jobs.Context{
-		Reconciler:     pgadapter.NewReconcilerStore(sysPool),
-		TrialGraceDays: 15,
-		BatchLimit:     100,
-	})
+	res, err := jobs.TrialCleanup(ctx, jctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.Succeeded, "only the past-grace trial_expired tenant must delete")
 
 	assert.False(t, tenantExists(t, ctx, rawPool, past), "past-grace tenant must be hard-deleted")
 	assert.True(t, tenantExists(t, ctx, rawPool, within), "within-grace tenant must survive")
 	assert.True(t, tenantExists(t, ctx, rawPool, activeTrial), "still-active trial must survive")
+
+	purged := pub.byType(domain.EventTenantMembershipsPurged)
+	require.Len(t, purged, 1, "one TenantMembershipsPurged must be enqueued for the deleted tenant")
+	assert.Equal(t, past, purged[0].TenantID)
 }
 
 // ── P18-REC-REALM-001 ───────────────────────────────────────────────────────

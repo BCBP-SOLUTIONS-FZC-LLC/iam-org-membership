@@ -55,6 +55,9 @@ type Context struct {
 	Logger port.SlogStyleLogger
 	// Metrics is nil-checked at every call site — see Metrics doc comment.
 	Metrics Metrics
+	// AuditLog is the AL-5 client for invitation.expired batch entries (D-6).
+	// Nil is safe — missing client silently skips the write.
+	AuditLog port.AuditLogClient
 
 	BatchLimit             int
 	SeatOverageGraceDays   int // SEAT-5 grace_ends_at = overage_since + N days

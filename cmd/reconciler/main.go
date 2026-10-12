@@ -16,6 +16,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
+	auditlogclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditlog"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
@@ -274,6 +275,7 @@ func run() int {
 		RealmProvisioner:       realmprovisionerclient.New(rawLog),
 		Logger:                 log,
 		Metrics:                metrics.Recorder{},
+		AuditLog:               auditlogclient.New(rawLog),
 		BatchLimit:             envInt("RECONCILER_BATCH_LIMIT", 500),
 		SeatOverageGraceDays:   envInt("SEAT_OVERAGE_GRACE_DAYS", 30),
 		TrialGraceDays:         envInt("TRIAL_GRACE_DAYS", 15),

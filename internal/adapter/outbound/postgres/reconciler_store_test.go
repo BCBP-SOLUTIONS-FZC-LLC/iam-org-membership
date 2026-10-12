@@ -142,30 +142,42 @@ func TestReconcilerStore_ClearRealmSyncPending_Success(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// ── HardDeleteExpiredTrials ──────────────────────────────────────────────
+// ── ListExpiredTrialTenants ──────────────────────────────────────────────
 
-func TestReconcilerStore_HardDeleteExpiredTrials_ReturnsRowsAffected(t *testing.T) {
+func TestReconcilerStore_ListExpiredTrialTenants_ReturnsIDs(t *testing.T) {
+	id1, id2 := uuid.New(), uuid.New()
 	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.NewCommandTag("DELETE 3"), nil
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return &fakeRows{scripted: [][]any{{id1}, {id2}}}, nil
 		},
 	}
-	n, err := NewReconcilerStore(nil).
-		HardDeleteExpiredTrials(injectTx(context.Background(), tx), 30, 500)
+	got, err := NewReconcilerStore(nil).
+		ListExpiredTrialTenants(injectTx(context.Background(), tx), 15, 500)
 	require.NoError(t, err)
-	assert.Equal(t, 3, n)
+	assert.Equal(t, []uuid.UUID{id1, id2}, got)
 }
 
-func TestReconcilerStore_HardDeleteExpiredTrials_ExecErrorPassesThrough(t *testing.T) {
-	execErr := errors.New("delete failed")
+func TestReconcilerStore_ListExpiredTrialTenants_QueryErrorPassesThrough(t *testing.T) {
+	queryErr := errors.New("query failed")
 	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, execErr
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return nil, queryErr
 		},
 	}
 	_, err := NewReconcilerStore(nil).
-		HardDeleteExpiredTrials(injectTx(context.Background(), tx), 30, 500)
-	assert.ErrorIs(t, err, execErr)
+		ListExpiredTrialTenants(injectTx(context.Background(), tx), 15, 500)
+	assert.ErrorIs(t, err, queryErr)
+}
+
+func TestReconcilerStore_ListExpiredTrialTenants_ScanErrorPassesThrough(t *testing.T) {
+	tx := &fakeTx{
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return &fakeRows{scripted: [][]any{{"not-a-uuid"}}}, nil
+		},
+	}
+	_, err := NewReconcilerStore(nil).
+		ListExpiredTrialTenants(injectTx(context.Background(), tx), 15, 500)
+	assert.Error(t, err)
 }
 
 // PruneOutbox was removed 2026-09-20 — outbox pruning goes entirely through
