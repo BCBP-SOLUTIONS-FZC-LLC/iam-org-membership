@@ -4,13 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/google/uuid"
 )
+
+// patchLocaleRe is the same structural BCP-47 check used by provisioning
+// (provisioning_service.go isValidLocale). Kept here so P-2 and I-1 apply
+// identical rules — a stored locale must always be a well-formed tag.
+var patchLocaleRe = regexp.MustCompile(`^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$`)
 
 // TenantService owns the P-1/P-2 flows. AUTH-1 (read as active member)
 // and AUTH-1 write (tenant_owner only for P-2) are checked at the handler
@@ -65,9 +72,8 @@ func (s *TenantService) GetIncludingOffboarded(ctx context.Context, tenantID uui
 
 // Patch applies P-2. Enforces T-10 range on MFA freshness. On
 // local_accounts_enabled change, calls RP PatchRealmConfig — on non-nil
-// error, sets realm_sync_pending=true and returns 202 semantics (handler
-// translates to HTTP 202 in Phase 4). Phase 2 stub RP returns nil so this
-// path exercises the happy branch.
+// error, sets realm_sync_pending=true (T-15 Option A) and the handler
+// returns HTTP 202 to the client.
 func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *domain.TenantPatch) (*domain.Tenant, bool, error) {
 	if patch == nil {
 		return nil, false, domain.NewError(domain.ErrValidation, "patch is required")
@@ -87,11 +93,21 @@ func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *do
 				WithDetails(map[string]any{"code": "invalid_mfa_freshness_seconds"})
 		}
 	}
-	// BCP-47 sanity: for Phase 2 we accept anything non-empty and defer
-	// full BCP-47 validation to a shared validator lib in Phase 6.
-	if patch.DefaultLocale != nil && *patch.DefaultLocale == "" {
-		return nil, false, domain.NewError(domain.ErrValidation, "default_locale must not be empty").
-			WithDetails(map[string]any{"code": "invalid_locale"})
+	// Name length cap — same as provisioning (GAP-I1-4 / provisioning_service.go).
+	// The DB has CHECK(name <> '') but no upper-bound constraint, so the service
+	// layer is the only guard.
+	if patch.Name != nil && len(*patch.Name) > 255 {
+		return nil, false, domain.NewError(domain.ErrValidation, "name must not exceed 255 characters").
+			WithDetails(map[string]any{"code": "invalid_request"})
+	}
+
+	// BCP-47 structural check — same regex as provisioning so stored locales
+	// are always well-formed (e.g. "en-US", "fr", "zh-Hant").
+	if patch.DefaultLocale != nil {
+		if *patch.DefaultLocale == "" || !patchLocaleRe.MatchString(*patch.DefaultLocale) {
+			return nil, false, domain.NewError(domain.ErrValidation, "default_locale must be a valid BCP-47 language tag (e.g. en-US, fr, zh-Hant)").
+				WithDetails(map[string]any{"code": "invalid_locale"})
+		}
 	}
 
 	// Detect a local_accounts_enabled change so we know whether to invoke
@@ -192,9 +208,8 @@ func (s *TenantService) auditSettingChange(parent context.Context, tenantID uuid
 			UserAgent:       userAgent,
 			Metadata:        changed,
 		}); err != nil {
-			// Fail-open: log but do not surface — audit outage must not
-			// degrade the P-2 response.
-			_ = err
+			// Fail-open: audit outage must not degrade P-2; count for alerting.
+			metrics.IncAuditDeliveryFailed("config.tenant_setting.changed")
 		}
 	}()
 }

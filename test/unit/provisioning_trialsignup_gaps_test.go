@@ -119,6 +119,10 @@ type tsRoleRepo struct {
 func (r *tsRoleRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
 	return nil, nil
 }
+
+func (r *tsRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (r *tsRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

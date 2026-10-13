@@ -192,6 +192,10 @@ type i1RoleRepo struct{}
 func (r *i1RoleRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
 	return nil, nil
 }
+
+func (r *i1RoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (r *i1RoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

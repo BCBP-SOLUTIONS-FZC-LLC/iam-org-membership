@@ -677,7 +677,7 @@ func (s *InvitationService) auditInvitation(parent context.Context, tenantID, in
 			IPAddress:       ipAddress,
 			UserAgent:       userAgent,
 		}); err != nil {
-			_ = err // fail-open — audit outage must not surface to caller
+			metrics.IncAuditDeliveryFailed(entryType) // fail-open — count for alerting
 		}
 	}()
 }

@@ -25,6 +25,10 @@ type fakeDeptMemRepo struct {
 func (f *fakeDeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
+
+func (f *fakeDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 func (f *fakeDeptMemRepo) ListByDepartment(ctx context.Context, tenantID, departmentID uuid.UUID) ([]domain.DeptMembership, error) {
 	return f.listByDeptFn(ctx, tenantID, departmentID)
 }
@@ -424,6 +428,10 @@ func (r *fullDeptMemRepo) ListByUser(_ context.Context, _, _ uuid.UUID) ([]domai
 	if r.existing != nil {
 		return []domain.DeptMembership{*r.existing}, nil
 	}
+	return nil, nil
+}
+
+func (r *fullDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
 func (r *fullDeptMemRepo) Assign(_ context.Context, tid, uid, did, memID uuid.UUID, level domain.DeptRole, actorID uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {

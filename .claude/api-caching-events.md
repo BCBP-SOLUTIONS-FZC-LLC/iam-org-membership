@@ -69,7 +69,7 @@
 | # | Method & Path | Caller | Purpose |
 |---|---|---|---|
 | I-1 | `POST /tenants` | Realm Provisioner / Signup BFF | Provision tenant row |
-| I-2 | `PATCH /tenants/:id` | Realm Provisioner | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` (all together) after dedicated realm provisioning |
+| I-2 | `PATCH /tenants/:id` | internal (tenant-orgm-q consumer, via `TenantRealmReady` event) | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` (all together) after dedicated realm provisioning — driven event-side, not by a direct RP HTTP call; RP has no HTTP client for this endpoint |
 | I-3 | `POST /tenants/:id/members` | Event Consumer | Add membership from Keycloak `REGISTER` — **also invitation-acceptance path** (§8.10, PI-4): flips matching pending row to `accepted`, applies queued roles/depts |
 | I-4 | `PATCH /tenants/:id/members/:user_id` | Event Consumer | Update status from Keycloak lifecycle |
 | I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — **delegate-impact gated** (§8.8, WFI-1); sets `ownerless_since` if last owner (TM-12/T-13) |
@@ -136,7 +136,7 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 | Key | Value | TTL | Invalidated by |
 |---|---|---|---|
 | `om:memberships:{tenant}:{user}` | JSON of full I-8 response | 300 s ±30 s jitter (CACHE-4) | any membership/role/dept write for this user; §8.9 user-deletion cascade |
-| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); Realm Provisioner I-2 |
+| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); I-2 (via `TenantRealmReady` consumer) |
 | `om:members:{tenant}:{limit}` | P-4 page-1 only (cursorless), `limit=50` only (CACHE-10) | 120 s | any membership add/remove/update for tenant (CACHE-7) |
 | `om:dept_members:{tenant}:{dept}` | JSON dept member list | 120 s | any dept_memberships write for tenant+dept |
 | `om:locale:{tenant}` | BCP-47 string | 600 s | P-2 with locale change |

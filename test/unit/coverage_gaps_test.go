@@ -131,6 +131,10 @@ func (r *gapDeptMemRepo) ListByUser(ctx context.Context, tenantID, userID uuid.U
 	}
 	return nil, nil
 }
+func (r *gapDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+
 func (r *gapDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }

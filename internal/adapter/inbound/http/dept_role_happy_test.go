@@ -113,6 +113,10 @@ func (f *drhDeptMemRepo) ListByUser(ctx context.Context, tid, uid uuid.UUID) ([]
 	}
 	return nil, nil
 }
+
+func (f *drhDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 func (f *drhDeptMemRepo) ListByDepartment(ctx context.Context, tid, did uuid.UUID) ([]domain.DeptMembership, error) {
 	if f.listByDeptFn != nil {
 		return f.listByDeptFn(ctx, tid, did)

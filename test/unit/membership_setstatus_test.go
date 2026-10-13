@@ -62,6 +62,9 @@ type noOwnerRoleRepo struct{}
 func (noOwnerRoleRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
 	return nil, nil
 }
+func (noOwnerRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (noOwnerRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }
@@ -280,6 +283,10 @@ type ownerRoleRepo struct {
 
 func (r *ownerRoleRepo) ListByUser(_ context.Context, tid, uid uuid.UUID) ([]domain.TenantRole, error) {
 	return []domain.TenantRole{{TenantID: tid, UserID: uid, RoleCode: domain.RoleTenantOwner}}, nil
+}
+
+func (r *ownerRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
 }
 func (r *ownerRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil

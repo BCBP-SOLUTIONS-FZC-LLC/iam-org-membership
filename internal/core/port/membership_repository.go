@@ -44,6 +44,10 @@ type TenantRoleRepository interface {
 	// ListByUser returns all active elevated roles for a user.
 	ListByUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.TenantRole, error)
 
+	// ListByUsers returns elevated roles for a batch of users in one query
+	// (WHERE user_id = ANY($2)). Used by P-4 to eliminate the N+1 pattern.
+	ListByUsers(ctx context.Context, tenantID uuid.UUID, userIDs []uuid.UUID) ([]domain.TenantRole, error)
+
 	// ListByRole returns all users holding a given elevated role
 	// (used by TM-8 last-owner guard when role=tenant_owner).
 	ListByRole(ctx context.Context, tenantID uuid.UUID, role domain.TenantRoleCode) ([]domain.TenantRole, error)
@@ -67,6 +71,10 @@ type TenantRoleRepository interface {
 type DeptMembershipRepository interface {
 	ListByUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.DeptMembership, error)
 	ListByDepartment(ctx context.Context, tenantID, departmentID uuid.UUID) ([]domain.DeptMembership, error)
+
+	// ListByUsers returns dept memberships for a batch of users in one query
+	// (WHERE user_id = ANY($2)). Used by P-4 to eliminate the N+1 pattern.
+	ListByUsers(ctx context.Context, tenantID uuid.UUID, userIDs []uuid.UUID) ([]domain.DeptMembership, error)
 
 	// Assign upserts a (user, dept) pair to the given level. On level
 	// change it soft-deletes the old row and inserts a new one so the

@@ -103,35 +103,55 @@ type SetStatusResult struct {
 	DelegateImpact *DelegateImpactAdvisory
 }
 
-// List is P-4 — keyset-paginated. Hydrates tenant_roles per row and injects
-// the derived "member" role (TR-7).
+// List is P-4 — keyset-paginated. Hydrates tenant_roles and dept_memberships
+// for the page in two batch queries (one per relation) rather than N+1.
 func (s *MembershipService) List(ctx context.Context, tenantID uuid.UUID, cursor *domain.MembershipListCursor, limit int) (*domain.MembershipListPage, error) {
 	page, err := s.memberships.List(ctx, tenantID, cursor, limit)
 	if err != nil {
 		return nil, err
 	}
-	// N+1 role + dept lookup — acceptable for Phase 2b (Phase 3 optimises via joined query).
+	if len(page.Items) == 0 {
+		return page, nil
+	}
+
+	// Collect the page's user IDs for the two batch lookups below.
+	userIDs := make([]uuid.UUID, len(page.Items))
+	for i, item := range page.Items {
+		userIDs[i] = item.Membership.UserID
+	}
+
+	// Batch-fetch elevated roles for all users on the page (one query).
+	allRoles, err := s.roles.ListByUsers(ctx, tenantID, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	rolesByUser := make(map[uuid.UUID][]domain.TenantRoleCode, len(userIDs))
+	for _, tr := range allRoles {
+		rolesByUser[tr.UserID] = append(rolesByUser[tr.UserID], tr.RoleCode)
+	}
+
+	// Batch-fetch dept memberships for all users on the page (one query).
+	allDepts, err := s.deptMemberships.ListByUsers(ctx, tenantID, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	deptsByUser := make(map[uuid.UUID][]domain.DeptMembershipView, len(userIDs))
+	for _, d := range allDepts {
+		deptsByUser[d.UserID] = append(deptsByUser[d.UserID], domain.DeptMembershipView{
+			DepartmentID: d.DepartmentID,
+			RoleLevel:    d.RoleLevel,
+		})
+	}
+
+	// Hydrate each page item from the in-memory maps — no further DB round-trips.
 	for i := range page.Items {
 		mem := &page.Items[i]
-		trs, err := s.roles.ListByUser(ctx, tenantID, mem.Membership.UserID)
-		if err != nil {
-			return nil, err
-		}
+		uid := mem.Membership.UserID
 		// TR-7: "member" is derived at read time — never stored in tenant_roles.
 		codes := []domain.TenantRoleCode{domain.RoleMember}
-		for _, tr := range trs {
-			codes = append(codes, tr.RoleCode)
-		}
+		codes = append(codes, rolesByUser[uid]...)
 		mem.TenantRoles = codes
-		dms, err := s.deptMemberships.ListByUser(ctx, tenantID, mem.Membership.UserID)
-		if err != nil {
-			return nil, err
-		}
-		views := make([]domain.DeptMembershipView, len(dms))
-		for j, d := range dms {
-			views[j] = domain.DeptMembershipView{DepartmentID: d.DepartmentID, RoleLevel: d.RoleLevel}
-		}
-		mem.Departments = views
+		mem.Departments = deptsByUser[uid] // nil → empty slice acceptable (I8-4 pattern)
 	}
 	return page, nil
 }

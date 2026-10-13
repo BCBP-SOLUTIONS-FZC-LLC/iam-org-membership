@@ -77,6 +77,10 @@ type ruRoleRepo struct {
 func (f *ruRoleRepo) ListByUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.TenantRole, error) {
 	return f.listByUserFn(ctx, tenantID, userID)
 }
+func (f *ruRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
+
 func (f *ruRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }
@@ -98,6 +102,10 @@ type ruDeptMemRepo struct {
 }
 
 func (f *ruDeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+
+func (f *ruDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
 func (f *ruDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {

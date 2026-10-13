@@ -28,6 +28,23 @@ type fakeRoleRepo struct {
 func (f *fakeRoleRepo) ListByUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.TenantRole, error) {
 	return f.listByUserFn(ctx, tenantID, userID)
 }
+func (f *fakeRoleRepo) ListByUsers(ctx context.Context, tenantID uuid.UUID, userIDs []uuid.UUID) ([]domain.TenantRole, error) {
+	var out []domain.TenantRole
+	for _, uid := range userIDs {
+		roles, err := f.listByUserFn(ctx, tenantID, uid)
+		if err != nil {
+			return nil, err
+		}
+		for i := range roles {
+			if roles[i].UserID == uuid.Nil {
+				roles[i].UserID = uid
+			}
+		}
+		out = append(out, roles...)
+	}
+	return out, nil
+}
+
 func (f *fakeRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }
@@ -115,6 +132,23 @@ type fakeDeptMemListByUser struct {
 func (f *fakeDeptMemListByUser) ListByUser(ctx context.Context, tenantID, userID uuid.UUID) ([]domain.DeptMembership, error) {
 	return f.listByUserFn(ctx, tenantID, userID)
 }
+func (f *fakeDeptMemListByUser) ListByUsers(ctx context.Context, tenantID uuid.UUID, userIDs []uuid.UUID) ([]domain.DeptMembership, error) {
+	var out []domain.DeptMembership
+	for _, uid := range userIDs {
+		dms, err := f.listByUserFn(ctx, tenantID, uid)
+		if err != nil {
+			return nil, err
+		}
+		for i := range dms {
+			if dms[i].UserID == uuid.Nil {
+				dms[i].UserID = uid
+			}
+		}
+		out = append(out, dms...)
+	}
+	return out, nil
+}
+
 func (f *fakeDeptMemListByUser) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }

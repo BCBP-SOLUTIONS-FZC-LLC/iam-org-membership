@@ -81,6 +81,10 @@ func (f *dmsFullDeptMemRepo) ListByUser(ctx context.Context, t, u uuid.UUID) ([]
 	}
 	return nil, nil
 }
+
+func (f *dmsFullDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 func (f *dmsFullDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }

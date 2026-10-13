@@ -38,6 +38,15 @@ func (r *TenantRoleRepository) ListByUser(ctx context.Context, tenantID, userID 
 	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`, tenantID, userID)
 }
 
+// ListByUsers fetches elevated roles for a batch of users in one round
+// trip, eliminating the N+1 pattern in P-4 (MembershipService.List).
+func (r *TenantRoleRepository) ListByUsers(ctx context.Context, tenantID uuid.UUID, userIDs []uuid.UUID) ([]domain.TenantRole, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = ANY($2) AND deleted_at IS NULL`, tenantID, userIDs)
+}
+
 func (r *TenantRoleRepository) ListByRole(ctx context.Context, tenantID uuid.UUID, role domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return r.listWhere(ctx, `WHERE tenant_id = $1 AND role_code = $2 AND deleted_at IS NULL`, tenantID, string(role))
 }

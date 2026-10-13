@@ -64,8 +64,7 @@ func (h *TenantHandler) Get(c *gin.Context) {
 // Patch is P-2: tenant_owner only.
 //
 // On local_accounts_enabled change, the service calls RP PatchRealmConfig
-// synchronously. If that returns non-nil (Phase 4 wires the real client;
-// Phase 2 stub always returns nil), the tenant row is written with
+// synchronously. If that returns non-nil, the tenant row is written with
 // realm_sync_pending=true and we return 202 Accepted per LLD §16 A58 / T-15.
 // Otherwise 200 OK with the updated tenant.
 //

@@ -83,6 +83,7 @@ components:
       - internal/adapter/outbound/groupmappingclient
       - internal/adapter/outbound/delegationcheck
       - internal/adapter/outbound/tokenservice
+      - internal/adapter/outbound/auditlog
 
   # Generated Swagger docs — output of `make swag` (swaggo/swag). Declared as a
   # component so arch-lint doesn't fail on the blank import in cmd/server/main.go.

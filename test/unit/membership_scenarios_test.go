@@ -29,6 +29,10 @@ func (r *extRoleRepo) ListByUser(ctx context.Context, t, u uuid.UUID) ([]domain.
 	}
 	return nil, nil
 }
+
+func (r *extRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (r *extRoleRepo) ListByRole(_ context.Context, _ uuid.UUID, _ domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

@@ -66,6 +66,10 @@ type noErrRoleRepo struct {
 func (r *noErrRoleRepo) ListByUser(_ context.Context, _, _ uuid.UUID) ([]domain.TenantRole, error) {
 	return r.roles, r.err
 }
+
+func (r *noErrRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (r *noErrRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

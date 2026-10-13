@@ -5,11 +5,10 @@
 //   - DeleteUser         — recommend-and-confirm (§16, PI-9 reconciler)
 //   - PatchRealmConfig   — HLD-ratified (HLD §5.2, LLD §16 A7/A58, T-15)
 //   - RevokeUserSessions — recommend-and-confirm (§16 A46, AUTH-8 fail-open)
-//   - ResetMFA           — RP-9, LLD §16 OQ-8 (F6 of the RP↔O&M alignment
-//     review): confirmed O&M-initiated, but not yet wired to a public
-//     endpoint or added to port.RealmProvisionerClient — deliberately a
-//     method on *HTTPClient only, not the interface, until the "Reset MFA"
-//     admin feature is actually scheduled (RP has agreed it's fine to hold).
+//   - ResetMFA           — RP-9, LLD §16 OQ-8/F6; O&M-initiated via P-34
+//     (POST /tenants/:id/members/:user_id/reset-mfa). Fail-closed: non-2xx
+//     maps to realm_provisioner_unavailable (503). Not in port.RealmProvisionerClient
+//     — called via the concrete *HTTPClient in MembershipService.ResetUserMFA.
 //
 // F8 of the RP↔O&M alignment review: every route below is versioned under
 // internalAPIBase ("/api/v1/internal"), built from one central helper

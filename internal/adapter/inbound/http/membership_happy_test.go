@@ -202,6 +202,10 @@ func (f *mhRoleRepo) ListByUser(ctx context.Context, tid, uid uuid.UUID) ([]doma
 	}
 	return nil, nil
 }
+
+func (f *mhRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (f *mhRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

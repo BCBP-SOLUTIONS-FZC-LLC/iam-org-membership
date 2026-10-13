@@ -71,6 +71,10 @@ func (f *oghRoleRepo) ListByUser(ctx context.Context, tid, uid uuid.UUID) ([]dom
 	return nil, nil
 }
 
+func (f *oghRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
+
 func (f *oghRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

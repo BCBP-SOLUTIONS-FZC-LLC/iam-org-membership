@@ -18,9 +18,9 @@ How this service implements the standard defined and enforced by [platform-ginco
 
 | Library | Version | Emits here | Wiring |
 |---|---|---|---|
-| platform-gincommon | v1.5.0 | `platform_http_*`, `platform_build_info`, `platform_library_info{library="platform-gincommon"}`; owns the registry and `metricslint` | `gincommon.ObservabilityMiddlewares(cfg)` in `internal/adapter/inbound/http/router.go`; `/metrics` served by `gincommon.MetricsHandler()` on `METRICS_PORT` |
-| platform-events/v2 | v2.0.0 | `platform_messages_*`, `platform_retry_total`, `platform_dlq_messages_total`, `platform_duplicate_messages_total` (inbox), `platform_outbox_*`, `platform_dependency_request_seconds` (SNS/SQS/codec), `platform_event_propagation_seconds`, ... | `events.InitMetrics(events.MetricsIdentityFromLabels(gincommon.MetricsConstLabels()), gincommon.MetricsRegisterer())` |
-| platform-pgcommon/v2 | v2.0.0 | `platform_db_*`, labelled `pool="default"` (app pool) and `pool="system"` (BYPASSRLS pool) | `pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(...), gincommon.MetricsRegisterer())`, before `pgcommon.NewPool` |
+| platform-gincommon | v1.6.0 | `platform_http_*`, `platform_build_info`, `platform_library_info{library="platform-gincommon"}`; owns the registry and `metricslint` | `gincommon.ObservabilityMiddlewares(cfg)` in `internal/adapter/inbound/http/router.go`; `/metrics` served by `gincommon.MetricsHandler()` on `METRICS_PORT` |
+| platform-events/v2 | v2.1.0 | `platform_messages_*`, `platform_retry_total`, `platform_dlq_messages_total`, `platform_duplicate_messages_total` (inbox), `platform_outbox_*`, `platform_dependency_request_seconds` (SNS/SQS/codec), `platform_event_propagation_seconds`, ... | `events.InitMetrics(events.MetricsIdentityFromLabels(gincommon.MetricsConstLabels()), gincommon.MetricsRegisterer())` |
+| platform-pgcommon/v2 | v2.0.1 | `platform_db_*`, labelled `pool="default"` (app pool) and `pool="system"` (BYPASSRLS pool) | `pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(...), gincommon.MetricsRegisterer())`, before `pgcommon.NewPool` |
 
 All three register on `gincommon.MetricsRegisterer()`, so one scrape serves every collector. `metrics.Register` is a no-op until gincommon's identity is initialised (the constructors need it), so it must run after `ObservabilityMiddlewares`; every test binary initialises gincommon with the production service name first. Order in both binaries: `ObservabilityMiddlewares` (fixes the identity) → `metrics.Register` (builds this service's collectors, including the registry-shared ones a library later adopts) → `events.InitMetrics` → `pgmetrics.InitWithIdentity` → pools. `TestStandard_LibrariesShareRegistryCollectors` pins that order: platform-events must adopt the shared collectors, not be refused.
 
@@ -41,7 +41,7 @@ The reconciler CronJobs share the server's identity, because the standard requir
 |---|---|---|---|
 | 1 — platform-shared | `platform_*` | The libraries. This service builds the three it also records into or that platform-events adopts (`platform_duplicate_messages_total`, `platform_dlq_messages_total`, `platform_dependency_request_seconds`) with `gincommon.NewSharedCounterVec` / `NewSharedHistogramVec` | see [inventory](metric-registry.md) |
 | 2 — IAM domain-shared | `iam_*` | `gincommon.NewSharedCounterVec` / `NewSharedHistogramVec` from the registry (`registerShared`): `iam_rls_violations_total`, `iam_auth_session_revoke_failed_total`, `iam_lifecycle_event_skipped_total`, `iam_lifecycle_event_lag_seconds` | 4 |
-| 3 — service-specific | `iam_org_membership_*` | `gincommon.NewCounterVec` / `NewGauge` / `NewHistogramVec` (`registerServiceMetrics`), which validate the `iam_org_membership_` prefix, suffixes and prohibited labels and inject the identity | 19 |
+| 3 — service-specific | `iam_org_membership_*` | `gincommon.NewCounterVec` / `NewGauge` / `NewHistogramVec` (`registerServiceMetrics`), which validate the `iam_org_membership_` prefix, suffixes and prohibited labels and inject the identity | 20 |
 
 Label **values** stay inside the registry vocabulary:
 

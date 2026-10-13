@@ -206,6 +206,10 @@ type ckTenantRoleRepo struct{}
 func (r *ckTenantRoleRepo) ListByUser(_ context.Context, _, _ uuid.UUID) ([]domain.TenantRole, error) {
 	return nil, nil
 }
+
+func (r *ckTenantRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (r *ckTenantRoleRepo) ListByRole(_ context.Context, _ uuid.UUID, _ domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }
@@ -231,6 +235,10 @@ type ckDeptMemRepo struct {
 }
 
 func (r *ckDeptMemRepo) ListByUser(_ context.Context, _, _ uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+
+func (r *ckDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
 func (r *ckDeptMemRepo) ListByDepartment(_ context.Context, _, _ uuid.UUID) ([]domain.DeptMembership, error) {
