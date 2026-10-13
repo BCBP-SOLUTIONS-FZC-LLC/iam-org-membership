@@ -3,8 +3,6 @@ package port
 import (
 	"context"
 	"log/slog"
-
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Logger is the structured logging port most of this service funnels
@@ -22,6 +20,24 @@ type Logger interface {
 	Error(msg string, fields map[string]any)
 }
 
+// traceExtractorFn is installed once at startup by the composition root
+// (cmd/server, cmd/reconciler) via SetTraceExtractor. It extracts a trace
+// ID string from a context that platform-gincommon's tracer provider has
+// already populated. The function is set after gincommon.InitTracingWithConfig
+// so the OTel import stays in cmd/ (the composition root), not here.
+//
+// nil (zero value) is safe: the *Context log variants simply omit trace_id.
+var traceExtractorFn func(context.Context) string
+
+// SetTraceExtractor installs the function used by all SlogStyleLogger
+// instances to enrich *Context log calls with a trace_id field. Call it
+// once from the composition root (cmd/server, cmd/reconciler), after
+// gincommon.InitTracingWithConfig has installed the global tracer provider.
+// Not safe for concurrent use after the first log call.
+func SetTraceExtractor(fn func(context.Context) string) {
+	traceExtractorFn = fn
+}
+
 // SlogStyleLogger adapts a Logger to log/slog's call conventions — both
 // the plain (msg, "key", val, ...) and *Context (ctx, msg, "key", val, ...)
 // variants — so every call site written against *slog.Logger (services,
@@ -30,12 +46,13 @@ type Logger interface {
 // slog calls to a shared Logger. The *Context variants additionally
 // attach the request's OTel trace_id, when present, as a field — the
 // correlation slog.WarnContext got for free from a context-aware handler,
-// reconstructed explicitly here since Logger itself is context-free.
+// reconstructed explicitly here via the traceExtractorFn injected by
+// SetTraceExtractor (cmd/), so no OTel import is needed in this package.
 //
 // The zero value is safe to use directly and is a no-op — logs never
 // fall through to slog.Default(). Production wiring always injects the
 // Zap logger from platform-gincommon's logger.NewLogger. Tests that omit
-// a logger simply emit nothing, matching iam-user-profile's GlueCodec.
+// a logger simply emit nothing.
 type SlogStyleLogger struct {
 	log Logger
 }
@@ -73,9 +90,9 @@ func (s SlogStyleLogger) ErrorContext(ctx context.Context, msg string, args ...a
 }
 
 func (s SlogStyleLogger) log4(ctx context.Context, level slog.Level, msg string, args []any, withCtx bool) {
-	if withCtx {
-		if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
-			args = append(append([]any{}, args...), "trace_id", span.SpanContext().TraceID().String())
+	if withCtx && traceExtractorFn != nil {
+		if id := traceExtractorFn(ctx); id != "" {
+			args = append(append([]any{}, args...), "trace_id", id)
 		}
 	}
 	if s.log == nil {

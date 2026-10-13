@@ -22,7 +22,10 @@ type ReconcilerStore interface {
 	ListSeatOverageCandidates(ctx context.Context, limit int) ([]uuid.UUID, error)
 	ListRealmSyncPending(ctx context.Context, limit int) ([]RealmSyncCandidate, error)
 	ClearRealmSyncPending(ctx context.Context, tenantID uuid.UUID) error
-	HardDeleteExpiredTrials(ctx context.Context, graceDays, limit int) (int, error)
+	// ListExpiredTrialTenants returns at most limit tenant IDs whose status is
+	// 'trial_expired' and trial_ends_at is older than graceDays. The caller is
+	// responsible for deleting each tenant atomically with its purge event.
+	ListExpiredTrialTenants(ctx context.Context, graceDays, limit int) ([]uuid.UUID, error)
 }
 
 // RealmSyncCandidate is one tenants row waiting for T-15 realm-config push.

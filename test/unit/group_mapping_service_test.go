@@ -141,6 +141,10 @@ func (f *fakeTenantRoleRepo) ListByUser(ctx context.Context, tenantID, userID uu
 	}
 	return nil, nil
 }
+func (f *fakeTenantRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
+
 func (f *fakeTenantRoleRepo) Grant(ctx context.Context, r *domain.TenantRole) (*domain.TenantRole, error) {
 	if f.grantFn != nil {
 		return f.grantFn(ctx, r)

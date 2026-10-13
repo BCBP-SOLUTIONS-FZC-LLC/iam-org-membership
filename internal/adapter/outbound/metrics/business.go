@@ -225,6 +225,20 @@ var (
 	// result, found|not_found (§11.2).
 	PublicTenantResolve *prometheus.CounterVec
 
+	// CatalogCacheInvalidated counts DepartmentCatalogChanged and
+	// PlanCatalogChanged events that successfully cleared their respective
+	// catalog cache keys (om:departments or om:plans, primary + stale) via
+	// the catalog-orgm-q consumer (Gap-12 / CAT-GAP-004 fix). Provides a
+	// Prometheus signal for the cache-propagation path.
+	CatalogCacheInvalidated prometheus.Counter
+
+	// AuditDeliveryFailed counts best-effort AL-5 direct-write calls that
+	// returned an error from the fire-and-forget goroutines in TenantService
+	// and InvitationService. Audit outages do not fail P-2 or invite flows
+	// (fail-open by design), but a sustained nonzero rate means audit records
+	// are silently missing and should alert.
+	AuditDeliveryFailed *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -403,6 +417,24 @@ func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
 // IncSeatOverageStarted satisfies jobs.Metrics.
 func (Recorder) IncSeatOverageStarted() { IncSeatOverageStarted(SeatOverageCauseReconciler) }
 
+// IncCatalogCacheInvalidated records one successful om:departments cache
+// clear by the catalog-orgm-q consumer. Nil-safe.
+func IncCatalogCacheInvalidated() {
+	if CatalogCacheInvalidated != nil {
+		CatalogCacheInvalidated.Inc()
+	}
+}
+
+// IncAuditDeliveryFailed records one AL-5 direct-write failure from a
+// fire-and-forget audit goroutine. entry_type identifies which entry type
+// failed (e.g. "config.tenant_setting.changed", "invitation.created").
+// Nil-safe.
+func IncAuditDeliveryFailed(entryType string) {
+	if AuditDeliveryFailed != nil {
+		AuditDeliveryFailed.WithLabelValues(entryType).Inc()
+	}
+}
+
 // ObserveLifecycleEventLag records the seconds between event.time and the
 // moment this consumer applied the projection — the SLO-3 primary drift
 // signal. Nil-safe, see ObserveDependencyLatency.
@@ -490,7 +522,7 @@ func registerShared() {
 	DLQMessages = mustShared(gincommon.NewSharedCounterVec(nil, "platform_dlq_messages_total"))
 	DependencyRequestSeconds = mustShared(gincommon.NewSharedHistogramVec(nil, "platform_dependency_request_seconds"))
 
-	// Tier 2 — domain-shared iam_* entries (platform-gincommon v1.5.0):
+	// Tier 2 — domain-shared iam_* entries (platform-gincommon v1.6.0):
 	// name, help, labels and buckets come from the registry, so every IAM
 	// service emitting them stays identical.
 	RLSViolations = mustShared(gincommon.NewSharedCounterVec(nil, "iam_rls_violations_total"))
@@ -618,6 +650,13 @@ func registerServiceMetrics() {
 		"iam_org_membership_public_tenant_resolve_total",
 		"PUB-1 pre-login tenant/realm resolution lookups served, by result.",
 		"result"))
+	CatalogCacheInvalidated = must(gincommon.NewCounter(nil,
+		"iam_org_membership_catalog_cache_invalidated_total",
+		"Catalog cache invalidations via catalog-orgm-q: DepartmentCatalogChanged (om:departments) and PlanCatalogChanged (om:plans) events that successfully cleared their primary+stale cache keys (Gap-12/CAT-GAP-004)."))
+	AuditDeliveryFailed = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_audit_delivery_failed_total",
+		"AL-5 direct-write calls that returned an error from best-effort fire-and-forget audit goroutines (TenantService, InvitationService). Audit outages are fail-open; a sustained nonzero rate means audit records are silently missing.",
+		"entry_type"))
 
 	TenantOwnerless = must(gincommon.NewGauge(nil,
 		"iam_org_membership_tenant_ownerless",
@@ -669,4 +708,10 @@ func prewarm() {
 	}
 	PublicTenantResolve.WithLabelValues("found")
 	PublicTenantResolve.WithLabelValues("not_found")
+	for _, et := range []string{
+		"config.tenant_setting.changed",
+		"invitation.created", "invitation.revoked", "invitation.expired",
+	} {
+		AuditDeliveryFailed.WithLabelValues(et)
+	}
 }

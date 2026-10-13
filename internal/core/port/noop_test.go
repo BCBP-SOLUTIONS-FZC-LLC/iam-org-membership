@@ -76,6 +76,7 @@ func TestTenantRepositoryNoop_AllMethods(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.NoError(t, n.WipeTenantChildren(ctx, id))
+	assert.NoError(t, n.HardDeleteTenant(ctx, id))
 }
 
 // TestInvitationRepositoryNoop_AllMethods exercises every InvitationRepositoryNoop method.

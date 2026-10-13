@@ -192,6 +192,10 @@ func (r *ssRoleRepoDM) ListByUser(ctx context.Context, tenantID, userID uuid.UUI
 	}
 	return nil, nil
 }
+func (r *ssRoleRepoDM) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
+
 func (r *ssRoleRepoDM) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }
@@ -217,6 +221,10 @@ type ssDeptMemRepoDM struct {
 }
 
 func (f *ssDeptMemRepoDM) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+
+func (f *ssDeptMemRepoDM) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
 func (f *ssDeptMemRepoDM) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {

@@ -170,6 +170,12 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			if metrics.LifecycleEventSkipped != nil {
 				metrics.LifecycleEventSkipped.WithLabelValues(env.Type).Inc()
 			}
+			// SLO-3: record lag even for skipped events — a late-arriving
+			// event that is skipped is exactly the delivery-delay signal
+			// iam_lifecycle_event_lag_seconds is designed to surface.
+			if !env.Timestamp.IsZero() {
+				metrics.ObserveLifecycleEventLag(env.Type, time.Since(env.Timestamp).Seconds())
+			}
 			c.logger.Info("EVT-14 stale — projection unchanged", "event_id", env.ID, "event_type", env.Type)
 			return nil
 		}

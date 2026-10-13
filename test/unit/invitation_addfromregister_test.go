@@ -61,6 +61,10 @@ type arDeptMemRepo struct {
 func (r *arDeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
+
+func (r *arDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 func (r *arDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }

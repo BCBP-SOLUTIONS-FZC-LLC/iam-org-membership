@@ -125,6 +125,10 @@ type TenantRepository interface {
 	// WipeTenantChildren deletes Core's tenant-scoped child rows on
 	// offboard (GDPR wipe). The tenants row itself stays soft-deleted.
 	WipeTenantChildren(ctx context.Context, id uuid.UUID) error
+
+	// HardDeleteTenant removes the tenant row itself (trial hard-delete path).
+	// ON DELETE CASCADE wipes all child tables in the same transaction.
+	HardDeleteTenant(ctx context.Context, id uuid.UUID) error
 }
 
 // TenantProjectionLock is the EVT-14 snapshot under FOR UPDATE.
@@ -223,5 +227,6 @@ func (TenantRepositoryNoop) ApplyLifecyclePatch(context.Context, uuid.UUID, Tena
 	return 0, nil
 }
 func (TenantRepositoryNoop) WipeTenantChildren(context.Context, uuid.UUID) error { return nil }
+func (TenantRepositoryNoop) HardDeleteTenant(context.Context, uuid.UUID) error   { return nil }
 
 var _ TenantRepository = TenantRepositoryNoop{}

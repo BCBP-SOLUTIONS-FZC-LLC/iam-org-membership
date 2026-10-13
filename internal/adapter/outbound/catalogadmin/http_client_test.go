@@ -29,6 +29,13 @@ func TestDepartments_Happy(t *testing.T) {
 		assert.Equal(t, "/api/v1/internal/departments", r.URL.Path)
 		assert.Equal(t, "iam-system", r.Header.Get("x-user-id"))
 		assert.Equal(t, "iam-system", r.Header.Get("x-tenant-roles"))
+		// Gap-11 pin: CAT-I1/CAT-I2 are cross-tenant; the client sends
+		// uuid.Nil as a placeholder because platform-gincommon's RequireAuth
+		// demands x-tenant-id on every /api/v1/internal route and there is no
+		// real tenant to scope to. If this assertion ever breaks, the
+		// workaround changed — update catalogadmin/http_client.go and the
+		// TODO comment there, or switch to a platform-gincommon escape hatch
+		// if one becomes available.
 		assert.Equal(t, uuid.Nil.String(), r.Header.Get("x-tenant-id"))
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{

@@ -230,6 +230,10 @@ func (r *sg3FullRoleRepo) ListByUser(ctx context.Context, tid, uid uuid.UUID) ([
 	}
 	return nil, nil
 }
+
+func (r *sg3FullRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (r *sg3FullRoleRepo) ListByRole(_ context.Context, _ uuid.UUID, _ domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

@@ -8,6 +8,26 @@ This service has never been deployed to any environment — there is no released
 
 ### Added
 
+- **Production-readiness hardening (LLD rev 2.20):**
+  - **Go 1.26.9:** toolchain bumped from 1.26.6, resolving three stdlib `net/http` CVEs — GO-2026-6617 (HTTP/2 HPACK encoder race → server crash), GO-2026-6519 (request smuggling), GO-2026-6612 (double flow-control refund). `govulncheck` reports 0 vulnerabilities.
+  - **Library bumps:** `platform-gincommon` v1.5.0→v1.6.0, `platform-events/v2` v2.0.0→v2.1.0, `platform-pgcommon/v2` v2.0.0→v2.0.1, `golang.org/x/net` v0.59.0→v0.61.0 (upstream CVE), AWS SDK patch, OTel v1.46.0→v1.47.0, `prometheus/client_golang` v1.24.1→v1.25.0.
+  - **P-4 N+1 eliminated:** `MembershipService.List` previously issued 1+N×2 queries per page (101 at limit=50). Now issues 3 total via new `ListByUsers(ctx, tenantID, []uuid.UUID)` batch methods (`WHERE user_id = ANY($2)`) on `TenantRoleRepository` and `DeptMembershipRepository`.
+  - **`iam_org_membership_audit_delivery_failed_total{entry_type}`:** new Tier-3 counter incremented when fire-and-forget AL-5 goroutines return an error (previously silently discarded). Entry types: `config.tenant_setting.changed`, `invitation.created`, `invitation.revoked`, `invitation.expired`. New `IAMAuditDeliveryFailed` alert (severity: ticket, 10-min window) + runbook in `docs/observability/runbooks.md`.
+  - **`AUDIT_LOG_BASE_URL` / `AUDIT_LOG_TIMEOUT_MS`:** added to `deploy/helm/values.yaml` and `validateRequiredEnv` (`devOK: true`, `stagingWarn: true`). AL-5 calls remain fail-open; without the URL all audit writes are skipped silently.
+  - **2 new CI enforcement scripts:** `check-database-access.sh` (no `database/sql`, no bare pgxpool construction, no `pgcommon.Config{DSN}` outside `postgres/db.go`, all `RunInTx*` wrapped by `wrapConnErr`) and `check-events-platform.sh` (outbox writes isolated to `eventbus/publisher.go`, `inbox.NewStore`/`store.Process` isolated to `postgres/idempotency_repository.go`, `events.InitMetrics` in both cmd binaries). Both wired into `validate-quality.yml`.
+
+### Fixed
+
+- **P-2 `PATCH /tenants/:id` validation gaps:** `tenant_service.go` now enforces (a) `len(*patch.Name) ≤ 255` (same cap as provisioning; DB had only `CHECK(name <> '')`) and (b) BCP-47 structural regex on `default_locale` (same `^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$` as provisioning; previously only empty string was rejected). Both return `400 invalid_request`.
+- **Port-layer OTel import violation:** `internal/core/port/logger.go` imported `go.opentelemetry.io/otel/trace` directly (forbidden vendor import in the port layer). Trace-ID extraction is now injected via `port.SetTraceExtractor(fn func(context.Context) string)`, called once per binary after `gincommon.InitTracingWithConfig`. The OTel import moves to `cmd/server/main.go` and `cmd/reconciler/main.go` (composition roots — permitted).
+- **arch-lint violation:** `internal/adapter/outbound/auditlog` was imported by `cmd` but not declared as a component in `.go-arch-lint.yml`. Added to `adapters_outbound`.
+
+### Removed
+
+- **Mock server files:** `tools/mockwf/main.go` (Workflow Service mock) and `scripts/mockserver/main.go` (multi-service mock) deleted. Both are superseded by Go test fakes (`scenarioCatalogClient`, etc.) and `testcontainers-go` integration tests. The `make mock-servers` Makefile target is removed.
+
+### Added (continued)
+
 - **PUB-1: `GET /api/v1/public/tenants/resolve` (identifier-first login, IAM HLD §8.2.7)**: a new, deliberately unauthenticated route, the only one in this service. It closes the pre-login realm-discovery gap that neither the HLD nor this LLD's login flows previously specified.
   - **What it does:** resolves a company slug, or the email of a still-pending, unexpired invitation, to `{found, realm, strategy, tenant_id?}`. `tenant_id` appears only for a shared/trial tenant (PUBRES-4). It is always `200`, never `404`: a no-match is exactly `{"found":false}` (constant-shape anti-enumeration, PUBRES-2).
   - **Auth and pool:** it bypasses `ext_authz`/AuthZ Enrichment and this service's own auth/GUC middleware entirely. `registerPublicRoutes` registers it on the engine, outside the protected `/api/v1` group. Queries run against the BYPASSRLS `sysPool`, the same pool as I-16, since no `app.tenant_id` GUC is ever bound on this path. It is deliberately uncached, with no event and no write.

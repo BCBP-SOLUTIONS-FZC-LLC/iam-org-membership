@@ -30,6 +30,10 @@ type p11DeptMemRepo struct {
 func (r *p11DeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
+
+func (r *p11DeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 func (r *p11DeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }

@@ -135,3 +135,48 @@ func TestCatalogConsumer_Handle_CacheDeleteError_ReturnsNil(t *testing.T) {
 	require.NoError(t, c.Handle(context.Background(), env))
 	assert.Empty(t, dedup.markCalls, "cache error must not trigger a processed_events write")
 }
+
+// CAT-GAP-004: PlanCatalogChanged handler tests.
+
+func TestCatalogConsumer_Handle_PlanChanged_ClearsPlansCache(t *testing.T) {
+	// PlanCatalogChanged must clear om:plans + om:plans:stale — no processed_events write.
+	dedup := &recordingDedup{}
+	cache := &stubCatalogCache{}
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
+
+	env := catalogEnv(eventPlanCatalogChanged, "")
+	require.NoError(t, c.Handle(context.Background(), env))
+
+	assert.Empty(t, dedup.isCalls, "no IsProcessed call for PlanCatalogChanged")
+	assert.Empty(t, dedup.markCalls, "no MarkProcessed call for PlanCatalogChanged")
+	require.Len(t, cache.deleted, 1)
+	assert.Equal(t, []string{omPlansKey, omPlansStaleKey}, cache.deleted[0])
+}
+
+func TestCatalogConsumer_Handle_PlanChanged_Redelivery_ClearsCacheAgain(t *testing.T) {
+	// Redelivery of PlanCatalogChanged must still clear the cache — no dedup gate.
+	cache := &stubCatalogCache{}
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, &recordingDedup{}), nil)
+
+	env := catalogEnv(eventPlanCatalogChanged, uuid.New().String())
+	require.NoError(t, c.Handle(context.Background(), env))
+	require.NoError(t, c.Handle(context.Background(), env))
+
+	assert.Len(t, cache.deleted, 2, "both deliveries must clear the plans cache")
+}
+
+func TestCatalogConsumer_Handle_PlanChanged_InvalidEventID_Errors(t *testing.T) {
+	c := NewCatalogConsumer(&stubCatalogCache{}, newFakeInbox(stubTx{}, &recordingDedup{}), nil)
+
+	err := c.Handle(context.Background(), catalogEnv(eventPlanCatalogChanged, "not-a-uuid"))
+	require.Error(t, err)
+}
+
+func TestCatalogConsumer_Handle_PlanChanged_CacheDeleteError_ReturnsNil(t *testing.T) {
+	// Cache DELETE failure is best-effort for plan invalidation too — ack the message.
+	cache := &stubCatalogCache{err: errors.New("valkey down")}
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, &recordingDedup{}), nil)
+
+	env := catalogEnv(eventPlanCatalogChanged, "")
+	require.NoError(t, c.Handle(context.Background(), env))
+}

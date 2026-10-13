@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/google/uuid"
 )
 
@@ -30,6 +32,7 @@ type InvitationService struct {
 	tenants            port.TenantRepository
 	rp                 port.RealmProvisionerClient
 	tokenService       port.TokenServiceClient // AUTH-9 defense-in-depth — optional, see WithTokenServiceClient
+	audit              port.AuditLogClient     // optional; nil disables AL-5 direct-write
 	cache              port.Cache
 	txRunner           port.TxRunner
 	logger             port.SlogStyleLogger
@@ -70,6 +73,13 @@ func NewInvitationService(
 // is safe because the primary guarantee is structural (composite FK bar).
 func (s *InvitationService) WithTokenServiceClient(c port.TokenServiceClient) *InvitationService {
 	s.tokenService = c
+	return s
+}
+
+// WithAuditLog attaches the AL-5 client for invitation.created, invitation.revoked
+// direct-write entries (D-6). Nil is safe — missing client silently skips the write.
+func (s *InvitationService) WithAuditLog(audit port.AuditLogClient) *InvitationService {
+	s.audit = audit
 	return s
 }
 
@@ -124,6 +134,10 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 		// (pre-flight or the transactional re-check) — never inside the
 		// retried transaction.
 		metrics.IncSeatLimitReached(s.planLabel(ctx, tenantID))
+	}
+	// AL-5 best-effort audit (invitation.created, D-6).
+	if err == nil && s.audit != nil {
+		s.auditInvitation(ctx, tenantID, inv.ID, actorID, "invitation.created", "create", "InvitationCreated")
 	}
 	return inv, err
 }
@@ -616,7 +630,56 @@ func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, 
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID))
 	}
+	// AL-5 best-effort audit (invitation.revoked, D-6).
+	if s.audit != nil {
+		rc, _ := requestctx.FromContext(ctx)
+		actorID := uuid.Nil
+		if rc != nil {
+			actorID = rc.UserID
+		}
+		s.auditInvitation(ctx, tenantID, id, actorID, "invitation.revoked", "revoke", "InvitationRevoked")
+	}
 	return inv, nil
+}
+
+// auditInvitation posts an invitation lifecycle entry to AL-5 in a
+// detached goroutine (fail-open, 5s hard cap).
+func (s *InvitationService) auditInvitation(parent context.Context, tenantID, invitationID, actorID uuid.UUID, entryType, action, sourceEventType string) {
+	rc, _ := requestctx.FromContext(parent)
+	actor := port.AuditActor{Type: "iam_system"}
+	if actorID != uuid.Nil {
+		actor = port.AuditActor{Type: "user", ID: actorID.String()}
+	}
+	ipAddress, userAgent := "", ""
+	if rc != nil {
+		ipAddress = rc.ClientIP
+		userAgent = rc.UserAgent
+	}
+
+	idemKey := fmt.Sprintf("%s:%s:%s", entryType, tenantID, invitationID)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.audit.WriteEntry(ctx, port.AuditWriteRequest{
+			IdempotencyKey: idemKey,
+			TenantID:       tenantID,
+			EntryType:      entryType,
+			Action:         action,
+			Actor:          actor,
+			Target: &port.AuditTarget{
+				Type: "invitation",
+				ID:   invitationID.String(),
+			},
+			OccurredAt:      time.Now().UTC(),
+			SourceService:   "iam-org-membership",
+			SourceEventType: sourceEventType,
+			IPAddress:       ipAddress,
+			UserAgent:       userAgent,
+		}); err != nil {
+			metrics.IncAuditDeliveryFailed(entryType) // fail-open — count for alerting
+		}
+	}()
 }
 
 type InvitationInput struct {

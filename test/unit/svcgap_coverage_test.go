@@ -537,6 +537,10 @@ type svcgapGmDeptMemRepo struct {
 func (r *svcgapGmDeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
+
+func (r *svcgapGmDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
 func (r *svcgapGmDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
@@ -568,6 +572,10 @@ func (r *svcgapGmRoleRepo) ListByUser(ctx context.Context, tid, uid uuid.UUID) (
 	if r.listByUserFn != nil {
 		return r.listByUserFn(ctx, tid, uid)
 	}
+	return nil, nil
+}
+
+func (r *svcgapGmRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
 	return nil, nil
 }
 func (r *svcgapGmRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
@@ -814,6 +822,13 @@ type svcgapDeptMemForList struct {
 
 func (r *svcgapDeptMemForList) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, r.listByUserErr
+}
+
+func (r *svcgapDeptMemForList) ListByUsers(_ context.Context, _ uuid.UUID, userIDs []uuid.UUID) ([]domain.DeptMembership, error) {
+	if len(userIDs) > 0 && r.listByUserErr != nil {
+		return nil, r.listByUserErr
+	}
+	return nil, nil
 }
 func (r *svcgapDeptMemForList) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
@@ -1092,6 +1107,10 @@ func (r *svcgapAssigneeEligibleDM) ListByUser(_ context.Context, _, _ uuid.UUID)
 	return []domain.DeptMembership{
 		{DepartmentID: r.deptID, RoleLevel: r.level},
 	}, nil
+}
+
+func (r *svcgapAssigneeEligibleDM) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
 }
 func (r *svcgapAssigneeEligibleDM) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil

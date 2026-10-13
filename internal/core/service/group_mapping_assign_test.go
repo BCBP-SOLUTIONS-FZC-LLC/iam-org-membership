@@ -58,6 +58,10 @@ func (f *gmaRoleRepo) ListByUser(ctx context.Context, tenantID, userID uuid.UUID
 	}
 	return nil, nil
 }
+func (f *gmaRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
+
 func (f *gmaRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }
@@ -82,6 +86,10 @@ type gmaDeptMemRepo struct {
 }
 
 func (f *gmaDeptMemRepo) ListByUser(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {
+	return nil, nil
+}
+
+func (f *gmaDeptMemRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.DeptMembership, error) {
 	return nil, nil
 }
 func (f *gmaDeptMemRepo) ListByDepartment(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) {

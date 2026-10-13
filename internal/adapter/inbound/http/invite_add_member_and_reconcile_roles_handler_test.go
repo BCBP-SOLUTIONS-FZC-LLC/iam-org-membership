@@ -609,6 +609,10 @@ func (r *p28RoleRepo) ListByUser(ctx context.Context, t, u uuid.UUID) ([]domain.
 	}
 	return nil, nil
 }
+
+func (r *p28RoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
 func (r *p28RoleRepo) ListByRole(ctx context.Context, t uuid.UUID, code domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	if r.listByRoleFn != nil {
 		return r.listByRoleFn(ctx, t, code)

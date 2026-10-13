@@ -2,9 +2,6 @@
 // It wires pgcommon.NewPool with the transaction-local RLS GUC provider
 // (RLS-6), runs domain migrations, applies the outbox schema, wires the
 // two-topic RoutingPublisher, and serves the HTTP surface.
-//
-// Phase 0 wires infrastructure only — health/readyz/metrics, outbox runner,
-// and empty router group. Business services and handlers arrive in Phase 2.
 package main
 
 import (
@@ -30,6 +27,7 @@ import (
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/sqspipeline"
+	auditlogclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditlog"
 	catalogadminclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/catalogadmin"
 	delegationcheckclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/delegationcheck"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
@@ -43,6 +41,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+
+	"go.opentelemetry.io/otel/trace"
 
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
@@ -133,6 +133,19 @@ func main() {
 	if err != nil {
 		panic("init tracing: " + err.Error())
 	}
+	// Install the trace-ID extractor used by port.SlogStyleLogger's *Context
+	// variants. This is the only place in the binary that touches the OTel
+	// trace API directly; every other trace interaction goes through gincommon
+	// (InitTracingWithConfig above, NewTracer in sqspipeline, SpanTracer in
+	// pgcommon). The extractor is set here, after the provider is installed,
+	// so span context is always valid when log4 calls it.
+	port.SetTraceExtractor(func(ctx context.Context) string {
+		sc := trace.SpanFromContext(ctx).SpanContext()
+		if !sc.IsValid() {
+			return ""
+		}
+		return sc.TraceID().String()
+	})
 	// ObservabilityMiddlewares is gincommon's public metrics-init API. Call
 	// it here (before any collector registration or exporter goroutine) so
 	// business / events / pgcommon metrics land on gincommon.MetricsRegisterer
@@ -445,7 +458,7 @@ func main() {
 		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("catalog-orgm-q")})
 		log.Info("catalog-orgm-q consumer wired", map[string]interface{}{"queue_url": url})
 	} else {
-		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments cache TTL-only)", nil)
+		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments and plans caches TTL-only)", nil)
 	}
 
 	for _, wc := range sqsConsumers {
@@ -491,7 +504,7 @@ func main() {
 	invitationRepo := pgadapter.NewInvitationRepository(pool)
 	authzRepo := pgadapter.NewAuthZRepository(pool)
 
-	// Outbound clients — Phase 2 fail-open stubs; Phase 4 wires real HTTP.
+	// Outbound clients — wired to real HTTP adapters behind port interfaces.
 	// log is threaded through so their transport-error warnings flow through
 	// the same gincommon-backed sink as HTTP/consumer logs instead of
 	// slog.Default().
@@ -517,6 +530,7 @@ func main() {
 	// the operation, since the primary guarantee is structural (composite
 	// FK bar, TR-8/DM-4).
 	tokenServiceClient := tokenserviceclient.New(log)
+	auditLogClient := auditlogclient.New(log)
 
 	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	// I-16 (§16 RP-C3): bound against sysPool (BYPASSRLS), NOT pool — RP's
@@ -532,7 +546,7 @@ func main() {
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
-	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient)
+	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).WithAuditLog(auditLogClient)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays).
 		WithTokenServiceClient(tokenServiceClient)
@@ -545,7 +559,8 @@ func main() {
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour).
 		WithMaxInvitesPerActorPerHour(inviteMaxPerActorPerHour).
-		WithTokenServiceClient(tokenServiceClient)
+		WithTokenServiceClient(tokenServiceClient).
+		WithAuditLog(auditLogClient)
 	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(sysTenantRepo, subscriptionGraceDays)
 	// PUB-1 (LLD §5.4/§8.11): sysTenantRepo, NOT tenantRepo — the route is
@@ -842,6 +857,13 @@ func validateRequiredEnv(appEnv string) {
 		// alert fires. devOK because local/dev commonly runs single-role
 		// Postgres with no separate migrator role.
 		{"SYSTEM_DATABASE_URL", true, false, "BYPASSRLS org_membership_migrator DSN; without it cross-tenant queries silently RLS-filter to zero rows with no alert"},
+		// AUDIT_LOG_BASE_URL is fail-open (the client logs a WARN and
+		// skips all AL-5 writes when unset), but unset in staging means
+		// audit records never reach iam-audit-log, which is wrong for
+		// compliance testing. devOK=true: local dev rarely runs
+		// iam-audit-log. stagingWarn=true so a staging misconfiguration
+		// surfaces in stderr without blocking the deploy.
+		{"AUDIT_LOG_BASE_URL", true, true, "iam-audit-log AL-5 base URL; unset skips audit writes silently — compliance records missing in staging/prod"},
 	}
 	var missing []string
 	for _, r := range reqs {

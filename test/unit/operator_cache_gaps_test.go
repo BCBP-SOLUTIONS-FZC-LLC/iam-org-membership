@@ -102,6 +102,10 @@ func (r *ocTenantRoleRepo) ListByUser(ctx context.Context, tenantID, userID uuid
 	}
 	return nil, nil
 }
+func (r *ocTenantRoleRepo) ListByUsers(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]domain.TenantRole, error) {
+	return nil, nil
+}
+
 func (r *ocTenantRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCode) ([]domain.TenantRole, error) {
 	return nil, nil
 }

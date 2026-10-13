@@ -431,10 +431,14 @@ func RequireOperatorRole() gin.HandlerFunc {
 // twice) is a safe no-op.
 var validatorsRegistered bool
 
-// RegisterValidators wires custom Gin validators (slug regex, keycloak
-// group name, BCP-47 locale, mfa_freshness range). Phase 0 leaves the set
-// empty — Phase 2 populates it alongside the first DTOs. Called from
-// main.go before router construction. Safe to call multiple times.
+// RegisterValidators is called from main.go before router construction.
+// All field constraints (slug regex, BCP-47 locale, mfa_freshness range)
+// are enforced in the service layer (provisioning_service.go isValidSlug /
+// isValidLocale, tenant_service.go Patch, etc.) rather than at the Gin
+// binding layer — service-layer validation is the single source of truth
+// and runs regardless of the HTTP entry point. This hook exists as an
+// extension point if framework-level binding tags are added in future.
+// Safe to call multiple times (idempotent guard below).
 func RegisterValidators() {
 	validatorsRegistered = true
 }

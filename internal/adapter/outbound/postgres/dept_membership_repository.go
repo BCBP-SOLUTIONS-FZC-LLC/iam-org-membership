@@ -37,6 +37,15 @@ func (r *DeptMembershipRepository) ListByUser(ctx context.Context, tenantID, use
 	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL ORDER BY department_id`, tenantID, userID)
 }
 
+// ListByUsers fetches dept memberships for a batch of users in one round
+// trip, eliminating the N+1 pattern in P-4 (MembershipService.List).
+func (r *DeptMembershipRepository) ListByUsers(ctx context.Context, tenantID uuid.UUID, userIDs []uuid.UUID) ([]domain.DeptMembership, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = ANY($2) AND deleted_at IS NULL ORDER BY user_id, department_id`, tenantID, userIDs)
+}
+
 func (r *DeptMembershipRepository) ListByDepartment(ctx context.Context, tenantID, departmentID uuid.UUID) ([]domain.DeptMembership, error) {
 	return r.listWhere(ctx, `WHERE tenant_id = $1 AND department_id = $2 AND deleted_at IS NULL ORDER BY user_id`, tenantID, departmentID)
 }

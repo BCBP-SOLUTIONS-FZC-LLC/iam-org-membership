@@ -16,11 +16,15 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
+	auditlogclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditlog"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+
+	"go.opentelemetry.io/otel/trace"
+
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
@@ -119,6 +123,17 @@ func run() int {
 	if err != nil {
 		panic("init tracing: " + err.Error())
 	}
+	// Install trace-ID extractor for port.SlogStyleLogger's *Context variants
+	// (same pattern as cmd/server/main.go — only place in this binary that
+	// touches the OTel trace API directly; all other trace work goes through
+	// gincommon). Must run after InitTracingWithConfig so the provider exists.
+	port.SetTraceExtractor(func(ctx context.Context) string {
+		sc := trace.SpanFromContext(ctx).SpanContext()
+		if !sc.IsValid() {
+			return ""
+		}
+		return sc.TraceID().String()
+	})
 	// Registered in reverse of execution order (defers run LIFO): this
 	// gincommon.Shutdown defer, registered FIRST, fires LAST — so the
 	// TracerProvider shuts down (below) before the Zap flush, matching
@@ -274,6 +289,7 @@ func run() int {
 		RealmProvisioner:       realmprovisionerclient.New(rawLog),
 		Logger:                 log,
 		Metrics:                metrics.Recorder{},
+		AuditLog:               auditlogclient.New(rawLog),
 		BatchLimit:             envInt("RECONCILER_BATCH_LIMIT", 500),
 		SeatOverageGraceDays:   envInt("SEAT_OVERAGE_GRACE_DAYS", 30),
 		TrialGraceDays:         envInt("TRIAL_GRACE_DAYS", 15),

@@ -108,12 +108,29 @@ jobs:
       - name: Events bypass check
         run: bash .github/scripts/check-forbidden-events-bypass.sh
 
+      # Structural isolation of the platform-events seams: outbox writes only
+      # in eventbus/publisher.go; inbox.NewStore and store.Process only in
+      # postgres/idempotency_repository.go; events.InitMetrics in both cmd
+      # binaries. Complements the bypass check (WHAT is used) with WHERE the
+      # platform-events abstractions are allowed to be called.
+      - name: Events platform isolation check
+        run: bash .github/scripts/check-events-platform.sh
+
       # Every outbox_events write/read/prune must go through platform-events
       # (outbox.Enqueue / outbox.Runner.PrunePublished), never hand-rolled
       # SQL — a real violation (port.ReconcilerStore.PruneOutbox) existed
       # here until 2026-09-20; this guards against it reappearing.
       - name: Outbox access check
         run: bash .github/scripts/check-outbox-access.sh
+
+      # All DB connections/configuration/operations must pass through
+      # platform-pgcommon (pgcommon.NewPool, RunInTx*, ConfigFromEnv,
+      # wrapConnErr). Belt-and-suspenders complement to golangci-lint's
+      # forbidigo rule: catches database/sql imports, bare pgxpool/pgx
+      # construction, unguarded RunInTx calls, and improper system-pool
+      # config literals that would silently drop PGBouncerMode=true.
+      - name: Database access check
+        run: bash .github/scripts/check-database-access.sh
 
       - name: Format check
         run: |

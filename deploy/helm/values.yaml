@@ -147,6 +147,16 @@ env:
   TOKEN_SERVICE_BASE_URL: ""
   TOKEN_SERVICE_TIMEOUT_MS: "1000"
 
+  # iam-audit-log — AL-5 direct-write for config.tenant_setting.changed,
+  # invitation.created/revoked/expired (D-6 subset). Calls are best-effort
+  # and fail-open: P-2 and invite flows always succeed even if this is unset
+  # or unreachable. Unset logs a WARN at startup (AUDIT_LOG_BASE_URL warning)
+  # and skips all AL-5 writes silently — set in staging/prod so audit records
+  # reach iam-audit-log. Sustained failures surface on the
+  # IAMAuditDeliveryFailed alert (iam_org_membership_audit_delivery_failed_total).
+  AUDIT_LOG_BASE_URL: ""
+  AUDIT_LOG_TIMEOUT_MS: "3000"
+
   # OpenTelemetry — read by platform-gincommon (InitTracingWithConfig takes
   # the identity from code, the exporter and sampler from here).
   OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"

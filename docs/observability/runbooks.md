@@ -243,3 +243,17 @@ These alerts query platform-library metrics that are still `proposed` in the reg
 **Meaning.** More than 1.44% of mutating requests (`POST|PUT|PATCH|DELETE`) returned 5xx over 5 minutes, which is 14.4× the 99.9% budget.
 
 **Triage.** As for `IAMOrgMembershipHighErrorRate`, restricted to write routes. Check whether the error is `db_unavailable` or a fail-closed dependency (`realm_provisioner_unavailable`, `catalog_unavailable`), and check `/readyz`.
+
+## Audit delivery
+
+### IAMAuditDeliveryFailed
+
+**Meaning.** `iam_org_membership_audit_delivery_failed_total{entry_type}` is nonzero over 10 minutes. Best-effort AL-5 direct-write goroutines in `TenantService.auditSettingChange` or `InvitationService.auditInviteEvent` are returning errors. P-2 and invite flows are unaffected (fail-open), but the listed `entry_type` audit records are silently absent from iam-audit-log.
+
+**Triage.**
+1. Check `AUDIT_LOG_BASE_URL` is set — if blank, all audit writes are no-ops by design.
+2. Check iam-audit-log's own health (`/healthz`, its own alerts) — an outage there causes all AL-5 calls to fail.
+3. Check for 429 or 5xx from iam-audit-log in this service's structured logs (`grep 'auditlog' <pod-logs>`).
+4. Verify the idempotency key pattern — a restart may cause a burst of retry-eligible calls with the same key (harmless, idempotent).
+
+**Resolve.** Fix the upstream iam-audit-log issue or set `AUDIT_LOG_BASE_URL`. The fire-and-forget goroutines do not retry, so missed entries are permanent once the error passes — reconcile via the Audit Log's own backfill mechanism if compliance requires it.

@@ -69,7 +69,7 @@
 | # | Method & Path | Caller | Purpose |
 |---|---|---|---|
 | I-1 | `POST /tenants` | Realm Provisioner / Signup BFF | Provision tenant row |
-| I-2 | `PATCH /tenants/:id` | Realm Provisioner | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` (all together) after dedicated realm provisioning |
+| I-2 | `PATCH /tenants/:id` | internal (tenant-orgm-q consumer, via `TenantRealmReady` event) | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` (all together) after dedicated realm provisioning — driven event-side, not by a direct RP HTTP call; RP has no HTTP client for this endpoint |
 | I-3 | `POST /tenants/:id/members` | Event Consumer | Add membership from Keycloak `REGISTER` — **also invitation-acceptance path** (§8.10, PI-4): flips matching pending row to `accepted`, applies queued roles/depts |
 | I-4 | `PATCH /tenants/:id/members/:user_id` | Event Consumer | Update status from Keycloak lifecycle |
 | I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — **delegate-impact gated** (§8.8, WFI-1); sets `ownerless_since` if last owner (TM-12/T-13) |
@@ -136,7 +136,7 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 | Key | Value | TTL | Invalidated by |
 |---|---|---|---|
 | `om:memberships:{tenant}:{user}` | JSON of full I-8 response | 300 s ±30 s jitter (CACHE-4) | any membership/role/dept write for this user; §8.9 user-deletion cascade |
-| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); Realm Provisioner I-2 |
+| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); I-2 (via `TenantRealmReady` consumer) |
 | `om:members:{tenant}:{limit}` | P-4 page-1 only (cursorless), `limit=50` only (CACHE-10) | 120 s | any membership add/remove/update for tenant (CACHE-7) |
 | `om:dept_members:{tenant}:{dept}` | JSON dept member list | 120 s | any dept_memberships write for tenant+dept |
 | `om:locale:{tenant}` | BCP-47 string | 600 s | P-2 with locale change |
@@ -216,7 +216,7 @@ Every event is enqueued to `outbox_events` in the business transaction (`eventbu
 | `TenantSeatOverageStarted` | `overage_since` NULL→set (SEAT-5) | `tenant_id`, `licensed_seats`, `active_users`, `pending_invitations`, `overage_since` |
 | `TenantSeatOverageResolved` | `overage_since` set→NULL | `tenant_id`, `resolved_at` |
 | `TenantStateChanged` (§16 A61) | Post-EVT-14 status/plan change | `tenant_id`, `status`, `previous_status`, `plan`, `previous_plan`, `changed_at`, `cause` |
-| `TenantMembershipsPurged` | Tenant genuinely transitions to `offboarded` (i.e. RP's consumed `TenantOffboarded` actually changes `tenants.status`, post-EVT-14) — emitted by `membership_event_consumer.go` so the Delegation, Tender-ACL, and Group-Mapping services can run their own tenant-scoped cascade-deletes (their rows live in separate databases, out of reach of O&M's own `ON DELETE CASCADE`). **Renamed in this pass** from a prior signal that was (incorrectly) also called `TenantOffboarded` and routed on `iam.tenant.events` — that violated "one producer per event name," since the real `TenantOffboarded` is RP's own terminal event, which O&M only *consumes* (unchanged — still `tenant-orgm-q`/`iam.tenant.events`, §7.1). Only O&M's own outbound relay was renamed and moved topics | `tenant_id`, `actor_id` |
+| `TenantMembershipsPurged` | Core's tenant-level cascade signal — emitted in **two paths**: (1) paid offboarding: `membership_event_consumer.go` when a consumed `TenantOffboarded` genuinely transitions `tenants.status` to `offboarded` (post-EVT-14), atomically with `WipeTenantChildren`; (2) trial hard-delete: `trial-cleanup` CronJob when a `trial_expired` tenant is past the 15-day grace, atomically with `HardDeleteTenant` via `TxRunner.RunInTx`. Delegation, Tender-ACL, and Group-Mapping consume this on their cascade queues to async-delete their own tenant-scoped rows (ADR-0008 §6.4). **Renamed** from an earlier `TenantOffboarded` relay that violated "one producer per event name" | `tenant_id`, `actor_id` |
 
 **Removed from this topic in this pass** (moved to the standalone Delegation Service's own topic `iam.delegation.events`): `DelegationStarted`, `DelegationEnded`, `DelegationReviewRequested`. Their JSON schemas are deleted from `internal/adapter/outbound/eventbus/schemas/`.
 

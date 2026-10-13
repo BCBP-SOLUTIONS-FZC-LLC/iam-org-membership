@@ -550,9 +550,10 @@ func (h *InternalHandler) GetSeatUsage(c *gin.Context) {
 // would collapse into the same generic-error handling as a genuine
 // dependency failure on the caller's side.
 //
-// Auth contract (GAP-TAC-OM-15): callers MUST send:
+// Auth contract (GAP-TAC-OM-15 / DLG-OM-GAP-004): callers MUST send:
 //
-//	x-user-id:     00000000-0000-0000-0000-0000000000a1  (iam-system UUID)
+//	x-user-id:      "iam-system" (string) OR 00000000-0000-0000-0000-0000000000a1 (UUID)
+//	                — IdentityBridgeMiddleware maps both to uuid.Nil; either form is accepted.
 //	x-tenant-id:   <target tenant UUID>
 //	x-tenant-roles: iam-system
 //
