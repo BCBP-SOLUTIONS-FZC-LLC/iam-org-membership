@@ -1,10 +1,15 @@
 # Pin base images to SHA digests for reproducible, supply-chain-safe builds.
-# Update with: docker buildx imagetools inspect <image> --format '{{.Manifest.Digest}}'
-FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
+# Update with: make pin-base-images  (requires docker and network access)
+# Current digests are tracked in .docker-digests; CI (validate-quality.yml,
+# "Dockerfile base image digest check") fails when the two disagree — a bump to
+# one (e.g. a Dependabot PR) must update the other.
+FROM golang:1.26.9-alpine@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
 
 WORKDIR /build
 
+# hadolint ignore=DL3064
 ENV GOPRIVATE="github.com/BCBP-SOLUTIONS-FZC-LLC/*"
+# hadolint ignore=DL3064
 ENV GONOSUMDB="github.com/BCBP-SOLUTIONS-FZC-LLC/*"
 
 # hadolint ignore=DL3018
@@ -36,7 +41,7 @@ RUN CGO_ENABLED=0 GOOS=linux \
     -ldflags="-s -w" \
     -o bin/migrate ./cmd/migrate
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 ARG BUILD_VERSION=dev
 ENV BUILD_VERSION=${BUILD_VERSION}
