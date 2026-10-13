@@ -35,7 +35,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 )
 
-// ── Fixed department IDs — match the mockserver so seeded dept IDs are stable ──
+// ── Fixed department IDs — stable across integration tests ──
 var (
 	DeptEngID = uuid.MustParse("de010001-0000-0000-0000-000000000001")
 	DeptDesID = uuid.MustParse("de010002-0000-0000-0000-000000000002")
@@ -47,7 +47,7 @@ var (
 
 // ── Go-level fakes for all external service clients ───────────────────────────
 
-// scenarioCatalogClient returns the same fixed dept/plan data as the mockserver.
+// scenarioCatalogClient returns fixed dept/plan data for integration tests.
 type scenarioCatalogClient struct{}
 
 func (c *scenarioCatalogClient) Departments(_ context.Context) ([]port.CatalogDepartment, error) {

@@ -303,19 +303,6 @@ run:
 	@-lsof -ti :$${APP_PORT:-8080} | xargs kill -9 2>/dev/null; true
 	bash -c 'set -a && source .env && set +a && BUILD_VERSION=$(BUILD_VERSION) $(GO) run ./cmd/server'
 
-# Start mock servers for the three external services needed during manual testing:
-#   :8084  Catalog Admin      (required — not fail-open)
-#   :8083  Realm Provisioner  (P-6 invite path)
-#   :8082  Workflow Service   (P-8 delete / P-26 removal-resolution)
-#
-# To simulate active workflows (makes P-8 return 409):
-#   make mock-servers MOCK_ARGS="-workflow-active 2"
-MOCK_ARGS ?=
-.PHONY: mock-servers
-mock-servers:
-	@-lsof -nP -iTCP:8082 -iTCP:8083 -iTCP:8084 2>/dev/null | awk 'NR>1{print $$2}' | sort -u | xargs kill -9 2>/dev/null; true
-	@sleep 0.3
-	$(GO) run scripts/mockserver/main.go $(MOCK_ARGS)
 
 # -----------------------------
 # BUILD

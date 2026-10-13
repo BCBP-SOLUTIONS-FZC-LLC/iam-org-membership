@@ -187,7 +187,7 @@ iam-org-membership/
 │   ├── observability/                 # Observability standard implementation, generated metric-registry.md, migration.md, runbooks.md
 │   └── runbook-*.md                   # schema-registry, outbox-dead-letter, i8-latency, rls-cross-tenant operator runbooks
 ├── deploy/                            # Helm chart (incl. migrate-job.yaml hook), monitoring alerts/SLO rules/dashboards, IAM policy
-├── scripts/                           # init-floci.sh, init-db.sql, merge_coverage.py, mockserver/ (make mock-servers), swagger patcher
+├── scripts/                           # init-floci.sh, init-db.sql, merge_coverage.py, swagger patcher
 ├── .githooks/pre-commit                # tidy + fmt-check + vet + lint; installed via `make setup`
 └── test/                              # test/unit (black-box), test/postgres (RLS + service integration), test/integration (SNS/SQS), test/e2e, test/dbseed
 ```
