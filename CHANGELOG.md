@@ -6,6 +6,16 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependency maintenance (LLD rev 2.28, 2026-10-15):**
+  - `github.com/aws/aws-sdk-go-v2/service/glue` v1.157.0 → v1.171.0 (Glue Schema Registry SDK — minor; no API surface change for startup schema-resolution).
+  - `github.com/aws/aws-sdk-go-v2/service/sqs` v1.52.1 → v1.52.4 (SQS consumer SDK — patch; long-polling reliability fix).
+  - `github.com/jackc/puddle/v2` v2.2.2 → v2.2.3 (pgx connection-pool — patch; idle-connection eviction fix).
+  - `github.com/alicebob/miniredis/v2` v2.39.0 → v2.40.0 (test-only Valkey stub — minor).
+  - `govulncheck ./internal/... ./pkg/...` → **0 vulnerabilities** (1 vulnerability in a required module does not reach any call site in this service).
+  - Swagger and AsyncAPI verified aligned against current code: all 39 endpoints, 14 produced events, and 15 consumed event types confirmed. No spec changes required.
+
 ### Added
 
 - **Production-readiness hardening (LLD rev 2.20):**

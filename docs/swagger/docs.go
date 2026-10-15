@@ -718,9 +718,135 @@ const docTemplate = `{
                 ]
             }
         },
+        "/internal/tenants/{id}/plan-change-check": {
+            "get": {
+                "description": "Validates whether the proposed target_plan is safe. Returns {allowed, blockers[]}. Fail-closed: RP unavailability → 503, not a silent allow. Billing must call this before committing downgrades and re-run it when a scheduled period-end downgrade takes effect.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "I-18 — Plan-change pre-flight check (Billing, CD-20)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target plan code (starter|pro|enterprise)",
+                        "name": "target_plan",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "allowed or blocked with blockers[]",
+                        "schema": {
+                            "$ref": "#/definitions/service.PlanChangeCheckResult"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid_target_plan (missing or unknown target_plan)",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "insufficient_role",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "tenant_not_found",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "realm_provisioner_unavailable (fail-closed: RP unreachable)",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
+            }
+        },
+        "/internal/tenants/{id}/plan-context": {
+            "get": {
+                "description": "Returns {tenant_id, plan, status, licensed_seats, feature_flags, record_version} from the om:tenant cache. Entitlements calls this on every billing/tenant event to re-derive the effective entitlement set (CD-13). Accepts iam-system and commercial-system (CD-19).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "I-17 — Tenant plan context (Entitlements Service)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
+            }
+        },
         "/internal/tenants/{id}/seat-usage": {
             "get": {
-                "description": "Same projection as P-27 but service-to-service (Billing pre-checks before charging for a new seat).",
+                "description": "Same projection as P-27 but service-to-service (Billing pre-checks before charging for a new seat). Accepts iam-system and commercial-system (CD-19).",
                 "produces": [
                     "application/json"
                 ],
@@ -2580,6 +2706,17 @@ const docTemplate = `{
                 "RealmDedicated"
             ]
         },
+        "domain.ResidencyMode": {
+            "type": "string",
+            "enum": [
+                "standard",
+                "strict"
+            ],
+            "x-enum-varnames": [
+                "ResidencyModeStandard",
+                "ResidencyModeStrict"
+            ]
+        },
         "domain.SubscriptionStatus": {
             "type": "string",
             "enum": [
@@ -3516,6 +3653,10 @@ const docTemplate = `{
                 },
                 "record_version": {
                     "type": "integer"
+                },
+                "residency_mode": {
+                    "description": "CD-37: \"standard\"|\"strict\"",
+                    "type": "string"
                 }
             }
         },
@@ -3565,6 +3706,14 @@ const docTemplate = `{
                 "record_version": {
                     "type": "integer"
                 },
+                "residency_mode": {
+                    "description": "CD-37",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.ResidencyMode"
+                        }
+                    ]
+                },
                 "slug": {
                     "type": "string"
                 },
@@ -3599,6 +3748,31 @@ const docTemplate = `{
                     "description": "Message is a human-readable explanation of the field violation.",
                     "type": "string",
                     "example": "must be between 60 and 900"
+                }
+            }
+        },
+        "service.PlanChangeBlocker": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.PlanChangeCheckResult": {
+            "type": "object",
+            "properties": {
+                "allowed": {
+                    "type": "boolean"
+                },
+                "blockers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/service.PlanChangeBlocker"
+                    }
                 }
             }
         }

@@ -74,6 +74,12 @@ func (s *MembershipService) WithTokenServiceClient(c port.TokenServiceClient) *M
 // whole ReconcileRoles call — AUTH-9 is defense-in-depth on top of the
 // structural composite-FK bar (TR-8/DM-4), not the primary guarantee.
 func (s *MembershipService) isServiceAccountOrDegrade(ctx context.Context, tenantID, userID uuid.UUID) bool {
+	// Reserved system principals (iam-system, commercial-system) must never
+	// be enrolled as members. Hard-reject before the Token Service call so
+	// AUTH-9's fail-open degradation cannot accidentally allow enrollment.
+	if domain.IsReservedSystemPrincipal(userID) {
+		return true
+	}
 	if s.tokenService == nil {
 		return false
 	}

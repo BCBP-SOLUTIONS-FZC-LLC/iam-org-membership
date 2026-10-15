@@ -83,6 +83,7 @@ Registered for the `iam` domain but not emitted by this service: `iam_auth_event
 | `iam_org_membership_invite_throttled_total` | counter | `reason` | P-6 invites refused by the abuse limits (§16 A41), by reason: reinvite_too_soon (PI-11), tenant_rate_limited and actor_rate_limited (PI-12). |
 | `iam_org_membership_membership_exists_check_total` | counter | `caller`, `result` | I-15 grant-time membership-existence checks served, by caller and result. |
 | `iam_org_membership_pending_invitations_stale` | gauge | - | Pending invitations past expires_at that invitation-expiry hasn't flipped yet. |
+| `iam_org_membership_plan_change_check_total` | counter | `result` | I-18 plan-change pre-check (CD-20) outcomes by result: allowed (no SSO blocker), blocked (sso_idp_configured), error (RP unavailable — maps to 503). |
 | `iam_org_membership_processed_events_duplicates_total` | counter | `consumer` | SQS redeliveries filtered by the processed_events composite PK (IDEMP-4). Authoritative alerting source until platform_duplicate_messages_total (Proposed, registry.go) is ratified. |
 | `iam_org_membership_public_tenant_resolve_total` | counter | `result` | PUB-1 pre-login tenant/realm resolution lookups served, by result. |
 | `iam_org_membership_realm_sync_failed_total` | counter | `stage` | realm-config-sync reconciler failures (T-15). |

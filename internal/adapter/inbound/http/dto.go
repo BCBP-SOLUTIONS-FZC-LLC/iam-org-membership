@@ -28,6 +28,7 @@ type TenantResponse struct {
 	LicensedSeats         int                       `json:"licensed_seats"`
 	OwnerlessSince        *time.Time                `json:"ownerless_since,omitempty"`
 	OverageSince          *time.Time                `json:"overage_since,omitempty"`
+	ResidencyMode         domain.ResidencyMode      `json:"residency_mode"` // CD-37
 	FeatureFlags          map[string]any            `json:"feature_flags"`
 	RecordVersion         int64                     `json:"record_version"`
 	UpdatedAt             time.Time                 `json:"updated_at"`
@@ -51,6 +52,7 @@ func TenantToResponse(t *domain.Tenant) TenantResponse {
 		LicensedSeats:         t.LicensedSeats,
 		OwnerlessSince:        t.OwnerlessSince,
 		OverageSince:          t.OverageSince,
+		ResidencyMode:         t.ResidencyMode,
 		FeatureFlags:          t.FeatureFlags,
 		RecordVersion:         t.RecordVersion,
 		UpdatedAt:             t.UpdatedAt,
@@ -64,17 +66,23 @@ type TenantPatchRequest struct {
 	DefaultLocale        *string `json:"default_locale,omitempty"`
 	LocalAccountsEnabled *bool   `json:"local_accounts_enabled,omitempty"`
 	MFAFreshnessSeconds  *int    `json:"mfa_freshness_seconds,omitempty"`
+	ResidencyMode        *string `json:"residency_mode,omitempty"` // CD-37: "standard"|"strict"
 	RecordVersion        int64   `json:"record_version"`
 }
 
 func (r *TenantPatchRequest) ToDomain() *domain.TenantPatch {
-	return &domain.TenantPatch{
+	p := &domain.TenantPatch{
 		Name:                 r.Name,
 		DefaultLocale:        r.DefaultLocale,
 		LocalAccountsEnabled: r.LocalAccountsEnabled,
 		MFAFreshnessSeconds:  r.MFAFreshnessSeconds,
 		RecordVersion:        r.RecordVersion,
 	}
+	if r.ResidencyMode != nil {
+		rm := domain.ResidencyMode(*r.ResidencyMode)
+		p.ResidencyMode = &rm
+	}
+	return p
 }
 
 // ── Departments ─────────────────────────────────────────────────────────

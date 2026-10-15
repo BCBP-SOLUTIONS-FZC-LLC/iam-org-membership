@@ -57,6 +57,16 @@ const (
 	SuspensionSourceOperator     SuspensionSource = "operator"
 )
 
+// ResidencyMode is the data-residency mode for the tenant (CD-37, TL decision
+// 2026-10-15). Available on ALL plans; only tenant_owner may change it.
+// AuthZ Enrichment injects the effective value as x-residency-mode.
+type ResidencyMode string
+
+const (
+	ResidencyModeStandard ResidencyMode = "standard"
+	ResidencyModeStrict   ResidencyMode = "strict"
+)
+
 // Tenant is the aggregate root for the tenant subtree. All child entities
 // this service owns (memberships, roles, department activations, invitations)
 // FK-cascade to this row (§4.2, T-1..T-16). Delegations and tender-ACL entries
@@ -81,9 +91,10 @@ type Tenant struct {
 	LocalAccountsEnabled   bool
 	RealmSyncPending       bool // T-15
 	DefaultLocale          string
-	LicensedSeats          int        // T-8
-	OwnerlessSince         *time.Time // T-13
-	OverageSince           *time.Time // SEAT-5
+	LicensedSeats          int           // T-8
+	OwnerlessSince         *time.Time    // T-13
+	OverageSince           *time.Time    // SEAT-5
+	ResidencyMode          ResidencyMode // CD-37: 'standard' (default) | 'strict'
 	RecordVersion          int64
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -98,6 +109,7 @@ type TenantPatch struct {
 	DefaultLocale        *string
 	LocalAccountsEnabled *bool
 	MFAFreshnessSeconds  *int
+	ResidencyMode        *ResidencyMode // CD-37: tenant_owner only; nil = no-op
 	FeatureFlags         map[string]any // O-4 only; ignored on P-2
 
 	RecordVersion int64

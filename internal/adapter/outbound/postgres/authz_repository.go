@@ -35,12 +35,12 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 	var out *port.MembershipProjectionRow
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		var (
-			mStatus, tStatus, tPlan, tLocale string
-			mfaFresh                         int
-			localAccountsEnabled             bool
-			tenantFeatureFlagsJSON           []byte
-			rolesJSON                        []byte // array_agg result as JSON array
-			deptsJSON                        []byte // json_agg result
+			mStatus, tStatus, tPlan, tLocale, tResidencyMode string
+			mfaFresh                                         int
+			localAccountsEnabled                             bool
+			tenantFeatureFlagsJSON                           []byte
+			rolesJSON                                        []byte // array_agg result as JSON array
+			deptsJSON                                        []byte // json_agg result
 		)
 
 		err := tx.QueryRow(ctx, `
@@ -51,6 +51,7 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 				t.default_locale,
 				t.mfa_freshness_seconds,
 				t.local_accounts_enabled,
+				t.residency_mode,
 				t.feature_flags,
 				COALESCE(
 					to_json(
@@ -84,11 +85,11 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 			  AND tm.deleted_at IS NULL
 			GROUP BY
 				tm.status, t.status, t.plan, t.default_locale,
-				t.mfa_freshness_seconds, t.local_accounts_enabled, t.feature_flags`,
+				t.mfa_freshness_seconds, t.local_accounts_enabled, t.residency_mode, t.feature_flags`,
 			tenantID, userID,
 		).Scan(
 			&mStatus, &tStatus, &tPlan, &tLocale,
-			&mfaFresh, &localAccountsEnabled, &tenantFeatureFlagsJSON,
+			&mfaFresh, &localAccountsEnabled, &tResidencyMode, &tenantFeatureFlagsJSON,
 			&rolesJSON, &deptsJSON,
 		)
 		if err != nil {
@@ -138,6 +139,7 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 			Locale:               tLocale,
 			MFAFreshnessSeconds:  mfaFresh,
 			LocalAccountsEnabled: localAccountsEnabled,
+			ResidencyMode:        domain.ResidencyMode(tResidencyMode),
 			TenantFeatureFlags:   tenantFlags,
 			Roles:                roles,
 			Departments:          depts,

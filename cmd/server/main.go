@@ -461,6 +461,33 @@ func main() {
 		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments and plans caches TTL-only)", nil)
 	}
 
+	// catalog-orgm-plans-q — dedicated handler for PlanCatalogChanged events.
+	// Merges the plan's new feature_set into tenants.feature_flags for all active
+	// tenants on the affected plan (sysPool BYPASSRLS) and evicts om:tenant caches.
+	// Separate from catalog-orgm-q because it requires a cross-tenant DB write
+	// and benefits from independent scaling + DLQ policy.
+	// sysPool-backed repo so the bulk UPDATE crosses RLS (BYPASSRLS role).
+	planCatalogConsumer := consumeradapter.NewPlanCatalogPlansConsumer(pgadapter.NewTenantRepository(sysPool), cache, inbox, log)
+	if url := os.Getenv("SQS_CATALOG_ORGM_PLANS_QUEUE_URL"); url != "" {
+		if err := sqspipeline.RequireDLQ(ctx, dlqPublisher, url, log); err != nil {
+			panic(fmt.Sprintf("DLQ preflight: %v", err))
+		}
+		cons, err := sqspipeline.NewConsumer(
+			sqspipeline.EnvForQueue(sqsEnv, url, envInt("SQS_CATALOG_ORGM_PLANS_CONCURRENCY", 1)),
+			sqsClient,
+			sqspipeline.Handler("catalog-orgm-plans-q", planCatalogConsumer.Handle, consumedValidator, dlqPublisher, log),
+			dlqPublisher,
+			log,
+		)
+		if err != nil {
+			panic(fmt.Sprintf("build catalog-orgm-plans-q consumer: %v", err))
+		}
+		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("catalog-orgm-plans-q")})
+		log.Info("catalog-orgm-plans-q consumer wired", map[string]interface{}{"queue_url": url})
+	} else {
+		log.Warn("SQS_CATALOG_ORGM_PLANS_QUEUE_URL unset — plan feature_set propagation to tenants disabled (feature flags TTL-only)", nil)
+	}
+
 	for _, wc := range sqsConsumers {
 		wc := wc
 		go func() {
@@ -546,7 +573,11 @@ func main() {
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
-	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).WithAuditLog(auditLogClient)
+	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
+		WithAuditLog(auditLogClient).
+		WithPlanCatalog(catalogReader).
+		WithIDPReader(rpClient).
+		WithTxRunner(txRunner)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays).
 		WithTokenServiceClient(tokenServiceClient)
@@ -842,7 +873,11 @@ func validateRequiredEnv(appEnv string) {
 		// silently reports zero active workflows — the opposite of the documented
 		// fail-CLOSED contract (§20.7, P-6/P-8). Safe in local dev (intentional
 		// fallback); dangerous in staging (silent wrong behaviour); fatal in prod.
-		{"REALM_PROVISIONER_BASE_URL", true, true, "Realm Provisioner base URL; unset makes RP calls fail OPEN (fabricated KC UUIDs, silent no-ops) instead of the documented fail-closed 503 — wrong in staging, fatal in production"},
+		// CD-20 fix: GetIDPCount (plan-change-check, I-18) falls back to
+		// (0, nil) when the base URL is empty — silently allowing any downgrade.
+		// This is intentional only in local dev. In staging and production it is
+		// a misconfiguration that must abort startup (stagingWarn changed false).
+		{"REALM_PROVISIONER_BASE_URL", true, false, "Realm Provisioner base URL; unset makes RP calls fail OPEN (fabricated KC UUIDs, silent no-ops for GetIDPCount) — wrong in staging, fatal in production (CD-20)"},
 		{"WORKFLOW_SERVICE_BASE_URL", true, true, "Workflow Service base URL; unset makes delegate-impact report zero workflows (fail-open, opposite of WFI-13 intent) — wrong in staging, fatal in production"},
 		// CatalogAdminClient is NOT fail-open (§20.7): an absent base URL
 		// causes catalog_unavailable 503 on every write path that touches

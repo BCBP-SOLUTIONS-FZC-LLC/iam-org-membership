@@ -129,6 +129,18 @@ type TenantStateChangedPayload struct {
 	Cause          string             `json:"cause"` // event type that caused the transition
 }
 
+// TenantSettingChangedPayload is EventTenantSettingChanged's data (CD-37).
+// Published on iam.tenant.events so AuthZ Enrichment (tenant-authz-q) can
+// evict its om:tenant cache and pick up the new residency_mode on the next
+// I-8 cache-miss rebuild.
+type TenantSettingChangedPayload struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	Setting  string    `json:"setting"`   // setting name, e.g. "residency_mode"
+	OldValue string    `json:"old_value"` // value before the change
+	NewValue string    `json:"new_value"` // value after the change
+	ActorID  uuid.UUID `json:"actor_id"`  // user or SystemActorID
+}
+
 // ── iam.tenant.events ──────────────────────────────────────────────────
 
 type TenantCreatedPayload struct {

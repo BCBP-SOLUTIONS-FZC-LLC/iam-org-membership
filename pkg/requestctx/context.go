@@ -59,7 +59,14 @@ func (rc *RequestContext) IsOperator() bool {
 // IsSystem reports whether the caller is the reserved iam-system principal
 // (RLS-5, IAPI-2) — accepted only on /api/v1/internal/* routes.
 func (rc *RequestContext) IsSystem() bool {
-	return rc.HasRole("iam-system")
+	return rc.HasRole(IamSystemPrincipal)
+}
+
+// IsCommercialSystem reports whether the caller is the commercial-system
+// principal introduced in CD-19. Accepted only on the three Commercial-caller
+// routes: I-11 (seat-usage), I-17 (plan-context), I-18 (plan-change-check).
+func (rc *RequestContext) IsCommercialSystem() bool {
+	return rc.HasRole(CommercialSystemPrincipal)
 }
 
 type requestIDKey struct{}

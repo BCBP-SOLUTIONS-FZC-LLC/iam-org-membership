@@ -25,6 +25,14 @@ definitions:
     x-enum-varnames:
     - RealmShared
     - RealmDedicated
+  domain.ResidencyMode:
+    enum:
+    - standard
+    - strict
+    type: string
+    x-enum-varnames:
+    - ResidencyModeStandard
+    - ResidencyModeStrict
   domain.SubscriptionStatus:
     enum:
     - trial
@@ -693,6 +701,9 @@ definitions:
         type: string
       record_version:
         type: integer
+      residency_mode:
+        description: 'CD-37: "standard"|"strict"'
+        type: string
     type: object
   http.TenantResponse:
     properties:
@@ -725,6 +736,10 @@ definitions:
         $ref: '#/definitions/domain.RealmType'
       record_version:
         type: integer
+      residency_mode:
+        allOf:
+        - $ref: '#/definitions/domain.ResidencyMode'
+        description: CD-37
       slug:
         type: string
       status:
@@ -750,6 +765,22 @@ definitions:
         description: Message is a human-readable explanation of the field violation.
         example: must be between 60 and 900
         type: string
+    type: object
+  service.PlanChangeBlocker:
+    properties:
+      code:
+        type: string
+      detail:
+        type: string
+    type: object
+  service.PlanChangeCheckResult:
+    properties:
+      allowed:
+        type: boolean
+      blockers:
+        items:
+          $ref: '#/definitions/service.PlanChangeBlocker'
+        type: array
     type: object
 host: localhost:8080
 info:
@@ -1200,10 +1231,95 @@ paths:
       summary: I-14 — Tenant mfa_freshness_seconds (AuthZ Enrichment)
       tags:
       - internal
+  /internal/tenants/{id}/plan-change-check:
+    get:
+      description: 'Validates whether the proposed target_plan is safe. Returns {allowed,
+        blockers[]}. Fail-closed: RP unavailability → 503, not a silent allow. Billing
+        must call this before committing downgrades and re-run it when a scheduled
+        period-end downgrade takes effect.'
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Target plan code (starter|pro|enterprise)
+        in: query
+        name: target_plan
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: allowed or blocked with blockers[]
+          schema:
+            $ref: '#/definitions/service.PlanChangeCheckResult'
+        "400":
+          description: invalid_target_plan (missing or unknown target_plan)
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "403":
+          description: insufficient_role
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: tenant_not_found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "503":
+          description: 'realm_provisioner_unavailable (fail-closed: RP unreachable)'
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: I-18 — Plan-change pre-flight check (Billing, CD-20)
+      tags:
+      - internal
+  /internal/tenants/{id}/plan-context:
+    get:
+      description: Returns {tenant_id, plan, status, licensed_seats, feature_flags,
+        record_version} from the om:tenant cache. Entitlements calls this on every
+        billing/tenant event to re-derive the effective entitlement set (CD-13). Accepts
+        iam-system and commercial-system (CD-19).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: I-17 — Tenant plan context (Entitlements Service)
+      tags:
+      - internal
   /internal/tenants/{id}/seat-usage:
     get:
       description: Same projection as P-27 but service-to-service (Billing pre-checks
-        before charging for a new seat).
+        before charging for a new seat). Accepts iam-system and commercial-system
+        (CD-19).
       parameters:
       - description: Tenant UUID
         format: uuid

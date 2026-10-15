@@ -233,6 +233,35 @@ func TestP11MW022_SeatLimitDetailsMerged(t *testing.T) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// CD-31 — Error-code pin: seat_limit_reached must not change during
+//          a future RFC 9457 migration (TL decision 2026-10-15).
+// ═════════════════════════════════════════════════════════════════════════
+
+// Test Case ID:      CD31-PIN-001
+// Feature:           CD-31 · seat_limit_reached code string is pinned to prevent
+//
+//	silent renames during a future RFC 9457 format migration.
+//
+// Priority: P1 · Severity: Blocker · Automation Status: Automated
+func TestCD31_SeatLimitReached_CodeStringPinned(t *testing.T) {
+	// This test intentionally checks the wire code string rather than
+	// errors.Is so that any future rename of the constant or the HTTP adapter
+	// mapping breaks the test explicitly. CD-31 (TL decision 2026-10-15):
+	// migrate IAM to RFC 9457 in a future phase — until then code strings
+	// must not change.
+	assert.Equal(t, "seat_limit_reached", domain.ErrSeatLimitReached.Error(),
+		"wire code string for ErrSeatLimitReached must remain 'seat_limit_reached'")
+
+	c, w := newTestContext(nil)
+	HandleError(c, domain.NewError(domain.ErrSeatLimitReached, "seat limit reached"))
+	assert.Equal(t, http.StatusConflict, w.Code,
+		"ErrSeatLimitReached must map to 409 Conflict")
+	body := decodeBody(t, w)
+	assert.Equal(t, "seat_limit_reached", body["code"],
+		"409 body.code must be 'seat_limit_reached' (CD-31 RFC-9457 migration pin)")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 // Unknown error → generic 500
 // ═════════════════════════════════════════════════════════════════════════
 

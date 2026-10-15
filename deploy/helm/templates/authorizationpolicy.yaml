@@ -1,0 +1,79 @@
+{{- if and .Values.commercialCallers.enabled .Values.commercialCallers.istio.enabled }}
+# CD-19 — Istio AuthorizationPolicy for Commercial domain callers.
+#
+# This policy grants Billing and Entitlements the minimum path-level access
+# they need on Core's internal routes. NetworkPolicy (networkpolicy.yaml)
+# enforces L3/L4; this policy adds L7 mTLS identity enforcement.
+#
+# ALLOW-policy safety (CD-19 alignment rule 3):
+#   An Istio ALLOW policy denies every request that matches no rule. The two
+#   commercial-caller rules below are scoped to specific paths; without an
+#   explicit catch-all for existing callers, the gateway, AuthZ Enrichment,
+#   Group Mapping, Audit Log, Tender ACL, Delegation, and every other
+#   IAM-internal caller would be silently denied the moment this policy becomes
+#   active. The first rule below covers all namespaces already admitted by the
+#   base NetworkPolicy ingress rules (set via
+#   commercialCallers.istio.existingCallerNamespaces in each env values file).
+#   No existing caller loses access.
+#
+# Prerequisites:
+#   - Istio installed in the cluster (istio-system namespace)
+#   - PeerAuthentication STRICT mode active in the iam namespace
+#   - commercial-billing and commercial-entitlements ServiceAccounts exist
+#     in their respective namespaces with Istio sidecar injection enabled
+#
+# Route definitions (must stay in sync with commercialSystemAllowedRoutes
+# in internal/adapter/inbound/http/middleware.go):
+#   Billing     → I-11 GET /api/v1/internal/tenants/*/seat-usage
+#               → I-18 GET /api/v1/internal/tenants/*/plan-change-check
+#   Entitlements → I-17 GET /api/v1/internal/tenants/*/plan-context
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}-commercial-callers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+  annotations:
+    app.kubernetes.io/component: "cd19-commercial-caller-policy"
+spec:
+  selector:
+    matchLabels:
+      {{- include "iam-org-membership.selectorLabels" . | nindent 6 }}
+  action: ALLOW
+  rules:
+    # Existing callers — namespace-level allow for every caller currently
+    # admitted by the base NetworkPolicy ingress rules (gateway, all IAM-internal
+    # services sharing the release namespace, and monitoring). No path restriction
+    # here: the NetworkPolicy already enforces port-level access, and these callers
+    # were unrestricted before CD-19 introduced this ALLOW policy.
+    # Populated via commercialCallers.istio.existingCallerNamespaces in each env
+    # values file (values-dev.yaml, values-staging.yaml, values-prod.yaml).
+    {{- if .Values.commercialCallers.istio.existingCallerNamespaces }}
+    - from:
+        - source:
+            namespaces:
+              {{- toYaml .Values.commercialCallers.istio.existingCallerNamespaces | nindent 14 }}
+    {{- end }}
+    # Billing (commercial-billing SA) — I-11 and I-18 only.
+    - from:
+        - source:
+            principals:
+              - "{{ .Values.commercialCallers.istio.trustDomain }}/ns/{{ .Values.commercialCallers.billing.namespace }}/sa/{{ .Values.commercialCallers.billing.serviceAccountName }}"
+      to:
+        - operation:
+            methods: ["GET"]
+            paths:
+              - "/api/v1/internal/tenants/*/seat-usage"
+              - "/api/v1/internal/tenants/*/plan-change-check"
+    # Entitlements (commercial-entitlements SA) — I-17 only.
+    - from:
+        - source:
+            principals:
+              - "{{ .Values.commercialCallers.istio.trustDomain }}/ns/{{ .Values.commercialCallers.entitlements.namespace }}/sa/{{ .Values.commercialCallers.entitlements.serviceAccountName }}"
+      to:
+        - operation:
+            methods: ["GET"]
+            paths:
+              - "/api/v1/internal/tenants/*/plan-context"
+{{- end }}

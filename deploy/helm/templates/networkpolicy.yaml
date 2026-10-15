@@ -60,6 +60,33 @@ spec:
           protocol: TCP
     {{- end }}
 
+    # CD-19 — Commercial domain callers (Billing + Entitlements).
+    # Billing (ns: billing, SA: commercial-billing) calls I-11 and I-18.
+    # Entitlements (ns: commercial, SA: commercial-entitlements) calls I-17.
+    # Only the API port is opened; metrics port is NOT included here.
+    {{- if .Values.commercialCallers.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.commercialCallers.billing.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.commercialCallers.billing.podSelector | nindent 14 }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.commercialCallers.entitlements.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.commercialCallers.entitlements.podSelector | nindent 14 }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    {{- end }}
+
     {{- with .Values.networkPolicy.additionalIngressRules }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

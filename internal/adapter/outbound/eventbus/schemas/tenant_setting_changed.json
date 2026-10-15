@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TenantSettingChangedPayload",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "setting",
+    "old_value",
+    "new_value",
+    "actor_id"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "setting": {
+      "type": "string"
+    },
+    "old_value": {
+      "type": "string"
+    },
+    "new_value": {
+      "type": "string"
+    },
+    "actor_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

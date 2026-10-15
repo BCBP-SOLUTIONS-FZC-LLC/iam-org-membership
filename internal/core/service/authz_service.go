@@ -51,6 +51,7 @@ type MembershipProjection struct {
 	Locale               string                      `json:"default_locale"`
 	MFAFreshnessSeconds  int                         `json:"mfa_freshness_seconds"`
 	LocalAccountsEnabled bool                        `json:"local_accounts_enabled"`
+	ResidencyMode        domain.ResidencyMode        `json:"residency_mode"` // CD-37
 	Roles                []domain.TenantRoleCode     `json:"roles"`
 	Departments          []domain.DeptMembershipView `json:"departments"`
 	// FeatureFlags is the effective set (planDefaults(plan) ⊕
@@ -171,6 +172,7 @@ func (s *AuthZService) readFromDB(ctx context.Context, tenantID, userID uuid.UUI
 		Locale:               row.Locale,
 		MFAFreshnessSeconds:  row.MFAFreshnessSeconds,
 		LocalAccountsEnabled: row.LocalAccountsEnabled,
+		ResidencyMode:        row.ResidencyMode,
 		Roles:                roles,
 		Departments:          depts,
 		FeatureFlags:         enabledFlags,

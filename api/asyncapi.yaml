@@ -12,7 +12,7 @@ info:
       Topic                        Glue registry            Events
       ─────────────────────────────────────────────────────────────
       iam-membership-events        iam-membership-events    12 (see below)
-      iam-tenant-events            iam-tenant-events        2  (TenantCreated, TrialStarted)
+      iam-tenant-events            iam-tenant-events        3  (TenantCreated, TrialStarted, TenantSettingChanged)
 
     The two-topic split follows HLD §9.1: tenant lifecycle (creation,
     trial start) fans out to a different consumer set than membership
@@ -22,11 +22,15 @@ info:
     Envelope.Source is the job of platform-events RoutingPublisher —
     see internal/adapter/outbound/eventbus/publisher.go.
 
-    Wire format: each SNS message body is prefixed with an 18-byte AWS Glue
-    Schema Registry header before the EventEnvelope JSON:
+    Wire format: the SNS Message body is the EventEnvelope JSON (UTF-8). When
+    the Glue codec is active, the envelope's "data" field is a base64 JSON
+    string (not an object). Decoded, that string is:
       byte 0     : header version (0x03)
       byte 1     : compression    (0x00 = none)
-      bytes 2-17 : schema version UUID (big-endian)
+      bytes 2-17 : Glue schema version UUID (big-endian)
+      bytes 18+  : typed payload JSON (e.g. {"tenant_id":"…","actor_id":"…"})
+    Strip bytes 0-17 to obtain the raw typed payload JSON. In dev/test
+    (NoopCodec) "data" is a plain JSON object and there is no binary prefix.
 
     Glue registries : iam-membership-events, iam-tenant-events (ap-south-1, JSON data format)
     Schemas         : one per event type, named by PascalCase event type string
@@ -433,6 +437,33 @@ servers:
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
+  sqsMembershipEntitlements:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Entitlements Service consumer (CD-25, proposed).
+      Queue: membership-entitlements-q  |  DLQ: membership-entitlements-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Entitlements Service (commercial domain)
+      SNS subscription filter: EventType IN [TenantMembershipsPurged]
+        (Entitlements purges per-tenant snapshots and overrides on full offboarding,
+         following the IAM pattern of purging on Core's TenantMembershipsPurged
+         rather than RP's TenantOffboarded — CD-25)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsMembershipUsage:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the Usage & Metering Service consumer (CD-25, proposed).
+      Queue: membership-usage-q  |  DLQ: membership-usage-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: Usage & Metering Service (commercial domain)
+      SNS subscription filter: EventType IN [TenantMembershipsPurged]
+        (Usage & Metering purges raw usage events for the tenant on full offboarding;
+         period totals are kept as financial records per CD-14 retention requirements)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
   # ── Consumers of iam-tenant-events ─────────────────────────────────────────
   sqsTenantAudit:
     host: "sqs.ap-south-1.amazonaws.com"
@@ -471,6 +502,19 @@ servers:
          row and runs its own realm-side expiry sweep off that value — it does not
          poll this service; see this service's LLD §7.3/§8.7 for the resolved
          RP-4 open question)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsTenantAuthZ:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the AuthZ Enrichment consumer on the tenant lifecycle topic.
+      Queue: tenant-authz-q  |  DLQ: tenant-authz-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: AuthZ Enrichment Service
+      SNS subscription filter: EventType IN [TenantSettingChanged]
+        (AuthZ evicts the om:tenant cache entry so the next I-8 cache-miss
+         rebuild picks up the new residency_mode — CD-37, TL decision 2026-10-15)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -523,6 +567,9 @@ servers:
       (iam-catalog-admin). Queue: catalog-orgm-q  |  DLQ: catalog-orgm-q-dlq
       (maxReceiveCount=5). Consumer short-name: orgm. Configured via
       SQS_CATALOG_ORGM_QUEUE_URL.
+      SNS subscription filter: EventType IN [DepartmentCatalogChanged, PlanCatalogChanged]
+      (cache-invalidation only — no DB writes; see catalog-orgm-plans-q for
+      plan feature_set propagation)
 
       Added 2026-09-20 to document what already exists in code (Gap 12,
       gap_doc/pending_gap_sep15.md): this service's consumer
@@ -535,6 +582,28 @@ servers:
       is unset in every environment today, so this queue does not exist yet
       either — this server entry documents the intended shape, not a live
       resource.
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
+  sqsCatalogOrgmPlans:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      Dedicated SQS queue for PlanCatalogChanged events from iam-catalog-admin.
+      Queue: catalog-orgm-plans-q  |  DLQ: catalog-orgm-plans-q-dlq (maxReceiveCount=5).
+      Separate from catalog-orgm-q because this consumer does a cross-tenant DB write
+      (MergeFeatureFlagsForPlan via sysPool BYPASSRLS) in addition to cache invalidation.
+      Concurrency: 1 (single goroutine — plan changes are infrequent bulk writes).
+      Configured via SQS_CATALOG_ORGM_PLANS_QUEUE_URL.
+      SNS subscription filter: EventType IN [PlanCatalogChanged]
+
+      On receipt of PlanCatalogChanged{plan_code, feature_set}:
+        1. Clears om:plans + om:plans:stale cache keys.
+        2. Bulk-merges feature_set into tenants.feature_flags for all active tenants
+           on plan_code: SET feature_flags = $feature_set::jsonb || feature_flags
+           (|| in Postgres JSONB: right side wins → per-tenant overrides preserved, T-9).
+        3. Evicts om:tenant:{id} for each updated tenant.
+      No CAT-I2 round-trip needed — feature_set is carried in the event payload.
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -628,15 +697,20 @@ channels:
       Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, TenantSeatOverage*
       Workflow          membership-workflow-q         membership-workflow-q-dlq         TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged
       Billing           membership-billing-q          membership-billing-q-dlq          TenantSeatOverage{Started,Resolved}
+      Entitlements      membership-entitlements-q     membership-entitlements-q-dlq     TenantMembershipsPurged  (CD-25)
+      Usage & Metering  membership-usage-q            membership-usage-q-dlq            TenantMembershipsPurged  (CD-25)
 
       All queues: maxReceiveCount=5, standard (non-FIFO).
 
       Sibling-service consumers (queues owned entirely by those services,
       not detailed as channels here since this repo has no config/binding
       visibility into them — see each owning service's own AsyncAPI spec):
-        Delegation Service     delegation-cascade-q        MembershipRevoked, TenantMembershipsPurged
-        Tender-ACL Service     (queue name owned by them)  MembershipRevoked, TenantMembershipsPurged
-        Group-Mapping Service  (queue name owned by them)  TenantMembershipsPurged
+        Delegation Service                    delegation-cascade-q        MembershipRevoked, TenantMembershipsPurged
+        Tender-ACL Service                    (queue name owned by them)  MembershipRevoked, TenantMembershipsPurged
+        Group-Mapping Service                 (queue name owned by them)  TenantMembershipsPurged
+        LLM Ingestion Service (proposed)      (name TBD — OI-82)          TenantMembershipsPurged
+        LLM Retrieval & Generation (proposed) iam-rag-purge-q             TenantMembershipsPurged  (OQ-29/OQ-75)
+        LLM Retrieval & Generation (proposed) iam-rag-membership-q        TenantStateChanged       (OQ-71)
 
       Queue security: every SQS queue that subscribes to this topic MUST enforce
       a resource-based policy restricting delivery to this SNS topic ARN. Without
@@ -684,12 +758,12 @@ channels:
   iamTenantEvents:
     address: "iam-tenant-events"
     description: |
-      SNS topic for tenant lifecycle creation events (2 event types from this
-      service: TenantCreated, TrialStarted). This service is a co-producer on
-      this topic alongside Realm Provisioner and Billing (per HLD §9.1.1
-      shared-producer arrangement); other services emit other event types onto
-      the same topic (e.g. TenantSuspended from Billing) — those are documented
-      in their own AsyncAPI specs.
+      SNS topic for tenant lifecycle creation events (3 event types from this
+      service: TenantCreated, TrialStarted, TenantSettingChanged). This service
+      is a co-producer on this topic alongside Realm Provisioner and Billing
+      (per HLD §9.1.1 shared-producer arrangement); other services emit other
+      event types onto the same topic (e.g. TenantSuspended from Billing) —
+      those are documented in their own AsyncAPI specs.
 
       Backing Glue registry: iam-tenant-events (ap-south-1, JSON data format).
 
@@ -700,11 +774,17 @@ channels:
       independently meaningful (it carries plan + trial_ends_at), not as a
       strict successor to TenantCreated.
 
+      TenantSettingChanged is emitted exactly once per P-2 PATCH that mutates
+      residency_mode, transactionally with the DB write (outbox-atomic, EVT-10).
+      CD-37, TL decision 2026-10-15.
+
       Fan-out queue registry (LLD §7.3.2):
         Audit Log         tenant-audit-q          (all types)
         Notification      tenant-notification-q   TenantCreated, TrialStarted
         Realm Provisioner tenant-realm-q          TrialStarted only (trial_ends_at
                                                     for its own local expiry sweep)
+        AuthZ Enrichment  tenant-authz-q          TenantSettingChanged only
+                                                    (cache eviction for residency_mode)
 
       All queues: maxReceiveCount=5, standard (non-FIFO).
 
@@ -715,6 +795,8 @@ channels:
         $ref: '#/components/messages/TenantCreated'
       TrialStarted:
         $ref: '#/components/messages/TrialStarted'
+      TenantSettingChanged:
+        $ref: '#/components/messages/TenantSettingChanged'
 
   # ── SQS consumer queue channels (LLD §7.3.2 fan-out) ──────────────────────
   # These channels document the downstream SQS queues that receive events from
@@ -960,20 +1042,75 @@ channels:
               name: membership-billing-q-dlq
             maxReceiveCount: 5
 
+  membershipEntitlementsQueue:
+    address: "membership-entitlements-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipEntitlements'
+    description: |
+      SQS queue subscribed to TenantMembershipsPurged for the Entitlements
+      Service to purge its per-tenant snapshots and overrides on full
+      offboarding (CD-25, proposed). Follows the IAM pattern of purging on
+      Core's TenantMembershipsPurged rather than RP's TenantOffboarded.
+      SNS subscription filter policy:
+        { "EventType": ["TenantMembershipsPurged"] }
+    messages:
+      TenantMembershipsPurged:
+        $ref: '#/components/messages/TenantMembershipsPurged'
+    bindings:
+      sqs:
+        queue:
+          name: membership-entitlements-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-entitlements-q-dlq
+            maxReceiveCount: 5
+
+  membershipUsageQueue:
+    address: "membership-usage-q"
+    servers:
+      - $ref: '#/servers/sqsMembershipUsage'
+    description: |
+      SQS queue subscribed to TenantMembershipsPurged for the Usage &
+      Metering Service to purge raw usage events on full offboarding,
+      keeping period totals as financial records (CD-25, proposed).
+      SNS subscription filter policy:
+        { "EventType": ["TenantMembershipsPurged"] }
+    messages:
+      TenantMembershipsPurged:
+        $ref: '#/components/messages/TenantMembershipsPurged'
+    bindings:
+      sqs:
+        queue:
+          name: membership-usage-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: membership-usage-q-dlq
+            maxReceiveCount: 5
+
   tenantAuditQueue:
     address: "tenant-audit-q"
     servers:
       - $ref: '#/servers/sqsTenantAudit'
     description: |
       SQS queue on iam-tenant-events with no SNS filter. Audit Log stores
-      every tenant lifecycle event (creation, trial-start, and events
-      emitted by other services on this topic) for 7-year retention.
+      every tenant lifecycle event (creation, trial-start, setting changes, and
+      events emitted by other services on this topic) for 7-year retention.
       SNS subscription filter policy: (no filter)
     messages:
       TenantCreated:
         $ref: '#/components/messages/TenantCreated'
       TrialStarted:
         $ref: '#/components/messages/TrialStarted'
+      TenantSettingChanged:
+        $ref: '#/components/messages/TenantSettingChanged'
     bindings:
       sqs:
         queue:
@@ -1043,6 +1180,32 @@ channels:
           redrivePolicy:
             deadLetterQueue:
               name: tenant-realm-q-dlq
+            maxReceiveCount: 5
+
+  tenantAuthZQueue:
+    address: "tenant-authz-q"
+    servers:
+      - $ref: '#/servers/sqsTenantAuthZ'
+    description: |
+      SQS queue on iam-tenant-events consumed by AuthZ Enrichment to evict the
+      om:tenant cache when tenant settings change, so the next I-8 cache-miss
+      rebuild picks up the new values (residency_mode, CD-37).
+      SNS subscription filter policy:
+        { "EventType": ["TenantSettingChanged"] }
+    messages:
+      TenantSettingChanged:
+        $ref: '#/components/messages/TenantSettingChanged'
+    bindings:
+      sqs:
+        queue:
+          name: tenant-authz-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: tenant-authz-q-dlq
             maxReceiveCount: 5
 
   # ── Inbound consumption channels (§7.1) ────────────────────────────────────
@@ -1150,6 +1313,8 @@ channels:
     messages:
       DepartmentCatalogChanged:
         $ref: '#/components/messages/DepartmentCatalogChanged'
+      PlanCatalogChanged:
+        $ref: '#/components/messages/PlanCatalogChanged'
     bindings:
       sqs:
         queue:
@@ -1161,6 +1326,32 @@ channels:
           redrivePolicy:
             deadLetterQueue:
               name: catalog-orgm-q-dlq
+            maxReceiveCount: 5
+
+  catalogOrgmPlansQueue:
+    address: "catalog-orgm-plans-q"
+    servers:
+      - $ref: '#/servers/sqsCatalogOrgmPlans'
+    description: |
+      Dedicated queue for PlanCatalogChanged events with feature_set propagation.
+      On receipt: merges feature_set into tenants.feature_flags for all active tenants
+      on the affected plan (sysPool BYPASSRLS) and evicts om:tenant caches.
+      No CAT-I2 round-trip — feature_set is carried in the event payload.
+      SNS subscription filter: EventType IN [PlanCatalogChanged]
+    messages:
+      PlanCatalogChanged:
+        $ref: '#/components/messages/PlanCatalogChanged'
+    bindings:
+      sqs:
+        queue:
+          name: catalog-orgm-plans-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: catalog-orgm-plans-q-dlq
             maxReceiveCount: 5
 
 operations:
@@ -1320,13 +1511,14 @@ operations:
       $ref: '#/channels/iamTenantEvents'
     tags:
       - $ref: '#/components/tags/published'
-    summary: Publish tenant creation events (TenantCreated, TrialStarted)
+    summary: Publish tenant creation and setting-change events (TenantCreated, TrialStarted, TenantSettingChanged)
     description: |
       iam-org-membership co-produces onto iam-tenant-events alongside Realm
-      Provisioner and Billing (HLD §9.1.1). This service emits exactly two
-      event types on this topic: TenantCreated and TrialStarted, both from
-      the TrialTenantProvisioned consumer that provisions the initial tenant
-      row plus the 5 default system departments and the owner role grant.
+      Provisioner and Billing (HLD §9.1.1). This service emits three event types
+      on this topic: TenantCreated and TrialStarted (from the TrialTenantProvisioned
+      consumer that provisions the initial tenant row), and TenantSettingChanged
+      (from P-2 PATCH when residency_mode is mutated — CD-37, TL decision
+      2026-10-15, outbox-atomic with the DB write).
 
       RoutingPublisher selects this topic per message by inspecting
       Envelope.Source: values with the ".tenant" suffix are routed here.
@@ -1337,6 +1529,7 @@ operations:
     messages:
       - $ref: '#/channels/iamTenantEvents/messages/TenantCreated'
       - $ref: '#/channels/iamTenantEvents/messages/TrialStarted'
+      - $ref: '#/channels/iamTenantEvents/messages/TenantSettingChanged'
 
   # ── Receive operations (fan-out consumers) ─────────────────────────────────
   # These operations document the downstream consumers of both topics. They
@@ -1517,7 +1710,7 @@ operations:
         overage-status flag it published on billing.events.
 
       See §16 A59, SEAT-3, SEAT-5.
-      Idempotency key: (id, consumer="billing") in processed_events.
+      Idempotency key: (id, consumer="commercial-billing") in processed_events.
     messages:
       - $ref: '#/channels/membershipBillingQueue/messages/TenantSeatOverageStarted'
       - $ref: '#/channels/membershipBillingQueue/messages/TenantSeatOverageResolved'
@@ -1539,6 +1732,7 @@ operations:
     messages:
       - $ref: '#/channels/tenantAuditQueue/messages/TenantCreated'
       - $ref: '#/channels/tenantAuditQueue/messages/TrialStarted'
+      - $ref: '#/channels/tenantAuditQueue/messages/TenantSettingChanged'
 
   receiveTenantNotification:
     action: receive
@@ -1583,6 +1777,27 @@ operations:
       Idempotency key: (id, consumer="realm-provisioner") in processed_events.
     messages:
       - $ref: '#/channels/tenantRealmQueue/messages/TrialStarted'
+
+  receiveTenantAuthZ:
+    action: receive
+    channel:
+      $ref: '#/channels/tenantAuthZQueue'
+    tags:
+      - $ref: '#/components/tags/published'
+    summary: AuthZ Enrichment evicts om:tenant cache on residency_mode change
+    description: |
+      Consumer: AuthZ Enrichment Service
+      Queue   : tenant-authz-q  |  DLQ: tenant-authz-q-dlq
+      Filter  : EventType IN [TenantSettingChanged]
+
+      On TenantSettingChanged (setting="residency_mode"): AuthZ Enrichment
+      deletes the om:tenant:{tenant_id} cache key so the next I-8 cache-miss
+      returns the updated residency_mode. The queue was introduced by CD-37
+      (TL decision 2026-10-15). Queue creation is the AuthZ team's.
+
+      Idempotency key: (id, consumer="authz-enrichment") in processed_events.
+    messages:
+      - $ref: '#/channels/tenantAuthZQueue/messages/TenantSettingChanged'
 
   # ── Inbound operations — the three queues this service consumes (§7.1) ─────
   consumeTenantOrgm:
@@ -1731,6 +1946,37 @@ operations:
       defines and ships the real payload.
     messages:
       - $ref: '#/channels/catalogOrgmQueue/messages/DepartmentCatalogChanged'
+      - $ref: '#/channels/catalogOrgmQueue/messages/PlanCatalogChanged'
+
+  consumeCatalogOrgmPlans:
+    action: receive
+    channel:
+      $ref: '#/channels/catalogOrgmPlansQueue'
+    tags:
+      - $ref: '#/components/tags/consumed'
+    summary: Consume PlanCatalogChanged — merge plan feature_set into tenants.feature_flags for all active tenants on affected plan
+    description: |
+      Consumer: this service (iam-org-membership), catalog_plans_consumer.go
+      Producer: Catalog / Admin Config Service (iam-catalog-admin)
+      Queue   : catalog-orgm-plans-q  |  DLQ: catalog-orgm-plans-q-dlq
+      Filter  : EventType IN [PlanCatalogChanged]
+
+      Handled by PlanCatalogPlansConsumer.Handle, a dedicated handler separate from
+      CatalogConsumer because it performs a cross-tenant bulk DB write over the
+      sysPool (BYPASSRLS role).
+
+      On every PlanCatalogChanged{plan_code, feature_set}:
+        1. Clears om:plans + om:plans:stale cache (belt-and-suspenders alongside catalog-orgm-q).
+        2. Runs: UPDATE tenants SET feature_flags = $feature_set::jsonb || feature_flags
+                  WHERE plan = $plan_code AND deleted_at IS NULL  RETURNING id
+           Right-side || wins → per-tenant overrides preserved (T-9).
+           feature_set carried in the event payload — no CAT-I2 round-trip needed.
+        3. Evicts om:tenant:{id} for each updated tenant ID.
+
+      Idempotency key: (id, consumer="catalog-plans") in processed_events.
+      Concurrency: 1 (plan changes are infrequent; serial processing avoids concurrent writes).
+    messages:
+      - $ref: '#/channels/catalogOrgmPlansQueue/messages/PlanCatalogChanged'
 
 components:
   securitySchemes:
@@ -1745,14 +1991,14 @@ components:
       name: published
       description: |
         This service is the producer. Emitted onto iam-membership-events
-        (12 event types) or iam-tenant-events (2 event types, co-produced
-        alongside Realm Provisioner and Billing) via the transactional
-        outbox (LLD §7.3/§7.4). Every message in components/messages except
-        the 14 consumed ones below, the publishMembershipEvents /
-        publishTenantEvents send operations, and the downstream fan-out
-        receive operations (Audit/AuthZ/Realm Provisioner/Notification/
-        Workflow/Billing — informational, documenting how other teams
-        consume what this service publishes) all carry this tag.
+        (12 event types) or iam-tenant-events (3 event types: TenantCreated,
+        TrialStarted, TenantSettingChanged — co-produced alongside Realm
+        Provisioner and Billing) via the transactional outbox (LLD §7.3/§7.4).
+        Every message in components/messages except the 14 consumed ones below,
+        the publishMembershipEvents / publishTenantEvents send operations, and
+        the downstream fan-out receive operations (Audit/AuthZ/Realm
+        Provisioner/Notification/Workflow/Billing — informational, documenting
+        how other teams consume what this service publishes) all carry this tag.
     consumed:
       name: consumed
       description: |
@@ -1777,9 +2023,12 @@ components:
   messageTraits:
     glueWireFormat:
       description: |
-        Message body is prefixed with the 18-byte Glue Schema Registry wire-format header:
-        [0x03][0x00][16-byte schema version UUID (big-endian)] followed by the JSON payload.
-        Consumers must strip this header before parsing the EventEnvelope JSON.
+        The SNS Message body is the EventEnvelope JSON. When the Glue codec is
+        active the "data" field is a base64 JSON string whose decoded form is:
+        [0x03][0x00][16-byte Glue schema version UUID (big-endian)][typed payload JSON].
+        Consumers must base64-decode "data", then strip the 18-byte prefix to
+        obtain the typed payload JSON. In dev/test (NoopCodec) "data" is a
+        plain JSON object — no base64, no binary prefix.
 
   messages:
     DepartmentMembershipGranted:
@@ -2369,6 +2618,47 @@ components:
               dataType: String
               description: Dynamic — set from envelope.subject at publish time.
 
+    TenantSettingChanged:
+      name: TenantSettingChanged
+      title: Tenant Setting Changed
+      summary: |
+        Emitted onto iam-tenant-events when a tenant setting is changed via P-2.
+        Currently produced when residency_mode is mutated by a tenant_owner.
+        Consumed by tenant-authz-q (AuthZ Enrichment — evicts om:tenant cache
+        so the next I-8 rebuild picks up the new value). CD-37, TL 2026-10-15.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-iam
+        slack: "#iam-events"
+      tags:
+        - $ref: '#/components/tags/published'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantSettingChangedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantSettingChanged
+              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
+            TenantID:
+              dataType: String
+              description: Dynamic — set from envelope.tenant_id at publish time.
+            Source:
+              dataType: String
+              value: iam-org-membership
+              description: Publishing service identifier.
+            EventID:
+              dataType: String
+              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
+            Subject:
+              dataType: String
+              description: Dynamic — set from envelope.subject (tenant_id) at publish time.
+
     # ── Consumed messages (§7.1) ─────────────────────────────────────────────
     # Producers are the Realm Provisioner (tenant-orgm-q, first 8) and the
     # Billing Service (billing-orgm-q, last 5), not this service. Documented
@@ -2742,6 +3032,41 @@ components:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="catalog", a distinct bucket from consumer="iam-org-membership" above).
 
+    PlanCatalogChanged:
+      name: PlanCatalogChanged
+      title: Plan Catalog Changed
+      summary: |
+        Consumed by this service on catalog-orgm-plans-q (PlanCatalogPlansConsumer).
+        Published by iam-catalog-admin whenever a plan's entitlement baseline changes
+        (e.g. sso_enabled flipped, workflow_template_limit updated).
+        Carries plan_code + feature_set — no CAT-I2 round-trip required.
+        On receipt: merges feature_set into tenants.feature_flags for all active tenants
+        on the affected plan and evicts om:tenant caches. T-9 preserved: tenant
+        overrides always win (right-hand || semantics).
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/PlanCatalogChangedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: PlanCatalogChanged
+              description: Set by iam-catalog-admin. Matches SNS filter policy on catalog-orgm-plans-q.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-catalog-admin".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as processed_events dedup key (consumer="catalog-plans").
+
     TenantPlanChanged:
       name: TenantPlanChanged
       title: Tenant Plan Changed
@@ -2773,7 +3098,7 @@ components:
               description: Dynamic — the tenant whose plan changed. Matches envelope.tenant_id.
             Source:
               dataType: String
-              description: Publishing service identifier — expected "iam-billing".
+              description: Publishing service identifier — expected "commercial-billing".
             EventID:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
@@ -2809,7 +3134,7 @@ components:
               description: Dynamic — the tenant with a past-due payment. Matches envelope.tenant_id.
             Source:
               dataType: String
-              description: Publishing service identifier — expected "iam-billing".
+              description: Publishing service identifier — expected "commercial-billing".
             EventID:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
@@ -2847,7 +3172,7 @@ components:
               description: Dynamic — the tenant whose subscription was cancelled. Matches envelope.tenant_id.
             Source:
               dataType: String
-              description: Publishing service identifier — expected "iam-billing".
+              description: Publishing service identifier — expected "commercial-billing".
             EventID:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
@@ -2898,7 +3223,7 @@ components:
               description: Dynamic — the tenant being reactivated. Matches envelope.tenant_id.
             Source:
               dataType: String
-              description: Publishing service identifier — "iam-billing" (billing-orgm-q) or "iam-realm-provisioner" (tenant-orgm-q, operator-reactivation path).
+              description: Publishing service identifier — "commercial-billing" (billing-orgm-q) or "iam-realm-provisioner" (tenant-orgm-q, operator-reactivation path).
             EventID:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
@@ -2936,7 +3261,7 @@ components:
               description: Dynamic — the tenant whose licensed seat count changed. Matches envelope.tenant_id.
             Source:
               dataType: String
-              description: Publishing service identifier — expected "iam-billing".
+              description: Publishing service identifier — expected "commercial-billing".
             EventID:
               dataType: String
               description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
@@ -3297,6 +3622,16 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/TrialStartedPayload'
+
+    TenantSettingChangedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantSettingChangedPayload'
 
     # ── Event payload schemas (OPEN — additionalProperties: true, LLD §16 OQ-6) ─
     # tenant_id IS repeated at the payload level for these events because the
@@ -3680,11 +4015,42 @@ components:
             tenant to trial_expired at this moment if no plan upgrade has
             occurred.
 
+    TenantSettingChangedPayload:
+      type: object
+      additionalProperties: true
+      required:
+        - tenant_id
+        - setting
+        - old_value
+        - new_value
+        - actor_id
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        setting:
+          type: string
+          description: Name of the tenant setting that changed (e.g. "residency_mode").
+          example: residency_mode
+        old_value:
+          type: string
+          description: Value of the setting before the change.
+          example: standard
+        new_value:
+          type: string
+          description: Value of the setting after the change.
+          example: strict
+        actor_id:
+          type: string
+          format: uuid
+          description: UUID of the user who made the change, or the system actor UUID.
+
     # ── Consumed-event envelope base (§7.1) ──────────────────────────────────
     # Shared shape for both inbound queues (platform-events Envelope[T]). The
-    # canonical schema for each of these 13 event types belongs to its
-    # producer's own AsyncAPI spec (Realm Provisioner for the first 8, Billing
-    # for the last 5) — this is this service's consumer-side documentation of
+    # canonical schema for each of these 14 event types belongs to its
+    # producer's own AsyncAPI spec (Realm Provisioner for the first 9, Billing
+    # for the last 5 — 9 because TenantReactivated{source=operator} from RP-10
+    # was added in the F1 fix of the RP↔O&M alignment review) — this is this service's consumer-side documentation of
     # the fields membership_event_consumer.go actually reads, not a closed
     # contract this service enforces. Unlike EventEnvelopeBase above (this
     # service's own OWN closed, additionalProperties:false payload contract),
@@ -3741,7 +4107,7 @@ components:
           type: string
           description: |
             Publishing-service identifier. "iam-realm-provisioner" for the
-            8 tenant-orgm-q types, "iam-billing" for the 5 billing-orgm-q
+            8 tenant-orgm-q types, "commercial-billing" for the 5 billing-orgm-q
             types. This consumer does not branch on this field — the queue
             (and therefore the SNS filter policy) already disambiguates the
             producer; source is documentation/observability only here.
@@ -4025,6 +4391,57 @@ components:
         real one once iam-catalog-admin defines and ships it; do not add
         speculative fields (department_id, change_type, etc.) without a
         confirmed contract from that service.
+
+    PlanCatalogChangedEnvelope:
+      type: object
+      required:
+        - id
+        - type
+        - data
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: RFC 4122 UUID v7 from iam-catalog-admin. processed_events dedup key under consumer="catalog-plans".
+        type:
+          type: string
+          enum:
+            - PlanCatalogChanged
+        source:
+          type: string
+          description: Publishing-service identifier — "iam-catalog-admin".
+          example: "iam-catalog-admin"
+        time:
+          type: string
+          format: date-time
+        data:
+          $ref: '#/components/schemas/PlanCatalogChangedPayload'
+
+    PlanCatalogChangedPayload:
+      type: object
+      additionalProperties: true
+      required:
+        - plan_code
+        - feature_set
+      properties:
+        plan_code:
+          type: string
+          enum: [starter, pro, enterprise]
+          description: The plan whose feature baseline changed.
+          example: enterprise
+        feature_set:
+          type: object
+          additionalProperties: true
+          description: |
+            The plan's complete new feature baseline. Keys are flag names (e.g. sso_enabled,
+            custom_branding, require_mfa_all_users); values are booleans or scalars.
+            Core merges this into tenants.feature_flags for all active tenants on plan_code:
+              SET feature_flags = $feature_set::jsonb || feature_flags
+            Right-hand || wins → per-tenant overrides preserved (T-9).
+          example:
+            sso_enabled: true
+            custom_branding: true
+            require_mfa_all_users: false
 
     TenantPlanChangedPayload:
       type: object

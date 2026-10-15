@@ -15,10 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tenantRow builds a 26-element []any in tenantSelectColumns order for use
+// tenantRow builds a 27-element []any in tenantSelectColumns order for use
 // with fakeRow/fakeRows in tests that need a scanTenant-compatible row.
 // Pass nil for featureFlagsJSON to get a NULL feature_flags column;
 // pass nil for deletedAt for a soft-delete = NULL row (non-deleted tenant).
+// CD-37: residency_mode added at index 22 (between overage_since and record_version).
 func tenantRow(featureFlagsJSON []byte, deletedAt *time.Time) []any { //nolint:unparam
 	now := time.Now().UTC().Truncate(time.Second)
 	return []any{
@@ -54,6 +55,8 @@ func tenantRow(featureFlagsJSON []byte, deletedAt *time.Time) []any { //nolint:u
 		int(10),
 		// ownerless_since, overage_since (*time.Time)
 		(*time.Time)(nil), (*time.Time)(nil),
+		// residency_mode (CD-37, index 22)
+		string(domain.ResidencyModeStandard),
 		// record_version
 		int64(1),
 		// created_at, updated_at

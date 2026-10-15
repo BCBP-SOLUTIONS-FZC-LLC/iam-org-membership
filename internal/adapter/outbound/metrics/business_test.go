@@ -79,6 +79,7 @@ func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	assert.NotNil(t, RealmSyncPending, "RealmSyncPending must be initialised")
 	assert.NotNil(t, SeatOverageActive, "SeatOverageActive must be initialised")
 	assert.NotNil(t, PendingInvitationsStale, "PendingInvitationsStale must be initialised")
+	assert.NotNil(t, PlanChangeCheckTotal, "PlanChangeCheckTotal must be initialised")
 }
 
 // TestMetricNamesStable — the exact names dashboards and alerts rely on
@@ -110,6 +111,7 @@ func TestMetricNamesStable(t *testing.T) {
 	RealmSyncFailed.WithLabelValues("stability_check").Inc()
 	DelegateRemovalBlocked.WithLabelValues("stability_check").Inc()
 	DelegateReassignment.WithLabelValues("stability_check").Inc()
+	PlanChangeCheckTotal.WithLabelValues("stability_check").Inc()
 
 	expected := []string{
 		// Tier 1 — platform_* (shared across domains).
@@ -139,6 +141,7 @@ func TestMetricNamesStable(t *testing.T) {
 		"iam_org_membership_realm_sync_pending",
 		"iam_org_membership_seat_overage_active",
 		"iam_org_membership_pending_invitations_stale",
+		"iam_org_membership_plan_change_check_total",
 	}
 
 	gathered, err := prometheus.DefaultGatherer.Gather()

@@ -29,6 +29,7 @@ type MembershipProjectionRow struct {
 	Locale               string
 	MFAFreshnessSeconds  int
 	LocalAccountsEnabled bool
+	ResidencyMode        domain.ResidencyMode // CD-37
 	TenantFeatureFlags   map[string]any
 	Roles                []domain.TenantRoleCode
 	Departments          []domain.DeptMembershipView

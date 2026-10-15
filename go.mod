@@ -6,17 +6,17 @@ require (
 	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2 v2.1.0
 	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon v1.6.0
 	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2 v2.0.1
-	github.com/alicebob/miniredis/v2 v2.39.0
+	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
-	github.com/aws/aws-sdk-go-v2/service/glue v1.157.0
+	github.com/aws/aws-sdk-go-v2/service/glue v1.171.0
 	github.com/aws/aws-sdk-go-v2/service/sns v1.47.5
-	github.com/aws/aws-sdk-go-v2/service/sqs v1.52.1
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.52.4
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/jackc/puddle/v2 v2.2.2
+	github.com/jackc/puddle/v2 v2.2.3
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/redis/go-redis/v9 v9.23.0

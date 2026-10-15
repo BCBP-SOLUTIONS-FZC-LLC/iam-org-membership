@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// authzSingleRow returns the 9-column row that FindMembershipProjection now
+// authzSingleRow returns the 10-column row that FindMembershipProjection now
 // scans in a single LEFT JOIN query (PERF-1 refactor). Column order matches
 // the Scan call in authz_repository.go:
 //
 //	mStatus, tStatus, tPlan, tLocale, mfaFresh, localAccountsEnabled,
-//	tenantFeatureFlagsJSON, rolesJSON, deptsJSON
+//	residency_mode (CD-37), tenantFeatureFlagsJSON, rolesJSON, deptsJSON
 func authzSingleRow(featureFlagsJSON []byte, rolesJSON []byte, deptsJSON []byte) []any {
 	if featureFlagsJSON == nil {
 		featureFlagsJSON = []byte("null")
@@ -36,6 +36,7 @@ func authzSingleRow(featureFlagsJSON []byte, rolesJSON []byte, deptsJSON []byte)
 		"en-US",          // tLocale
 		300,              // mfaFresh
 		true,             // localAccountsEnabled
+		"standard",       // residency_mode (CD-37)
 		featureFlagsJSON, // tenantFeatureFlagsJSON
 		rolesJSON,        // roles as JSON array e.g. ["tenant_admin"]
 		deptsJSON,        // depts as JSON array e.g. [{"department_id":"...","role_level":"reviewer"}]
@@ -121,6 +122,7 @@ func TestAuthZRepo_FindMembershipProjection_HappyPathFullProjection(t *testing.T
 	assert.Equal(t, "en-US", got.Locale)
 	assert.Equal(t, 300, got.MFAFreshnessSeconds)
 	assert.True(t, got.LocalAccountsEnabled)
+	assert.Equal(t, domain.ResidencyModeStandard, got.ResidencyMode, "CD-37: residency_mode must be projected")
 	assert.Equal(t, true, got.TenantFeatureFlags["beta"])
 	require.Len(t, got.Roles, 1)
 	assert.Equal(t, domain.TenantRoleCode("tenant_admin"), got.Roles[0])

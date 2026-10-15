@@ -300,6 +300,7 @@ func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
 // here.
 var schemaFileNames = map[string]string{
 	"department_catalog_changed.json":          "DepartmentCatalogChanged",
+	"plan_catalog_changed.json":                "PlanCatalogChanged",
 	"department_membership_granted.json":       domain.EventDepartmentMembershipGranted,
 	"department_membership_level_changed.json": domain.EventDepartmentMembershipLevelChanged,
 	"department_membership_revoked.json":       domain.EventDepartmentMembershipRevoked,
@@ -308,6 +309,7 @@ var schemaFileNames = map[string]string{
 	"mfa_reset.json":                           domain.EventMFAReset,
 	"tenant_converted.json":                    "TenantConverted",
 	"tenant_created.json":                      domain.EventTenantCreated,
+	"tenant_setting_changed.json":              domain.EventTenantSettingChanged,
 	"tenant_memberships_purged.json":           domain.EventTenantMembershipsPurged,
 	"tenant_offboarded.json":                   "TenantOffboarded",
 	"tenant_payment_past_due.json":             "TenantPaymentPastDue",
