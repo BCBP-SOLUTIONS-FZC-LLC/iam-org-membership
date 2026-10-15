@@ -16,21 +16,17 @@
       "format": "uuid"
     },
     "setting": {
-      "type": "string",
-      "description": "Name of the tenant setting that changed (e.g. 'residency_mode')."
+      "type": "string"
     },
     "old_value": {
-      "type": "string",
-      "description": "Value of the setting before the change."
+      "type": "string"
     },
     "new_value": {
-      "type": "string",
-      "description": "Value of the setting after the change."
+      "type": "string"
     },
     "actor_id": {
       "type": "string",
-      "format": "uuid",
-      "description": "UUID of the user who made the change, or the system actor UUID."
+      "format": "uuid"
     }
   }
 }
