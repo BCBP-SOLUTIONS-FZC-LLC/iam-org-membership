@@ -675,12 +675,16 @@ func TestAddFromRegister_ServiceAccountTarget_Returns403(t *testing.T) {
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "auth9-register")
 	userID := uuid.New()
+	// Service accounts always have a real Keycloak-minted UUID — never uuid.Nil.
+	// uuid.Nil means "no keycloak user linked" (plain-add sentinel) and skips
+	// the AUTH-9 check by design; use a real UUID to test the rejection path.
+	keycloakUserID := uuid.New()
 
 	fx.TokenService.isServiceAccountFn = func(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
 		return true, nil
 	}
 
-	_, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
+	_, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, keycloakUserID, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, domain.ErrServiceAccountNotGrantable)
 
