@@ -439,13 +439,13 @@ func (s *InvitationService) preflightSeatCheck(ctx context.Context, tenantID uui
 // — in that case we still let acceptance proceed (SEAT-3 keeps existing
 // users; only new invites are blocked), matching the LLD's SEAT-4 posture.
 func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userID uuid.UUID, keycloakUserID uuid.UUID, email string) (*domain.TenantMembership, error) {
-	// AUTH-9 defense-in-depth: reject before any write if the registering
-	// subject resolves to the tenant's automation principal. In normal
-	// operation this can never fire — the automation principal is minted
-	// directly by the Realm Provisioner and never flows through the
-	// REGISTER webhook — but checked here rather than relying solely on
-	// the structural composite-FK bar.
-	if s.isServiceAccountOrDegrade(ctx, tenantID, keycloakUserID) {
+	// AUTH-9 defense-in-depth: reject if the registering subject resolves to
+	// the tenant's automation principal. Skip when keycloakUserID is the zero
+	// UUID (uuid.Nil) — that sentinel means "no Keycloak user linked to this
+	// registration" and is a valid plain-add path; a nil UUID cannot be a
+	// service account. Reserved-principal and Token Service checks only apply
+	// when a real Keycloak UUID is present.
+	if keycloakUserID != uuid.Nil && s.isServiceAccountOrDegrade(ctx, tenantID, keycloakUserID) {
 		return nil, domain.NewError(domain.ErrServiceAccountNotGrantable,
 			"service accounts cannot be enrolled as tenant members")
 	}
