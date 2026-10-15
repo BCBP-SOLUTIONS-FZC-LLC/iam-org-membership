@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PlanCatalogChangedPayload",
+  "description": "Published by iam-catalog-admin when a plan's entitlement baseline changes. Core consumes this on catalog-orgm-plans-q to merge the new feature_set into tenants.feature_flags for all active tenants on the affected plan.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "plan_code",
+    "feature_set"
+  ],
+  "properties": {
+    "plan_code": {
+      "type": "string",
+      "enum": ["starter", "pro", "enterprise"],
+      "description": "The plan whose feature baseline changed."
+    },
+    "feature_set": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "The plan's complete new feature baseline. Keys are flag names; values are booleans or scalars. Core merges this into tenants.feature_flags (tenant overrides win)."
+    }
+  }
+}

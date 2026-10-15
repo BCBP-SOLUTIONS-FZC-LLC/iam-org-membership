@@ -14,8 +14,10 @@ package postgres
 //  5. The Scan itself fails → early nil,err return (line 26-28).
 //
 // We use the existing fakeRow helper (fakes_test.go, same package) whose
-// Scan copies values via reflection — all 26 tenantSelectColumns must be
+// Scan copies values via reflection — all 27 tenantSelectColumns must be
 // provided in the exact order the function declares them.
+// CD-37: residency_mode was added at index 22 (between overage_since and
+// record_version), shifting deleted_at from index 25 → 26.
 
 import (
 	"errors"
@@ -37,8 +39,8 @@ import (
 //	cancelled_at, suspension_source, last_event_at,
 //	realm_id, realm_type, keycloak_shard, mfa_freshness_seconds,
 //	local_accounts_enabled, realm_sync_pending, default_locale,
-//	licensed_seats, ownerless_since, overage_since,
-//	record_version, created_at, updated_at, deleted_at  (26 total)
+//	licensed_seats, ownerless_since, overage_since, residency_mode,
+//	record_version, created_at, updated_at, deleted_at  (27 total, CD-37)
 func minimalTenantRow(overrides ...func(vals []any)) []any {
 	id := uuid.New()
 	now := time.Now().UTC().Truncate(time.Second)
@@ -76,11 +78,13 @@ func minimalTenantRow(overrides ...func(vals []any)) []any {
 		int(5),
 		// ownerless_since, overage_since (*time.Time)
 		(*time.Time)(nil), (*time.Time)(nil),
+		// residency_mode (CD-37, index 22) — string default 'standard'
+		string(domain.ResidencyModeStandard),
 		// record_version
 		int64(1),
 		// created_at, updated_at
 		now, now,
-		// deleted_at (*time.Time)
+		// deleted_at (*time.Time, index 26)
 		(*time.Time)(nil),
 	}
 	for _, fn := range overrides {
@@ -197,11 +201,11 @@ func TestScanTenant_OperatorSuspension(t *testing.T) {
 // columns so the reflection-based scanInto correctly copies pointer-to-time
 // values. Incidentally tests the OverageSince / OwnerlessSince paths.
 //
-// Column index map (0-based):
+// Column index map (0-based, 27 columns total after CD-37):
 //
 //	6  = trial_ends_at, 8 = subscription_started_at, 9 = cancelled_at,
 //	11 = last_event_at, 20 = ownerless_since, 21 = overage_since,
-//	25 = deleted_at.
+//	22 = residency_mode (new CD-37), 26 = deleted_at.
 func TestScanTenant_AllTimeFieldsPopulated(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	vals := minimalTenantRow(func(v []any) {
@@ -211,7 +215,7 @@ func TestScanTenant_AllTimeFieldsPopulated(t *testing.T) {
 		v[11] = &now // last_event_at
 		v[20] = &now // ownerless_since
 		v[21] = &now // overage_since
-		v[25] = &now // deleted_at
+		v[26] = &now // deleted_at (index shifted +1 by residency_mode at 22)
 	})
 	row := &fakeRow{values: vals}
 	got, err := scanTenant(row)

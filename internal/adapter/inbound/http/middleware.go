@@ -45,12 +45,19 @@ type bridgedIdentity struct {
 // parseBridgedIdentity turns primitive gateway header values into a typed
 // requestctx.RequestContext. Returns a non-nil ErrorResponse (and empty
 // rc) if either identity header is malformed — the caller writes the 401.
-// "iam-system" user id is honored specially per RLS-5/IAPI-2.
+//
+// Reserved principal strings are mapped to fixed UUIDs instead of being
+// parsed as ordinary UUIDs (RLS-5/IAPI-2):
+//   - "iam-system"        → uuid.Nil   (IamSystemSentinelUUID)
+//   - "commercial-system" → CommercialSystemUUID (CD-19)
 func parseBridgedIdentity(in bridgedIdentity) (*requestctx.RequestContext, *ErrorResponse) {
 	var userID uuid.UUID
-	if in.UserIDStr == "iam-system" {
+	switch in.UserIDStr {
+	case requestctx.IamSystemPrincipal:
 		userID = uuid.Nil
-	} else {
+	case requestctx.CommercialSystemPrincipal:
+		userID = requestctx.CommercialSystemUUID
+	default:
 		id, err := uuid.Parse(in.UserIDStr)
 		if err != nil {
 			return nil, &ErrorResponse{
@@ -152,16 +159,72 @@ func RequireJSONContentType() gin.HandlerFunc {
 // RequireSystemRole gates /api/v1/internal/* to the reserved iam-system
 // principal (RLS-5, IAPI-2, AUTH-5). NetworkPolicy is the primary defence;
 // this middleware is defense-in-depth.
+//
+// Deprecated: prefer RequireInternalCaller for the internal group, which also
+// accepts commercial-system on the three CD-19 routes. RequireSystemRole is
+// kept for any caller that explicitly wants iam-system-only access.
 func RequireSystemRole() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc, ok := requestctx.FromContext(c.Request.Context())
-		if !ok || !rc.HasRole("iam-system") {
+		if !ok || !rc.HasRole(requestctx.IamSystemPrincipal) {
 			er := newErrorResponse(c, "insufficient_role", "internal route requires iam-system role", nil)
 			er.Status = http.StatusForbidden
 			c.AbortWithStatusJSON(http.StatusForbidden, er)
 			return
 		}
 		c.Next()
+	}
+}
+
+// commercialSystemAllowedRoutes is the explicit per-route allow-list for the
+// commercial-system principal (CD-19). Key: "METHOD /full/gin/route/template".
+// Gin's c.FullPath() returns the registered route pattern with :param
+// placeholders, so the key format is stable regardless of actual path values.
+// Any commercial-system caller that hits a route NOT in this map receives 403.
+var commercialSystemAllowedRoutes = map[string]bool{
+	"GET /api/v1/internal/tenants/:id/seat-usage":        true, // I-11 — Billing pre-check
+	"GET /api/v1/internal/tenants/:id/plan-context":      true, // I-17 — Entitlements re-read
+	"GET /api/v1/internal/tenants/:id/plan-change-check": true, // I-18 — Billing downgrade guard
+}
+
+// RequireInternalCaller gates /api/v1/internal/* routes. It accepts:
+//   - iam-system principal on every internal route (existing AUTH-5 behaviour)
+//   - commercial-system principal on the three CD-19 routes only
+//     (I-11, I-17, I-18 — see commercialSystemAllowedRoutes)
+//
+// Any other caller, or a commercial-system caller on a non-allowed route,
+// receives 403 insufficient_role. NetworkPolicy + Istio AuthorizationPolicy
+// are the primary defence; this middleware is application-layer defence-in-depth.
+func RequireInternalCaller() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rc, ok := requestctx.FromContext(c.Request.Context())
+		if !ok {
+			er := newErrorResponse(c, "insufficient_role", "internal route requires iam-system role", nil)
+			er.Status = http.StatusForbidden
+			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			return
+		}
+		if rc.IsSystem() {
+			// iam-system: unrestricted access to all internal routes.
+			c.Next()
+			return
+		}
+		if rc.IsCommercialSystem() {
+			// commercial-system: allowed only on the explicit per-route list.
+			key := c.Request.Method + " " + c.FullPath()
+			if commercialSystemAllowedRoutes[key] {
+				c.Next()
+				return
+			}
+			er := newErrorResponse(c, "insufficient_role",
+				"commercial-system is not authorised on this internal route", nil)
+			er.Status = http.StatusForbidden
+			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			return
+		}
+		er := newErrorResponse(c, "insufficient_role", "internal route requires iam-system role", nil)
+		er.Status = http.StatusForbidden
+		c.AbortWithStatusJSON(http.StatusForbidden, er)
 	}
 }
 
@@ -571,7 +634,8 @@ func errorResponseWithDetails(er ErrorResponse, details map[string]any) map[stri
 func domainErrorStatus(de *domain.DomainError) int {
 	switch {
 	case errors.Is(de.Cause, domain.ErrValidation),
-		errors.Is(de.Cause, domain.ErrNoMutableField):
+		errors.Is(de.Cause, domain.ErrNoMutableField),
+		errors.Is(de.Cause, domain.ErrInvalidTargetPlan):
 		return http.StatusBadRequest
 	case errors.Is(de.Cause, domain.ErrMissingIdentity):
 		return http.StatusUnauthorized

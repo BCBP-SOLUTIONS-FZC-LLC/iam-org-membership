@@ -1,0 +1,19 @@
+# Dev environment overrides for iam-org-membership.
+# Merge with base values.yaml: helm upgrade ... -f values.yaml -f values-dev.yaml
+
+env:
+  APP_ENV: "dev"
+  LOG_LEVEL: "debug"
+  OTEL_TRACES_SAMPLER_RATIO: "1.0"   # full sampling in dev
+  DOCS_ENABLED: "true"
+
+# CD-19: Commercial domain callers admitted in dev for integration testing.
+# Istio is not deployed in dev; NetworkPolicy is the sole L3/L4 enforcement.
+commercialCallers:
+  enabled: true
+  istio:
+    enabled: false
+    existingCallerNamespaces:
+      - iam                    # IAM namespace: AuthZ Enrichment, Group Mapping, Audit Log, Tender ACL, Delegation, Event Consumer
+      - envoy-gateway-system   # Ingress controller / Envoy Gateway data plane
+      - monitoring             # Prometheus scrape (port 9090 only — enforced at L3 by metricsIngress)

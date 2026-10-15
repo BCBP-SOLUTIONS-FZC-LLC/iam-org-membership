@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TenantSettingChangedPayload",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "setting",
+    "old_value",
+    "new_value",
+    "actor_id"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "setting": {
+      "type": "string",
+      "description": "Name of the tenant setting that changed (e.g. 'residency_mode')."
+    },
+    "old_value": {
+      "type": "string",
+      "description": "Value of the setting before the change."
+    },
+    "new_value": {
+      "type": "string",
+      "description": "Value of the setting after the change."
+    },
+    "actor_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID of the user who made the change, or the system actor UUID."
+    }
+  }
+}

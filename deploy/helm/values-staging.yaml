@@ -1,0 +1,19 @@
+# Staging environment overrides for iam-org-membership.
+# Merge with base values.yaml: helm upgrade ... -f values.yaml -f values-staging.yaml
+
+env:
+  APP_ENV: "staging"
+  LOG_LEVEL: "info"
+  OTEL_TRACES_SAMPLER_RATIO: "0.5"
+
+# CD-19: Commercial domain callers admitted in staging to mirror prod admission.
+# Istio not yet confirmed in the staging cluster; promote istio.enabled to true
+# once PeerAuthentication STRICT mode is active in the iam namespace.
+commercialCallers:
+  enabled: true
+  istio:
+    enabled: false
+    existingCallerNamespaces:
+      - iam                    # IAM namespace: AuthZ Enrichment, Group Mapping, Audit Log, Tender ACL, Delegation, Event Consumer
+      - envoy-gateway-system   # Ingress controller / Envoy Gateway data plane
+      - monitoring             # Prometheus scrape (port 9090 only — enforced at L3 by metricsIngress)

@@ -110,6 +110,10 @@ env:
   # Business timers (LLD §12).
   INVITATION_EXPIRY_DAYS: "7"
   SEAT_OVERAGE_GRACE_DAYS: "30"
+  # CD-23: grace before cancelled → suspended (30 days). Must equal RP
+  # CANCELLED_GRACE_DAYS. RP offboards at suspended + 60 days (90 days total
+  # from cancellation). Do NOT change without a joint RP + Core release.
+  SUBSCRIPTION_GRACE_DAYS: "30"
   MAX_LIFECYCLE_EVENT_SKEW_SECONDS: "300"
   INVITE_REINVITE_COOLDOWN_MINUTES: "15"
   INVITE_MAX_PER_TENANT_PER_HOUR: "60"
@@ -137,6 +141,9 @@ env:
   # the code default from 300ms to 1000ms — 300ms was too tight under load
   # or cold-start; this value was left stale at the old default, which would
   # have silently overridden the fix on every real deploy. Corrected here.
+  # DLG-OM-GAP-001: set to http://iam-delegation.iam.svc.cluster.local:8080
+  # in staging/prod. Without it, dept-scope precision on admin removal path
+  # (§8.8.4) permanently degrades to tenant-wide scoping (never a hard fail).
   DELEGATION_BASE_URL: ""
   DELEGATION_TIMEOUT_MS: "1000"
   # token-service (AUTH-9/IB-3) — fails open on the membership-create
@@ -191,6 +198,16 @@ envFromSecret:
   - SNS_TOPIC_TENANT_ARN
   - SQS_TENANT_ORGM_QUEUE_URL
   - SQS_BILLING_ORGM_QUEUE_URL
+  # CAT-GAP-005: CatalogConsumer polls this queue for DepartmentCatalogChanged
+  # events. Set to the catalog-orgm-q ARN. When unset the consumer goroutine
+  # never starts and om:departments cache is TTL-invalidated only (11-min worst case).
+  - SQS_CATALOG_ORGM_QUEUE_URL
+  # Dedicated queue for PlanCatalogChanged with feature_set propagation. On receipt,
+  # merges the plan's new feature_set into tenants.feature_flags for all active tenants
+  # on the affected plan (sysPool BYPASSRLS) and evicts om:tenant caches.
+  # Set to the catalog-orgm-plans-q ARN. When unset, plan feature_set changes
+  # only clear the om:plans cache (TTL-based propagation, up to 600 s lag).
+  - SQS_CATALOG_ORGM_PLANS_QUEUE_URL
   - GLUE_REGISTRY_MEMBERSHIP_ARN
   - GLUE_REGISTRY_TENANT_ARN
   - AWS_ACCESS_KEY_ID
@@ -222,6 +239,8 @@ secretValues:
   SNS_TOPIC_TENANT_ARN: ""
   SQS_TENANT_ORGM_QUEUE_URL: ""
   SQS_BILLING_ORGM_QUEUE_URL: ""
+  SQS_CATALOG_ORGM_QUEUE_URL: ""
+  SQS_CATALOG_ORGM_PLANS_QUEUE_URL: ""
   GLUE_REGISTRY_MEMBERSHIP_ARN: ""
   GLUE_REGISTRY_TENANT_ARN: ""
   AWS_ACCESS_KEY_ID: ""
@@ -338,8 +357,77 @@ networkPolicy:
       kubernetes.io/metadata.name: monitoring
     podSelector:
       app.kubernetes.io/name: prometheus
-  additionalIngressRules: []
+  # TAC-GAP-010 / EC-OM-GAP-003: explicit ingress rules for services that call
+  # internal endpoints (I-15 from iam-tender-acl; I-3/I-4/I-5/I-10 from
+  # iam-event-consumer). The existing `podSelector: {}` rule already admits all
+  # same-namespace pods; these named rules are explicit documentation and ensure
+  # correctness if pods move to dedicated namespaces in future.
+  additionalIngressRules:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: iam-tender-acl
+      ports:
+        - port: 8080
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: iam-event-consumer
+      ports:
+        - port: 8080
+          protocol: TCP
   additionalEgressRules: []
+
+# CD-19 — Commercial domain callers.
+# Feature-gates both the NetworkPolicy ingress rules and the Istio
+# AuthorizationPolicy that restrict which Commercial services can reach
+# which internal routes on Core.
+#
+# Default false — override to true in each env values file (values-dev.yaml,
+# values-staging.yaml, values-prod.yaml) that should admit Commercial callers.
+# Set commercialCallers.istio.enabled=true only when Istio (service mesh)
+# is confirmed in the cluster — the NetworkPolicy is always enforced regardless.
+commercialCallers:
+  enabled: false          # base default; set true per-env in values-{dev,staging,prod}.yaml
+
+  # Billing Service (namespace "billing", SA "commercial-billing").
+  # Allowed routes (NetworkPolicy + Istio): I-11 seat-usage, I-18 plan-change-check.
+  billing:
+    namespace: billing
+    serviceAccountName: commercial-billing
+    # Label selectors for the NetworkPolicy (namespaceSelector + podSelector).
+    namespaceSelector:
+      kubernetes.io/metadata.name: billing
+    podSelector:
+      app.kubernetes.io/name: commercial-billing
+
+  # Entitlements Service (namespace "commercial", SA "commercial-entitlements").
+  # Allowed route (NetworkPolicy + Istio): I-17 plan-context.
+  entitlements:
+    namespace: commercial
+    serviceAccountName: commercial-entitlements
+    namespaceSelector:
+      kubernetes.io/metadata.name: commercial
+    podSelector:
+      app.kubernetes.io/name: commercial-entitlements
+
+  # Istio AuthorizationPolicy — only render when the service mesh is present.
+  # The NetworkPolicy above enforces L3/L4; AuthorizationPolicy adds L7 mTLS
+  # identity enforcement. Both should be enabled in production.
+  #
+  # ALLOW-policy safety: an Istio ALLOW policy denies every request that matches
+  # no rule. existingCallerNamespaces lists the namespaces that the base
+  # NetworkPolicy already admits (gateway, IAM-internal services, monitoring) so
+  # they are explicitly allowed here and do not lose access when commercial rules
+  # are added. Set this per-env in values-{dev,staging,prod}.yaml.
+  istio:
+    enabled: false   # set true once Istio is confirmed in the cluster
+    # SPIFFE principal prefix — cluster.local is the default Istio trust domain.
+    trustDomain: cluster.local
+    # Namespaces already admitted by the base NetworkPolicy ingress rules.
+    # Required for ALLOW-policy safety — see authorizationpolicy.yaml comment.
+    existingCallerNamespaces: []
 
 # ServiceMonitor — requires kube-prometheus-stack (monitoring.coreos.com/v1 CRD).
 # Enable to have Prometheus auto-discover and scrape /metrics.

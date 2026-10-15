@@ -45,7 +45,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 ## API overview
 
-**37 active endpoints** across four route prefixes (`/api/v1/*`, `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
+**39 active endpoints** across four route prefixes (`/api/v1/*`, `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
 
 **Middleware chain:** a 1 MB body cap, then `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → Timeout`) and `NormalizeAuthErrors` (adds this service's `code` — `missing_identity_headers`/`ambiguous_identity_headers`/`invalid_request_context` — to gincommon's own 401/400 bodies) on every route; the protected `/api/v1` group adds `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → `GUCBridgeMiddleware` (binds `app.tenant_id` transaction-locally, RLS-6) → `RequireJSONContentType`. The service trusts gateway-injected headers (`x-user-id`, `x-tenant-id`, `x-tenant-roles`) under mesh mTLS — no JWT parsing.
 
@@ -77,7 +77,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 *Retired, never reused:* P-14/15/16/17/29 (group-mapping admin CRUD → Group Mapping Service), P-18/19/20/32/33 (delegation → Delegation Service), P-21/22/23 (tender ACL → Tender ACL Service).
 
-### Internal routes (13) — `/api/v1/internal/*`, mesh-mTLS + NetworkPolicy only
+### Internal routes (15) — `/api/v1/internal/*`, mesh-mTLS + NetworkPolicy only
 
 | # | Method & Path | Caller | Purpose |
 |---|---|---|---|
@@ -94,6 +94,8 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | I-14 | `GET /tenants/:id/mfa-freshness` | AuthZ Enrichment | Authoritative read for the Approver step-up gate |
 | I-15 | `GET /tenants/:id/members/:user_id/exists` | Tender ACL Service, Delegation Service (×2) | Grant-time membership-existence check, replaces a composite FK lost across the DB split |
 | I-16 | `GET /subscription-lapses` | Realm Provisioner (RP-C3 lapse sweep) | Cross-tenant bulk read of tenants past their cancellation grace period |
+| I-17 | `GET /tenants/:id/plan-context` | Entitlements Service | Tenant plan context — `{plan, status, licensed_seats, feature_flags, record_version}` from `om:tenant` cache (CD-13) |
+| I-18 | `GET /tenants/:id/plan-change-check?target_plan=` | Billing Service | Pre-flight check for a plan change — `{allowed, blockers[]}`, current blocker: `sso_configured` (CD-20) |
 
 *Retired, never reused:* I-6/I-7 (quotas → Usage & Metering), I-12 (tender-ACL check → Tender ACL Service).
 
@@ -762,8 +764,9 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | **Realm Provisioner** | I-1, I-2, I-16 | Provision tenant row; set `realm_id`/`realm_type`/`keycloak_shard`; poll subscription lapses (RP-C3) |
 | **Signup BFF** | I-1 | Provision new tenant row on trial sign-up |
 | **AuthZ Enrichment** | I-8, I-14 | Hot-path full membership projection (p50 ≤ 15 ms); authoritative MFA-freshness read for step-up gate |
-| **Billing** | I-11 (same handler as P-27) | Seat-usage pre-check before a seat-reduction plan change |
-| **LLM Service** | I-9 | Tenant default locale for prompt assembly |
+| **Billing** | I-11 (same handler as P-27), I-18 | Seat-usage pre-check before a seat-reduction plan change; SSO-downgrade guard before committing a plan change (CD-20) |
+| **Entitlements Service** | I-17 | Tenant plan context (`plan`, `status`, `licensed_seats`, `feature_flags`) for re-deriving effective entitlement set after billing/tenant events (CD-13) |
+| **LLM Ingestion Service** | I-9 | Tenant default locale for prompt assembly |
 | **Workflow Service** | I-13 | Validate-and-emit on tender assignee override — persists nothing here |
 | **Tender ACL Service** | I-15 | Grant-time membership-existence check (replaces composite FK lost across DB split) |
 | **Delegation Service** | I-15 | Grant-time membership-existence check (replaces composite FK lost across DB split) |
@@ -782,13 +785,22 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | Consumer | Queue | Events consumed |
 |---|---|---|
-| **Audit Log Service** | `membership-audit-q` | Catch-all — every event on both topics |
-| **AuthZ Enrichment** | `membership-authz-q` | Every membership write — cache invalidation for `om:memberships:{tenant}:{user}` |
-| **Workflow Service** | `membership-workflow-q` | `TenantStateChanged`, `TenderAssigneeOverridden`, `MembershipRevoked` |
-| **Tender ACL Service** | (subscribes to membership topic) | `MembershipRevoked`, `TenantMembershipsPurged` — async cascade-deletes on offboarding |
-| **Delegation Service** | (subscribes to membership topic) | `MembershipRevoked`, `TenantMembershipsPurged` — async cascade-deletes on offboarding |
-| **Group Mapping / JIT Config Service** | (subscribes to membership topic) | `TenantMembershipsPurged` — async cascade-deletes on offboarding |
-| **Realm Provisioner** | `tenant-orgm-q` | `TrialStarted{tenant_id, plan, trial_ends_at}` — seeds RP's own trial-expiry sweep (no polling either direction) |
+| **Audit Log Service** | `membership-audit-q` | Catch-all — all 12 membership events + `TenantCreated`, `TrialStarted` on `iam.tenant.events` |
+| **AuthZ Enrichment** | `membership-authz-q` | `DepartmentMembership*`, `TenantRole*`, `MembershipRevoked` — cache invalidation for `om:memberships:{tenant}:{user}` |
+| **Realm Provisioner** | `membership-realm-q` | `DepartmentMembershipGranted`/`LevelChanged`, `TenantRoleGranted`/`Revoked` — add/drop `requires-mfa` realm role |
+| **Notification** | `membership-notification-q` | `DepartmentMembership*`, `TenantRole*`, `TenantSeatOverage*` — user/admin emails + seat-overage banner |
+| **Workflow Service** | `membership-workflow-q` | `TenderAssigneeOverridden`, `DepartmentMembership*`, `TenantStateChanged` — assignee reconciliation + tenant-state pause/resume/terminate |
+| **Billing** | `membership-billing-q` | `TenantSeatOverageStarted`/`Resolved` only — seat-overage grace/enforcement |
+| **Entitlements Service** | `membership-entitlements-q` | `TenantMembershipsPurged` only (CD-25) — purge per-tenant snapshots on offboarding |
+| **Usage & Metering** | `membership-usage-q` | `TenantMembershipsPurged` only (CD-25) — purge raw usage events on offboarding |
+| **Delegation Service** | `delegation-cascade-q` | `MembershipRevoked`, `TenantMembershipsPurged` — async end of delegation rows on removal/offboarding |
+| **Tender ACL Service** | (queue name owned by them) | `MembershipRevoked`, `TenantMembershipsPurged` — async cascade-delete of ACL overlays |
+| **Group Mapping / JIT Config Service** | (queue name owned by them) | `TenantMembershipsPurged` — async wipe of group→dept/role mapping rows |
+| **LLM Ingestion Service** (**proposed**) | (name TBD — OI-82) | `TenantMembershipsPurged` — purge ingestion corpus on tenant offboarding |
+| **LLM Retrieval & Generation** (**proposed**) | `iam-rag-purge-q` | `TenantMembershipsPurged` — purge artefacts, retrieval sets, reports on offboarding (OQ-29/OQ-75) |
+| **LLM Retrieval & Generation** (**proposed**) | `iam-rag-membership-q` | `TenantStateChanged` — freeze/thaw collections on tenant status changes (OQ-71) |
+| **Realm Provisioner** | `tenant-realm-q` | `TrialStarted` on `iam.tenant.events` — seeds RP's own trial-expiry sweep |
+| **Notification** | `tenant-notification-q` | `TenantCreated`, `TrialStarted` on `iam.tenant.events` — welcome + trial-start emails |
 
 ### 4. Infrastructure dependencies
 
@@ -797,7 +809,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 8 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
 | **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
 | **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
-| **AWS SQS** | `tenant-orgm-q` and `billing-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`) |
+| **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` is implemented but inert until `iam-catalog-admin`'s publisher side ships and `SQS_CATALOG_ORGM_QUEUE_URL` is set |
 | **AWS Glue Schema Registry** | `iam-membership-events` and `iam-tenant-events` — version UUIDs resolved once at startup by definition (publish); consumers only strip the header, and validate against embedded consumed schemas |
 
 ---

@@ -60,7 +60,7 @@ type CatalogConsumer struct {
 // ProcessedEventsConsumers returns every consumer name this service records
 // in processed_events, for the processed-events-prune job.
 func ProcessedEventsConsumers() []string {
-	return []string{consumerName, catalogConsumerName}
+	return []string{consumerName, catalogConsumerName, catalogPlansConsumerName}
 }
 
 // NewCatalogConsumer builds a CatalogConsumer. inbox is used only by

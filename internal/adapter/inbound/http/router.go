@@ -425,9 +425,11 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	op.POST("/tenants/:id/reassign-owner", operatorH.ReassignOwner)   // O-7
 
 	// Internal /api/v1/internal/* routes — mTLS + iam-system role (RLS-5,
-	// IAPI-2, AUTH-5). NetworkPolicy is the primary defence; RequireSystemRole
-	// is defense-in-depth.
-	internal := v1.Group("/internal", RequireSystemRole())
+	// IAPI-2, AUTH-5). NetworkPolicy + Istio AuthorizationPolicy are the
+	// primary defence; RequireInternalCaller is application-layer
+	// defence-in-depth. commercial-system (CD-19) is additionally accepted on
+	// I-11/I-17/I-18 only — see commercialSystemAllowedRoutes in middleware.go.
+	internal := v1.Group("/internal", RequireInternalCaller())
 	internal.POST("/tenants", internalH.ProvisionTenant)                            // I-1
 	internal.PATCH("/tenants/:id", internalH.PatchTenantRealm)                      // I-2
 	internal.POST("/tenants/:id/members", internalH.AddMember)                      // I-3 (§8.10 accept + JIT add)
@@ -447,5 +449,7 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// gincommon's RequireAuth requires x-tenant-id on every /api/v1 request
 	// regardless, so RP's client sends a sentinel uuid.Nil value for it
 	// (never read by this handler, which queries sysPool unconditionally).
-	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses) // I-16 (§16 RP-C3)
+	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses)    // I-16 (§16 RP-C3)
+	internal.GET("/tenants/:id/plan-context", internalH.GetPlanContext)       // I-17 (CD-13)
+	internal.GET("/tenants/:id/plan-change-check", internalH.PlanChangeCheck) // I-18 (CD-20)
 }

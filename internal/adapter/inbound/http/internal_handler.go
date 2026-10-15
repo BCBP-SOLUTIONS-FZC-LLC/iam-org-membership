@@ -492,9 +492,11 @@ func (h *InternalHandler) GetMFAFreshness(c *gin.Context) {
 // ── I-11 GET /tenants/:id/seat-usage (S2S — same handler as P-27) ─────
 
 // GetSeatUsage is I-11 — Seat-usage S2S (Billing pre-check).
+// Auth: iam-system or commercial-system (Billing, CD-19) — see
+// commercialSystemAllowedRoutes in middleware.go.
 //
 // @Summary      I-11 — Seat-usage S2S (Billing pre-check)
-// @Description  Same projection as P-27 but service-to-service (Billing pre-checks before charging for a new seat).
+// @Description  Same projection as P-27 but service-to-service (Billing pre-checks before charging for a new seat). Accepts iam-system and commercial-system (CD-19).
 // @Tags         internal
 // @Produce      json
 // @Param        id   path      string             true  "Tenant UUID"  format(uuid)
@@ -609,6 +611,92 @@ func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 	}
 	metrics.IncMembershipExistsCheck(caller, "active")
 	c.JSON(http.StatusOK, gin.H{"active": true, "tenant_membership_id": m.ID})
+}
+
+// ── I-17 GET /tenants/:id/plan-context (CD-13) ─────────────────────────
+
+// GetPlanContext is I-17 — tenant plan context for the Entitlements Service.
+// Returns plan, status, licensed_seats, feature_flags and record_version
+// from the om:tenant cache so the Entitlements Service can re-read a tenant's
+// commercial projection on every event it receives (CD-13, blocking).
+// Auth: iam-system or commercial-system (Entitlements, CD-19) — see
+// commercialSystemAllowedRoutes in middleware.go.
+//
+// @Summary      I-17 — Tenant plan context (Entitlements Service)
+// @Description  Returns {tenant_id, plan, status, licensed_seats, feature_flags, record_version} from the om:tenant cache. Entitlements calls this on every billing/tenant event to re-derive the effective entitlement set (CD-13). Accepts iam-system and commercial-system (CD-19).
+// @Tags         internal
+// @Produce      json
+// @Param        id   path      string  true  "Tenant UUID"  format(uuid)
+// @Success      200  {object}  map[string]interface{}
+// @Failure      403  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /internal/tenants/{id}/plan-context [get]
+func (h *InternalHandler) GetPlanContext(c *gin.Context) {
+	tenantID, err := parseTenantIDParam(c)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	t, err := h.tenants.Get(c.Request.Context(), tenantID)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"tenant_id":      t.ID,
+		"plan":           t.Plan,
+		"status":         t.Status,
+		"licensed_seats": t.LicensedSeats,
+		"feature_flags":  t.FeatureFlags,
+		"residency_mode": t.ResidencyMode,
+		"record_version": t.RecordVersion,
+	})
+}
+
+// ── I-18 GET /tenants/:id/plan-change-check (CD-20) ────────────────────
+
+// PlanChangeCheck is I-18 — pre-flight check for a plan downgrade (CD-20).
+// Billing MUST call this before accepting any plan change; when allowed=false
+// it MUST refuse with 409 and surface the blockers[] to the tenant owner.
+//
+// Auth: iam-system (all internal callers) or commercial-system (Billing,
+// CD-19). The allow-list is in commercialSystemAllowedRoutes (middleware.go).
+// NetworkPolicy (billing namespace) + Istio AuthorizationPolicy are the
+// primary enforcement; RequireInternalCaller is application-layer defence.
+//
+// @Summary      I-18 — Plan-change pre-flight check (Billing, CD-20)
+// @Description  Validates whether the proposed target_plan is safe. Returns {allowed, blockers[]}. Fail-closed: RP unavailability → 503, not a silent allow. Billing must call this before committing downgrades and re-run it when a scheduled period-end downgrade takes effect.
+// @Tags         internal
+// @Produce      json
+// @Param        id           path   string  true  "Tenant UUID"    format(uuid)
+// @Param        target_plan  query  string  true  "Target plan code (starter|pro|enterprise)"
+// @Success      200  {object}  service.PlanChangeCheckResult  "allowed or blocked with blockers[]"
+// @Failure      400  {object}  ErrorResponse  "invalid_target_plan (missing or unknown target_plan)"
+// @Failure      403  {object}  ErrorResponse  "insufficient_role"
+// @Failure      404  {object}  ErrorResponse  "tenant_not_found"
+// @Failure      503  {object}  ErrorResponse  "realm_provisioner_unavailable (fail-closed: RP unreachable)"
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /internal/tenants/{id}/plan-change-check [get]
+func (h *InternalHandler) PlanChangeCheck(c *gin.Context) {
+	tenantID, err := parseTenantIDParam(c)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	// target_plan validation (empty → 400) is delegated to the service so
+	// both "missing" and "unknown" return the same invalid_target_plan code.
+	targetPlan := c.Query("target_plan")
+	result, err := h.tenants.PlanChangeCheck(c.Request.Context(), tenantID, domain.TenantPlan(targetPlan))
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 // ── I-16 GET /subscription-lapses ──────────────────────────────────────

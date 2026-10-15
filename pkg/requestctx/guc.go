@@ -10,7 +10,9 @@ import (
 
 // systemPrincipal is the reserved iam-system GUC user-id stamped on
 // internal provisioning, SQS consumers, and reconciler writes (RLS-5).
-const systemPrincipal = "iam-system"
+// Alias of IamSystemPrincipal — kept as a package-private constant so
+// the GUC binding code does not need to spell out the full identifier.
+const systemPrincipal = IamSystemPrincipal
 
 // WithSystemTenant binds app.tenant_id and app.user_id=iam-system into ctx
 // via pgcommon's GUCSet so the next pool checkout issues

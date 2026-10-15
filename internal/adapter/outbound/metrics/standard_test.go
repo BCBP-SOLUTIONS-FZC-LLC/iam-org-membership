@@ -102,4 +102,5 @@ func exerciseEveryCollector(t *testing.T) {
 	IncDelegateReassignment("replace_delegate")
 	IncMembershipExistsCheck("tender_acl", "active")
 	IncPublicTenantResolve("found")
+	IncPlanChangeCheck("allowed")
 }

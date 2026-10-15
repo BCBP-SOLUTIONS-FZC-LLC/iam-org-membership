@@ -1,0 +1,21 @@
+# Prod environment overrides for iam-org-membership.
+# Merge with base values.yaml: helm upgrade ... -f values.yaml -f values-prod.yaml
+
+env:
+  APP_ENV: "prod"
+  LOG_LEVEL: "info"
+  OTEL_TRACES_SAMPLER_RATIO: "0.1"
+
+# CD-19: Commercial domain callers admitted in prod.
+# Istio required in prod — PeerAuthentication STRICT mode must be active in the
+# iam namespace before enabling. Both NetworkPolicy (L3/L4) and
+# AuthorizationPolicy (L7 mTLS) are enforced together.
+commercialCallers:
+  enabled: true
+  istio:
+    enabled: true            # L7 mTLS enforcement active in prod
+    trustDomain: cluster.local
+    existingCallerNamespaces:
+      - iam                  # IAM namespace: AuthZ Enrichment, Group Mapping, Audit Log, Tender ACL, Delegation, Event Consumer
+      - envoy-gateway-system # Ingress controller / Envoy Gateway data plane
+      - monitoring           # Prometheus scrape (port 9090 only — enforced at L3 by metricsIngress)

@@ -239,6 +239,10 @@ var (
 	// are silently missing and should alert.
 	AuditDeliveryFailed *prometheus.CounterVec
 
+	// PlanChangeCheckTotal counts I-18 plan-change pre-check outcomes
+	// (CD-20) by result: allowed, blocked, or error (RP unavailable).
+	PlanChangeCheckTotal *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -432,6 +436,14 @@ func IncCatalogCacheInvalidated() {
 func IncAuditDeliveryFailed(entryType string) {
 	if AuditDeliveryFailed != nil {
 		AuditDeliveryFailed.WithLabelValues(entryType).Inc()
+	}
+}
+
+// IncPlanChangeCheck records one I-18 plan-change pre-check outcome.
+// result must be one of "allowed", "blocked", "error". Nil-safe.
+func IncPlanChangeCheck(result string) {
+	if PlanChangeCheckTotal != nil {
+		PlanChangeCheckTotal.WithLabelValues(result).Inc()
 	}
 }
 
@@ -657,6 +669,10 @@ func registerServiceMetrics() {
 		"iam_org_membership_audit_delivery_failed_total",
 		"AL-5 direct-write calls that returned an error from best-effort fire-and-forget audit goroutines (TenantService, InvitationService). Audit outages are fail-open; a sustained nonzero rate means audit records are silently missing.",
 		"entry_type"))
+	PlanChangeCheckTotal = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_plan_change_check_total",
+		"I-18 plan-change pre-check (CD-20) outcomes by result: allowed (no SSO blocker), blocked (sso_idp_configured), error (RP unavailable — maps to 503).",
+		"result"))
 
 	TenantOwnerless = must(gincommon.NewGauge(nil,
 		"iam_org_membership_tenant_ownerless",
@@ -708,6 +724,9 @@ func prewarm() {
 	}
 	PublicTenantResolve.WithLabelValues("found")
 	PublicTenantResolve.WithLabelValues("not_found")
+	for _, r := range []string{"allowed", "blocked", "error"} {
+		PlanChangeCheckTotal.WithLabelValues(r)
+	}
 	for _, et := range []string{
 		"config.tenant_setting.changed",
 		"invitation.created", "invitation.revoked", "invitation.expired",

@@ -12,7 +12,7 @@ import (
 func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 	var t domain.Tenant
 	var featureFlagsJSON []byte
-	var plan, status, realmType string
+	var plan, status, realmType, residencyMode string
 	var suspensionSource *string
 	err := row.Scan(
 		&t.ID, &t.Slug, &t.Name, &plan, &featureFlagsJSON, &status,
@@ -20,7 +20,7 @@ func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 		&t.CancelledAt, &suspensionSource, &t.LastEventAt,
 		&t.RealmID, &realmType, &t.KeycloakShard, &t.MFAFreshnessSeconds,
 		&t.LocalAccountsEnabled, &t.RealmSyncPending, &t.DefaultLocale,
-		&t.LicensedSeats, &t.OwnerlessSince, &t.OverageSince,
+		&t.LicensedSeats, &t.OwnerlessSince, &t.OverageSince, &residencyMode,
 		&t.RecordVersion, &t.CreatedAt, &t.UpdatedAt, &t.DeletedAt,
 	)
 	if err != nil {
@@ -29,6 +29,7 @@ func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 	t.Plan = domain.TenantPlan(plan)
 	t.Status = domain.SubscriptionStatus(status)
 	t.RealmType = domain.RealmType(realmType)
+	t.ResidencyMode = domain.ResidencyMode(residencyMode)
 	if suspensionSource != nil {
 		src := domain.SuspensionSource(*suspensionSource)
 		t.SuspensionSource = &src

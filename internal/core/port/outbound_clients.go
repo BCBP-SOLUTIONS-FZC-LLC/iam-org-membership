@@ -137,6 +137,25 @@ type TokenServiceClient interface {
 	IsServiceAccount(ctx context.Context, tenantID, userID uuid.UUID) (bool, error)
 }
 
+// RealmIDPReader is the narrow port for querying a tenant's configured
+// Identity Provider count from the Realm Provisioner (RP-11 realm read).
+// Used exclusively by plan-change-check (I-18, CD-20) to detect the
+// sso_idp_configured downgrade blocker.
+//
+// Fail-closed: any transport error, non-2xx response (including 404), or
+// unparseable body returns a non-nil error. The caller maps this to
+// 503 realm_provisioner_unavailable — the downgrade is refused, not silently
+// allowed, when the IDP count cannot be determined.
+//
+// Dev exception: when no RP base URL is configured the implementation
+// returns (0, nil) so the endpoint remains usable without a live RP.
+type RealmIDPReader interface {
+	// GetIDPCount returns the number of Identity Providers configured in
+	// the tenant's Keycloak realm. Returns a non-nil error on any RP
+	// communication failure (fail-closed).
+	GetIDPCount(ctx context.Context, tenantID uuid.UUID) (int, error)
+}
+
 // CatalogAdminClient is the outbound HTTP client for the Catalog / Admin
 // Config Service (catalog-admin-config), which owns the global
 // departments/plans catalogs as of ADR-0007 Wave 1. Read-only, mesh-only

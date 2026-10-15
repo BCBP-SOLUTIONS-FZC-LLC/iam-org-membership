@@ -86,6 +86,12 @@ const (
 	// iam.tenant.events
 	EventTenantCreated = "TenantCreated"
 	EventTrialStarted  = "TrialStarted"
+	// EventTenantSettingChanged is emitted via the transactional outbox on
+	// iam.tenant.events whenever a tenant setting changes. Currently produced
+	// only by P-2 when residency_mode changes (CD-37, TL decision 2026-10-15).
+	// Consumer: tenant-authz-q (AuthZ Enrichment — evicts om:tenant so the
+	// next I-8 cache-miss rebuild sees the updated residency_mode).
+	EventTenantSettingChanged = "TenantSettingChanged"
 )
 
 // TopicMembership and TopicTenant identify the two SNS topics O&M publishes
@@ -101,7 +107,7 @@ const (
 // unknown Type before it reached this point.
 func TopicForEvent(eventType string) string {
 	switch eventType {
-	case EventTenantCreated, EventTrialStarted:
+	case EventTenantCreated, EventTrialStarted, EventTenantSettingChanged:
 		return TopicTenant
 	default:
 		return TopicMembership
@@ -130,7 +136,8 @@ func IsProducedEvent(eventType string) bool {
 		EventMembershipRevoked,
 		EventTenantMembershipsPurged,
 		EventTenantCreated,
-		EventTrialStarted:
+		EventTrialStarted,
+		EventTenantSettingChanged:
 		return true
 	default:
 		return false

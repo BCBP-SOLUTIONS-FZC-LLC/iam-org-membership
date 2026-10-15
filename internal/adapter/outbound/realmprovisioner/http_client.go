@@ -68,6 +68,7 @@ type HTTPClient struct {
 }
 
 var _ port.RealmProvisionerClient = (*HTTPClient)(nil)
+var _ port.RealmIDPReader = (*HTTPClient)(nil)
 
 func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
 	if timeout <= 0 {
@@ -316,6 +317,60 @@ func (c *HTTPClient) ResetMFA(ctx context.Context, tenantID, keycloakUserID uuid
 	metrics.IncDependencyError(xsvcService, "reset_mfa", metrics.HTTPStatusReason(resp.StatusCode))
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("rp: ResetMFA returned %d: %s", resp.StatusCode, string(msg))
+}
+
+// GetIDPCount calls RP-11 (GET /api/v1/internal/tenants/:id/realm) to fetch
+// the number of IdPs configured in the tenant's Keycloak realm. Used by
+// plan-change-check (I-18, CD-20).
+//
+// Fail-closed: any transport error, non-2xx (including 404 for a tenant Core
+// knows exists), or unparseable body returns a non-nil error. The caller
+// maps this to 503 realm_provisioner_unavailable.
+//
+// Dev exception: when baseURL is empty (no RP configured) returns (0, nil)
+// so the endpoint stays functional in local dev.
+func (c *HTTPClient) GetIDPCount(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	if c.baseURL == "" {
+		return 0, nil // dev fallback
+	}
+
+	// Hard 2s cap for this specific check — plan-change-check is synchronous
+	// on Billing's hot path; a slow RP must not stall the UI.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.url("/tenants/"+tenantID.String()+"/realm"), nil)
+	if err != nil {
+		return 0, fmt.Errorf("rp: GetIDPCount build request: %w", err)
+	}
+	c.setInternalHeaders(req, tenantID)
+
+	start := time.Now()
+	resp, err := c.client.Do(req)
+	metrics.ObserveDependencyCall(xsvcService, "get_idp_count", time.Since(start).Seconds(), resp, err)
+	if err != nil {
+		metrics.IncDependencyError(xsvcService, "get_idp_count", metrics.DependencyErrorReason(err))
+		c.warn("rp: GetIDPCount transport error",
+			"tenant_id", tenantID, "error", err.Error())
+		return 0, fmt.Errorf("rp: GetIDPCount transport error: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		metrics.IncDependencyError(xsvcService, "get_idp_count", metrics.HTTPStatusReason(resp.StatusCode))
+		c.warn("rp: GetIDPCount non-2xx",
+			"tenant_id", tenantID, "status", resp.StatusCode)
+		return 0, fmt.Errorf("rp: GetIDPCount returned %d", resp.StatusCode)
+	}
+	var out struct {
+		IDPCount int `json:"idp_count"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&out); err != nil {
+		c.warn("rp: GetIDPCount decode error",
+			"tenant_id", tenantID, "error", err.Error())
+		return 0, fmt.Errorf("rp: GetIDPCount decode: %w", err)
+	}
+	return out.IDPCount, nil
 }
 
 // createInvitedUserIdempotencyKey derives a stable RP-5 Idempotency-Key from

@@ -36,7 +36,7 @@ const tenantSelectColumns = `
 	cancelled_at, suspension_source, last_event_at,
 	realm_id, realm_type, keycloak_shard, mfa_freshness_seconds,
 	local_accounts_enabled, realm_sync_pending, default_locale,
-	licensed_seats, ownerless_since, overage_since,
+	licensed_seats, ownerless_since, overage_since, residency_mode,
 	record_version, created_at, updated_at, deleted_at`
 
 func (r *TenantRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
@@ -110,6 +110,9 @@ func (r *TenantRepository) Update(ctx context.Context, id uuid.UUID, patch *doma
 	}
 	if patch.MFAFreshnessSeconds != nil {
 		sets = append(sets, "mfa_freshness_seconds = "+next(*patch.MFAFreshnessSeconds))
+	}
+	if patch.ResidencyMode != nil {
+		sets = append(sets, "residency_mode = "+next(string(*patch.ResidencyMode)))
 	}
 	if len(sets) == 0 {
 		// Nothing to update — return the current row (idempotent PATCH).
@@ -324,6 +327,43 @@ func (r *TenantRepository) LicensedSeatsForUpdate(ctx context.Context, id uuid.U
 		return tx.QueryRow(ctx, `SELECT licensed_seats FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&n)
 	})
 	return n, err
+}
+
+// MergeFeatureFlagsForPlan bulk-merges planFeatureSet into tenants.feature_flags
+// for all active tenants on plan, using:
+//
+//	SET feature_flags = $planFeatureSet::jsonb || feature_flags
+//
+// The right side (existing tenant overrides) wins on key conflicts (T-9 preserved).
+// Returns the IDs of rows that were updated so the caller can evict their caches.
+// Must be called on a BYPASSRLS (sysPool) repository — cross-tenant write.
+func (r *TenantRepository) MergeFeatureFlagsForPlan(ctx context.Context, plan domain.TenantPlan, planFeatureSet []byte) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, qErr := tx.Query(ctx,
+			`UPDATE tenants
+			    SET feature_flags = $1::jsonb || feature_flags
+			  WHERE plan = $2
+			    AND deleted_at IS NULL
+			  RETURNING id`,
+			string(planFeatureSet), string(plan))
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if sErr := rows.Scan(&id); sErr != nil {
+				return sErr
+			}
+			ids = append(ids, id)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func (r *TenantRepository) SetFeatureFlags(ctx context.Context, id uuid.UUID, flags []byte, expectedVersion int64) error {
