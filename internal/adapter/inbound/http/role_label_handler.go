@@ -5,6 +5,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,7 +25,7 @@ func NewRoleLabelHandler(svc *service.RoleLabelService) *RoleLabelHandler {
 // @Produce      json
 // @Param        id   path      string                 true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  RoleLabelListResponse
-// @Failure      403  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -66,9 +67,9 @@ func (h *RoleLabelHandler) List(c *gin.Context) {
 // @Param        role_code  path      string                 true  "Role level"   Enums(preparator, reviewer, approver)
 // @Param        request    body      RoleLabelPatchRequest  true  "Rename payload"
 // @Success      200        {object}  RoleLabelResponse
-// @Failure      400        {object}  ErrorResponse
-// @Failure      403        {object}  ErrorResponse
-// @Failure      409        {object}  ErrorResponse  "record_version mismatch (CONC-4)"
+// @Failure      400        {object}  ProblemResponse
+// @Failure      403        {object}  ProblemResponse
+// @Failure      409        {object}  ProblemResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -94,8 +95,8 @@ func (h *RoleLabelHandler) Patch(c *gin.Context) {
 		return
 	}
 	var req RoleLabelPatchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	l, err := h.svc.Update(c.Request.Context(), tenantID, roleCode, req.DisplayName, req.RecordVersion)

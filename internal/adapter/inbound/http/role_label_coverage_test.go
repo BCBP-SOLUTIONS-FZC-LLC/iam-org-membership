@@ -32,10 +32,10 @@ func TestP28RL_VAL01_InvalidTenantUUID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"display_name":"Buyer","record_version":1}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-uuid", "role_code", "approver")
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
-// P28RL-VAL-02: role_code path param contains an unrecognised value → 400.
+// P28RL-VAL-02: role_code path param contains an unrecognised value → 422.
 // RoleLabelService.Update rejects any value that is not preparator/reviewer/approver.
 func TestP28RL_VAL02_InvalidRoleCode(t *testing.T) {
 	tenantID := uuid.New()
@@ -47,12 +47,12 @@ func TestP28RL_VAL02_InvalidRoleCode(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "role_code", "wizard")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_role")
+	assertErrorCode(t, w, http.StatusBadRequest, "INVALID_ROLE")
 }
 
 // P28RL-VAL-03: role_code=member → 400.
 // 'member' is a derived-only tenant role (TR-7 / §16 A29), never a dept role.
-// The service rejects it with ErrValidation, same as any other non-dept code.
+// The handler rejects it with a DomainError(code="invalid_role", cause=ErrValidation) → 400.
 func TestP28RL_VAL03_MemberRoleCodeRejected(t *testing.T) {
 	tenantID := uuid.New()
 	svc := service.NewRoleLabelService(&drhLabelRepo{}, drhCache{})
@@ -63,7 +63,7 @@ func TestP28RL_VAL03_MemberRoleCodeRejected(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "role_code", "member")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_role")
+	assertErrorCode(t, w, http.StatusBadRequest, "INVALID_ROLE")
 }
 
 // P28RL-VAL-04: display_name="" → 400.
@@ -78,7 +78,7 @@ func TestP28RL_VAL04_EmptyDisplayName(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "role_code", "reviewer")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P28RL-VAL-05: body=bad-json → 400.
@@ -108,7 +108,7 @@ func TestP28RL_AUTH01_MissingIdentity(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "role_code", "approver")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // P28RL-AUTH-02: plain member (no elevated role) cannot PATCH → 403.
@@ -126,7 +126,7 @@ func TestP28RL_AUTH02_MemberCannotPatch(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "role_code", "approver")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P28RL-AUTH-03: caller's TenantID != path tenant_id → 403 (cross-tenant).
@@ -146,7 +146,7 @@ func TestP28RL_AUTH03_CrossTenantPatch(t *testing.T) {
 	setParams(c, "id", pathTenant.String(), "role_code", "approver")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── Concurrency ───────────────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ func TestP28RL_CONC01_StaleRecordVersion(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "role_code", "approver")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "optimistic_lock_conflict")
+	assertErrorCode(t, w, http.StatusConflict, "OPTIMISTIC_LOCK_CONFLICT")
 }
 
 // ── Happy paths ───────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,7 +27,7 @@ func NewInvitationHandler(svc *service.InvitationService) *InvitationHandler {
 // @Produce      json
 // @Param        id   path      string                    true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  InvitationListResponse
-// @Failure      403  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -63,10 +64,10 @@ func (h *InvitationHandler) List(c *gin.Context) {
 // @Param        id       path      string                   true  "Tenant UUID"  format(uuid)
 // @Param        request  body      InvitationCreateRequest  true  "Invite payload"
 // @Success      202      {object}  InvitationResponse       "Pending row created + RP CreateInvitedUser dispatched"
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      409      {object}  ErrorResponse  "seat_limit_reached OR invitation_already_exists"
-// @Failure      429      {object}  ErrorResponse  "reinvite_too_soon OR invite_rate_limited"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      409      {object}  ProblemResponse  "seat_limit_reached OR invitation_already_exists"
+// @Failure      429      {object}  ProblemResponse  "reinvite_too_soon OR invite_rate_limited"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -82,8 +83,8 @@ func (h *InvitationHandler) Invite(c *gin.Context) {
 		return
 	}
 	var req InvitationCreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	roles := make([]domain.TenantRoleCode, len(req.InitialTenantRoles))
@@ -114,10 +115,10 @@ func (h *InvitationHandler) Invite(c *gin.Context) {
 // @Param        invitation_id   path      string              true   "Invitation UUID"   format(uuid)
 // @Param        request         body      InvitationRevokeRequest  true  "Revoke payload (PI-8 optimistic-lock version)"
 // @Success      204
-// @Failure      400             {object}  ErrorResponse
-// @Failure      403             {object}  ErrorResponse
-// @Failure      404             {object}  ErrorResponse
-// @Failure      409             {object}  ErrorResponse  "record_version mismatch (CONC-4)"
+// @Failure      400             {object}  ProblemResponse
+// @Failure      403             {object}  ProblemResponse
+// @Failure      404             {object}  ProblemResponse
+// @Failure      409             {object}  ProblemResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -143,8 +144,8 @@ func (h *InvitationHandler) Revoke(c *gin.Context) {
 	// through to the query string in that case.
 	var req InvitationRevokeRequest
 	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
-			HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+		if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+			HandleError(c, err)
 			return
 		}
 	}

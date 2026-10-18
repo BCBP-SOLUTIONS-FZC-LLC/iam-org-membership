@@ -77,7 +77,7 @@ func TestListDepts_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── P9-AUTH-06: suspended caller on ListDeptMembers → 403 ────────────────────
@@ -89,7 +89,7 @@ func TestListDeptMembers_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── P30-AUTH-08: suspended caller on ListInvitations → 403 ───────────────────
@@ -101,7 +101,7 @@ func TestListInvitations_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── P5-AUTH-06: suspended caller on GetMember → 403 ──────────────────────────
@@ -113,7 +113,7 @@ func TestGetMember_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── P5-AUTH-07: left caller on GetMember → 403 ───────────────────────────────
@@ -125,7 +125,7 @@ func TestGetMember_LeftCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", leftCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── P12-AUTH-06: suspended caller on ListRoleLabels → 403 ────────────────────
@@ -137,7 +137,7 @@ func TestListRoleLabels_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I5-VAL-01: DeleteMember internal — invalid tenant UUID → 400 ─────────────
@@ -148,7 +148,7 @@ func TestDeleteMemberInternal_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", iamSystemCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
 	h.DeleteMember(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── I5-VAL-02: DeleteMember internal — invalid user UUID → 400 ───────────────
@@ -159,7 +159,7 @@ func TestDeleteMemberInternal_InvalidUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", iamSystemCtx(uuid.New()))
 	setParams(c, "id", uuid.New().String(), "user_id", "not-a-uuid")
 	h.DeleteMember(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── I9-BL-03: GetLocale on offboarded tenant → 404 ───────────────────────────
@@ -177,7 +177,7 @@ func TestGetLocale_OffboardedTenant_404(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", iamSystemCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	h.GetLocale(c)
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // ── P11-BL-02: remove dept member from unactivated dept → 404 ────────────────
@@ -203,7 +203,7 @@ func TestDeptRemove_DeptNotActivated_404(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ── P8-BL-02: remove member who is delegate for multiple workflows → 409 ─────
@@ -224,7 +224,7 @@ func TestMembershipDelete_MultipleDelegators_409(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusConflict, "workflow_resolution_required")
+	assertErrorCode(t, w, http.StatusConflict, "WORKFLOW_RESOLUTION_REQUIRED")
 }
 
 // ── P2-A-01: tenant PATCH with no identity → 401 ─────────────────────────────
@@ -235,7 +235,7 @@ func TestTenantPatch_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"name":"X"}`, nil)
 	setParams(c, "id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ── P6-IDP-01: invite to email with existing pending invite → 409 ────────────
@@ -259,7 +259,7 @@ func TestInvite_DuplicateEmail_409(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusConflict, "invitation_already_exists")
+	assertErrorCode(t, w, http.StatusConflict, "INVITATION_ALREADY_EXISTS")
 	_ = repo
 }
 
@@ -286,7 +286,7 @@ func TestInvite_ConcurrentDuplicate_Returns409(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusConflict, "invitation_already_exists")
+	assertErrorCode(t, w, http.StatusConflict, "INVITATION_ALREADY_EXISTS")
 }
 
 // miscInviteRepo is a stub for invite tests that need configurable
@@ -488,7 +488,7 @@ func TestDeleteMemberInternal_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", rc)
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── P9-CACHE-01 / P9-CACHE-02: ListDeptMembers cache hit/miss ────────────────

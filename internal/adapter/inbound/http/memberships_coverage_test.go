@@ -190,7 +190,7 @@ func TestGetMemberships_InvalidUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/?tenant_id="+tenantID.String(), "", systemCtx())
 	setParams(c, "id", "not-a-uuid")
 	h.GetMemberships(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I8-M-02 | all-zeros user UUID, valid tenant_id → passes UUID parse; absorb panic

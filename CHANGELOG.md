@@ -8,6 +8,15 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **RFC 9457 Problem Details adoption (LLD rev 2.29, 2026-10-18):** All HTTP error responses now use RFC 9457 `application/problem+json` via `platform-gincommon v2`'s shared implementation as the single error-handling owner.
+  - `domainErrorToProblem` in `middleware.go` now maps every domain sentinel to the platform type (e.g. `TypeNotFound`, `TypeConflict`) and adds a domain-specific UPPER_SNAKE `errorCode` override via `.WithCode(strings.ToUpper(de.Code))` — e.g. `"TENANT_NOT_FOUND"` instead of the platform default `"NOT_FOUND"`, `"SEAT_LIMIT_REACHED"` instead of `"CONFLICT"`. All 50+ domain error codes now have stable, specific errorCodes.
+  - `HandleError` routes domain errors that carry a `Details` map (e.g. `active_workflows`, `licensed_seats`, `record_version`, `retry_after_seconds`) through a new `abortWithDetailedProblem` helper that merges those fields as RFC 9457 §3.1 extension members into the `application/problem+json` body.
+  - `AsyncAPIHandler` now uses `gincommon.AbortWithProblem(c, problem.NewInternalError(err))` — removes the last service-owned `gin.H{"code":…}` custom error JSON.
+  - Swagger regenerated (`make swag`): `http.ErrorResponse` / `http.ValidationError` replaced by `http.ProblemResponse` (`= problem.Problem`); all `@Failure` annotations now reference the RFC 9457 envelope. `make swag-check` will pass after this commit.
+  - 58 unit tests updated: `body["code"]` → `body["errorCode"]`, `body["message"]` → `body["detail"]`, domain code values updated to UPPER_SNAKE. `TestCD31_SeatLimitReached_CodeStringPinned` corrected — sentinel `.Error()` stays `"seat_limit_reached"`, HTTP wire `errorCode` is now `"SEAT_LIMIT_REACHED"`.
+  - **CD-31 resolved**: this completes the deferred RFC 9457 migration noted in LLD rev 2.27.
+  - `govulncheck ./internal/... ./pkg/...` → **0 vulnerabilities**. All 28 direct dependencies at latest versions (no updates available). All 21 packages pass `go test ./... -short`.
+
 - **Dependency maintenance (LLD rev 2.28, 2026-10-15):**
   - `github.com/aws/aws-sdk-go-v2/service/glue` v1.157.0 → v1.171.0 (Glue Schema Registry SDK — minor; no API surface change for startup schema-resolution).
   - `github.com/aws/aws-sdk-go-v2/service/sqs` v1.52.1 → v1.52.4 (SQS consumer SDK — patch; long-polling reliability fix).

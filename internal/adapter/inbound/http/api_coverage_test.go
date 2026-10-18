@@ -23,7 +23,7 @@ func TestPatchMember_StatusLeft_Returns400(t *testing.T) {
 		&requestctx.RequestContext{UserID: uuid.New(), TenantID: tenant, Roles: []string{"tenant_owner"}})
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P24-AUTH-01: non-admin caller → 403 ──────────────────────────────────
@@ -38,7 +38,7 @@ func TestActivateDept_PlainMember_Returns403(t *testing.T) {
 		plainMemberCtx(tenant))
 	setParams(c, "id", tenant.String(), "dept_id", uuid.New().String())
 	h.Activate(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P25-AUTH-01: non-admin caller → 403 ──────────────────────────────────
@@ -53,7 +53,7 @@ func TestPatchDept_PlainMember_Returns403(t *testing.T) {
 		plainMemberCtx(tenant))
 	setParams(c, "id", tenant.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P10-AUTH-01: non-admin caller → 403 ──────────────────────────────────
@@ -69,7 +69,7 @@ func TestAssignDeptMember_PlainMember_Returns403(t *testing.T) {
 	setParams(c, "id", tenant.String(), "dept_id", uuid.New().String(),
 		"user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P24-AUTH-02: tenant_admin can activate ────────────────────────────────

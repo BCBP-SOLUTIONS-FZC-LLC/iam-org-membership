@@ -6,6 +6,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -29,8 +30,8 @@ func NewTenantHandler(svc *service.TenantService) *TenantHandler {
 // @Produce      json
 // @Param        id   path      string          true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  TenantResponse
-// @Failure      403  {object}  ErrorResponse  "AUTH-1..8 gate failed"
-// @Failure      404  {object}  ErrorResponse  "Row not visible (RLS returns 0 rows OR row absent)"
+// @Failure      403  {object}  ProblemResponse  "AUTH-1..8 gate failed"
+// @Failure      404  {object}  ProblemResponse  "Row not visible (RLS returns 0 rows OR row absent)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -77,9 +78,9 @@ func (h *TenantHandler) Get(c *gin.Context) {
 // @Param        request  body      TenantPatchRequest  true  "Patch payload"
 // @Success      200      {object}  TenantResponse
 // @Success      202      {object}  TenantResponse  "Accepted (T-15 deferred realm sync)"
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse  "AUTH-1..8 gate failed"
-// @Failure      409      {object}  ErrorResponse  "record_version mismatch (CONC-4)"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse  "AUTH-1..8 gate failed"
+// @Failure      409      {object}  ProblemResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -106,8 +107,8 @@ func (h *TenantHandler) Patch(c *gin.Context) {
 	}
 
 	var req TenantPatchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 

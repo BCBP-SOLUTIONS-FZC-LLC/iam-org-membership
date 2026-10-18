@@ -62,7 +62,7 @@ func TestSetFeatureFlags_RepoError_409(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.SetFeatureFlags(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "optimistic_lock_conflict")
+	assertErrorCode(t, w, http.StatusConflict, "OPTIMISTIC_LOCK_CONFLICT")
 }
 
 // O7-H-FULL-01: full happy path — ReassignOwner grants the role, clears
@@ -120,7 +120,7 @@ func TestReassignOwner_ServiceError_422(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.ReassignOwner(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_owner_candidate")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "INVALID_OWNER_CANDIDATE")
 }
 
 // O7-ERR-02: ActiveRoleCodes (tenRoles.ListByUser) errors after a
@@ -151,5 +151,5 @@ func TestReassignOwner_ActiveRoleCodesError_500(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.ReassignOwner(c)
 
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "db_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "DB_UNAVAILABLE")
 }

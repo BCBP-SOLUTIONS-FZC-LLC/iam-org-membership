@@ -225,5 +225,5 @@ func TestResetMFA_InvalidUserID_Returns400(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", "not-a-valid-uuid")
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }

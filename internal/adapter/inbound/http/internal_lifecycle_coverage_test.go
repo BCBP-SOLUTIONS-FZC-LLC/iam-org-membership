@@ -102,7 +102,7 @@ func TestPatchMemberLifecycle_BadTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"active","record_version":1}`, iamSystemCtx(uuid.New()))
 	setParams(c, "id", "bad-uuid", "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── I4-AUTH-01: iam-system is allowed ────────────────────────────────────────
@@ -131,7 +131,7 @@ func TestPatchMemberLifecycle_RegularMember_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"active","record_version":1}`, plainMemberCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I4-BL-01: member not found → 404 ─────────────────────────────────────────
@@ -147,7 +147,7 @@ func TestPatchMemberLifecycle_MemberNotFound_404(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"active","record_version":1}`, iamSystemCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ── I4-SEC-02: stale record_version → 409 ────────────────────────────────────
@@ -163,7 +163,7 @@ func TestPatchMemberLifecycle_StaleRV_409(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"active","record_version":1}`, iamSystemCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusConflict, "optimistic_lock_conflict")
+	assertErrorCode(t, w, http.StatusConflict, "OPTIMISTIC_LOCK_CONFLICT")
 }
 
 // ── I4-EDGE-02: invalid status value → 400 ───────────────────────────────────
@@ -267,7 +267,7 @@ func TestDeleteMemberInternal_NonSystemCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", rc)
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I5-EDGE-02: DB error → 503 ────────────────────────────────────────────────
@@ -279,5 +279,5 @@ func TestDeleteMemberInternal_DBError_503(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", iamSystemCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.DeleteMember(c)
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "db_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "DB_UNAVAILABLE")
 }

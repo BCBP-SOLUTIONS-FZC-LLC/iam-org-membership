@@ -38,7 +38,7 @@ func TestListDept_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P3-002
@@ -53,7 +53,7 @@ func TestListDept_MissingIdentity(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
 	setParams(c, "id", tenant.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // Test Case ID:      P9-P3-003
@@ -68,7 +68,7 @@ func TestListDept_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -102,7 +102,7 @@ func TestActivateDept_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String())
 	h.Activate(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // Test Case ID:      P9-P24-003
@@ -120,7 +120,7 @@ func TestActivateDept_NonAdmin(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, rc)
 	setParams(c, "id", tenant.String())
 	h.Activate(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -136,7 +136,7 @@ func TestPatchDept_InvalidDeptID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"is_active":true,"record_version":1}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "dept_id", "bogus")
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P25-002
@@ -148,7 +148,7 @@ func TestPatchDept_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"is_active":true,"record_version":1}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -163,7 +163,7 @@ func TestListMembers_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P4-002
@@ -175,7 +175,7 @@ func TestListMembers_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -191,7 +191,7 @@ func TestGetMember_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "bogus")
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P5-002
@@ -203,7 +203,7 @@ func TestGetMember_MissingIdentity(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -218,7 +218,7 @@ func TestSeatUsage_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
 	h.SeatUsage(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P27-002
@@ -230,7 +230,7 @@ func TestSeatUsage_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String())
 	h.SeatUsage(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -247,7 +247,7 @@ func TestRemovalResolution_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "bogus")
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P26-002
@@ -274,7 +274,7 @@ func TestListRoleLabels_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P12-002
@@ -286,7 +286,7 @@ func TestListRoleLabels_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -315,7 +315,7 @@ func TestPatchRoleLabel_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", body, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "role_code", "approver")
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P-18/P-19/P-20 (ACLHandler) — retired ADR-0007 Wave 3 Phase 6, moved to
@@ -334,7 +334,7 @@ func TestP9O4001_SetFeatureFlags_RequiresOperator(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", body, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", uuid.New().String())
 	h.SetFeatureFlags(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // Test Case ID:      P9-O4-002
@@ -346,5 +346,5 @@ func TestP9O4002_SetFeatureFlags_InvalidID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", body, operatorCtx())
 	setParams(c, "id", "bogus")
 	h.SetFeatureFlags(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }

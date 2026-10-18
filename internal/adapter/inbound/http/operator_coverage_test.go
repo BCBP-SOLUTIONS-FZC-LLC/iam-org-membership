@@ -111,7 +111,7 @@ func TestSetFeatureFlags_MemberRole_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"feature_flags":{},"record_version":1}`, rc)
 	setParams(c, "id", uuid.New().String())
 	h.SetFeatureFlags(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // O4-A-04 | 200 | platform_operator passes, absorb panic
@@ -130,7 +130,7 @@ func TestSetFeatureFlags_MalformedJSON_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"feature_flags":`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.SetFeatureFlags(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // O4-M-02 | 400 | empty body → validation_error
@@ -193,7 +193,7 @@ func TestSetFeatureFlags_InvalidTenantUUID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"feature_flags":{},"record_version":1}`, operatorCtx())
 	setParams(c, "id", "not-a-uuid")
 	h.SetFeatureFlags(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // O4-V-07 | 200 | feature_flags:null, absorb panic
@@ -502,7 +502,7 @@ func TestReassignOwner_NoAuth_401(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, nil)
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // O7-A-02 | 403 | member role → insufficient_role
@@ -513,7 +513,7 @@ func TestReassignOwner_MemberRole_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, rc)
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // O7-A-03 | 403 | tenant_admin → insufficient_role
@@ -524,7 +524,7 @@ func TestReassignOwner_TenantAdmin_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, rc)
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // O7-A-04 | 200 | platform_operator passes, absorb panic
@@ -544,7 +544,7 @@ func TestReassignOwner_MalformedJSON_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"user_id":`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // O7-M-02 | 400 | {} with no user_id → uuid.Nil → handler returns 400
@@ -553,7 +553,7 @@ func TestReassignOwner_EmptyBody_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{}`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // O7-V-01 | 400 | user_id:"00000000-..." → uuid.Nil → 400
@@ -562,7 +562,7 @@ func TestReassignOwner_ZeroUUID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"user_id":"00000000-0000-0000-0000-000000000000"}`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // O7-V-02 | 400 | user_id not present → uuid.Nil → 400
@@ -571,7 +571,7 @@ func TestReassignOwner_NullUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{}`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // O7-V-03 | 400 | user_id:"not-a-uuid" → ShouldBindJSON fails → 400
@@ -580,7 +580,7 @@ func TestReassignOwner_InvalidUserIDFormat_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"user_id":"not-a-uuid"}`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // O7-V-04 | 400 | path param id="bogus" → invalid_uuid
@@ -590,7 +590,7 @@ func TestReassignOwner_InvalidTenantIDPath_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, operatorCtx())
 	setParams(c, "id", "bogus")
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // O7-V-05 | 400 | empty body {} → uuid.Nil → 400
@@ -599,7 +599,7 @@ func TestReassignOwner_BothFieldsMissing_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{}`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // O7-BL-01 | 422 | not a member — absorb panic (service handles)

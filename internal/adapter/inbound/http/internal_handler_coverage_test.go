@@ -83,7 +83,7 @@ func TestProvisionTenant_ServiceValidationError_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
 	h.ProvisionTenant(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I1-H-01: fresh create → 201.
@@ -148,7 +148,7 @@ func TestPatchMemberLifecycle_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"active","record_version":1}`, systemCtx())
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I4-M-02: malformed user_id path param → 400 invalid_uuid.
@@ -157,7 +157,7 @@ func TestPatchMemberLifecycle_InvalidUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"active","record_version":1}`, systemCtx())
 	setParams(c, "id", uuid.New().String(), "user_id", "not-a-uuid")
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I4-M-03: malformed JSON body → 400 validation_error.
@@ -166,7 +166,7 @@ func TestPatchMemberLifecycle_MalformedBody_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":`, systemCtx())
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // I4-H-01: full happy path → 200.
@@ -198,7 +198,7 @@ func TestPatchMemberLifecycle_ServiceError_409(t *testing.T) {
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "optimistic_lock_conflict")
+	assertErrorCode(t, w, http.StatusConflict, "OPTIMISTIC_LOCK_CONFLICT")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -276,7 +276,7 @@ func TestAssignFromGroups_MembershipLookupError(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.AssignFromGroups(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -312,7 +312,7 @@ func TestDeleteMember_ServiceError(t *testing.T) {
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	h.DeleteMember(c)
 
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "db_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "DB_UNAVAILABLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -364,7 +364,7 @@ func TestGetMemberships_FullNotFound_404(t *testing.T) {
 	setParams(c, "id", userID.String())
 	h.GetMemberships(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -398,7 +398,7 @@ func TestGetLocale_NotFound_404(t *testing.T) {
 	setParams(c, "id", uuid.New().String())
 	h.GetLocale(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -411,7 +411,7 @@ func TestGetMFAFreshness_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
 	setParams(c, "id", "not-a-uuid")
 	h.GetMFAFreshness(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I14-H-01: full happy path → 200 with mfa_freshness_seconds.
@@ -443,7 +443,7 @@ func TestGetMFAFreshness_NotFound_404(t *testing.T) {
 	setParams(c, "id", uuid.New().String())
 	h.GetMFAFreshness(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -456,7 +456,7 @@ func TestGetSeatUsageInternal_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
 	setParams(c, "id", "not-a-uuid")
 	h.GetSeatUsage(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I11-H-01: full happy path → 200.
@@ -493,7 +493,7 @@ func TestGetSeatUsageInternal_NotFound_404(t *testing.T) {
 	setParams(c, "id", uuid.New().String())
 	h.GetSeatUsage(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -562,7 +562,7 @@ func TestCheckMemberExists_GenericError(t *testing.T) {
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	h.CheckMemberExists(c)
 
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "db_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "DB_UNAVAILABLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -577,7 +577,7 @@ func TestAssigneeOverride_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
 	setParams(c, "id", "not-a-uuid", "tender_id", uuid.New().String())
 	h.AssigneeOverride(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I13-M-02: missing required field (new_user_id) → 400 validation_error.
@@ -587,7 +587,7 @@ func TestAssigneeOverride_MissingFields_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
 	setParams(c, "id", uuid.New().String(), "tender_id", uuid.New().String())
 	h.AssigneeOverride(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I13-H-01: full happy path → 200 eligible:true.
@@ -633,5 +633,5 @@ func TestAssigneeOverride_ActorNotElevated_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }

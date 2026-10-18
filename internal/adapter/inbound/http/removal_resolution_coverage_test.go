@@ -87,7 +87,7 @@ func TestRemovalResolution_UnknownAction_422b(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"bad_action"}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_action")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "INVALID_ACTION")
 }
 
 // ── P26-VAL-03: empty body → 400 ─────────────────────────────────────────────
@@ -110,7 +110,7 @@ func TestRemovalResolution_BadTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad-uuid", "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P26-AUTH-04: nil identity → 401 ──────────────────────────────────────────
@@ -121,7 +121,7 @@ func TestRemovalResolution_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, nil)
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ── P26-AUTH-01: plain member → 403 ──────────────────────────────────────────
@@ -133,7 +133,7 @@ func TestRemovalResolution_PlainMember_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, plainMemberCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P26-AUTH-02: tender_admin → 403 ──────────────────────────────────────────
@@ -146,7 +146,7 @@ func TestRemovalResolution_TenderAdmin_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, rc)
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P26-AUTH-03: cross-tenant caller → 403 ───────────────────────────────────
@@ -160,7 +160,7 @@ func TestRemovalResolution_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, rc)
 	setParams(c, "id", pathTenant.String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P26-DEP-01: ReassignDelegate fails → 503 ─────────────────────────────────
@@ -181,7 +181,7 @@ func TestRemovalResolution_ReplaceDelegateWorkflowDown_503(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "workflow_service_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "WORKFLOW_SERVICE_UNAVAILABLE")
 }
 
 // ── P26-DEP-02: CancelByDelegate fails → 503 ──────────────────────────────────
@@ -201,7 +201,7 @@ func TestRemovalResolution_StopWorkflowsWorkflowDown_503(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "workflow_service_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "WORKFLOW_SERVICE_UNAVAILABLE")
 }
 
 // ── P26-FLOW-01, P26-FLOW-02, P26-EVT-01, P26-EVT-02: resolution → 204 ───────

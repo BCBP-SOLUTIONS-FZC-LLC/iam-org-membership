@@ -127,7 +127,7 @@ func TestRevoke_InvalidInvitationID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "invitation_id", "not-a-uuid")
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P31-VAL-02: bad tenant_id → 400 ──────────────────────────────────────────
@@ -138,7 +138,7 @@ func TestRevoke_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad-tenant", "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P31-VAL-03: non-integer record_version query param → 400 ──────────────────
@@ -151,7 +151,7 @@ func TestRevoke_BadRecordVersion_400(t *testing.T) {
 	c.Request.URL.RawQuery = "record_version=abc"
 	setParams(c, "id", tenantID.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P31-AUTH-01: nil identity → 401 ──────────────────────────────────────────
@@ -162,7 +162,7 @@ func TestRevoke_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", nil)
 	setParams(c, "id", uuid.New().String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ── P31-AUTH-02: plain member → 403 ──────────────────────────────────────────
@@ -174,7 +174,7 @@ func TestRevoke_InsufficientRole_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, plainMemberCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P31-AUTH-03 / P31-SEC-01: cross-tenant → 403 ─────────────────────────────
@@ -187,7 +187,7 @@ func TestRevoke_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, rc)
 	setParams(c, "id", pathTenant.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P31-BL-01: invitation not found → 404 ────────────────────────────────────
@@ -202,7 +202,7 @@ func TestInvitationRevoke_NotFound_404(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusNotFound, "invitation_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "INVITATION_NOT_FOUND")
 }
 
 // ── P31-BL-02: already accepted → 404 ────────────────────────────────────────
@@ -218,7 +218,7 @@ func TestInvitationRevoke_AlreadyAccepted_404(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusNotFound, "invitation_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "INVITATION_NOT_FOUND")
 }
 
 // ── P31-BL-03: already expired → 404 ─────────────────────────────────────────
@@ -233,7 +233,7 @@ func TestInvitationRevoke_Expired_404(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusNotFound, "invitation_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "INVITATION_NOT_FOUND")
 }
 
 // ── P31-EDGE-01 / P31-EDGE-02: already revoked (idempotent) → 404 ────────────
@@ -248,7 +248,7 @@ func TestInvitationRevoke_AlreadyRevoked_404(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusNotFound, "invitation_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "INVITATION_NOT_FOUND")
 }
 
 // ── P31-DEP-01: DB unavailable → 503 ─────────────────────────────────────────
@@ -263,5 +263,5 @@ func TestInvitationRevoke_DBUnavailable_503(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "db_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "DB_UNAVAILABLE")
 }

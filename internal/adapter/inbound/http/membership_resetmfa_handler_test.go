@@ -21,7 +21,7 @@ func TestResetMFA_PlainMember_Returns403(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", ``, plainMemberCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P34-VALID-01: malformed tenant id → 400 ─────────────────────────────
@@ -71,7 +71,7 @@ func TestResetMFA_MemberNotFound_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ── P34-422-01: suspended member → 422 member_not_active ────────────────
@@ -88,7 +88,7 @@ func TestResetMFA_MemberNotActive_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "member_not_active")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "MEMBER_NOT_ACTIVE")
 }
 
 // ── P34-503-01: RP-9 outage → 503 realm_provisioner_unavailable, fail-closed ─
@@ -108,5 +108,5 @@ func TestResetMFA_RPOutage_503(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "realm_provisioner_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "REALM_PROVISIONER_UNAVAILABLE")
 }

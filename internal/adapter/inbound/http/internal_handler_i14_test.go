@@ -44,7 +44,7 @@ func TestGetMFAFreshness_InvalidUUID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", iamSystemCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
 	h.GetMFAFreshness(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── I14-AUTH-01: no identity header → middleware aborts with 403 ─────────────
@@ -69,7 +69,7 @@ func TestGetMFAFreshness_RegularMember_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", rc)
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I14-AUTH-03: tenant_admin → 403 ──────────────────────────────────────────
@@ -81,7 +81,7 @@ func TestGetMFAFreshness_TenantAdmin_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", tenantAdminCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I14-AUTH-04: platform_operator → 403 ─────────────────────────────────────
@@ -94,7 +94,7 @@ func TestGetMFAFreshness_PlatformOperator_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", rc)
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I14-HP-03 / I14-BL-01: tenant not found → 404 ────────────────────────────
@@ -111,7 +111,7 @@ func TestGetMFAFreshness_TenantNotFound_404(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", iamSystemCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	h.GetMFAFreshness(c)
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // ── I14-HP happy path: iam-system gets mfa_freshness_seconds → 200 ────────────

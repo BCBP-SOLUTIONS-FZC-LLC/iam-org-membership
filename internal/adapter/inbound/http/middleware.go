@@ -4,31 +4,22 @@
 package http
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
-
-// errorLogger is the shared gincommon-backed Logger, set once by NewRouter
-// from RouterConfig.GinConfig.Logger. HandleError has ~150 call sites across
-// every handler file, so threading a logger through as an explicit
-// parameter would touch all of them; a package-level var set at router
-// construction time reaches the one bypass site (the unhandled-500 branch
-// below) without that churn. nil-safe — tests that build handlers without
-// going through NewRouter simply get no logging here, same as before.
-var errorLogger port.Logger
 
 // bridgedIdentity is the primitive-typed view of the gateway-injected
 // identity used by the bridge helper. Keeping this decoupled from the
@@ -43,14 +34,14 @@ type bridgedIdentity struct {
 }
 
 // parseBridgedIdentity turns primitive gateway header values into a typed
-// requestctx.RequestContext. Returns a non-nil ErrorResponse (and empty
+// requestctx.RequestContext. Returns a non-nil *problem.Error (and empty
 // rc) if either identity header is malformed — the caller writes the 401.
 //
 // Reserved principal strings are mapped to fixed UUIDs instead of being
 // parsed as ordinary UUIDs (RLS-5/IAPI-2):
 //   - "iam-system"        → uuid.Nil   (IamSystemSentinelUUID)
 //   - "commercial-system" → CommercialSystemUUID (CD-19)
-func parseBridgedIdentity(in bridgedIdentity) (*requestctx.RequestContext, *ErrorResponse) {
+func parseBridgedIdentity(in bridgedIdentity) (*requestctx.RequestContext, *problem.Error) {
 	var userID uuid.UUID
 	switch in.UserIDStr {
 	case requestctx.IamSystemPrincipal:
@@ -60,21 +51,13 @@ func parseBridgedIdentity(in bridgedIdentity) (*requestctx.RequestContext, *Erro
 	default:
 		id, err := uuid.Parse(in.UserIDStr)
 		if err != nil {
-			return nil, &ErrorResponse{
-				Error: "missing_identity_headers", Code: "missing_identity_headers",
-				Message: "x-user-id header is not a valid UUID",
-				Status:  http.StatusUnauthorized,
-			}
+			return nil, problem.NewUnauthorizedError("x-user-id header is not a valid UUID")
 		}
 		userID = id
 	}
 	tenantID, err := uuid.Parse(in.TenantIDStr)
 	if err != nil {
-		return nil, &ErrorResponse{
-			Error: "missing_identity_headers", Code: "missing_identity_headers",
-			Message: "x-tenant-id header is not a valid UUID",
-			Status:  http.StatusUnauthorized,
-		}
+		return nil, problem.NewUnauthorizedError("x-tenant-id header is not a valid UUID")
 	}
 	return &requestctx.RequestContext{
 		UserID: userID, TenantID: tenantID,
@@ -95,18 +78,15 @@ func GUCBridgeMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		rc, errResp := parseBridgedIdentity(bridgedIdentity{
+		rc, errProb := parseBridgedIdentity(bridgedIdentity{
 			UserIDStr:   platformRc.UserID,
 			TenantIDStr: platformRc.TenantID,
 			Roles:       platformRc.Roles,
 			ClientIP:    platformRc.ClientIP,
 			UserAgent:   c.Request.Header.Get("User-Agent"),
 		})
-		if errResp != nil {
-			// Enrich with trace/request IDs then abort.
-			er := newErrorResponse(c, errResp.Code, errResp.Message, nil)
-			er.Status = errResp.Status
-			c.AbortWithStatusJSON(errResp.Status, er)
+		if errProb != nil {
+			gincommon.AbortWithProblem(c, errProb)
 			return
 		}
 		ctx := requestctx.WithContext(c.Request.Context(), rc)
@@ -147,9 +127,7 @@ func RequireJSONContentType() gin.HandlerFunc {
 			return
 		}
 		if c.ContentType() != "application/json" {
-			er := newErrorResponse(c, "unsupported_media_type", "Content-Type must be application/json", nil)
-			er.Status = http.StatusUnsupportedMediaType
-			c.AbortWithStatusJSON(http.StatusUnsupportedMediaType, er)
+			gincommon.AbortWithProblem(c, problem.NewError(problem.TypeUnsupportedMediaType, "Content-Type must be application/json"))
 			return
 		}
 		c.Next()
@@ -167,9 +145,7 @@ func RequireSystemRole() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc, ok := requestctx.FromContext(c.Request.Context())
 		if !ok || !rc.HasRole(requestctx.IamSystemPrincipal) {
-			er := newErrorResponse(c, "insufficient_role", "internal route requires iam-system role", nil)
-			er.Status = http.StatusForbidden
-			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError("internal route requires iam-system role"))
 			return
 		}
 		c.Next()
@@ -199,9 +175,7 @@ func RequireInternalCaller() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc, ok := requestctx.FromContext(c.Request.Context())
 		if !ok {
-			er := newErrorResponse(c, "insufficient_role", "internal route requires iam-system role", nil)
-			er.Status = http.StatusForbidden
-			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError("internal route requires iam-system role"))
 			return
 		}
 		if rc.IsSystem() {
@@ -216,15 +190,10 @@ func RequireInternalCaller() gin.HandlerFunc {
 				c.Next()
 				return
 			}
-			er := newErrorResponse(c, "insufficient_role",
-				"commercial-system is not authorised on this internal route", nil)
-			er.Status = http.StatusForbidden
-			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError("commercial-system is not authorised on this internal route"))
 			return
 		}
-		er := newErrorResponse(c, "insufficient_role", "internal route requires iam-system role", nil)
-		er.Status = http.StatusForbidden
-		c.AbortWithStatusJSON(http.StatusForbidden, er)
+		gincommon.AbortWithProblem(c, problem.NewForbiddenError("internal route requires iam-system role"))
 	}
 }
 
@@ -326,10 +295,7 @@ func RequireActiveMembership(memberships port.MembershipRepository) gin.HandlerF
 		if err != nil {
 			if errors.Is(err, domain.ErrMemberNotFound) {
 				// No active membership row (left/never joined) → not an active member
-				er := newErrorResponse(c, "insufficient_role",
-					"caller is not an active member of this tenant", nil)
-				er.Status = http.StatusForbidden
-				c.AbortWithStatusJSON(http.StatusForbidden, er)
+				gincommon.AbortWithProblem(c, problem.NewForbiddenError("caller is not an active member of this tenant"))
 				return
 			}
 			// Real DB error — let the handler surface it naturally
@@ -343,134 +309,11 @@ func RequireActiveMembership(memberships port.MembershipRepository) gin.HandlerF
 			if m.Status == domain.MembershipSuspended {
 				msg = "suspended members cannot access tenant APIs"
 			}
-			er := newErrorResponse(c, "insufficient_role", msg, nil)
-			er.Status = http.StatusForbidden
-			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError(msg))
 			return
 		}
 		c.Next()
 	}
-}
-
-// NormalizeAuthErrors rewrites the error bodies platform-gincommon's own
-// middlewares write inside it — RequireAuth's 401 and ContextMiddleware's
-// 400 — to this service's envelope (LLD §17, G-13). The library writes
-// {"error":"...","status":N} without a "code"; this adds one:
-//   - 401: ambiguous_identity_headers when an identity header was sent more
-//     than once, missing_identity_headers otherwise;
-//   - 400: invalid_request_context.
-//
-// A body that already has a "code" (every HandleError response) is left
-// alone. Two library responses are written outside this middleware and keep
-// gincommon's shape: the request-deadline 503 (TimeoutMiddleware, body
-// {"error":"request timeout"}) and the panic-recovery 500.
-//
-// Only a 400 or 401 is buffered. Any other status passes straight through to
-// the real writer, and a handler that writes nothing leaves the response
-// unwritten, so gincommon's TimeoutMiddleware can still answer with its 503.
-func NormalizeAuthErrors() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		buf := &bufferedWriter{ResponseWriter: c.Writer, buf: &bytes.Buffer{}}
-		c.Writer = buf
-		// Hand the real writer back to the outer middlewares (observability,
-		// TimeoutMiddleware, panic recovery) however the chain exits — a
-		// panicking handler unwinds past the code after c.Next().
-		defer func() { c.Writer = buf.ResponseWriter }()
-		c.Next()
-		if buf.status == 0 {
-			return // passed through (or nothing written)
-		}
-		c.Writer = buf.ResponseWriter
-		body := buf.buf.Bytes()
-		var raw map[string]any
-		if err := json.Unmarshal(body, &raw); err == nil {
-			if _, hasCode := raw["code"]; !hasCode {
-				code := libraryErrorCode(buf.status, raw)
-				raw["code"] = code
-				raw["error"] = code
-				body, _ = json.Marshal(raw)
-				buf.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
-			}
-		}
-		buf.ResponseWriter.WriteHeader(buf.status)
-		if len(body) > 0 {
-			_, _ = buf.ResponseWriter.Write(body)
-		}
-	}
-}
-
-// libraryErrorCode is the code for a platform-gincommon error body.
-func libraryErrorCode(status int, raw map[string]any) string {
-	if status == http.StatusBadRequest {
-		return "invalid_request_context"
-	}
-	return authErrorCode(raw)
-}
-
-// authErrorCode classifies a platform-gincommon 401 body by its message.
-func authErrorCode(raw map[string]any) string {
-	if msg, _ := raw["error"].(string); strings.HasPrefix(msg, "ambiguous ") {
-		return "ambiguous_identity_headers"
-	}
-	return "missing_identity_headers"
-}
-
-// bufferedWriter holds back a 400 or 401 so NormalizeAuthErrors can rewrite
-// it; every other status is written through to the embedded writer as it
-// comes.
-type bufferedWriter struct {
-	gin.ResponseWriter
-	buf         *bytes.Buffer
-	status      int  // buffered status (400 or 401 only)
-	passthrough bool // another status was set: write straight through
-}
-
-// buffered reports whether NormalizeAuthErrors may need to rewrite code.
-func buffered(code int) bool {
-	return code == http.StatusUnauthorized || code == http.StatusBadRequest
-}
-
-func (w *bufferedWriter) WriteHeader(code int) {
-	if w.passthrough {
-		w.ResponseWriter.WriteHeader(code)
-		return
-	}
-	if buffered(code) {
-		w.status = code
-		return
-	}
-	w.passthrough = true
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *bufferedWriter) Write(b []byte) (int, error) {
-	if w.passthrough {
-		return w.ResponseWriter.Write(b)
-	}
-	if w.status == 0 {
-		// Write without a status: an implicit 200, never a 401.
-		w.passthrough = true
-		return w.ResponseWriter.Write(b)
-	}
-	return w.buf.Write(b)
-}
-
-func (w *bufferedWriter) Status() int {
-	if w.passthrough || w.status == 0 {
-		return w.ResponseWriter.Status()
-	}
-	return w.status
-}
-
-func (w *bufferedWriter) Written() bool {
-	if w.passthrough {
-		return w.ResponseWriter.Written()
-	}
-	return w.buf.Len() > 0 || w.status != 0
-}
-
-func (w *bufferedWriter) WriteString(s string) (int, error) {
-	return w.Write([]byte(s))
 }
 
 // RequireOperatorRole gates /api/v1/operator/* (AUTH-6). Every operator
@@ -480,9 +323,7 @@ func RequireOperatorRole() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc, ok := requestctx.FromContext(c.Request.Context())
 		if !ok || !rc.IsOperator() {
-			er := newErrorResponse(c, "insufficient_role", "operator route requires platform_operator role", nil)
-			er.Status = http.StatusForbidden
-			c.AbortWithStatusJSON(http.StatusForbidden, er)
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError("operator route requires platform_operator role"))
 			return
 		}
 		c.Next()
@@ -506,71 +347,155 @@ func RegisterValidators() {
 	validatorsRegistered = true
 }
 
-// HandleError writes a JSON error response derived from err. Recognises
-// *domain.DomainError and maps its Code to an HTTP status per §17. The
-// response body follows the flat ErrorResponse shape (§17, matches
-// platform-gincommon.ErrorResponse and the sibling iam-user-profile2
-// service) — populates `request_id`/`trace_id` for cross-service
-// correlation.
+// HandleError writes an RFC 9457 problem response derived from err.
+// Recognises *problem.Error (passed through), *domain.DomainError (mapped
+// to the appropriate platform problem type per §17), and raw pgconn/context
+// errors (classified to 503/409). All error responses are written as
+// application/problem+json via gincommon.AbortWithProblem.
+//
+// When a *domain.DomainError carries a non-empty Details map, the response
+// is written via abortWithDetailedProblem, which merges those fields as
+// RFC 9457 §3.1 extension members (e.g. active_workflows, licensed_seats).
 func HandleError(c *gin.Context, err error) {
 	if leaveToRequestContext(c, err) {
 		return
 	}
 	var de *domain.DomainError
-	if errors.As(err, &de) {
-		status := domainErrorStatus(de)
-		body := newErrorResponse(c, de.Code, de.Message, nil)
-		body.Status = status
-		// Merge domain-error details into the flat envelope so 409/422
-		// contract fields (record_version, active_workflows, workflow_ids,
-		// allowed_actions, licensed_seats, ...) surface at the top level
-		// as the DTO declares (dto.go:245).
-		mergedBody := errorResponseWithDetails(body, de.Details)
-		c.AbortWithStatusJSON(status, mergedBody)
+	if errors.As(err, &de) && len(de.Details) > 0 {
+		abortWithDetailedProblem(c, domainErrorToProblem(de), de.Details)
 		return
 	}
-	// Raw pgconn.PgError that was not caught and translated by the service
-	// layer. wrapConnErr maps these classes to ErrDBUnavailable, so the
-	// DomainError branch above is the production path. This fallback still
-	// classifies a leaked PgError (tests, future missed wrap) into 503
-	// db_unavailable per LLD §17, using pgcommon's SQLSTATE helpers so
-	// inbound HTTP never imports pgconn.
+	gincommon.AbortWithProblem(c, toDomainProblem(err))
+}
+
+// abortWithDetailedProblem writes an RFC 9457 problem response extended with
+// domain-level fields from details (RFC 9457 §3.1 extension members). Used
+// when a DomainError carries structured context that API clients depend on
+// (e.g. active_workflows, licensed_seats, record_version, retry_after_seconds).
+func abortWithDetailedProblem(c *gin.Context, pe *problem.Error, details map[string]any) {
+	if c.Writer.Written() {
+		c.Abort()
+		return
+	}
+	traceID := problem.ResolveTraceID(
+		c.GetHeader("traceparent"),
+		c.GetHeader("x-request-id"),
+		"")
+	p := problem.BuilderFor(pe).
+		Instance(c.Request.URL.Path).
+		TraceID(traceID).
+		Build()
+
+	// Marshal standard problem to a map, then overlay extension members.
+	var base map[string]any
+	raw, _ := json.Marshal(p)
+	_ = json.Unmarshal(raw, &base)
+	maps.Copy(base, details)
+	body, _ := json.Marshal(base)
+	c.Abort()
+	c.Data(p.Status, problem.ContentType, body)
+}
+
+// toDomainProblem converts any service error to the correct *problem.Error
+// for RFC 9457 rendering. *problem.Error passes through; *domain.DomainError
+// is mapped via domainErrorToProblem; pg errors are classified by SQLSTATE;
+// anything else is returned as-is for gincommon's FromError fallback (which
+// maps DeadlineExceeded→503, MaxBytesError→413, else→500).
+func toDomainProblem(err error) error {
+	var pe *problem.Error
+	if errors.As(err, &pe) {
+		return pe
+	}
+
+	var de *domain.DomainError
+	if errors.As(err, &de) {
+		return domainErrorToProblem(de)
+	}
+
+	// Leaked pgconn.PgError not wrapped by the service layer — classify by
+	// SQLSTATE family so inbound HTTP never imports pgconn directly.
 	if pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) ||
 		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err) || pgcommon.IsPoolClosed(err) {
-		er := newErrorResponse(c, domain.ErrDBUnavailable.Error(), "database unavailable", nil)
-		er.Status = http.StatusServiceUnavailable
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
-		return
+		return problem.NewServiceUnavailableError("database unavailable")
 	}
-	// A leaked statement/lock timeout (57014/55P03) or an exhausted
-	// deadlock/serialization retry (40P01/40001): the same codes wrapConnErr
-	// gives them, never a 500.
 	if pgcommon.IsQueryCanceled(err) || pgcommon.IsLockNotAvailable(err) {
-		er := newErrorResponse(c, domain.ErrRequestTimeout.Error(), "database statement or lock timeout", nil)
-		er.Status = http.StatusServiceUnavailable
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
-		return
+		return problem.NewServiceUnavailableError("database statement or lock timeout")
 	}
 	if pgcommon.IsDeadlock(err) || pgcommon.IsSerializationFailure(err) {
-		er := newErrorResponse(c, domain.ErrConflict.Error(), "concurrent update conflict — retry the request", nil)
-		er.Status = http.StatusConflict
-		c.AbortWithStatusJSON(http.StatusConflict, errorResponseWithDetails(er, map[string]any{"code": "concurrent_update"}))
-		return
+		return problem.NewConflictError("concurrent update conflict — retry the request")
 	}
-	// A request deadline that expired outside a wrapped repository call (or
-	// a client that went away) is a timeout, not a server fault.
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		er := newErrorResponse(c, domain.ErrRequestTimeout.Error(), "request deadline exceeded", nil)
-		er.Status = http.StatusServiceUnavailable
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, er)
-		return
+
+	// context.Canceled: client disconnected or a non-request-context deadline
+	// (e.g. a statement timeout) surfaced as Canceled. Map to 503 so it's
+	// never misread as a server fault. DeadlineExceeded is already handled by
+	// gincommon.FromError; Canceled is not, so we classify it here.
+	if errors.Is(err, context.Canceled) {
+		return problem.NewServiceUnavailableError("request canceled")
 	}
-	if errorLogger != nil {
-		errorLogger.Error("unhandled 500 error", map[string]any{"error_type": fmt.Sprintf("%T", err), "error": err.Error()})
+
+	// Unclassified: pass to gincommon (DeadlineExceeded→503, else→500 no-detail).
+	return err
+}
+
+// domainErrorToProblem maps a *domain.DomainError to the corresponding
+// platform problem type per LLD §17. The domain message becomes the RFC 9457
+// detail field; status is determined by the error cause. The domain error
+// code (e.g. "tenant_not_found") is surfaced as an uppercase errorCode
+// override (e.g. "TENANT_NOT_FOUND") so clients can branch on specific
+// business errors without parsing human-readable detail strings.
+func domainErrorToProblem(de *domain.DomainError) *problem.Error {
+	msg := de.Message
+	// Convert the domain sentinel's lowercase_snake code (e.g. "tenant_not_found")
+	// to the RFC 9457 / platform-standard UPPER_SNAKE errorCode.
+	code := strings.ToUpper(de.Code)
+	switch {
+	case errors.Is(de.Cause, domain.ErrValidation),
+		errors.Is(de.Cause, domain.ErrNoMutableField),
+		errors.Is(de.Cause, domain.ErrInvalidTargetPlan):
+		return problem.NewBadRequestError(msg).WithCode(code)
+	case errors.Is(de.Cause, domain.ErrMissingIdentity):
+		return problem.NewUnauthorizedError(msg).WithCode(code)
+	case errors.Is(de.Cause, domain.ErrInsufficientRole),
+		errors.Is(de.Cause, domain.ErrCannotRemoveOwner),
+		errors.Is(de.Cause, domain.ErrTenantTrialExpired),
+		errors.Is(de.Cause, domain.ErrTenantSuspended),
+		errors.Is(de.Cause, domain.ErrTenantReadOnly),
+		errors.Is(de.Cause, domain.ErrServiceAccountNotGrantable):
+		return problem.NewForbiddenError(msg).WithCode(code)
+	case errors.Is(de.Cause, domain.ErrTenantNotFound),
+		errors.Is(de.Cause, domain.ErrMemberNotFound),
+		errors.Is(de.Cause, domain.ErrDepartmentNotFound),
+		errors.Is(de.Cause, domain.ErrInvitationNotFound),
+		errors.Is(de.Cause, domain.ErrPlanNotFound):
+		return problem.NewNotFoundError(msg).WithCode(code)
+	case errors.Is(de.Cause, domain.ErrOptimisticLockConflict),
+		errors.Is(de.Cause, domain.ErrConflict),
+		errors.Is(de.Cause, domain.ErrSlugAlreadyTaken),
+		errors.Is(de.Cause, domain.ErrMemberAlreadyExists),
+		errors.Is(de.Cause, domain.ErrDeptMembershipAlreadyExists),
+		errors.Is(de.Cause, domain.ErrWorkflowResolutionRequired),
+		errors.Is(de.Cause, domain.ErrSeatLimitReached),
+		errors.Is(de.Cause, domain.ErrInvitationAlreadyExists),
+		errors.Is(de.Cause, domain.ErrTenantOffboarded),
+		errors.Is(de.Cause, domain.ErrDepartmentAlreadyActivated),
+		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted):
+		return problem.NewConflictError(msg).WithCode(code)
+	case errors.Is(de.Cause, domain.ErrReinviteTooSoon),
+		errors.Is(de.Cause, domain.ErrInviteRateLimited):
+		return problem.NewRateLimitError(msg).WithCode(code)
+	case errors.Is(de.Cause, domain.ErrDBUnavailable),
+		errors.Is(de.Cause, domain.ErrCacheUnavailable),
+		errors.Is(de.Cause, domain.ErrWorkflowServiceUnavailable),
+		errors.Is(de.Cause, domain.ErrRealmProvisionerUnavailable),
+		errors.Is(de.Cause, domain.ErrRequestTimeout),
+		errors.Is(de.Cause, domain.ErrCatalogUnavailable),
+		errors.Is(de.Cause, domain.ErrGroupMappingUnavailable),
+		errors.Is(de.Cause, domain.ErrDependencyUnavailable):
+		return problem.NewServiceUnavailableError(msg).WithCode(code)
+	default:
+		// Remaining domain codes are 422 business-rule violations (§17).
+		return problem.NewBusinessRuleError(msg).WithCode(code)
 	}
-	er := newErrorResponse(c, "internal_error", "an unexpected error occurred", nil)
-	er.Status = http.StatusInternalServerError
-	c.AbortWithStatusJSON(http.StatusInternalServerError, er)
 }
 
 // clientClosedRequest is the de-facto status (nginx's 499) recorded when the
@@ -604,80 +529,4 @@ func leaveToRequestContext(c *gin.Context, err error) bool {
 		return true
 	}
 	return false
-}
-
-// errorResponseWithDetails renders the flat ErrorResponse envelope with
-// any DomainError.Details merged as top-level fields on a marshalable map.
-// Using a map preserves the DTO's flat shape while allowing arbitrary
-// per-code extras (record_version, active_workflows, ...) without
-// enumerating every field on the struct.
-func errorResponseWithDetails(er ErrorResponse, details map[string]any) map[string]any {
-	out := map[string]any{
-		"error":   er.Error,
-		"code":    er.Code,
-		"status":  er.Status,
-		"message": er.Message,
-	}
-	if er.TraceID != "" {
-		out["trace_id"] = er.TraceID
-	}
-	if er.RequestID != "" {
-		out["request_id"] = er.RequestID
-	}
-	for k, v := range details {
-		out[k] = v
-	}
-	return out
-}
-
-// domainErrorStatus maps a DomainError to its HTTP status per LLD §17.
-func domainErrorStatus(de *domain.DomainError) int {
-	switch {
-	case errors.Is(de.Cause, domain.ErrValidation),
-		errors.Is(de.Cause, domain.ErrNoMutableField),
-		errors.Is(de.Cause, domain.ErrInvalidTargetPlan):
-		return http.StatusBadRequest
-	case errors.Is(de.Cause, domain.ErrMissingIdentity):
-		return http.StatusUnauthorized
-	case errors.Is(de.Cause, domain.ErrInsufficientRole),
-		errors.Is(de.Cause, domain.ErrCannotRemoveOwner),
-		errors.Is(de.Cause, domain.ErrTenantTrialExpired),
-		errors.Is(de.Cause, domain.ErrTenantSuspended),
-		errors.Is(de.Cause, domain.ErrTenantReadOnly),
-		errors.Is(de.Cause, domain.ErrServiceAccountNotGrantable):
-		return http.StatusForbidden
-	case errors.Is(de.Cause, domain.ErrTenantNotFound),
-		errors.Is(de.Cause, domain.ErrMemberNotFound),
-		errors.Is(de.Cause, domain.ErrDepartmentNotFound),
-		errors.Is(de.Cause, domain.ErrInvitationNotFound),
-		errors.Is(de.Cause, domain.ErrPlanNotFound):
-		return http.StatusNotFound
-	case errors.Is(de.Cause, domain.ErrOptimisticLockConflict),
-		errors.Is(de.Cause, domain.ErrConflict),
-		errors.Is(de.Cause, domain.ErrSlugAlreadyTaken),
-		errors.Is(de.Cause, domain.ErrMemberAlreadyExists),
-		errors.Is(de.Cause, domain.ErrDeptMembershipAlreadyExists),
-		errors.Is(de.Cause, domain.ErrWorkflowResolutionRequired),
-		errors.Is(de.Cause, domain.ErrSeatLimitReached),
-		errors.Is(de.Cause, domain.ErrInvitationAlreadyExists),
-		errors.Is(de.Cause, domain.ErrTenantOffboarded),
-		errors.Is(de.Cause, domain.ErrDepartmentAlreadyActivated),
-		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted):
-		return http.StatusConflict
-	case errors.Is(de.Cause, domain.ErrReinviteTooSoon),
-		errors.Is(de.Cause, domain.ErrInviteRateLimited):
-		return http.StatusTooManyRequests
-	case errors.Is(de.Cause, domain.ErrDBUnavailable),
-		errors.Is(de.Cause, domain.ErrCacheUnavailable),
-		errors.Is(de.Cause, domain.ErrWorkflowServiceUnavailable),
-		errors.Is(de.Cause, domain.ErrRealmProvisionerUnavailable),
-		errors.Is(de.Cause, domain.ErrRequestTimeout),
-		errors.Is(de.Cause, domain.ErrCatalogUnavailable),
-		errors.Is(de.Cause, domain.ErrGroupMappingUnavailable),
-		errors.Is(de.Cause, domain.ErrDependencyUnavailable):
-		return http.StatusServiceUnavailable
-	default:
-		// Remaining domain codes are 422 domain-rule violations.
-		return http.StatusUnprocessableEntity
-	}
 }

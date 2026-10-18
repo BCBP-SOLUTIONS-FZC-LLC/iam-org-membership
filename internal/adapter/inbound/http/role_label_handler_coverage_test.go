@@ -26,7 +26,7 @@ func TestRoleLabelList_ServiceError(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.List(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // P13-M-03: malformed tenant id path param on Patch → 400 invalid_uuid.
@@ -36,5 +36,5 @@ func TestRoleLabelPatch_InvalidTenantID_400(t *testing.T) {
 	setParams(c, "id", "not-a-uuid", "role_code", "approver")
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }

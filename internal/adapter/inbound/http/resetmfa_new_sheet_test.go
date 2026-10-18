@@ -62,7 +62,7 @@ func TestResetMFA_Auth_CrossTenantForbidden(t *testing.T) {
 	setParams(c, "id", tenantB.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P34-VAL-02: invalid user_id UUID → 400 ───────────────────────────────────
@@ -98,7 +98,7 @@ func TestResetMFA_NotFound_TenantNotExist(t *testing.T) {
 	setParams(c, "id", unknownTenant.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ── P34-DEP-02: RP timeout → 503 realm_provisioner_unavailable ──────────────
@@ -122,7 +122,7 @@ func TestResetMFA_Dep_RPTimeout_503(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "realm_provisioner_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "REALM_PROVISIONER_UNAVAILABLE")
 }
 
 // ── P34-BL-01: self-reset allowed — actor IS the target user → 204 ──────────
@@ -210,7 +210,7 @@ func TestResetMFA_Evt_NoEventOnRPFailure(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.ResetMFA(c)
 
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "realm_provisioner_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "REALM_PROVISIONER_UNAVAILABLE")
 }
 
 // ── P34-CACHE-01: no cache invalidation on MFA reset ─────────────────────────

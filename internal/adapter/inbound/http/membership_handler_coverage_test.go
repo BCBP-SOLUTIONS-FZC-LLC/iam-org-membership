@@ -55,7 +55,7 @@ func TestMembershipList_ServiceError(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.List(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // P4-H-05: page.NextCursor non-nil → response carries a base64 next_cursor.
@@ -106,7 +106,7 @@ func TestMembershipRemove_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P8-H-01: full happy path — owner removes a plain member → 204.
@@ -141,7 +141,7 @@ func TestMembershipRemove_WorkflowGateBlocks_409(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", userID.String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "workflow_resolution_required")
+	assertErrorCode(t, w, http.StatusConflict, "WORKFLOW_RESOLUTION_REQUIRED")
 }
 
 // P34-M-02: malformed user_id path param on ResetMFA → 400 invalid_uuid.
@@ -151,7 +151,7 @@ func TestResetMFA_InvalidUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "not-a-uuid")
 	h.ResetMFA(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P26-M-06: malformed tenant id path param on RemovalResolution → 400 invalid_uuid.
@@ -160,7 +160,7 @@ func TestRemovalResolution_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"action":"stop_workflows"}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
 	h.RemovalResolution(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // MW-TAOH-01: requireTenderAdminOrHigher's cross-tenant branch (delegates to

@@ -78,7 +78,7 @@ func TestRequireSystemRole_Rejects403WhenRoleMissing(t *testing.T) {
 	assert.True(t, c.IsAborted())
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "insufficient_role", body["code"])
+	assert.Equal(t, "FORBIDDEN", body["errorCode"])
 }
 
 func TestRequireSystemRole_Rejects403WhenNoIdentity(t *testing.T) {
@@ -117,7 +117,7 @@ func TestRequireOperatorRole_RejectsTenantOwner(t *testing.T) {
 
 	assert.True(t, c.IsAborted())
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Equal(t, "insufficient_role", decodeBody(t, w)["code"])
+	assert.Equal(t, "FORBIDDEN", decodeBody(t, w)["errorCode"])
 }
 
 func TestRequireOperatorRole_RejectsSystemPrincipal(t *testing.T) {
@@ -277,8 +277,8 @@ func TestHandleError_OptimisticLockReturns409WithVersionField(t *testing.T) {
 
 	assert.Equal(t, http.StatusConflict, w.Code, "optimistic_lock_conflict must be 409")
 	body := decodeBody(t, w)
-	assert.Equal(t, "optimistic_lock_conflict", body["code"])
-	assert.Equal(t, "row moved under you", body["message"])
+	assert.Equal(t, "OPTIMISTIC_LOCK_CONFLICT", body["errorCode"])
+	assert.Equal(t, "row moved under you", body["detail"])
 	require.Contains(t, body, "record_version", "409 body MUST carry record_version for retry (CONC-4)")
 	assert.Equal(t, float64(7), body["record_version"], "record_version echoes the CURRENT db value")
 	assert.Contains(t, body, "updated_at")
@@ -294,7 +294,7 @@ func TestHandleError_LastOwnerRemovalReturns422(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "TM-8 last_owner_removal must be 422")
 	body := decodeBody(t, w)
-	assert.Equal(t, "last_owner_removal", body["code"])
+	assert.Equal(t, "LAST_OWNER_REMOVAL", body["errorCode"])
 }
 
 func TestHandleError_WorkflowResolutionRequiredReturns409WithWorkflowFields(t *testing.T) {
@@ -314,7 +314,7 @@ func TestHandleError_WorkflowResolutionRequiredReturns409WithWorkflowFields(t *t
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "workflow_resolution_required", body["code"])
+	assert.Equal(t, "WORKFLOW_RESOLUTION_REQUIRED", body["errorCode"])
 	assert.Equal(t, float64(2), body["active_workflows"])
 	assert.Contains(t, body, "workflow_ids")
 	assert.Contains(t, body, "allowed_actions")
@@ -330,7 +330,7 @@ func TestHandleError_SeatLimitReachedReturns409(t *testing.T) {
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "seat_limit_reached", body["code"])
+	assert.Equal(t, "SEAT_LIMIT_REACHED", body["errorCode"])
 	assert.Equal(t, float64(10), body["licensed_seats"])
 }
 
@@ -341,7 +341,7 @@ func TestHandleError_InsufficientRoleReturns403(t *testing.T) {
 	HandleError(c, err)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Equal(t, "insufficient_role", decodeBody(t, w)["code"])
+	assert.Equal(t, "INSUFFICIENT_ROLE", decodeBody(t, w)["errorCode"])
 }
 
 func TestHandleError_MissingIdentityReturns401(t *testing.T) {
@@ -351,7 +351,7 @@ func TestHandleError_MissingIdentityReturns401(t *testing.T) {
 	HandleError(c, err)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assert.Equal(t, "missing_identity_headers", decodeBody(t, w)["code"])
+	assert.Equal(t, "MISSING_IDENTITY_HEADERS", decodeBody(t, w)["errorCode"])
 }
 
 func TestHandleError_ValidationReturns400(t *testing.T) {
@@ -361,7 +361,7 @@ func TestHandleError_ValidationReturns400(t *testing.T) {
 	HandleError(c, err)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Equal(t, "validation_error", decodeBody(t, w)["code"])
+	assert.Equal(t, "VALIDATION_ERROR", decodeBody(t, w)["errorCode"])
 }
 
 func TestHandleError_TenantNotFoundReturns404(t *testing.T) {
@@ -383,7 +383,7 @@ func TestHandleError_ReinviteTooSoonReturns429(t *testing.T) {
 
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "reinvite_too_soon", body["code"])
+	assert.Equal(t, "REINVITE_TOO_SOON", body["errorCode"])
 	assert.Equal(t, float64(300), body["retry_after_seconds"])
 }
 
@@ -394,7 +394,7 @@ func TestHandleError_DBUnavailableReturns503(t *testing.T) {
 	HandleError(c, err)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Equal(t, "db_unavailable", decodeBody(t, w)["code"])
+	assert.Equal(t, "DB_UNAVAILABLE", decodeBody(t, w)["errorCode"])
 }
 
 func TestHandleError_UnknownDomainErrorFallsBackTo422(t *testing.T) {
@@ -407,7 +407,7 @@ func TestHandleError_UnknownDomainErrorFallsBackTo422(t *testing.T) {
 	HandleError(c, err)
 
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
-	assert.Equal(t, "invalid_action", decodeBody(t, w)["code"])
+	assert.Equal(t, "INVALID_ACTION", decodeBody(t, w)["errorCode"])
 }
 
 func TestHandleError_NonDomainErrorReturns500(t *testing.T) {
@@ -419,8 +419,8 @@ func TestHandleError_NonDomainErrorReturns500(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "internal_error", body["code"])
-	assert.NotContains(t, body["message"], assert.AnError.Error(),
+	assert.Equal(t, "INTERNAL_ERROR", body["errorCode"])
+	assert.NotContains(t, w.Body.String(), assert.AnError.Error(),
 		"raw error message must NOT be surfaced to the client")
 }
 
@@ -434,7 +434,7 @@ func TestHandleError_DBConnectivitySQLState_Returns503(t *testing.T) {
 			c, w := newTestContext(nil)
 			HandleError(c, &pgconn.PgError{Code: code})
 			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-			assert.Contains(t, w.Body.String(), "db_unavailable")
+			assert.Contains(t, w.Body.String(), "SERVICE_UNAVAILABLE")
 		})
 	}
 }
@@ -443,7 +443,7 @@ func TestHandleError_DBResourceExhaustionSQLState_Returns503(t *testing.T) {
 	c, w := newTestContext(nil)
 	HandleError(c, &pgconn.PgError{Code: "53300"}) // too_many_connections
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "db_unavailable")
+	assert.Contains(t, w.Body.String(), "SERVICE_UNAVAILABLE")
 }
 
 // A leaked class 57 (operator_intervention) or 58 (system_error) PgError is
@@ -454,7 +454,7 @@ func TestHandleError_OperatorOrSystemErrorSQLState_Returns503(t *testing.T) {
 			c, w := newTestContext(nil)
 			HandleError(c, &pgconn.PgError{Code: code})
 			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-			assert.Contains(t, w.Body.String(), "db_unavailable")
+			assert.Contains(t, w.Body.String(), "SERVICE_UNAVAILABLE")
 		})
 	}
 }
@@ -466,7 +466,7 @@ func TestHandleError_ConstraintViolationSQLState_Returns500(t *testing.T) {
 	c, w := newTestContext(nil)
 	HandleError(c, &pgconn.PgError{Code: "23505"}) // unique_violation
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "internal_error")
+	assert.Contains(t, w.Body.String(), "INTERNAL_ERROR")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -492,7 +492,7 @@ func TestRequireJSONContentType_Rejects415OnFormPost(t *testing.T) {
 
 	assert.True(t, c.IsAborted())
 	assert.Equal(t, http.StatusUnsupportedMediaType, w.Code)
-	assert.Equal(t, "unsupported_media_type", decodeBody(t, w)["code"])
+	assert.Equal(t, "UNSUPPORTED_MEDIA_TYPE", decodeBody(t, w)["errorCode"])
 }
 
 func TestRequireJSONContentType_SkipsGET(t *testing.T) {
@@ -518,72 +518,6 @@ func TestRequireJSONContentType_SkipsEmptyBody(t *testing.T) {
 	assert.False(t, c.IsAborted())
 }
 
-// ── NormalizeAuthErrors (G-13 fix) ────────────────────────────────────────────
-
-// P7-AUTH-03: platform-gincommon 401 response is normalized to include the
-// code field matching LLD §17. The middleware rewrites any 401 body that
-// lacks a "code" field to use code=missing_identity_headers.
-func TestNormalizeAuthErrors_Adds401CodeField(t *testing.T) {
-	r := gin.New()
-	r.Use(NormalizeAuthErrors())
-	// Simulate platform-gincommon writing a 401 without a code field.
-	r.GET("/test", func(c *gin.Context) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"error":  "missing or invalid authentication headers",
-			"status": 401,
-		})
-	})
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	var body map[string]any
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
-	assert.Equal(t, "missing_identity_headers", body["code"])
-	assert.Equal(t, "missing_identity_headers", body["error"])
-}
-
-// NormalizeAuthErrors passes non-401 responses through unchanged.
-func TestNormalizeAuthErrors_PassesThrough200(t *testing.T) {
-	r := gin.New()
-	r.Use(NormalizeAuthErrors())
-	r.GET("/test", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `"ok"`)
-}
-
-// NormalizeAuthErrors does not overwrite a 401 that already has a code field.
-func TestNormalizeAuthErrors_SkipsIfCodeAlreadyPresent(t *testing.T) {
-	r := gin.New()
-	r.Use(NormalizeAuthErrors())
-	r.GET("/test", func(c *gin.Context) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"code":   "missing_identity_headers",
-			"error":  "missing_identity_headers",
-			"status": 401,
-		})
-	})
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	var body map[string]any
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
-	// code field must still be present and correct
-	assert.Equal(t, "missing_identity_headers", body["code"])
-}
-
 // A raw statement/lock timeout or exhausted deadlock that skipped
 // wrapConnErr still gets its proper code, never a 500.
 func TestHandleError_LeakedTimeoutAndConflictSQLStates(t *testing.T) {
@@ -591,10 +525,10 @@ func TestHandleError_LeakedTimeoutAndConflictSQLStates(t *testing.T) {
 		status int
 		body   string
 	}{
-		"57014": {http.StatusServiceUnavailable, "request_timeout"},
-		"55P03": {http.StatusServiceUnavailable, "request_timeout"},
-		"40P01": {http.StatusConflict, "concurrent_update"},
-		"40001": {http.StatusConflict, "concurrent_update"},
+		"57014": {http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
+		"55P03": {http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
+		"40P01": {http.StatusConflict, "CONFLICT"},
+		"40001": {http.StatusConflict, "CONFLICT"},
 	} {
 		t.Run(code, func(t *testing.T) {
 			c, w := newTestContext(nil)

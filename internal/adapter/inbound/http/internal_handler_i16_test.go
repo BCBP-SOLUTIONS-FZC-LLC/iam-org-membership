@@ -194,7 +194,7 @@ func TestListSubscriptionLapses_NoRoles_403(t *testing.T) {
 	rc := &requestctx.RequestContext{UserID: uuid.New(), TenantID: uuid.Nil, Roles: nil}
 	c, w := buildCtx(http.MethodGet, "/", "", rc)
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I16-AUTH-04: wrong role (tenant_admin) → 403 ─────────────────────────────
@@ -204,7 +204,7 @@ func TestListSubscriptionLapses_WrongRole_TenantAdmin_403(t *testing.T) {
 	mw := RequireSystemRole()
 	c, w := buildCtx(http.MethodGet, "/", "", tenantAdminCtx(uuid.New()))
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I16-AUTH-06: non-nil UUID in x-tenant-id → 200 (handler ignores value) ───
@@ -234,7 +234,7 @@ func TestListSubscriptionLapses_RealUserUUID_TenantAdmin_403(t *testing.T) {
 	}
 	c, w := buildCtx(http.MethodGet, "/", "", rc)
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }
 
 // ── I16-CFG-01: graceDays=0 → grace window propagated to repo ────────────────
@@ -303,7 +303,7 @@ func TestListSubscriptionLapses_RepoError_503(t *testing.T) {
 	h := buildLapseHandler(repo, 30)
 	c, w := buildCtx(http.MethodGet, "/", "", nilUUIDCtx())
 	h.ListSubscriptionLapses(c)
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "db_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "DB_UNAVAILABLE")
 }
 
 // ── I16-IDEMP-01: repeated calls → identical responses (no side effects) ──────

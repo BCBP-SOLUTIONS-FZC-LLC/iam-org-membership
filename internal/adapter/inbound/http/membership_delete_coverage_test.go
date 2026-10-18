@@ -97,7 +97,7 @@ func TestMembershipDelete_HasDelegatedWorkflows_409(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "workflow_resolution_required")
+	assertErrorCode(t, w, http.StatusConflict, "WORKFLOW_RESOLUTION_REQUIRED")
 }
 
 // ── P8-EDGE-01: actor == target → still 204 ──────────────────────────────────
@@ -145,7 +145,7 @@ func TestMembershipDelete_WorkflowServiceTimeout_503(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "workflow_service_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "WORKFLOW_SERVICE_UNAVAILABLE")
 }
 
 // ── P8-DEP-02: RP.RevokeUserSessions fails → still 204 (fail-open AUTH-8) ───
@@ -183,7 +183,7 @@ func TestMembershipDelete_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", nil)
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ── P8-AUTH-02: plain member → 403 ───────────────────────────────────────────
@@ -195,7 +195,7 @@ func TestMembershipDelete_NonAdmin_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", plainMemberCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P8-AUTH-03 / P8-SEC-01: cross-tenant caller → 403 ───────────────────────
@@ -213,7 +213,7 @@ func TestMembershipDelete_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", rc)
 	setParams(c, "id", pathTenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P8-AUTH-04: tender_admin → 403 ───────────────────────────────────────────
@@ -230,7 +230,7 @@ func TestMembershipDelete_TenderAdminBlocked_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", rc)
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P8-BL-03: member not found → 404 ─────────────────────────────────────────
@@ -253,7 +253,7 @@ func TestMembershipDelete_MemberNotFound_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ── P8-VAL-01: invalid user_id → 400 ─────────────────────────────────────────
@@ -265,7 +265,7 @@ func TestMembershipDelete_InvalidUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", "not-a-uuid")
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P8-VAL-02: invalid tenant_id → 400 ───────────────────────────────────────
@@ -276,5 +276,5 @@ func TestMembershipDelete_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad-tenant", "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }

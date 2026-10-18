@@ -165,7 +165,7 @@ func TestGetTenant_NoAuth_401(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", nil)
 	setParams(c, "id", tenantID.String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // GT-A-02 | operator rc with matching TenantID → passes auth, absorb panic
@@ -200,7 +200,7 @@ func TestGetTenant_TenantAdmin_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", rc)
 	setParams(c, "id", tenantID.String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // GT-A-05 | member rc with matching TenantID → passes (no role restriction), absorb panic
@@ -232,7 +232,7 @@ func TestGetTenant_MissingUserID_401(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", nil)
 	setParams(c, "id", tenantID.String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // GT-A-08 | empty roles, matching TenantID → no role required, absorb panic
@@ -252,7 +252,7 @@ func TestGetTenant_InvalidUUID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // GT-NF-01 | valid UUID, valid auth → handler reaches service, absorb panic
@@ -398,7 +398,7 @@ func TestGetTenant_MismatchXTenantID_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", differentTenantCtx())
 	setParams(c, "id", tenantID.String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // GT-RLS-03 | nil rc (missing X-Tenant-ID) → 401
@@ -408,7 +408,7 @@ func TestGetTenant_MissingXTenantID_401(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", nil)
 	setParams(c, "id", tenantID.String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // GT-CACHE-01 | cache miss — same-tenant, absorb panic

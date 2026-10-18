@@ -9,8 +9,6 @@
 //   - requireTenderAdminOrHigher — cross-tenant path
 //   - RequireActiveMembership — no-identity bypass, operator bypass, db-error fall-through,
 //     member-not-found path
-//   - bufferedWriter.Status — status==0 path (delegates to embedded writer)
-//   - newErrorResponse — nil context path
 //   - middleware.GUCBridgeMiddleware — already covered in gucbridge_test.go;
 //     this file adds the errResp path via parseBridgedIdentity directly
 package http
@@ -40,7 +38,7 @@ func TestDeptMembershipAssign_BadTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Assign: invalid dept UUID → 400 invalid_uuid
@@ -50,7 +48,7 @@ func TestDeptMembershipAssign_BadDeptID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", "bad-dept", "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Assign: invalid user UUID → 400 invalid_uuid
@@ -60,7 +58,7 @@ func TestDeptMembershipAssign_BadUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", "bad-uid")
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Assign: missing identity → 401 missing_identity_headers
@@ -69,7 +67,7 @@ func TestDeptMembershipAssign_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, nil)
 	setParams(c, "id", uuid.New().String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // Assign: cross-tenant → 403 insufficient_role
@@ -84,7 +82,7 @@ func TestDeptMembershipAssign_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, rc)
 	setParams(c, "id", pathTenant.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // Assign: plain member (no elevated role) → 403
@@ -99,7 +97,7 @@ func TestDeptMembershipAssign_PlainMember_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, rc)
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // Assign: malformed JSON body → 400
@@ -110,7 +108,7 @@ func TestDeptMembershipAssign_MalformedBody_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{bad`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // Assign: service returns error (department not active) → 422
@@ -153,7 +151,7 @@ func TestDeptMembershipList_BadTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad-uuid", "dept_id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // List: missing identity → 401
@@ -162,7 +160,7 @@ func TestDeptMembershipList_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", nil)
 	setParams(c, "id", uuid.New().String(), "dept_id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // List: service error → 500
@@ -197,7 +195,7 @@ func TestDeptActivate_MissingIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, nil)
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // Activate: idempotent replay → 200 (wasCreated=false path)
@@ -238,7 +236,7 @@ func TestDeptPatch_BadDeptID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", body, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", "not-a-uuid")
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Patch: missing identity → 401
@@ -249,7 +247,7 @@ func TestDeptPatch_MissingIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", body, nil)
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // Patch: cross-tenant → 403
@@ -265,7 +263,7 @@ func TestDeptPatch_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", body, rc)
 	setParams(c, "id", pathTenant.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // Patch: non-admin caller → 403 (AUTH-2: tender_admin not sufficient for patch)
@@ -281,7 +279,7 @@ func TestDeptPatch_TenderAdmin_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", body, rc)
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -311,7 +309,7 @@ func TestRoleLabelList_BadTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // List: missing identity → 401
@@ -320,7 +318,7 @@ func TestRoleLabelList_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", nil)
 	setParams(c, "id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -455,7 +453,7 @@ func TestRequireActiveMembership_DBError_FallsThrough(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-// RequireActiveMembership: member not found (no row) → 403 insufficient_role
+// RequireActiveMembership: member not found (no row) → 403 forbidden
 func TestRequireActiveMembership_MemberNotFound_403(t *testing.T) {
 	tenantID := uuid.New()
 	rc := &requestctx.RequestContext{
@@ -466,56 +464,5 @@ func TestRequireActiveMembership_MemberNotFound_403(t *testing.T) {
 	mw := RequireActiveMembership(&noMemRepo{})
 	c, w := buildCtx(http.MethodGet, "/", "", rc)
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// bufferedWriter.Status — status==0 path (66.7% → 100%)
-// ═════════════════════════════════════════════════════════════════════════════
-
-// Status: when status is 0, delegates to the embedded ResponseWriter.Status()
-// (which returns 200 from gin's CreateTestContext recorder).
-func TestBufferedWriter_Status_WhenZero_DelegatesToEmbedded(t *testing.T) {
-	bw := newBufferedWriter(t)
-	// bw.status == 0, so it should delegate to the embedded writer's Status()
-	// gin.ResponseWriter returns 200 by default
-	got := bw.Status()
-	assert.Equal(t, http.StatusOK, got,
-		"when internal status is 0, Status() must delegate to embedded writer")
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// newErrorResponse — nil context and request-ID header paths (66.7% → 100%)
-// ═════════════════════════════════════════════════════════════════════════════
-
-// newErrorResponse(nil, ...): nil context → no trace_id / request_id enrichment
-func TestNewErrorResponse_NilContext_Succeeds(t *testing.T) {
-	er := newErrorResponse(nil, "test_code", "test message", nil)
-	assert.Equal(t, "test_code", er.Code)
-	assert.Equal(t, "test_code", er.Error)
-	assert.Equal(t, "test message", er.Message)
-	assert.Empty(t, er.TraceID, "nil context → no trace_id")
-	assert.Empty(t, er.RequestID, "nil context → no request_id")
-}
-
-// newErrorResponse: c != nil with x-request-id header set → RequestID populated
-// from the c.GetHeader(gincommon.HeaderRequestID) branch.
-func TestNewErrorResponse_WithRequestIDHeader_PopulatesRequestID(t *testing.T) {
-	c, _ := buildCtx(http.MethodGet, "/", "", nil)
-	// Set the x-request-id header directly on the request — gincommon.HeaderRequestID = "x-request-id"
-	c.Request.Header.Set("x-request-id", "test-req-id-123")
-	er := newErrorResponse(c, "test_code", "msg", nil)
-	assert.Equal(t, "test-req-id-123", er.RequestID, "x-request-id header must populate RequestID")
-}
-
-// newErrorResponse: c != nil with X-Request-ID response header set → RequestID populated
-// from the c.Writer.Header().Get(gincommon.HeaderRequestIDResponse) branch.
-func TestNewErrorResponse_WithResponseRequestIDHeader_PopulatesRequestID(t *testing.T) {
-	c, _ := buildCtx(http.MethodGet, "/", "", nil)
-	// No request header — set the response header instead.
-	// gincommon.HeaderRequestIDResponse = "X-Request-ID"
-	c.Writer.Header().Set("X-Request-ID", "resp-req-id-456")
-	er := newErrorResponse(c, "test_code", "msg", nil)
-	assert.Equal(t, "resp-req-id-456", er.RequestID,
-		"X-Request-ID response header must populate RequestID when request header is absent")
+	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
 }

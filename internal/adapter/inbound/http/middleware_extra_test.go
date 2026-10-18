@@ -59,7 +59,7 @@ func TestP11MW002_OperatorGate_RejectsTenantOwner(t *testing.T) {
 	assert.True(t, c.IsAborted(), "non-operator must abort")
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "insufficient_role", body["code"])
+	assert.Equal(t, "FORBIDDEN", body["errorCode"])
 }
 
 // Test Case ID:      P11-MW-003
@@ -108,61 +108,61 @@ func TestP11MW010_AllSentinelsMapToCorrectStatus(t *testing.T) {
 		expectCode   string
 	}{
 		// 400 Bad Request
-		{"validation → 400", domain.ErrValidation, http.StatusBadRequest, "validation_error"},
-		{"no_mutable_field → 400", domain.ErrNoMutableField, http.StatusBadRequest, "no_mutable_field"},
+		{"validation → 400", domain.ErrValidation, http.StatusBadRequest, "VALIDATION_ERROR"},
+		{"no_mutable_field → 400", domain.ErrNoMutableField, http.StatusBadRequest, "NO_MUTABLE_FIELD"},
 
 		// 401 Unauthorized
-		{"missing_identity → 401", domain.ErrMissingIdentity, http.StatusUnauthorized, "missing_identity_headers"},
+		{"missing_identity → 401", domain.ErrMissingIdentity, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS"},
 
 		// 403 Forbidden
-		{"insufficient_role → 403", domain.ErrInsufficientRole, http.StatusForbidden, "insufficient_role"},
-		{"cannot_remove_owner → 403", domain.ErrCannotRemoveOwner, http.StatusForbidden, "cannot_remove_owner"},
+		{"insufficient_role → 403", domain.ErrInsufficientRole, http.StatusForbidden, "INSUFFICIENT_ROLE"},
+		{"cannot_remove_owner → 403", domain.ErrCannotRemoveOwner, http.StatusForbidden, "CANNOT_REMOVE_OWNER"},
 
 		// 404 Not Found
-		{"tenant_not_found → 404", domain.ErrTenantNotFound, http.StatusNotFound, "tenant_not_found"},
-		{"member_not_found → 404", domain.ErrMemberNotFound, http.StatusNotFound, "member_not_found"},
-		{"department_not_found → 404", domain.ErrDepartmentNotFound, http.StatusNotFound, "department_not_found"},
-		{"invitation_not_found → 404", domain.ErrInvitationNotFound, http.StatusNotFound, "invitation_not_found"},
+		{"tenant_not_found → 404", domain.ErrTenantNotFound, http.StatusNotFound, "TENANT_NOT_FOUND"},
+		{"member_not_found → 404", domain.ErrMemberNotFound, http.StatusNotFound, "MEMBER_NOT_FOUND"},
+		{"department_not_found → 404", domain.ErrDepartmentNotFound, http.StatusNotFound, "DEPARTMENT_NOT_FOUND"},
+		{"invitation_not_found → 404", domain.ErrInvitationNotFound, http.StatusNotFound, "INVITATION_NOT_FOUND"},
 
 		// 409 Conflict
-		{"optimistic_lock → 409", domain.ErrOptimisticLockConflict, http.StatusConflict, "optimistic_lock_conflict"},
-		{"conflict → 409", domain.ErrConflict, http.StatusConflict, "conflict"},
-		{"slug_taken → 409", domain.ErrSlugAlreadyTaken, http.StatusConflict, "slug_already_taken"},
-		{"member_already_exists → 409", domain.ErrMemberAlreadyExists, http.StatusConflict, "member_already_exists"},
-		{"dept_membership_exists → 409", domain.ErrDeptMembershipAlreadyExists, http.StatusConflict, "dept_membership_already_exists"},
-		{"workflow_resolution_required → 409", domain.ErrWorkflowResolutionRequired, http.StatusConflict, "workflow_resolution_required"},
-		{"seat_limit → 409", domain.ErrSeatLimitReached, http.StatusConflict, "seat_limit_reached"},
-		{"invitation_already_exists → 409", domain.ErrInvitationAlreadyExists, http.StatusConflict, "invitation_already_exists"},
-		{"tenant_offboarded → 409", domain.ErrTenantOffboarded, http.StatusConflict, "tenant_offboarded"},
-		{"dept_already_activated → 409", domain.ErrDepartmentAlreadyActivated, http.StatusConflict, "department_already_activated"},
-		{"role_already_granted → 409", domain.ErrRoleAlreadyGranted, http.StatusConflict, "role_already_granted"},
+		{"optimistic_lock → 409", domain.ErrOptimisticLockConflict, http.StatusConflict, "OPTIMISTIC_LOCK_CONFLICT"},
+		{"conflict → 409", domain.ErrConflict, http.StatusConflict, "CONFLICT"},
+		{"slug_taken → 409", domain.ErrSlugAlreadyTaken, http.StatusConflict, "SLUG_ALREADY_TAKEN"},
+		{"member_already_exists → 409", domain.ErrMemberAlreadyExists, http.StatusConflict, "MEMBER_ALREADY_EXISTS"},
+		{"dept_membership_exists → 409", domain.ErrDeptMembershipAlreadyExists, http.StatusConflict, "DEPT_MEMBERSHIP_ALREADY_EXISTS"},
+		{"workflow_resolution_required → 409", domain.ErrWorkflowResolutionRequired, http.StatusConflict, "WORKFLOW_RESOLUTION_REQUIRED"},
+		{"seat_limit → 409", domain.ErrSeatLimitReached, http.StatusConflict, "SEAT_LIMIT_REACHED"},
+		{"invitation_already_exists → 409", domain.ErrInvitationAlreadyExists, http.StatusConflict, "INVITATION_ALREADY_EXISTS"},
+		{"tenant_offboarded → 409", domain.ErrTenantOffboarded, http.StatusConflict, "TENANT_OFFBOARDED"},
+		{"dept_already_activated → 409", domain.ErrDepartmentAlreadyActivated, http.StatusConflict, "DEPARTMENT_ALREADY_ACTIVATED"},
+		{"role_already_granted → 409", domain.ErrRoleAlreadyGranted, http.StatusConflict, "ROLE_ALREADY_GRANTED"},
 
 		// 422 Unprocessable Entity (default bucket)
-		{"cannot_delete_system → 422", domain.ErrCannotDeleteSystemDepartment, http.StatusUnprocessableEntity, "cannot_delete_system_department"},
-		{"dept_not_active → 422", domain.ErrDepartmentNotActiveForTenant, http.StatusUnprocessableEntity, "department_not_active_for_tenant"},
-		{"dept_retired → 422", domain.ErrDepartmentRetired, http.StatusUnprocessableEntity, "department_retired"},
-		{"dept_deactivated → 422", domain.ErrDepartmentDeactivated, http.StatusUnprocessableEntity, "department_deactivated"},
-		{"invalid_replacement → 422", domain.ErrInvalidReplacement, http.StatusUnprocessableEntity, "invalid_replacement"},
-		{"invalid_owner_candidate → 422", domain.ErrInvalidOwnerCandidate, http.StatusUnprocessableEntity, "invalid_owner_candidate"},
-		{"invalid_role → 422", domain.ErrInvalidRole, http.StatusUnprocessableEntity, "invalid_role"},
-		{"assignee_ineligible → 422", domain.ErrAssigneeIneligible, http.StatusUnprocessableEntity, "assignee_ineligible"},
-		{"field_immutable → 422", domain.ErrFieldImmutable, http.StatusUnprocessableEntity, "field_immutable"},
-		{"system_name_immutable → 422", domain.ErrSystemNameImmutable, http.StatusUnprocessableEntity, "system_name_immutable"},
-		{"system_dept_no_retire → 422", domain.ErrSystemDepartmentCannotBeRetired, http.StatusUnprocessableEntity, "system_department_cannot_be_retired"},
-		{"last_owner_removal → 422", domain.ErrLastOwnerRemoval, http.StatusUnprocessableEntity, "last_owner_removal"},
+		{"cannot_delete_system → 422", domain.ErrCannotDeleteSystemDepartment, http.StatusUnprocessableEntity, "CANNOT_DELETE_SYSTEM_DEPARTMENT"},
+		{"dept_not_active → 422", domain.ErrDepartmentNotActiveForTenant, http.StatusUnprocessableEntity, "DEPARTMENT_NOT_ACTIVE_FOR_TENANT"},
+		{"dept_retired → 422", domain.ErrDepartmentRetired, http.StatusUnprocessableEntity, "DEPARTMENT_RETIRED"},
+		{"dept_deactivated → 422", domain.ErrDepartmentDeactivated, http.StatusUnprocessableEntity, "DEPARTMENT_DEACTIVATED"},
+		{"invalid_replacement → 422", domain.ErrInvalidReplacement, http.StatusUnprocessableEntity, "INVALID_REPLACEMENT"},
+		{"invalid_owner_candidate → 422", domain.ErrInvalidOwnerCandidate, http.StatusUnprocessableEntity, "INVALID_OWNER_CANDIDATE"},
+		{"invalid_role → 422", domain.ErrInvalidRole, http.StatusUnprocessableEntity, "INVALID_ROLE"},
+		{"assignee_ineligible → 422", domain.ErrAssigneeIneligible, http.StatusUnprocessableEntity, "ASSIGNEE_INELIGIBLE"},
+		{"field_immutable → 422", domain.ErrFieldImmutable, http.StatusUnprocessableEntity, "FIELD_IMMUTABLE"},
+		{"system_name_immutable → 422", domain.ErrSystemNameImmutable, http.StatusUnprocessableEntity, "SYSTEM_NAME_IMMUTABLE"},
+		{"system_dept_no_retire → 422", domain.ErrSystemDepartmentCannotBeRetired, http.StatusUnprocessableEntity, "SYSTEM_DEPARTMENT_CANNOT_BE_RETIRED"},
+		{"last_owner_removal → 422", domain.ErrLastOwnerRemoval, http.StatusUnprocessableEntity, "LAST_OWNER_REMOVAL"},
 
 		// 429 Too Many Requests
-		{"reinvite_too_soon → 429", domain.ErrReinviteTooSoon, http.StatusTooManyRequests, "reinvite_too_soon"},
-		{"invite_rate_limited → 429", domain.ErrInviteRateLimited, http.StatusTooManyRequests, "invite_rate_limited"},
+		{"reinvite_too_soon → 429", domain.ErrReinviteTooSoon, http.StatusTooManyRequests, "REINVITE_TOO_SOON"},
+		{"invite_rate_limited → 429", domain.ErrInviteRateLimited, http.StatusTooManyRequests, "INVITE_RATE_LIMITED"},
 
 		// 503 Service Unavailable
-		{"db_unavailable → 503", domain.ErrDBUnavailable, http.StatusServiceUnavailable, "db_unavailable"},
-		{"cache_unavailable → 503", domain.ErrCacheUnavailable, http.StatusServiceUnavailable, "cache_unavailable"},
-		{"workflow_service_unavailable → 503", domain.ErrWorkflowServiceUnavailable, http.StatusServiceUnavailable, "workflow_service_unavailable"},
-		{"realm_provisioner_unavailable → 503", domain.ErrRealmProvisionerUnavailable, http.StatusServiceUnavailable, "realm_provisioner_unavailable"},
-		{"catalog_unavailable → 503", domain.ErrCatalogUnavailable, http.StatusServiceUnavailable, "catalog_unavailable"},
-		{"group_mapping_unavailable → 503", domain.ErrGroupMappingUnavailable, http.StatusServiceUnavailable, "group_mapping_unavailable"},
-		{"dependency_unavailable → 503", domain.ErrDependencyUnavailable, http.StatusServiceUnavailable, "dependency_unavailable"},
+		{"db_unavailable → 503", domain.ErrDBUnavailable, http.StatusServiceUnavailable, "DB_UNAVAILABLE"},
+		{"cache_unavailable → 503", domain.ErrCacheUnavailable, http.StatusServiceUnavailable, "CACHE_UNAVAILABLE"},
+		{"workflow_service_unavailable → 503", domain.ErrWorkflowServiceUnavailable, http.StatusServiceUnavailable, "WORKFLOW_SERVICE_UNAVAILABLE"},
+		{"realm_provisioner_unavailable → 503", domain.ErrRealmProvisionerUnavailable, http.StatusServiceUnavailable, "REALM_PROVISIONER_UNAVAILABLE"},
+		{"catalog_unavailable → 503", domain.ErrCatalogUnavailable, http.StatusServiceUnavailable, "CATALOG_UNAVAILABLE"},
+		{"group_mapping_unavailable → 503", domain.ErrGroupMappingUnavailable, http.StatusServiceUnavailable, "GROUP_MAPPING_UNAVAILABLE"},
+		{"dependency_unavailable → 503", domain.ErrDependencyUnavailable, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,7 +170,7 @@ func TestP11MW010_AllSentinelsMapToCorrectStatus(t *testing.T) {
 			HandleError(c, domain.NewError(tc.err, "test"))
 			assert.Equal(t, tc.expectStatus, w.Code, "wrong HTTP status")
 			body := decodeBody(t, w)
-			assert.Equal(t, tc.expectCode, body["code"], "wrong error code")
+			assert.Equal(t, tc.expectCode, body["errorCode"], "wrong error code")
 		})
 	}
 	assert.GreaterOrEqual(t, len(cases), 40,
@@ -190,7 +190,7 @@ func TestP11MW020_OptimisticLockDetailsMerged(t *testing.T) {
 		WithDetails(map[string]any{"record_version": int64(7)}))
 	assert.Equal(t, http.StatusConflict, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "optimistic_lock_conflict", body["code"])
+	assert.Equal(t, "OPTIMISTIC_LOCK_CONFLICT", body["errorCode"])
 	// record_version was int64(7), but JSON unmarshal yields float64.
 	rv, ok := body["record_version"].(float64)
 	require.True(t, ok, "record_version must be surfaced")
@@ -209,7 +209,7 @@ func TestP11MW021_WorkflowResolutionDetailsMerged(t *testing.T) {
 		}))
 	assert.Equal(t, http.StatusConflict, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "workflow_resolution_required", body["code"])
+	assert.Equal(t, "WORKFLOW_RESOLUTION_REQUIRED", body["errorCode"])
 	assert.Equal(t, float64(3), body["active_workflows"])
 	actions, _ := body["allowed_actions"].([]any)
 	require.Len(t, actions, 2)
@@ -228,7 +228,7 @@ func TestP11MW022_SeatLimitDetailsMerged(t *testing.T) {
 		}))
 	assert.Equal(t, http.StatusConflict, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "seat_limit_reached", body["code"])
+	assert.Equal(t, "SEAT_LIMIT_REACHED", body["errorCode"])
 	assert.Equal(t, float64(10), body["licensed_seats"])
 }
 
@@ -257,8 +257,8 @@ func TestCD31_SeatLimitReached_CodeStringPinned(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, w.Code,
 		"ErrSeatLimitReached must map to 409 Conflict")
 	body := decodeBody(t, w)
-	assert.Equal(t, "seat_limit_reached", body["code"],
-		"409 body.code must be 'seat_limit_reached' (CD-31 RFC-9457 migration pin)")
+	assert.Equal(t, "SEAT_LIMIT_REACHED", body["errorCode"],
+		"409 body.errorCode must be 'SEAT_LIMIT_REACHED' (CD-31 RFC-9457 migration pin)")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -273,7 +273,7 @@ func TestP11MW030_NonDomainError500(t *testing.T) {
 	HandleError(c, assertionError("boom"))
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "internal_error", body["code"])
+	assert.Equal(t, "INTERNAL_ERROR", body["errorCode"])
 }
 
 // assertionError implements the error interface for the 500-path test.

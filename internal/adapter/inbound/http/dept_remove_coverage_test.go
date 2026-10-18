@@ -170,7 +170,7 @@ func TestDeptRemove_MemberNotInDept_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ── P11-BL-04: workflow error → fail-open → 200 ───────────────────────────────
@@ -226,7 +226,7 @@ func TestDeptRemove_ActiveDelegate_409(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "workflow_resolution_required")
+	assertErrorCode(t, w, http.StatusConflict, "WORKFLOW_RESOLUTION_REQUIRED")
 }
 
 // ── P11-DEP-01: workflow timeout → fail-open → 200 ───────────────────────────
@@ -257,7 +257,7 @@ func TestDeptRemove_NoIdentity_401(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", nil)
 	setParams(c, "id", uuid.New().String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ── P11-AUTH-02: plain member → 403 ──────────────────────────────────────────
@@ -269,7 +269,7 @@ func TestDeptRemove_PlainMember_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", plainMemberCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P11-AUTH-03: tender_admin → 403 ──────────────────────────────────────────
@@ -282,7 +282,7 @@ func TestDeptRemove_TenderAdmin_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", rc)
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P11-SEC-01: cross-tenant → 403 ───────────────────────────────────────────
@@ -295,7 +295,7 @@ func TestDeptRemove_CrossTenant_403(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", rc)
 	setParams(c, "id", pathTenant.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P11-VAL-01: bad dept_id → 400 ────────────────────────────────────────────
@@ -307,7 +307,7 @@ func TestDeptRemove_InvalidDeptID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", "bad-uuid", "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P11-VAL-02: bad tenant_id → 400 ──────────────────────────────────────────
@@ -318,7 +318,7 @@ func TestDeptRemove_InvalidTenantID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad-tenant", "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P11-VAL-03: bad user_id → 400 ────────────────────────────────────────────
@@ -330,7 +330,7 @@ func TestDeptRemove_InvalidUserID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", "", tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", "bad-uid")
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── P11-EVT-01: remove → DeptMembershipRevoked event emitted → 200 ───────────
@@ -369,5 +369,5 @@ func TestDeptRemove_AlreadyRemoved_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }

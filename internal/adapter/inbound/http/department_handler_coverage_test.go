@@ -19,7 +19,7 @@ func TestDeptActivate_InvalidTenantID_400(t *testing.T) {
 	setParams(c, "id", "not-a-uuid")
 	h.Activate(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P24-A-05: no identity in context → 401 missing_identity_headers.
@@ -30,7 +30,7 @@ func TestDeptActivate_NoIdentity_401(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
 
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // P24-A-06: cross-tenant caller → 403 insufficient_role.
@@ -42,7 +42,7 @@ func TestDeptActivate_CrossTenant_403(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P25-M-03: malformed tenant id path param on Patch → 400 invalid_uuid.
@@ -52,7 +52,7 @@ func TestDeptPatch_InvalidTenantID_400(t *testing.T) {
 	setParams(c, "id", "not-a-uuid", "dept_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P25-A-05: no identity in context on Patch → 401 missing_identity_headers.
@@ -63,7 +63,7 @@ func TestDeptPatch_NoIdentity_401(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // P25-M-04: malformed JSON body on Patch → 400 validation_error.
@@ -74,5 +74,5 @@ func TestDeptPatch_MalformedBody_400(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }

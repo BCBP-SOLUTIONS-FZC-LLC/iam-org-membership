@@ -120,19 +120,24 @@ The only route in this service with no authentication. It's registered directly 
 
 ## Input validation
 
-Domain-rule failures are raised as a `*domain.DomainError` wrapping one of the sentinel error values in `internal/core/domain/errors.go`; `HandleError` (`internal/adapter/inbound/http/middleware.go`) maps `DomainError.Code` to a frozen HTTP status. A raw `*pgconn.PgError` that escapes the repository layer untranslated is classified with platform-pgcommon's SQLSTATE helpers — `IsConnectionException`/`IsInsufficientResources`/`IsOperatorIntervention`/`IsSystemError`/`IsPoolClosed` → `503 db_unavailable`, `IsQueryCanceled`/`IsLockNotAvailable` → `503 request_timeout`, `IsDeadlock`/`IsSerializationFailure` → `409 conflict` (`concurrent_update`); anything else falls back to `500 internal_error` and is logged.
+Domain-rule failures are raised as a `*domain.DomainError` wrapping one of the sentinel error values in `internal/core/domain/errors.go`; `HandleError` (`internal/adapter/inbound/http/middleware.go`) maps each sentinel to an RFC 9457 `application/problem+json` response via `platform-gincommon v2`. The `errorCode` field carries the domain-specific UPPER_SNAKE code (e.g. `"TENANT_NOT_FOUND"`, `"SEAT_LIMIT_REACHED"`) — never the platform type's generic default. Domain errors that carry structured context (`active_workflows`, `licensed_seats`, `record_version`, `retry_after_seconds`) include those as RFC 9457 §3.1 extension members alongside the standard envelope. A raw `*pgconn.PgError` that escapes the repository layer untranslated is classified with platform-pgcommon's SQLSTATE helpers — `IsConnectionException`/`IsInsufficientResources`/`IsOperatorIntervention`/`IsSystemError`/`IsPoolClosed` → `503 DB_UNAVAILABLE`, `IsQueryCanceled`/`IsLockNotAvailable` → `503 REQUEST_TIMEOUT`, `IsDeadlock`/`IsSerializationFailure` → `409 CONFLICT`; anything else falls back to `500 INTERNAL_ERROR`.
 
 ```json
 {
-  "error": "seat_limit_reached",
+  "type": "https://errors.company.com/platform/conflict",
+  "title": "Conflict",
   "status": 409,
+  "detail": "Seat limit reached — upgrade your plan or remove a member.",
+  "errorCode": "SEAT_LIMIT_REACHED",
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "timestamp": "2026-10-18T10:45:22Z",
   "licensed_seats": 10,
   "active_users": 9,
   "pending_invitations": 1
 }
 ```
 
-`DomainError.Details` merges into the flat envelope at the top level (`record_version`, `active_workflows`, `workflow_ids`, `allowed_actions`, `licensed_seats`, `retry_after_seconds`, ...) rather than a nested `details` object.
+`DomainError.Details` are merged as RFC 9457 §3.1 extension members alongside the standard envelope fields (`record_version`, `active_workflows`, `workflow_ids`, `allowed_actions`, `licensed_seats`, `retry_after_seconds`, ...) — not in a nested `details` object.
 
 ### Notable validation rules
 
