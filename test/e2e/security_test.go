@@ -289,7 +289,7 @@ func TestFabricatedRecordVersionOnPatch(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusConflict, code,
 		"P14-TAMPER-001: fabricated record_version must trigger optimistic-lock 409 (got %d body=%s)", code, string(body))
-	assert.Contains(t, string(body), "optimistic_lock_conflict",
+	assert.Contains(t, string(body), "OPTIMISTIC_LOCK_CONFLICT",
 		"P14-TAMPER-001: error code must indicate optimistic-lock conflict")
 }
 
