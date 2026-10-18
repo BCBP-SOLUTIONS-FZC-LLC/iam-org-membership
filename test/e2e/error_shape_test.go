@@ -128,7 +128,7 @@ func TestPublicResolveInvalidIdentifierShape(t *testing.T) {
 
 	var envelope map[string]any
 	unmarshalBody(t, body, &envelope)
-	assert.Equal(t, "BAD_REQUEST", envelope["errorCode"])
+	assert.Equal(t, "VALIDATION_ERROR", envelope["errorCode"])
 	assert.NotEmpty(t, envelope["detail"])
 	assert.NotEmpty(t, envelope["traceId"], "RFC 9457 problem body must carry traceId")
 	assert.NotEmpty(t, envelope["type"], "RFC 9457 problem body must carry type URI")
