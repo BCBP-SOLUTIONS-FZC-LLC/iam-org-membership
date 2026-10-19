@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 )
 
 type fakeResolver struct {
@@ -105,7 +105,7 @@ func TestPUB1_Handler_DBUnavailable_503(t *testing.T) {
 	f := &fakeResolver{err: domain.NewError(domain.ErrDBUnavailable, "db down")}
 	w, body := doPublic(t, publicRouter(f), "?identifier=acme")
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Equal(t, "db_unavailable", body["code"])
+	assert.Equal(t, "DB_UNAVAILABLE", body["errorCode"])
 }
 
 func TestPUB1_Router_NilHandler_NotRegistered(t *testing.T) {

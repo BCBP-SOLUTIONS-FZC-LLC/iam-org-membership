@@ -1,16 +1,15 @@
 //go:build e2e
 
 // Phase 13 · error-envelope shape. Verifies the §17 error taxonomy is
-// preserved end-to-end when a real HTTP request produces:
+// preserved end-to-end when a real HTTP request produces an RFC 9457
+// application/problem+json response:
 //
-//   - P13-ERR-001: 404 for unknown tenant → {error, code, message, status}.
+//   - P13-ERR-001: 404 for unknown tenant → {type, title, status, errorCode, detail}.
 //   - P13-ERR-002: 422 for invalid UUID path param.
 //   - P13-ERR-003: 400 for malformed JSON body.
 //   - P13-ERR-004: 403 for cross-tenant read (tenant-ID mismatch).
 //
-// The error body shape mirrors sibling iam-user-profile2 (see dto.go
-// ErrorResponse struct). Both `error` and `code` fields must be populated
-// — `code` is the legacy alias kept for backwards compatibility.
+// All error responses follow RFC 9457 Problem Details (platform-gincommon).
 package e2e_test
 
 import (
@@ -25,7 +24,7 @@ import (
 // ── P13-ERR-001 ─────────────────────────────────────────────────────────────
 
 // TestUnknownTenantReturnsShapedError — GET on a tenant UUID
-// that doesn't exist must return 404 with the canonical error envelope.
+// that doesn't exist must return 404 with the RFC 9457 problem envelope.
 func TestUnknownTenantReturnsShapedError(t *testing.T) {
 	e := newE2EEnv(t)
 	tenantID := e.seedTenant(t, "err-001-existing")
@@ -47,14 +46,16 @@ func TestUnknownTenantReturnsShapedError(t *testing.T) {
 
 	// RLS + service layer → not_found. Either 404 or 403 is acceptable
 	// depending on whether the auth check runs before the fetch; assert
-	// on the envelope shape either way.
+	// on the RFC 9457 envelope shape either way.
 	assert.Contains(t, []int{http.StatusNotFound, http.StatusForbidden}, code,
 		"P13-ERR-001: unknown tenant must yield 404/403 (got %d)", code)
 
 	var envelope map[string]any
 	unmarshalBody(t, body, &envelope)
-	assert.NotEmpty(t, envelope["code"], "P13-ERR-001: error body must carry `code`")
-	assert.NotEmpty(t, envelope["message"], "P13-ERR-001: error body must carry `message`")
+	assert.NotEmpty(t, envelope["errorCode"], "P13-ERR-001: problem body must carry `errorCode`")
+	assert.NotEmpty(t, envelope["detail"], "P13-ERR-001: problem body must carry `detail`")
+	assert.NotEmpty(t, envelope["type"], "P13-ERR-001: problem body must carry RFC 9457 `type`")
+	assert.NotEmpty(t, envelope["title"], "P13-ERR-001: problem body must carry RFC 9457 `title`")
 }
 
 // ── P13-ERR-002 ─────────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ func TestInvalidUUIDParam(t *testing.T) {
 
 	var envelope map[string]any
 	unmarshalBody(t, body, &envelope)
-	assert.NotEmpty(t, envelope["code"], "error envelope must carry code")
+	assert.NotEmpty(t, envelope["errorCode"], "RFC 9457 problem body must carry errorCode")
 }
 
 // ── P13-ERR-003 ─────────────────────────────────────────────────────────────
@@ -95,8 +96,8 @@ func TestMalformedJSONBody(t *testing.T) {
 
 	var envelope map[string]any
 	unmarshalBody(t, body, &envelope)
-	assert.NotEmpty(t, envelope["code"], "P13-ERR-003: error envelope must carry code")
-	assert.NotEmpty(t, envelope["message"], "P13-ERR-003: error envelope must carry message")
+	assert.NotEmpty(t, envelope["errorCode"], "P13-ERR-003: RFC 9457 problem body must carry errorCode")
+	assert.NotEmpty(t, envelope["detail"], "P13-ERR-003: RFC 9457 problem body must carry detail")
 }
 
 // ── P13-ERR-004 ─────────────────────────────────────────────────────────────
@@ -118,9 +119,8 @@ func TestCrossTenantForbidden(t *testing.T) {
 		"P13-ERR-004: cross-tenant read must be 403 (got %d body=%s)", code, string(body))
 }
 
-// TestPublicResolveInvalidIdentifierShape: PUB-1's 400 uses the same error
-// envelope as every other 400 here, including request_id/trace_id, even
-// though the route runs with no auth middleware at all.
+// TestPublicResolveInvalidIdentifierShape: PUB-1's 400 returns an RFC 9457
+// problem envelope even though the route runs with no auth middleware at all.
 func TestPublicResolveInvalidIdentifierShape(t *testing.T) {
 	e := newE2EEnv(t)
 	code, _, body := e.do(t, reqOpts{method: http.MethodGet, path: "/api/v1/public/tenants/resolve?identifier="})
@@ -128,8 +128,8 @@ func TestPublicResolveInvalidIdentifierShape(t *testing.T) {
 
 	var envelope map[string]any
 	unmarshalBody(t, body, &envelope)
-	assert.Equal(t, "invalid_identifier", envelope["code"])
-	assert.NotEmpty(t, envelope["message"])
-	assert.NotEmpty(t, envelope["request_id"], "error body must carry request_id")
-	assert.NotEmpty(t, envelope["trace_id"], "error body must carry trace_id")
+	assert.Equal(t, "VALIDATION_ERROR", envelope["errorCode"])
+	assert.NotEmpty(t, envelope["detail"])
+	assert.NotEmpty(t, envelope["traceId"], "RFC 9457 problem body must carry traceId")
+	assert.NotEmpty(t, envelope["type"], "RFC 9457 problem body must carry type URI")
 }

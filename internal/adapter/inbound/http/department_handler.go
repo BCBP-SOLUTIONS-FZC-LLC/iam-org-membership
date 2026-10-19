@@ -6,6 +6,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -28,8 +29,8 @@ func NewDepartmentHandler(svc *service.DepartmentService) *DepartmentHandler {
 // @Produce      json
 // @Param        id   path      string                  true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  DepartmentListResponse
-// @Failure      403  {object}  ErrorResponse
-// @Failure      404  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
+// @Failure      404  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -80,9 +81,9 @@ func (h *DepartmentHandler) List(c *gin.Context) {
 // @Param        id       path      string                             true  "Tenant UUID"  format(uuid)
 // @Param        request  body      object{department_id=string}       true  "Catalog department UUID"
 // @Success      201      {object}  TenantDepartmentActivatedResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse  "AUTH-1..8 gate failed"
-// @Failure      404      {object}  ErrorResponse
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse  "AUTH-1..8 gate failed"
+// @Failure      404      {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -109,7 +110,7 @@ func (h *DepartmentHandler) Activate(c *gin.Context) {
 	var body struct {
 		DepartmentID uuid.UUID `json:"department_id"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.DepartmentID == uuid.Nil {
+	if err := gincommon.ShouldBindJSON(c, &body); err != nil || body.DepartmentID == uuid.Nil {
 		HandleError(c, domain.NewError(domain.ErrValidation, "department_id is required").
 			WithDetails(map[string]any{"code": "invalid_uuid"}))
 		return
@@ -143,10 +144,10 @@ func (h *DepartmentHandler) Activate(c *gin.Context) {
 // @Param        dept_id  path      string                        true  "Department UUID" format(uuid)
 // @Param        request  body      TenantDepartmentPatchRequest  true  "Toggle payload"
 // @Success      200      {object}  TenantDepartmentActivatedResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      409      {object}  ErrorResponse  "record_version mismatch (CONC-4)"
-// @Failure      422      {object}  ErrorResponse  "system_department_cannot_be_retired"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      409      {object}  ProblemResponse  "record_version mismatch (CONC-4)"
+// @Failure      422      {object}  ProblemResponse  "system_department_cannot_be_retired"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -177,8 +178,8 @@ func (h *DepartmentHandler) Patch(c *gin.Context) {
 		return
 	}
 	var req TenantDepartmentPatchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	if req.IsActive == nil {

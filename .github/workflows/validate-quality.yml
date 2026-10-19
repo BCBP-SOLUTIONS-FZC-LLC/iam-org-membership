@@ -1,7 +1,9 @@
 # Reusable workflow — quality gate.
-# fmt · tidy · vet · lint (golangci-lint) · vuln-check.
+# fmt · tidy · vet · lint (golangci-lint) · vuln-check · Helm (lint + template + kubeconform).
 # Called by ci.yml and release.yml. Must pass before push/release; does NOT
 # gate coverage, trivy, or smoke (those only need validate-test.yml).
+# Helm validation runs inline here (not as a separate job) to keep the parallel
+# job count flat — mirrors iam-user-profile's approach.
 name: Validate / Quality
 
 "on":
@@ -23,17 +25,17 @@ jobs:
   quality:
     name: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
           token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
 
       - name: Set up Go
-        uses: actions/setup-go@v6.5.0
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |
@@ -174,3 +176,23 @@ jobs:
             exit 1
           fi
           echo "Dockerfile base images are digest-pinned."
+
+      # Helm lint (--strict) + helm template × 4 values combos + kubeconform.
+      # Runs inline here (same job as the Go quality checks) so there is no
+      # extra parallel job slot — mirrors iam-user-profile's flat job count.
+      #
+      # Values combinations exercised:
+      #   base only | base+values-dev.yaml | base+values-staging.yaml | base+values-prod.yaml
+      #
+      # kubeconform validates standard K8s resources (K8s 1.31.0 schemas).
+      # CRD kinds (ServiceMonitor, PrometheusRule, HTTPRoute, SecurityPolicy,
+      # AuthorizationPolicy) are skipped via -ignore-missing-schemas — see
+      # .github/scripts/helm-check.sh for the full rationale.
+      - name: Cache helm + kubeconform binaries
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/go/bin
+          key: helm-check-tools-${{ runner.os }}-helm3.16.3-kubeconform0.6.7
+
+      - name: Helm lint + template + kubeconform
+        run: bash .github/scripts/helm-check.sh

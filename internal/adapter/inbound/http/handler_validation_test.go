@@ -95,8 +95,8 @@ func setParams(c *gin.Context, kvs ...string) {
 	}
 }
 
-// assertErrorCode extracts the `code` from a JSON error body and asserts
-// it matches. Also verifies the HTTP status.
+// assertErrorCode extracts the RFC 9457 `errorCode` from a problem+json body
+// and asserts it matches wantCode. Also verifies the HTTP status.
 func assertErrorCode(t *testing.T, w *httptest.ResponseRecorder, wantStatus int, wantCode string) {
 	t.Helper()
 	assert.Equal(t, wantStatus, w.Code, "http status")
@@ -105,7 +105,7 @@ func assertErrorCode(t *testing.T, w *httptest.ResponseRecorder, wantStatus int,
 	}
 	var body map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err == nil {
-		assert.Equal(t, wantCode, body["code"], "error code in body")
+		assert.Equal(t, wantCode, body["errorCode"], "RFC 9457 errorCode in body")
 	}
 }
 
@@ -117,7 +117,7 @@ func TestProvisionTenant_MalformedJSON(t *testing.T) {
 	h := &InternalHandler{} // nil svc — validation must fail before service
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", `{"slug":`, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 func TestProvisionTenant_EmptyBody(t *testing.T) {
@@ -144,7 +144,7 @@ func TestProvisionTenant_InvalidTenantIDString(t *testing.T) {
 	body := `{"tenant_id":"not-a-uuid","slug":"acme","name":"Acme","plan":"starter","owner_user_id":"22222222-2222-2222-2222-222222222222"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // I1-M-05: owner_user_id must be a valid UUID string.
@@ -153,7 +153,7 @@ func TestProvisionTenant_InvalidOwnerIDString(t *testing.T) {
 	body := `{"tenant_id":"11111111-1111-1111-1111-111111111111","slug":"acme","name":"Acme","plan":"starter","owner_user_id":"not-a-uuid"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // I1-V-01: tenant_id missing (parses to uuid.Nil) is rejected by the
@@ -163,7 +163,7 @@ func TestProvisionTenant_MissingTenantID(t *testing.T) {
 	body := `{"slug":"acme","name":"Acme","plan":"starter","owner_user_id":"22222222-2222-2222-2222-222222222222"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 	assert.Contains(t, w.Body.String(), "tenant_id")
 }
 
@@ -173,7 +173,7 @@ func TestProvisionTenant_MissingSlug(t *testing.T) {
 	body := `{"tenant_id":"11111111-1111-1111-1111-111111111111","name":"Acme","plan":"starter","owner_user_id":"22222222-2222-2222-2222-222222222222"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 	assert.Contains(t, w.Body.String(), "slug")
 }
 
@@ -183,7 +183,7 @@ func TestProvisionTenant_MissingOwnerID(t *testing.T) {
 	body := `{"tenant_id":"11111111-1111-1111-1111-111111111111","slug":"acme","name":"Acme","plan":"starter"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 	assert.Contains(t, w.Body.String(), "owner_user_id")
 }
 
@@ -194,7 +194,7 @@ func TestProvisionTenant_MissingName(t *testing.T) {
 	body := `{"tenant_id":"11111111-1111-1111-1111-111111111111","slug":"acme","plan":"starter","owner_user_id":"22222222-2222-2222-2222-222222222222"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 	assert.Contains(t, w.Body.String(), "name")
 }
 
@@ -205,7 +205,7 @@ func TestProvisionTenant_MissingPlan(t *testing.T) {
 	body := `{"tenant_id":"11111111-1111-1111-1111-111111111111","slug":"acme","name":"Acme","owner_user_id":"22222222-2222-2222-2222-222222222222"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 	assert.Contains(t, w.Body.String(), "plan is required")
 }
 
@@ -217,7 +217,7 @@ func TestProvisionTenant_UnknownPlan(t *testing.T) {
 	body := `{"tenant_id":"11111111-1111-1111-1111-111111111111","slug":"acme","name":"Acme","plan":"diamond","owner_user_id":"22222222-2222-2222-2222-222222222222"}`
 	c, w := buildCtx(http.MethodPost, "/api/v1/internal/tenants", body, systemCtx())
 	h.ProvisionTenant(c)
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_plan")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "INVALID_PLAN")
 	// Received value echoed for observability.
 	assert.Contains(t, w.Body.String(), "diamond")
 }
@@ -262,7 +262,7 @@ func TestPatchTenantRealm_EmptyBody(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/api/v1/internal/tenants/"+tenant.String(), `{}`, systemCtx())
 	setParams(c, "id", tenant.String())
 	h.PatchTenantRealm(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 	assert.Contains(t, w.Body.String(), "required")
 }
 
@@ -273,7 +273,7 @@ func TestPatchTenantRealm_MissingRealmID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/api/v1/internal/tenants/"+tenant.String(), body, systemCtx())
 	setParams(c, "id", tenant.String())
 	h.PatchTenantRealm(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestPatchTenantRealm_MissingKeycloakShard(t *testing.T) {
@@ -283,7 +283,7 @@ func TestPatchTenantRealm_MissingKeycloakShard(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/api/v1/internal/tenants/"+tenant.String(), body, systemCtx())
 	setParams(c, "id", tenant.String())
 	h.PatchTenantRealm(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestPatchTenantRealm_UnknownRealmType(t *testing.T) {
@@ -293,7 +293,7 @@ func TestPatchTenantRealm_UnknownRealmType(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/api/v1/internal/tenants/"+tenant.String(), body, systemCtx())
 	setParams(c, "id", tenant.String())
 	h.PatchTenantRealm(c)
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_realm_type")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "INVALID_REALM_TYPE")
 	assert.Contains(t, w.Body.String(), "platinum")
 }
 
@@ -325,7 +325,7 @@ func TestPatchTenantRealm_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/api/v1/internal/tenants/not-a-uuid", `{"realm_id":"acme"}`, systemCtx())
 	setParams(c, "id", "not-a-uuid")
 	h.PatchTenantRealm(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestPatchTenantRealm_MalformedBody(t *testing.T) {
@@ -345,7 +345,7 @@ func TestAddMember_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"user_id":"aaaa1111-1111-1111-1111-111111111111"}`, systemCtx())
 	setParams(c, "id", "bogus")
 	h.AddMember(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestAddMember_MissingUserID(t *testing.T) {
@@ -356,7 +356,7 @@ func TestAddMember_MissingUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{}`, systemCtx())
 	setParams(c, "id", tenant.String())
 	h.AddMember(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestAddMember_MalformedJSON(t *testing.T) {
@@ -376,7 +376,7 @@ func TestPatchMemberLifecycle_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"status":"suspended","record_version":1}`, systemCtx())
 	setParams(c, "id", uuid.New().String(), "user_id", "not-a-uuid")
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -390,7 +390,7 @@ func TestAssigneeOverride_InvalidTenderID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
 	setParams(c, "id", uuid.New().String(), "tender_id", "not-a-uuid")
 	h.AssigneeOverride(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestAssigneeOverride_MalformedBody(t *testing.T) {
@@ -412,7 +412,7 @@ func TestInvite_MissingIdentity(t *testing.T) {
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
 	// requireTenantAdmin returns ErrMissingIdentity → 401
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 func TestInvite_CrossTenant(t *testing.T) {
@@ -423,7 +423,7 @@ func TestInvite_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@e.com","full_name":"U"}`, rc)
 	setParams(c, "id", tenantA.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 func TestInvite_InsufficientRole(t *testing.T) {
@@ -436,7 +436,7 @@ func TestInvite_InsufficientRole(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@e.com","full_name":"U"}`, rc)
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 func TestInvite_InvalidTenantID(t *testing.T) {
@@ -444,7 +444,7 @@ func TestInvite_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@e.com","full_name":"U"}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -458,7 +458,7 @@ func TestRevoke_InvalidInvitationID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "invitation_id", "bogus")
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestRevoke_CrossTenant(t *testing.T) {
@@ -467,7 +467,7 @@ func TestRevoke_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", `{"record_version":1}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "invitation_id", uuid.New().String())
 	h.Revoke(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -480,7 +480,7 @@ func TestReconcileRoles_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "bogus")
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestReconcileRoles_MissingIdentity(t *testing.T) {
@@ -489,7 +489,7 @@ func TestReconcileRoles_MissingIdentity(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, nil)
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -502,7 +502,7 @@ func TestDeptAssign_InvalidDeptID(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "dept_id", "bogus", "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestDeptAssign_CrossTenant(t *testing.T) {
@@ -511,7 +511,7 @@ func TestDeptAssign_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"level":"reviewer"}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -524,7 +524,7 @@ func TestDeptRemove_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "dept_id", uuid.New().String(), "user_id", "bogus")
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -540,7 +540,7 @@ func TestReassignOwner_RequiresOperator(t *testing.T) {
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
 	// The handler's own requireOperator check runs after param parse; must 403.
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 func TestReassignOwner_InvalidTenantID(t *testing.T) {
@@ -549,7 +549,7 @@ func TestReassignOwner_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, operatorCtx())
 	setParams(c, "id", "not-a-uuid")
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestReassignOwner_MissingUserID(t *testing.T) {
@@ -559,7 +559,7 @@ func TestReassignOwner_MissingUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{}`, operatorCtx())
 	setParams(c, "id", uuid.New().String())
 	h.ReassignOwner(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -572,7 +572,7 @@ func TestMemberRemove_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "bogus")
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestMemberRemove_CrossTenant(t *testing.T) {
@@ -581,7 +581,7 @@ func TestMemberRemove_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "user_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -593,7 +593,7 @@ func TestTenantGet_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestTenantPatch_MalformedBody(t *testing.T) {
@@ -611,7 +611,7 @@ func TestTenantPatch_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"name":"New"}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // Reference-touch on the top of the file to make sure gin's TestMode is set.

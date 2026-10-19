@@ -33,7 +33,7 @@ func TestInvite_MalformedJSONBody(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // P6-V-02: missing full_name → 400.
@@ -101,7 +101,7 @@ func TestInvite_SeatCapReached(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@a.com","full_name":"U"}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusConflict, "seat_limit_reached")
+	assertErrorCode(t, w, http.StatusConflict, "SEAT_LIMIT_REACHED")
 	assert.Contains(t, w.Body.String(), "licensed_seats")
 	assert.Contains(t, w.Body.String(), "active_users")
 	assert.Contains(t, w.Body.String(), "pending_invitations")
@@ -129,7 +129,7 @@ func TestInvite_ReinviteCooldown(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@a.com","full_name":"U"}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusTooManyRequests, "reinvite_too_soon")
+	assertErrorCode(t, w, http.StatusTooManyRequests, "REINVITE_TOO_SOON")
 	assert.Contains(t, w.Body.String(), "retry_after_seconds")
 }
 
@@ -155,7 +155,7 @@ func TestInvite_HourlyRateLimitExceeded(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@a.com","full_name":"U"}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusTooManyRequests, "invite_rate_limited")
+	assertErrorCode(t, w, http.StatusTooManyRequests, "INVITE_RATE_LIMITED")
 	assert.Contains(t, w.Body.String(), "retry_after_seconds")
 }
 
@@ -178,7 +178,7 @@ func TestInvite_RealmProvisionerUnavailable(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@a.com","full_name":"U"}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusServiceUnavailable, "realm_provisioner_unavailable")
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "REALM_PROVISIONER_UNAVAILABLE")
 }
 
 // P6-EVT-01: P-6 stages an invitation but emits NO outbox events.
@@ -200,7 +200,7 @@ func TestInvite_NoEventsEmitted(t *testing.T) {
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
 	// 409 before RP call proves the pre-flight check ran and no KC user was created.
-	assertErrorCode(t, w, http.StatusConflict, "invitation_already_exists")
+	assertErrorCode(t, w, http.StatusConflict, "INVITATION_ALREADY_EXISTS")
 }
 
 // P6-H-04: response body shape — invitation_id, email, status:pending, expires_at.
@@ -241,7 +241,7 @@ func TestReconcileRoles_MalformedBody(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // P28-M-02: invalid tenant UUID → 400.
@@ -250,7 +250,7 @@ func TestReconcileRoles_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantAdminCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P28-A-02: member role → 403 (AUTH-2: tenant_admin required).
@@ -261,7 +261,7 @@ func TestReconcileRoles_MemberRoleForbidden(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, rc)
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P28-A-03: cross-tenant → 403.
@@ -270,7 +270,7 @@ func TestReconcileRoles_CrossTenantForbidden(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantAdminCtx(uuid.New()))
 	setParams(c, "id", uuid.New().String(), "user_id", uuid.New().String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P28-V-01: 'member' in desired set → 400 invalid_role (TR-7).
@@ -285,7 +285,7 @@ func TestReconcileRoles_MemberRoleRejected(t *testing.T) {
 	setParams(c, "id", tenant.String(), "user_id", userID.String())
 	h.ReconcileRoles(c)
 	// ErrInvalidRole → 422 (LLD §17 invalid_role taxonomy, TR-7).
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_role")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "INVALID_ROLE")
 }
 
 // P28-V-02: unknown role code → 422 invalid_role (ErrInvalidRole, LLD §17).
@@ -296,7 +296,7 @@ func TestReconcileRoles_UnknownRoleCode(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["superadmin"]}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "invalid_role")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "INVALID_ROLE")
 }
 
 // P28-GUARD-01: last tenant_owner removal → 422 last_owner_removal (TM-8).
@@ -319,7 +319,7 @@ func TestReconcileRoles_LastOwnerRemovalBlocked(t *testing.T) {
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":[]}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", ownerID.String())
 	h.ReconcileRoles(c)
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "last_owner_removal")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "LAST_OWNER_REMOVAL")
 }
 
 // P28-H-01: grant new role → 200, response echoes the post-reconcile
@@ -451,7 +451,7 @@ func TestInvite_UserAlreadyActiveMember(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"active@a.com","full_name":"Active"}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusConflict, "member_already_exists")
+	assertErrorCode(t, w, http.StatusConflict, "MEMBER_ALREADY_EXISTS")
 }
 
 // memberAlreadyExistsTxRunner simulates the inner tx raising member_already_exists
@@ -479,7 +479,7 @@ func TestInvite_TenantNotFound(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"email":"u@a.com","full_name":"U"}`, tenantAdminCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Invite(c)
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 // ── I3-EVT-03: plain-add emits zero events ────────────────────────────────
@@ -528,7 +528,7 @@ func TestAddMember_TenantNotFound(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
 	setParams(c, "id", tenant.String())
 	h.AddMember(c)
-	assertErrorCode(t, w, http.StatusNotFound, "tenant_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "TENANT_NOT_FOUND")
 }
 
 type tenantNotFoundTxRunner struct{}

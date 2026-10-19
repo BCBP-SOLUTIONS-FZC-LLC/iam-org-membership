@@ -81,7 +81,7 @@ func TestAssigneeOverride_MissingActorID_400(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── I13-VAL-02 ───────────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ func TestAssigneeOverride_InvalidTenderID_400(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", "bad-uuid")
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── I13-VAL-03 ───────────────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ func TestAssigneeOverride_MalformedBody_400(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // ── I13-VAL-04 ───────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ func TestAssigneeOverride_BadRequiredLevel_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "assignee_ineligible")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "ASSIGNEE_INELIGIBLE")
 }
 
 // ── I13-AUTH-01 ──────────────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ func TestAssigneeOverride_NoIdentity_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── I13-AUTH-02 ──────────────────────────────────────────────────────────────
@@ -200,7 +200,7 @@ func TestAssigneeOverride_PlainMember_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── I13-SEC-01 / I13-SEC-02 ──────────────────────────────────────────────────
@@ -354,7 +354,7 @@ func TestAssigneeOverride_AssigneeNotInDept_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "assignee_ineligible")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "ASSIGNEE_INELIGIBLE")
 }
 
 // ── I13-BL-02 / I13-BL-03 ────────────────────────────────────────────────────
@@ -386,7 +386,7 @@ func TestAssigneeOverride_AssigneeSuspended_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "assignee_ineligible")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "ASSIGNEE_INELIGIBLE")
 }
 
 // ── I13-BL-04 ────────────────────────────────────────────────────────────────
@@ -420,7 +420,7 @@ func TestAssigneeOverride_AssigneeBelowLevel_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "assignee_ineligible")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "ASSIGNEE_INELIGIBLE")
 }
 
 // ── I13-EDGE-01 ──────────────────────────────────────────────────────────────
@@ -446,7 +446,7 @@ func TestAssigneeOverride_NoElevatedRole_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
 	h.AssigneeOverride(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── I13-EDGE-02 ──────────────────────────────────────────────────────────────

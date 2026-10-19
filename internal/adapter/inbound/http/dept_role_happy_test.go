@@ -457,7 +457,7 @@ func TestDeptMembershipAssign_UserNotMember_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "member_not_active")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "MEMBER_NOT_ACTIVE")
 }
 
 // P10-NF-02: tenantDepts.Find returns ErrDepartmentNotFound → 422 department_deactivated.
@@ -475,7 +475,7 @@ func TestDeptMembershipAssign_DeptNotFound_404(t *testing.T) {
 	h.Assign(c)
 
 	// Dept not activated for tenant → 422 department_deactivated (D-5/TD-6 step 2).
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "department_deactivated")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "DEPARTMENT_DEACTIVATED")
 }
 
 // P10-422-02: globally retired dept → 422 department_retired (B-15 fix).
@@ -493,7 +493,7 @@ func TestDeptMembershipAssign_GloballyRetiredDept_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", deptID.String(), "user_id", uuid.New().String())
 	h.Assign(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "department_retired")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "DEPARTMENT_RETIRED")
 }
 
 // P10-422-03: tenant-deactivated dept → 422 department_deactivated (B-15 error code fix).
@@ -510,7 +510,7 @@ func TestDeptMembershipAssign_TenantDeactivatedDept_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "department_deactivated")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "DEPARTMENT_DEACTIVATED")
 }
 
 // P10-HAPPY-03 (service level): same level re-assign → no event emitted.

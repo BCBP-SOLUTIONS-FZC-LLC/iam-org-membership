@@ -32,7 +32,7 @@ func TestTenantPatch_InvalidTenantIDInPath(t *testing.T) {
 		`{"name":"Acme","record_version":1}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P2-M-02: broken JSON body → 400 validation_error.
@@ -43,7 +43,7 @@ func TestTenantPatch_MalformedJSONBody(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"name":`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // P2-M-03: empty request body → 400.
@@ -125,7 +125,7 @@ func TestTenantPatch_CrossTenantForbidden(t *testing.T) {
 		`{"name":"Acme","record_version":1}`, tenantOwnerCtx(callerTenant))
 	setParams(c, "id", pathTenant.String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P2-A-04: caller has only 'member' role → 403 tenant_owner required.
@@ -138,7 +138,7 @@ func TestTenantPatch_MemberRoleForbidden(t *testing.T) {
 		`{"name":"Acme","record_version":1}`, rc)
 	setParams(c, "id", tenant.String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 	assert.Contains(t, w.Body.String(), "tenant_owner")
 }
 
@@ -152,7 +152,7 @@ func TestTenantPatch_TenantAdminForbidden(t *testing.T) {
 		`{"name":"Acme","record_version":1}`, rc)
 	setParams(c, "id", tenant.String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P2-A-06: tenant_owner passes the write gate.

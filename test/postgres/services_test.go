@@ -19,7 +19,7 @@ package postgres_test
 
 import (
 	"context"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"sort"
 	"sync"
 	"testing"

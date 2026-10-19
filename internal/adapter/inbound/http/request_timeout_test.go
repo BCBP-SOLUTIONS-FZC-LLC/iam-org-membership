@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 )
 
 // blockingResolver honours the request deadline, like a query cancelled by it.
@@ -87,7 +87,7 @@ func TestRouter_RequestTimeout_DeadlineReturns503(t *testing.T) {
 	rt.Handler().ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), `"error":"request timeout"`, "gincommon's timeout body")
+	assert.Contains(t, w.Body.String(), `"errorCode":"REQUEST_TIMEOUT"`, "gincommon's timeout body")
 	assert.Less(t, time.Since(start), 5*time.Second, "the deadline must actually be enforced")
 	assert.True(t, httpStatusClasses(t, "/api/v1/public/tenants/resolve")["5xx"])
 	assert.Positive(t, requestTimeouts(t, "/api/v1/public/tenants/resolve"), "the library must count the timeout")
@@ -119,7 +119,7 @@ func TestHandleError_RequestContextEnded(t *testing.T) {
 	c, w = newTestContext(nil)
 	HandleError(c, domain.NewError(domain.ErrRequestTimeout, "statement timeout"))
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), `"code":"request_timeout"`)
+	assert.Contains(t, w.Body.String(), `"errorCode":"REQUEST_TIMEOUT"`)
 }
 
 // The deadline middleware must sit INSIDE the observability stack: when a
@@ -144,106 +144,4 @@ func TestRouter_RequestTimeout_RecordedAsTheClientSeesIt(t *testing.T) {
 
 func TestNewRouter_DefaultsRequestTimeout(t *testing.T) {
 	assert.Equal(t, 30*time.Second, defaultRequestTimeout)
-}
-
-// NormalizeAuthErrors forwards only what the handler produced: nothing
-// written stays unwritten (so an outer middleware can still answer), and a
-// status set without a body still reaches the client.
-func TestNormalizeAuthErrors_ForwardsOnlyWhatTheHandlerWrote(t *testing.T) {
-	newEngine := func(h gin.HandlerFunc) (*gin.Engine, *bool) {
-		r := gin.New()
-		written := new(bool)
-		r.Use(func(c *gin.Context) {
-			c.Next()
-			*written = c.Writer.Written()
-		})
-		r.Use(NormalizeAuthErrors())
-		r.GET("/", h)
-		return r, written
-	}
-
-	r, written := newEngine(func(*gin.Context) {})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody))
-	assert.False(t, *written, "an empty handler must leave the response unwritten for the outer middlewares")
-
-	r, _ = newEngine(func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody))
-	assert.Equal(t, http.StatusNoContent, w.Code)
-
-	r, _ = newEngine(func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody))
-	assert.Equal(t, http.StatusCreated, w.Code)
-	assert.JSONEq(t, `{"ok":true}`, w.Body.String())
-}
-
-// Only a 401 is held back and normalised; an ambiguous identity header gets
-// its own code.
-func TestNormalizeAuthErrors_OnlyRewrites401(t *testing.T) {
-	r := gin.New()
-	r.Use(NormalizeAuthErrors())
-	r.GET("/missing", func(c *gin.Context) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid authentication headers", "status": 401})
-	})
-	r.GET("/ambiguous", func(c *gin.Context) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "ambiguous x-user-id header", "status": 401})
-	})
-	r.GET("/forbidden", func(c *gin.Context) { c.JSON(http.StatusForbidden, gin.H{"error": "nope"}) })
-
-	for path, want := range map[string]string{"/missing": "missing_identity_headers", "/ambiguous": "ambiguous_identity_headers"} {
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, http.NoBody))
-		assert.Equal(t, http.StatusUnauthorized, w.Code)
-		assert.Contains(t, w.Body.String(), `"code":"`+want+`"`, path)
-	}
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/forbidden", http.NoBody))
-	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.JSONEq(t, `{"error":"nope"}`, w.Body.String(), "non-401 bodies pass through untouched")
-}
-
-// ContextMiddleware's library 400 gets a code too; a handler's own 400
-// (which already has one) is untouched.
-func TestNormalizeAuthErrors_LibraryBadRequestGetsCode(t *testing.T) {
-	r := gin.New()
-	r.Use(NormalizeAuthErrors())
-	r.GET("/lib", func(c *gin.Context) {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request context", "status": 400})
-	})
-	r.GET("/own", func(c *gin.Context) {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "validation_error", "code": "validation_error"})
-	})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/lib", http.NoBody))
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), `"code":"invalid_request_context"`)
-
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/own", http.NoBody))
-	assert.JSONEq(t, `{"error":"validation_error","code":"validation_error"}`, w.Body.String())
-}
-
-// A handler panic unwinds past NormalizeAuthErrors; the outer recovery must
-// still write to the real response writer, not into the discarded buffer.
-func TestNormalizeAuthErrors_RestoresWriterOnPanic(t *testing.T) {
-	r := gin.New()
-	r.Use(func(c *gin.Context) {
-		defer func() {
-			if recover() != nil {
-				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal"})
-			}
-		}()
-		c.Next()
-	})
-	r.Use(NormalizeAuthErrors())
-	r.GET("/", func(c *gin.Context) {
-		c.Status(http.StatusUnauthorized) // buffered, then the handler panics
-		panic("boom")
-	})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody))
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "internal")
 }

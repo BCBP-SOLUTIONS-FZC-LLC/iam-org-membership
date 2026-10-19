@@ -6,6 +6,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	pgcommon "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -31,9 +32,9 @@ func NewOperatorHandler(svc *service.OperatorService) *OperatorHandler {
 // @Param        id       path      string                         true  "Tenant UUID"  format(uuid)
 // @Param        request  body      OperatorFeatureFlagsRequest    true  "Feature-flags map"
 // @Success      200      {object}  TenantResponse
-// @Failure      400      {object}  ErrorResponse  "unknown_feature_flag | invalid_feature_value"
-// @Failure      403      {object}  ErrorResponse
-// @Failure      404      {object}  ErrorResponse
+// @Failure      400      {object}  ProblemResponse  "unknown_feature_flag | invalid_feature_value"
+// @Failure      403      {object}  ProblemResponse
+// @Failure      404      {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -49,8 +50,8 @@ func (h *OperatorHandler) SetFeatureFlags(c *gin.Context) {
 		return
 	}
 	var req OperatorFeatureFlagsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	// RLS-6: override GUC with the PATH tenant so operator cross-tenant
@@ -79,10 +80,10 @@ func (h *OperatorHandler) SetFeatureFlags(c *gin.Context) {
 // @Param        id       path      string                          true  "Tenant UUID"  format(uuid)
 // @Param        request  body      OperatorReassignOwnerRequest    true  "New owner payload"
 // @Success      200      {object}  OperatorReassignOwnerResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      409      {object}  ErrorResponse  "tenant_offboarded"
-// @Failure      422      {object}  ErrorResponse  "invalid_owner_candidate"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      409      {object}  ProblemResponse  "tenant_offboarded"
+// @Failure      422      {object}  ProblemResponse  "invalid_owner_candidate"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -98,8 +99,8 @@ func (h *OperatorHandler) ReassignOwner(c *gin.Context) {
 		return
 	}
 	var req OperatorReassignOwnerRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	newOwnerID := req.EffectiveUserID()

@@ -42,8 +42,8 @@ func NewPublicHandler(resolver TenantResolver) *PublicHandler {
 // @Produce      json
 // @Param        identifier  query     string  true  "Company slug or pending-invitation email (max 254 chars)"
 // @Success      200         {object}  PublicTenantResolveResponse
-// @Failure      400         {object}  ErrorResponse  "invalid_identifier"
-// @Failure      503         {object}  ErrorResponse  "db_unavailable"
+// @Failure      400         {object}  ProblemResponse  "invalid_identifier"
+// @Failure      503         {object}  ProblemResponse  "db_unavailable"
 // @Router       /public/tenants/resolve [get]
 func (h *PublicHandler) ResolveTenant(c *gin.Context) {
 	identifier := strings.TrimSpace(c.Query("identifier"))

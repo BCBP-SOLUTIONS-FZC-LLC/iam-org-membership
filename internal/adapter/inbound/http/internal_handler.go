@@ -8,6 +8,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -70,19 +71,19 @@ type internalProvisionRequest struct {
 // @Param        request  body      InternalProvisionRequest  true  "Provisioning payload"
 // @Success      201      {object}  TenantResponse  "Fresh create"
 // @Success      200      {object}  TenantResponse  "Idempotent replay (LLD I1-1: same id already provisioned)"
-// @Failure      400      {object}  ErrorResponse   "validation_error (missing/malformed required fields)"
-// @Failure      403      {object}  ErrorResponse   "insufficient_role (non iam-system caller)"
-// @Failure      409      {object}  ErrorResponse   "slug_already_taken (LLD I1-2)"
-// @Failure      422      {object}  ErrorResponse   "invalid_plan (plan not in {starter,pro,enterprise})"
-// @Failure      500      {object}  ErrorResponse   "internal_error"
+// @Failure      400      {object}  ProblemResponse   "validation_error (missing/malformed required fields)"
+// @Failure      403      {object}  ProblemResponse   "insufficient_role (non iam-system caller)"
+// @Failure      409      {object}  ProblemResponse   "slug_already_taken (LLD I1-2)"
+// @Failure      422      {object}  ProblemResponse   "invalid_plan (plan not in {starter,pro,enterprise})"
+// @Failure      500      {object}  ProblemResponse   "internal_error"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
 // @Router       /internal/tenants [post]
 func (h *InternalHandler) ProvisionTenant(c *gin.Context) {
 	var req internalProvisionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	// LLD line 2456-2461: tenant_id, slug, name, plan, owner_user_id are all required.
@@ -144,11 +145,11 @@ type internalRealmPatchRequest struct {
 // @Param        id       path      string                       true  "Tenant UUID"  format(uuid)
 // @Param        request  body      InternalRealmPatchRequest    true  "Realm identity payload"
 // @Success      200      {object}  InternalTenantRealmResponse
-// @Failure      400      {object}  ErrorResponse  "validation_error (missing required field)"
-// @Failure      403      {object}  ErrorResponse  "insufficient_role (non iam-system caller)"
-// @Failure      404      {object}  ErrorResponse  "tenant_not_found"
-// @Failure      422      {object}  ErrorResponse  "invalid_realm_type (realm_type not in {shared, dedicated})"
-// @Failure      500      {object}  ErrorResponse  "internal_error"
+// @Failure      400      {object}  ProblemResponse  "validation_error (missing required field)"
+// @Failure      403      {object}  ProblemResponse  "insufficient_role (non iam-system caller)"
+// @Failure      404      {object}  ProblemResponse  "tenant_not_found"
+// @Failure      422      {object}  ProblemResponse  "invalid_realm_type (realm_type not in {shared, dedicated})"
+// @Failure      500      {object}  ProblemResponse  "internal_error"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -160,8 +161,8 @@ func (h *InternalHandler) PatchTenantRealm(c *gin.Context) {
 		return
 	}
 	var req internalRealmPatchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	// LLD §5.4 I-2: all three realm fields are required. Without this
@@ -209,10 +210,10 @@ type internalMembershipPatchRequest struct {
 // @Param        user_id  path      string                             true  "User UUID"    format(uuid)
 // @Param        request  body      InternalMembershipPatchRequest     true  "Lifecycle payload"
 // @Success      200      {object}  InternalMembershipPatchResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      404      {object}  ErrorResponse
-// @Failure      409      {object}  ErrorResponse  "record_version mismatch (CONC-4)"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      404      {object}  ProblemResponse
+// @Failure      409      {object}  ProblemResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -229,8 +230,8 @@ func (h *InternalHandler) PatchMemberLifecycle(c *gin.Context) {
 		return
 	}
 	var req internalMembershipPatchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	m, err := h.provisioning.SetMembershipStatus(c.Request.Context(), tenantID, userID, domain.MembershipStatus(req.Status), req.RecordVersion)
@@ -264,8 +265,8 @@ type internalAddMemberRequest struct {
 // @Param        id       path      string                       true  "Tenant UUID"  format(uuid)
 // @Param        request  body      InternalAddMemberRequest     true  "Register payload"
 // @Success      201      {object}  MembershipItemResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -277,8 +278,8 @@ func (h *InternalHandler) AddMember(c *gin.Context) {
 		return
 	}
 	var req internalAddMemberRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	if req.UserID == uuid.Nil {
@@ -322,8 +323,8 @@ type internalJITRequest struct {
 // @Param        id       path      string                 true  "Tenant UUID"  format(uuid)
 // @Param        request  body      InternalJITRequest     true  "JIT payload — user_id + Keycloak group list"
 // @Success      200      {object}  InternalJITResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -335,8 +336,8 @@ func (h *InternalHandler) AssignFromGroups(c *gin.Context) {
 		return
 	}
 	var req internalJITRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	if req.UserID == uuid.Nil {
@@ -362,8 +363,8 @@ func (h *InternalHandler) AssignFromGroups(c *gin.Context) {
 // @Param        id       path      string                          true  "Tenant UUID"  format(uuid)
 // @Param        user_id  path      string                          true  "User UUID"    format(uuid)
 // @Success      200      {object}  InternalMemberDeleteResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      404      {object}  ErrorResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      404      {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -398,9 +399,9 @@ func (h *InternalHandler) DeleteMember(c *gin.Context) {
 // @Param        id         path      string   true  "User UUID"    format(uuid)
 // @Param        tenant_id  query     string   true  "Tenant UUID"  format(uuid)
 // @Success      200        {object}  map[string]interface{}
-// @Failure      400        {object}  ErrorResponse
-// @Failure      403        {object}  ErrorResponse
-// @Failure      404        {object}  ErrorResponse  "no active membership"
+// @Failure      400        {object}  ProblemResponse
+// @Failure      403        {object}  ProblemResponse
+// @Failure      404        {object}  ProblemResponse  "no active membership"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -435,8 +436,8 @@ func (h *InternalHandler) GetMemberships(c *gin.Context) {
 // @Produce      json
 // @Param        id   path      string                   true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  InternalLocaleResponse
-// @Failure      403  {object}  ErrorResponse
-// @Failure      404  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
+// @Failure      404  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -469,8 +470,8 @@ func (h *InternalHandler) GetLocale(c *gin.Context) {
 // @Produce      json
 // @Param        id   path      string                          true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  InternalMFAFreshnessResponse
-// @Failure      403  {object}  ErrorResponse
-// @Failure      404  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
+// @Failure      404  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -501,8 +502,8 @@ func (h *InternalHandler) GetMFAFreshness(c *gin.Context) {
 // @Produce      json
 // @Param        id   path      string             true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  SeatUsageResponse
-// @Failure      403  {object}  ErrorResponse
-// @Failure      404  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
+// @Failure      404  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -570,8 +571,8 @@ func (h *InternalHandler) GetSeatUsage(c *gin.Context) {
 // @Param        id       path      string  true  "Tenant UUID"  format(uuid)
 // @Param        user_id  path      string  true  "User UUID"    format(uuid)
 // @Success      200      {object}  MemberExistsResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse  "insufficient_role — x-tenant-roles must be iam-system"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse  "insufficient_role — x-tenant-roles must be iam-system"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -628,8 +629,8 @@ func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 // @Produce      json
 // @Param        id   path      string  true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  map[string]interface{}
-// @Failure      403  {object}  ErrorResponse
-// @Failure      404  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
+// @Failure      404  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -674,10 +675,10 @@ func (h *InternalHandler) GetPlanContext(c *gin.Context) {
 // @Param        id           path   string  true  "Tenant UUID"    format(uuid)
 // @Param        target_plan  query  string  true  "Target plan code (starter|pro|enterprise)"
 // @Success      200  {object}  service.PlanChangeCheckResult  "allowed or blocked with blockers[]"
-// @Failure      400  {object}  ErrorResponse  "invalid_target_plan (missing or unknown target_plan)"
-// @Failure      403  {object}  ErrorResponse  "insufficient_role"
-// @Failure      404  {object}  ErrorResponse  "tenant_not_found"
-// @Failure      503  {object}  ErrorResponse  "realm_provisioner_unavailable (fail-closed: RP unreachable)"
+// @Failure      400  {object}  ProblemResponse  "invalid_target_plan (missing or unknown target_plan)"
+// @Failure      403  {object}  ProblemResponse  "insufficient_role"
+// @Failure      404  {object}  ProblemResponse  "tenant_not_found"
+// @Failure      503  {object}  ProblemResponse  "realm_provisioner_unavailable (fail-closed: RP unreachable)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -767,9 +768,9 @@ type assigneeOverrideRequest struct {
 // @Param        tender_id  path      string                       true  "Tender UUID"  format(uuid)
 // @Param        request    body      AssigneeOverrideRequest      true  "Override payload"
 // @Success      200        {object}  AssigneeOverrideResponse
-// @Failure      400        {object}  ErrorResponse
-// @Failure      403        {object}  ErrorResponse
-// @Failure      422        {object}  ErrorResponse  "assignee_ineligible"
+// @Failure      400        {object}  ProblemResponse
+// @Failure      403        {object}  ProblemResponse
+// @Failure      422        {object}  ProblemResponse  "assignee_ineligible"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -786,8 +787,8 @@ func (h *InternalHandler) AssigneeOverride(c *gin.Context) {
 		return
 	}
 	var req assigneeOverrideRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	// Actor must hold tender_admin (or higher) — checked here defensively;

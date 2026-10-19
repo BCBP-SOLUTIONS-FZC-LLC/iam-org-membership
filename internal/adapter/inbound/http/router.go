@@ -22,7 +22,8 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
 )
 
 // Pinger is satisfied by any dependency /readyz must check. pgcommon.Pool,
@@ -108,11 +109,6 @@ func (r *Router) Handler() http.Handler { return r.engine }
 // /api/v1/*, operator /api/v1/operator/*, internal /api/v1/internal/*,
 // the unauthenticated infra probes, and (when enabled) the docs surface.
 func NewRouter(cfg RouterConfig) *Router {
-	// Set once so HandleError's unhandled-500 branch (middleware.go) logs
-	// through the same gincommon-backed sink as every other log line,
-	// instead of a bare stdlib log.Printf.
-	errorLogger = cfg.GinConfig.Logger
-
 	r := gin.New()
 	// Return 405 Method Not Allowed (with Allow header) when a path exists
 	// but the HTTP method is not registered, instead of the default 404.
@@ -133,8 +129,6 @@ func NewRouter(cfg RouterConfig) *Router {
 		ginCfg.RequestTimeout = defaultRequestTimeout
 	}
 	r.Use(gincommon.ObservabilityMiddlewares(ginCfg)...)
-	// G-13: normalize platform-gincommon 401 responses to include code field.
-	r.Use(NormalizeAuthErrors())
 
 	registerInfraRoutes(r, cfg)
 	registerDocsRoutes(r, cfg)
@@ -297,9 +291,7 @@ func registerDocsRoutes(r *gin.Engine, cfg RouterConfig) {
 			authMiddleware = func(c *gin.Context) {
 				got := []byte(c.GetHeader("Authorization"))
 				if len(got) != len(want) || subtle.ConstantTimeCompare(got, want) != 1 {
-					er := newErrorResponse(c, "unauthorized", "docs require Authorization: Bearer <DOCS_AUTH_TOKEN>", nil)
-					er.Status = http.StatusUnauthorized
-					c.AbortWithStatusJSON(http.StatusUnauthorized, er)
+					gincommon.AbortWithProblem(c, problem.NewUnauthorizedError("docs require Authorization: Bearer <DOCS_AUTH_TOKEN>"))
 					return
 				}
 				c.Next()

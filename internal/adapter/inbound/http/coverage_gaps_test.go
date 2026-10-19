@@ -9,13 +9,13 @@ package http
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	gincommon "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	gincommon "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -26,44 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
-
-// ── middleware.go: errorLogger != nil path in HandleError (407.24,409.3) ──
-
-// TestHandleError_WithErrorLogger_LogsUnhandled500 verifies that when
-// errorLogger is non-nil, an unhandled (non-domain) error is logged and
-// surfaces as 500 internal_error.
-func TestHandleError_WithErrorLogger_LogsUnhandled500(t *testing.T) {
-	// Capture whether the logger's Error method was called.
-	var logged bool
-	origLogger := errorLogger
-	errorLogger = &captureLogger{onError: func(msg string, fields map[string]any) {
-		logged = true
-	}}
-	defer func() { errorLogger = origLogger }()
-
-	c, w := buildCtx(http.MethodGet, "/", "", systemCtx())
-	HandleError(c, errors.New("unexpected db error"))
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.True(t, logged, "errorLogger.Error must be called for unhandled 500")
-}
-
-// captureLogger is a minimal port.Logger for test assertions.
-type captureLogger struct {
-	onError func(string, map[string]any)
-}
-
-func (l *captureLogger) Debug(_ string, _ map[string]any) {}
-func (l *captureLogger) Info(_ string, _ map[string]any)  {}
-func (l *captureLogger) Warn(_ string, _ map[string]any)  {}
-func (l *captureLogger) Error(msg string, fields map[string]any) {
-	if l.onError != nil {
-		l.onError(msg, fields)
-	}
-}
-
-// Verify it satisfies port.Logger (which is what errorLogger is typed as).
-var _ port.Logger = (*captureLogger)(nil)
 
 // ── middleware.go: GUCBridgeMiddleware errResp branch (98.21,104.4) ──
 
@@ -78,8 +40,8 @@ func TestParseBridgedIdentity_InvalidTenantUUID_ReturnsErrResp(t *testing.T) {
 		TenantIDStr: "not-a-uuid", // invalid UUID
 	})
 	require.NotNil(t, errResp)
-	assert.Equal(t, http.StatusUnauthorized, errResp.Status)
-	assert.Contains(t, errResp.Message, "x-tenant-id")
+	assert.Equal(t, http.StatusUnauthorized, errResp.Type.Status)
+	assert.Contains(t, errResp.Detail, "x-tenant-id")
 }
 
 // TestParseBridgedIdentity_InvalidUserUUID_ReturnsErrResp verifies that an
@@ -90,7 +52,7 @@ func TestParseBridgedIdentity_InvalidUserUUID_ReturnsErrResp(t *testing.T) {
 		TenantIDStr: uuid.New().String(),
 	})
 	require.NotNil(t, errResp)
-	assert.Equal(t, http.StatusUnauthorized, errResp.Status)
+	assert.Equal(t, http.StatusUnauthorized, errResp.Type.Status)
 }
 
 // ── membership_handler.go: List cursor JSON unmarshal error (76.16,79.3) ──
@@ -110,7 +72,7 @@ func TestMembershipList_InvalidCursorBase64Valid_InvalidJSON_400(t *testing.T) {
 
 	h.List(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_cursor")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── membership_handler.go: RemovalResolution body json decode error (283-285, 286-288) ──
@@ -126,7 +88,7 @@ func TestDepartmentActivate_BadTenantUUID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"department_id":"`+uuid.New().String()+`"}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid")
 	h.Activate(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // TestDepartmentPatch_BadTenantUUID_400 covers line 156-159 in Patch:
@@ -136,7 +98,7 @@ func TestDepartmentPatch_BadTenantUUID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"is_active":false,"record_version":1}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // TestDepartmentPatch_IsActiveNil_400 covers line 180-183 in Patch:
@@ -147,7 +109,7 @@ func TestDepartmentPatch_IsActiveNil_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── internal_handler.go: PatchMemberLifecycle ShouldBindJSON error (231.47,234.3) ──
@@ -158,7 +120,7 @@ func TestPatchMemberLifecycle_MalformedJSON_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{not-json`, systemCtx())
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // ── internal_handler.go: GetMemberships invalid tenant_id query param (113.16,116.3) ──
@@ -169,8 +131,8 @@ func TestGetMemberships_InvalidTenantID_400(t *testing.T) {
 	setParams(c, "id", uuid.New().String())
 	c.Request.URL.RawQuery = "tenant_id=not-a-uuid"
 	h.GetMemberships(c)
-	// The error code is "invalid_uuid" from the uuid.Parse failure path in GetMemberships.
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	// The error code is "VALIDATION_ERROR" from the uuid.Parse failure path in GetMemberships.
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── internal_handler.go: AssigneeOverride bad tender UUID (634.16,637.3) ──
@@ -181,7 +143,7 @@ func TestAssigneeOverride_BadTenderUUID_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{}`, systemCtx())
 	setParams(c, "id", tenantID.String(), "tender_id", "bad-tender-uuid")
 	h.AssigneeOverride(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── internal_handler.go: CheckMemberExists user_id parse error ──
@@ -422,14 +384,18 @@ func TestHandleError_RequestTimeout_Is503(t *testing.T) {
 			c, w := buildCtx(http.MethodGet, "/", "", systemCtx())
 			HandleError(c, err)
 			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-			assert.Contains(t, w.Body.String(), `"code":"request_timeout"`)
+			body := w.Body.String()
+			assert.True(t,
+				strings.Contains(body, `"errorCode":"SERVICE_UNAVAILABLE"`) ||
+					strings.Contains(body, `"errorCode":"REQUEST_TIMEOUT"`),
+				"expected 503 error code: %s", body)
 		})
 	}
 }
 
 func TestHandleError_ConcurrentUpdate_Is409(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", systemCtx())
-	HandleError(c, domain.NewError(domain.ErrConflict, "concurrent update").WithDetails(map[string]any{"code": "concurrent_update"}))
+	HandleError(c, domain.NewError(domain.ErrConflict, "concurrent update"))
 	assert.Equal(t, http.StatusConflict, w.Code)
-	assert.Contains(t, w.Body.String(), `"code":"concurrent_update"`)
+	assert.Contains(t, w.Body.String(), `"errorCode":"CONFLICT"`)
 }

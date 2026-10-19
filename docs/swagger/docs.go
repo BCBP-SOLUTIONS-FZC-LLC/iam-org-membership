@@ -153,31 +153,31 @@ const docTemplate = `{
                     "400": {
                         "description": "validation_error (missing/malformed required fields)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "insufficient_role (non iam-system caller)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "slug_already_taken (LLD I1-2)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "invalid_plan (plan not in {starter,pro,enterprise})",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "500": {
                         "description": "internal_error",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -236,31 +236,31 @@ const docTemplate = `{
                     "400": {
                         "description": "validation_error (missing required field)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "insufficient_role (non iam-system caller)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "tenant_not_found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "invalid_realm_type (realm_type not in {shared, dedicated})",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "500": {
                         "description": "internal_error",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -319,13 +319,13 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -372,13 +372,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -437,13 +437,13 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -498,13 +498,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -569,25 +569,25 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "record_version mismatch (CONC-4)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -642,13 +642,13 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "insufficient_role — x-tenant-roles must be iam-system",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -695,13 +695,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -755,25 +755,25 @@ const docTemplate = `{
                     "400": {
                         "description": "invalid_target_plan (missing or unknown target_plan)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "insufficient_role",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "tenant_not_found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "503": {
                         "description": "realm_provisioner_unavailable (fail-closed: RP unreachable)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -821,13 +821,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -874,13 +874,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -947,19 +947,19 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "assignee_ineligible",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1015,19 +1015,19 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "no active membership",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1086,19 +1086,19 @@ const docTemplate = `{
                     "400": {
                         "description": "unknown_feature_flag | invalid_feature_value",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1157,25 +1157,25 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "tenant_offboarded",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "invalid_owner_candidate",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1221,13 +1221,13 @@ const docTemplate = `{
                     "400": {
                         "description": "invalid_identifier",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "503": {
                         "description": "db_unavailable",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 }
@@ -1291,13 +1291,13 @@ const docTemplate = `{
                     "403": {
                         "description": "AUTH-1..8 gate failed",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Row not visible (RLS returns 0 rows OR row absent)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1360,19 +1360,19 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "AUTH-1..8 gate failed",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "record_version mismatch (CONC-4)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1419,13 +1419,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1487,19 +1487,19 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "AUTH-1..8 gate failed",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1566,25 +1566,25 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "record_version mismatch (CONC-4)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "system_department_cannot_be_retired",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1639,13 +1639,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1720,19 +1720,19 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "department_not_active_for_tenant",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1793,19 +1793,19 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "workflow_resolution_required (§8.8.4)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1852,7 +1852,7 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1913,25 +1913,25 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "record_version mismatch (CONC-4)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -1990,13 +1990,13 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2053,25 +2053,25 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "seat_limit_reached OR invitation_already_exists",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "429": {
                         "description": "reinvite_too_soon OR invite_rate_limited",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2126,13 +2126,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2179,13 +2179,13 @@ const docTemplate = `{
                     "409": {
                         "description": "workflow_resolution_required",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "last_owner_removal",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2250,19 +2250,19 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "record_version mismatch (CONC-4)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2311,19 +2311,19 @@ const docTemplate = `{
                     "404": {
                         "description": "member_not_found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "member_not_active",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "503": {
                         "description": "realm_provisioner_unavailable",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2390,19 +2390,19 @@ const docTemplate = `{
                     "400": {
                         "description": "invalid_role (TR-7)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "422": {
                         "description": "last_owner_removal",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2449,7 +2449,7 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2520,19 +2520,19 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "409": {
                         "description": "record_version mismatch (CONC-4)",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2579,13 +2579,13 @@ const docTemplate = `{
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2646,13 +2646,13 @@ const docTemplate = `{
                     "422": {
                         "description": "invalid_action | invalid_replacement",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     },
                     "503": {
                         "description": "workflow_service_unavailable",
                         "schema": {
-                            "$ref": "#/definitions/http.ErrorResponse"
+                            "$ref": "#/definitions/http.ProblemResponse"
                         }
                     }
                 },
@@ -2750,6 +2750,19 @@ const docTemplate = `{
                 "PlanPro",
                 "PlanEnterprise"
             ]
+        },
+        "github_com_BCBP-SOLUTIONS-FZC-LLC_platform-gincommon_v2_internal_problem.FieldError": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "description": "Field is the JSON path of the invalid field (e.g. \"deadline\", \"items[0].sku\").",
+                    "type": "string"
+                },
+                "message": {
+                    "description": "Message is a fixed phrase (\"is required\", \"must be in the future\"). It never\nechoes the rejected value, which may be PII.",
+                    "type": "string"
+                }
+            }
         },
         "http.AssigneeOverrideRequest": {
             "type": "object",
@@ -2918,76 +2931,6 @@ const docTemplate = `{
                 "user_id": {
                     "type": "string",
                     "format": "uuid"
-                }
-            }
-        },
-        "http.ErrorResponse": {
-            "type": "object",
-            "properties": {
-                "active_workflows": {
-                    "description": "ActiveWorkflows is populated on 409 workflow_resolution_required\nresponses (§8.8). Count of open workflows blocking the mutation.",
-                    "type": "integer",
-                    "example": 3
-                },
-                "allowed_actions": {
-                    "description": "AllowedActions lists the P-26 resolution actions the caller may invoke.",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "example": [
-                        "replace_delegate",
-                        "stop_workflows"
-                    ]
-                },
-                "code": {
-                    "description": "Code is a legacy alias for Error kept for backwards compatibility.",
-                    "type": "string",
-                    "example": "not_found"
-                },
-                "details": {
-                    "description": "Details is populated with per-field errors for 422 validation failures.",
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/http.ValidationError"
-                    }
-                },
-                "error": {
-                    "description": "Error is the machine-readable error code (LLD §17 error taxonomy).",
-                    "type": "string",
-                    "example": "not_found"
-                },
-                "message": {
-                    "description": "Message is a human-readable explanation of the error.",
-                    "type": "string",
-                    "example": "resource not found"
-                },
-                "record_version": {
-                    "description": "RecordVersion is populated on 409 optimistic_lock_conflict responses\nso the client can re-read and retry (CONC-4).",
-                    "type": "integer",
-                    "example": 5
-                },
-                "request_id": {
-                    "description": "RequestID is the per-request UUID injected by platform-gincommon.",
-                    "type": "string",
-                    "example": "01H8XYZ0000000000000000000"
-                },
-                "status": {
-                    "description": "Status is the HTTP status code echoed in the body.",
-                    "type": "integer",
-                    "example": 404
-                },
-                "trace_id": {
-                    "description": "TraceID is the OTel W3C trace ID for cross-service correlation.",
-                    "type": "string",
-                    "example": "a3f1b2c8d4e5f60718293a4b5c6d7e8f"
-                },
-                "workflow_ids": {
-                    "description": "WorkflowIDs is populated on 409 workflow_resolution_required responses.",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 }
             }
         },
@@ -3437,6 +3380,54 @@ const docTemplate = `{
                 }
             }
         },
+        "http.ProblemResponse": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "description": "Detail is a sentence the service wrote about this occurrence. It never\ncarries exception text, SQL, secrets or tenant information.",
+                    "type": "string"
+                },
+                "errorCode": {
+                    "description": "ErrorCode is the stable, upper snake case, machine-readable code.",
+                    "type": "string"
+                },
+                "instance": {
+                    "description": "Instance is the request path (never the query string, which may carry tokens).",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "Status is the HTTP status code; it always equals the response status.",
+                    "type": "integer"
+                },
+                "tenantId": {
+                    "description": "TenantID is set only for a request with a verified tenant context.",
+                    "type": "string"
+                },
+                "timestamp": {
+                    "description": "Timestamp is when the problem was created, formatted with TimestampLayout.",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title is the short, fixed summary of the type. It never varies per occurrence.",
+                    "type": "string"
+                },
+                "traceId": {
+                    "description": "TraceID correlates the response with the server's logs and traces.",
+                    "type": "string"
+                },
+                "type": {
+                    "description": "Type is the absolute, stable type URI ({base}/{domain}/{error}), or\n\"about:blank\" for a status without a registered type (RFC 9457 §4.2.1).",
+                    "type": "string"
+                },
+                "validationErrors": {
+                    "description": "ValidationErrors lists the invalid fields of a validation-failed problem.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_BCBP-SOLUTIONS-FZC-LLC_platform-gincommon_v2_internal_problem.FieldError"
+                    }
+                }
+            }
+        },
         "http.PublicTenantResolveResponse": {
             "type": "object",
             "properties": {
@@ -3728,26 +3719,6 @@ const docTemplate = `{
                 },
                 "updated_at": {
                     "type": "string"
-                }
-            }
-        },
-        "http.ValidationError": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "description": "Code is the machine-readable violation code.",
-                    "type": "string",
-                    "example": "out_of_range"
-                },
-                "field": {
-                    "description": "Field is the JSON path of the failing field.",
-                    "type": "string",
-                    "example": "mfa_freshness_seconds"
-                },
-                "message": {
-                    "description": "Message is a human-readable explanation of the field violation.",
-                    "type": "string",
-                    "example": "must be between 60 and 900"
                 }
             }
         },

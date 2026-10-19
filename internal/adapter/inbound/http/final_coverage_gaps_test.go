@@ -6,7 +6,6 @@
 //
 //   - asyncapi.go:140.16,146.3          AsyncAPIHandler error path
 //   - department_handler.go:180.47,183.3 Patch ShouldBindJSON error path
-//   - errors.go:28.58,30.4              newErrorResponse RequestIDFromContext non-empty
 //   - internal_handler.go:115.16,118.3   ProvisionTenant service error
 //   - internal_handler.go:187.169,190.3  PatchTenantRealm service error
 //   - internal_handler.go:289.22,291.3   AddMember kcID == uuid.Nil fallback
@@ -38,28 +37,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// ── errors.go:28.58,30.4 — newErrorResponse RequestIDFromContext non-empty ──
-//
-// gincommon.RequestIDFromContext(c) reads c.GetString("request_id"). Setting
-// that key directly in the gin context before calling HandleError makes the
-// non-empty branch reachable without the full middleware stack.
-
-// TestNewErrorResponse_RequestIDFromContext_PopulatesRequestID verifies that
-// when the gincommon request_id key is set in the gin context, newErrorResponse
-// captures it into er.RequestID (errors.go line 29).
-func TestNewErrorResponse_RequestIDFromContext_PopulatesRequestID(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
-	c.Request = req
-	// Set the gincommon request_id key — RequestIDFromContext reads this string key.
-	c.Set("request_id", "req-abc-123")
-
-	er := newErrorResponse(c, "test_code", "test message", nil)
-	assert.Equal(t, "req-abc-123", er.RequestID,
-		"newErrorResponse must capture request_id from the gin context (errors.go line 29)")
-}
 
 // ── asyncapi.go:140.16,146.3 — AsyncAPIHandler loadAsyncSpec error branch ──
 //
@@ -106,7 +83,7 @@ func TestDeptPatch_MalformedJSONBody_400(t *testing.T) {
 
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // ── internal_handler.go:115.16,118.3 — ProvisionTenant service error ──
@@ -383,7 +360,7 @@ func TestAssigneeOverride_BadTenantUUID_Covers679(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{}`, systemCtx())
 	setParams(c, "id", "not-a-valid-uuid", "tender_id", uuid.New().String())
 	h.AssigneeOverride(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── invitation_handler.go:104.2,104.57 — Invite c.JSON happy path ──
@@ -493,7 +470,7 @@ func TestInvitationRevoke_MalformedJSONBody_400(t *testing.T) {
 
 	h.Revoke(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // ── middleware.go:97.21,103.4 — GUCBridgeMiddleware errResp != nil path ──
@@ -512,8 +489,8 @@ func TestGUCBridgeMiddleware_ParseBridgedIdentityErrorPath(t *testing.T) {
 		TenantIDStr: "definitely-not-a-uuid",
 	})
 	require.NotNil(t, errResp, "parseBridgedIdentity must return errResp for invalid tenant UUID")
-	assert.Equal(t, http.StatusUnauthorized, errResp.Status)
-	assert.Contains(t, errResp.Message, "x-tenant-id")
+	assert.Equal(t, http.StatusUnauthorized, errResp.Type.Status)
+	assert.Contains(t, errResp.Detail, "x-tenant-id")
 }
 
 // TestGUCBridgeMiddleware_WithValidContext_PassesThrough confirms the factory
@@ -562,7 +539,7 @@ func TestRequireActiveTenant_TenantNotFound_Returns404(t *testing.T) {
 
 	assert.True(t, c.IsAborted(), "ErrTenantNotFound must abort the request")
 	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Contains(t, w.Body.String(), "tenant_not_found")
+	assert.Contains(t, w.Body.String(), "NOT_FOUND")
 }
 
 // ── middleware.go:282.3,282.11 — RequireActiveMembership c.Next() happy path ──

@@ -96,7 +96,7 @@ func TestMembershipPatch_NonAdminSameTenant_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P7-M-12: repo returns optimistic_lock_conflict → 409 (CONC-4).
@@ -112,7 +112,7 @@ func TestMembershipPatch_OptimisticLockConflict_409(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "optimistic_lock_conflict")
+	assertErrorCode(t, w, http.StatusConflict, "OPTIMISTIC_LOCK_CONFLICT")
 }
 
 // P7-M-13: user not a tenant member → 404 member_not_found.
@@ -128,7 +128,7 @@ func TestMembershipPatch_MemberNotFound_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // P7-M-14: WFI-13 advisory present when workflow client reports active_workflows > 0.
@@ -190,7 +190,7 @@ func TestMembershipPatch_TenderAdminForbidden_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P7-NF-02: suspend a soft-deleted (left) user → 404 member_not_found.
@@ -207,7 +207,7 @@ func TestMembershipPatch_SuspendLeftUser_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "member_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
 // ── P-8 MembershipHandler.Remove (handler-layer auth gate only) ──────────────
@@ -223,7 +223,7 @@ func TestMembershipRemove_NonAdminSameTenant_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ── P-26 MembershipHandler.RemovalResolution ─────────────────────────────────
@@ -281,7 +281,7 @@ func TestRemovalResolution_UnknownAction_422(t *testing.T) {
 	h.RemovalResolution(c)
 
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "invalid_action")
+	assert.Contains(t, w.Body.String(), "INVALID_ACTION")
 }
 
 // P26-M-04: non-admin caller → 403.
@@ -293,11 +293,11 @@ func TestRemovalResolution_NonAdminSameTenant_403(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.RemovalResolution(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P26-M-05: replace_delegate with nil replacement_user_id → 400 (ErrValidation).
-// LLD §8.8.3 names this "invalid_replacement" but the code returns ErrValidation
+// LLD §8.8.3 names this "BUSINESS_RULE_VIOLATION" but the code returns ErrValidation
 // (missing field is a 400, not a 422 precondition failure).
 func TestRemovalResolution_ReplaceDelegate_MissingReplacement_400(t *testing.T) {
 	tenantID := uuid.New()

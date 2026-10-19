@@ -6,6 +6,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,8 +27,8 @@ func NewDeptMembershipHandler(svc *service.DeptMembershipService) *DeptMembershi
 // @Param        id       path      string                  true  "Tenant UUID"    format(uuid)
 // @Param        dept_id  path      string                  true  "Department UUID" format(uuid)
 // @Success      200      {object}  DeptMemberListResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      404      {object}  ErrorResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      404      {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -71,9 +72,9 @@ func (h *DeptMembershipHandler) List(c *gin.Context) {
 // @Param        user_id  path      string                    true  "User UUID"       format(uuid)
 // @Param        request  body      DeptMembershipPutRequest  true  "Level payload"
 // @Success      200      {object}  DeptMembershipAssignResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      422      {object}  ErrorResponse  "department_not_active_for_tenant"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      422      {object}  ProblemResponse  "department_not_active_for_tenant"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -99,8 +100,8 @@ func (h *DeptMembershipHandler) Assign(c *gin.Context) {
 		return
 	}
 	var req DeptMembershipPutRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	rc, _ := requestctx.FromContext(c.Request.Context())
@@ -127,9 +128,9 @@ func (h *DeptMembershipHandler) Assign(c *gin.Context) {
 // @Param        dept_id  path      string  true  "Department UUID" format(uuid)
 // @Param        user_id  path      string  true  "User UUID"       format(uuid)
 // @Success      200      {object}  DeptMembershipRemoveResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      404      {object}  ErrorResponse
-// @Failure      409      {object}  ErrorResponse  "workflow_resolution_required (§8.8.4)"
+// @Failure      403      {object}  ProblemResponse
+// @Failure      404      {object}  ProblemResponse
+// @Failure      409      {object}  ProblemResponse  "workflow_resolution_required (§8.8.4)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles

@@ -27,7 +27,7 @@ func TestListDeptMembers_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus", "dept_id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P8-002
@@ -39,7 +39,7 @@ func TestListDeptMembers_InvalidDeptID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "dept_id", "bogus")
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P8-003
@@ -51,7 +51,7 @@ func TestListDeptMembers_MissingIdentity(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
 	setParams(c, "id", tenant.String(), "dept_id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // Test Case ID:      P9-P8-004
@@ -63,7 +63,7 @@ func TestListDeptMembers_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "dept_id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -78,7 +78,7 @@ func TestListInvitations_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bogus")
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-P30-002
@@ -89,7 +89,7 @@ func TestListInvitations_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // Test Case ID:      P9-P30-003
@@ -100,7 +100,7 @@ func TestListInvitations_MissingIdentity(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, nil)
 	setParams(c, "id", uuid.New().String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -115,7 +115,7 @@ func TestP9I5001_DeleteMemberInternal_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, systemCtx())
 	setParams(c, "id", "bogus", "user_id", uuid.New().String())
 	h.DeleteMember(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-I5-002
@@ -126,7 +126,7 @@ func TestP9I5002_DeleteMemberInternal_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, systemCtx())
 	setParams(c, "id", uuid.New().String(), "user_id", "bogus")
 	h.DeleteMember(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -141,7 +141,7 @@ func TestP9I8001_GetMemberships_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/?tenant_id="+uuid.New().String(), ``, systemCtx())
 	setParams(c, "id", "bogus")
 	h.GetMemberships(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-I8-002
@@ -170,7 +170,7 @@ func TestP9I9001_GetLocale_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
 	setParams(c, "id", "bogus")
 	h.GetLocale(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -185,7 +185,7 @@ func TestP9I11001_GetSeatUsage_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
 	setParams(c, "id", "bogus")
 	h.GetSeatUsage(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // I-6 (InternalHandler.CheckTenderAccess) — retired ADR-0007 Wave 3 Phase 6,
@@ -207,7 +207,7 @@ func TestCheckMemberExists_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
 	setParams(c, "id", "bogus", "user_id", uuid.New().String())
 	h.CheckMemberExists(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestCheckMemberExists_InvalidUserID(t *testing.T) {
@@ -215,7 +215,7 @@ func TestCheckMemberExists_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
 	setParams(c, "id", uuid.New().String(), "user_id", "bogus")
 	h.CheckMemberExists(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -231,7 +231,7 @@ func TestP9I10001_AssignFromGroups_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
 	setParams(c, "id", "bogus")
 	h.AssignFromGroups(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-I10-002
@@ -242,7 +242,7 @@ func TestP9I10002_AssignFromGroups_MissingUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodPost, "/", `{"groups":["eng"]}`, systemCtx())
 	setParams(c, "id", uuid.New().String())
 	h.AssignFromGroups(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // Test Case ID:      P9-I10-003
@@ -270,7 +270,7 @@ func TestSetFeatureFlags_NoAuth_401(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"feature_flags":{"sso_enabled":true}}`, nil)
 	setParams(c, "id", uuid.New().String())
 	h.SetFeatureFlags(c)
-	assertErrorCode(t, w, http.StatusUnauthorized, "missing_identity_headers")
+	assertErrorCode(t, w, http.StatusUnauthorized, "MISSING_IDENTITY_HEADERS")
 }
 
 // Test Case ID:      O4-A-03
@@ -285,5 +285,5 @@ func TestSetFeatureFlags_TenantAdmin_403(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"feature_flags":{"sso_enabled":true}}`, rc)
 	setParams(c, "id", uuid.New().String())
 	h.SetFeatureFlags(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }

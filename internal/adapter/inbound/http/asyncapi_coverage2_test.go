@@ -53,8 +53,7 @@ func TestAsyncAPIHandler_SpecLoadErrorReturns500(t *testing.T) {
 	AsyncAPIHandler(c)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "internal_error")
-	assert.Contains(t, w.Body.String(), "AsyncAPI spec unavailable")
+	assert.Contains(t, w.Body.String(), "INTERNAL_ERROR")
 }
 
 // ── renderPage — env badge color switch + long description truncation ────

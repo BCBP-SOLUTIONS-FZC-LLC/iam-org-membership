@@ -5,12 +5,10 @@
 // TestRouter_I16_* pattern in router_i16_crosstenant_test.go — the
 // gincommon RequestContext type is internal to that module and cannot be
 // constructed directly), RequireJSONContentType's POST-with-empty-body
-// branch, the bufferedWriter helper methods, HandleError's errorLogger
-// call site, and RequireActiveTenant's ErrTenantNotFound lookup branch.
+// branch, and RequireActiveTenant's ErrTenantNotFound lookup branch.
 package http
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -19,11 +17,10 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/pkg/gincommon"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -42,7 +39,7 @@ func TestRequireActiveMembership_MemberNotFound_Returns403(t *testing.T) {
 
 	assert.True(t, c.IsAborted())
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Equal(t, "insufficient_role", decodeBody(t, w)["code"])
+	assert.Equal(t, "FORBIDDEN", decodeBody(t, w)["errorCode"])
 }
 
 func TestRequireActiveMembership_RepoError_PassesThroughToHandler(t *testing.T) {
@@ -76,7 +73,7 @@ func TestRequireActiveMembership_SuspendedMember_Returns403(t *testing.T) {
 	assert.True(t, c.IsAborted())
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "insufficient_role", body["code"])
+	assert.Equal(t, "FORBIDDEN", body["errorCode"])
 }
 
 func TestRequireActiveMembership_ActiveMember_Proceeds(t *testing.T) {
@@ -118,7 +115,7 @@ func TestGUCBridgeMiddleware_MalformedUserIDHeader_Returns401ViaRouter(t *testin
 	router.Handler().ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "missing_identity_headers")
+	assert.Contains(t, w.Body.String(), "UNAUTHORIZED")
 }
 
 func TestGUCBridgeMiddleware_MalformedTenantIDHeader_Returns401ViaRouter(t *testing.T) {
@@ -135,7 +132,7 @@ func TestGUCBridgeMiddleware_MalformedTenantIDHeader_Returns401ViaRouter(t *test
 	router.Handler().ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "missing_identity_headers")
+	assert.Contains(t, w.Body.String(), "UNAUTHORIZED")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -157,79 +154,6 @@ func TestRequireJSONContentType_SkipsEmptyBodyOnPOST(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// bufferedWriter — Write / Status / Written / WriteString direct coverage.
-// ─────────────────────────────────────────────────────────────────────────
-
-// newBufferedWriterForTest builds a bufferedWriter wrapping a real
-// gin.ResponseWriter (httptest.ResponseRecorder alone doesn't implement the
-// gin.ResponseWriter interface — it's missing CloseNotify etc.).
-func newBufferedWriterForTest() *bufferedWriter {
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	return &bufferedWriter{ResponseWriter: c.Writer, buf: new(bytes.Buffer)}
-}
-
-func TestBufferedWriter_WriteSetsStatusOKWhenUnset(t *testing.T) {
-	bw := newBufferedWriterForTest()
-
-	n, err := bw.Write([]byte("hello"))
-	require.NoError(t, err)
-	assert.Equal(t, 5, n)
-	assert.True(t, bw.passthrough, "a write with no status is an implicit 200, written through")
-	assert.Equal(t, http.StatusOK, bw.Status())
-}
-
-func TestBufferedWriter_StatusFallsBackToWrappedWriterWhenUnset(t *testing.T) {
-	bw := newBufferedWriterForTest()
-
-	// status field is zero — Status() must delegate to the wrapped
-	// gin.ResponseWriter (defaults to 200 on a fresh writer).
-	assert.Equal(t, bw.ResponseWriter.Status(), bw.Status())
-}
-
-func TestBufferedWriter_StatusReturnsBufferedValueWhenSet(t *testing.T) {
-	bw := newBufferedWriterForTest()
-	bw.WriteHeader(http.StatusTeapot)
-
-	assert.Equal(t, http.StatusTeapot, bw.Status())
-}
-
-func TestBufferedWriter_WrittenReflectsBufferedState(t *testing.T) {
-	bw := newBufferedWriterForTest()
-	assert.False(t, bw.Written())
-
-	_, _ = bw.Write([]byte("x"))
-	assert.True(t, bw.Written())
-}
-
-func TestBufferedWriter_WriteString(t *testing.T) {
-	bw := newBufferedWriterForTest()
-
-	bw.WriteHeader(http.StatusUnauthorized)
-	n, err := bw.WriteString("hi")
-	require.NoError(t, err)
-	assert.Equal(t, 2, n)
-	assert.Equal(t, "hi", bw.buf.String())
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// HandleError — errorLogger != nil call site on the unhandled-500 branch.
-// ─────────────────────────────────────────────────────────────────────────
-
-func TestHandleError_LogsThroughErrorLoggerWhenSet(t *testing.T) {
-	orig := errorLogger
-	logger := &rcTestLogger{}
-	errorLogger = logger
-	defer func() { errorLogger = orig }()
-
-	c, w := newTestContext(nil)
-	HandleError(c, errors.New("boom, unhandled"))
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.True(t, logger.errorCalled, "unhandled 500s must log through errorLogger when set")
-}
-
-// ─────────────────────────────────────────────────────────────────────────
 // RequireActiveTenant — ErrTenantNotFound lookup branch (distinct from the
 // generic-error-falls-through branch already covered in
 // require_active_tenant_test.go).
@@ -246,5 +170,5 @@ func TestRequireActiveTenant_LookupErrorTenantNotFound_Returns404(t *testing.T) 
 
 	assert.True(t, c.IsAborted())
 	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Equal(t, "tenant_not_found", decodeBody(t, w)["code"])
+	assert.Equal(t, "TENANT_NOT_FOUND", decodeBody(t, w)["errorCode"])
 }

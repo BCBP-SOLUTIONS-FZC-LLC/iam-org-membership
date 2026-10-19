@@ -152,7 +152,7 @@ func TestInternalCheckMemberExists_Active_200Active_True(t *testing.T) {
 // non-ErrMemberNotFound error from FindByUserID propagates as an HTTP error.
 func TestInternalCheckMemberExists_ServiceError_Propagates(t *testing.T) {
 	mem := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
-		return nil, errors.New("db_unavailable")
+		return nil, errors.New("SERVICE_UNAVAILABLE")
 	}}
 	svc := service.NewMembershipService(
 		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
@@ -184,7 +184,7 @@ func TestInternalAssignFromGroups_NilUserID_Returns400(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.AssignFromGroups(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // TestInternalAssignFromGroups_MalformedBody_Returns400 verifies that a
@@ -197,7 +197,7 @@ func TestInternalAssignFromGroups_MalformedBody_Returns400(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.AssignFromGroups(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // agsGroupMappingClient is a port.GroupMappingClient stub for AssignFromGroups tests.

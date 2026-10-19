@@ -63,7 +63,7 @@ func TestInvitationRevoke_InvalidTenantID_400(t *testing.T) {
 	setParams(c, "id", "not-a-uuid", "invitation_id", uuid.New().String())
 	h.Revoke(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P31-M-03: malformed invitation_id path param → 400 invalid_uuid.
@@ -75,7 +75,7 @@ func TestInvitationRevoke_InvalidInvitationID_400(t *testing.T) {
 	setParams(c, "id", tenant.String(), "invitation_id", "not-a-uuid")
 	h.Revoke(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P31-M-04: malformed JSON body (Content-Length > 0) → 400 validation_error.
@@ -87,7 +87,7 @@ func TestInvitationRevoke_MalformedBody_400(t *testing.T) {
 	setParams(c, "id", tenant.String(), "invitation_id", invID.String())
 	h.Revoke(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 // P31-M-05: legacy query-string record_version is not a valid integer → 400.
@@ -101,5 +101,5 @@ func TestInvitationRevoke_InvalidQueryVersion_400(t *testing.T) {
 	c.Request.URL.RawQuery = "record_version=not-a-number"
 	h.Revoke(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }

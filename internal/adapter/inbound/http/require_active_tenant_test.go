@@ -87,14 +87,14 @@ func TestRequireActiveTenant_TrialExpired_BlocksRead(t *testing.T) {
 	w, called := runGate(t, http.MethodGet, domain.StatusTrialExpired, []string{"tenant_owner"})
 	assert.False(t, called, "handler must NOT run — TRIAL-4 forbids reads")
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Equal(t, "tenant_trial_expired", decodeErr(t, w)["code"])
+	assert.Equal(t, "TENANT_TRIAL_EXPIRED", decodeErr(t, w)["errorCode"])
 }
 
 func TestRequireActiveTenant_TrialExpired_BlocksWrite(t *testing.T) {
 	w, called := runGate(t, http.MethodPatch, domain.StatusTrialExpired, []string{"tenant_owner"})
 	assert.False(t, called)
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	assert.Equal(t, "tenant_trial_expired", decodeErr(t, w)["code"])
+	assert.Equal(t, "TENANT_TRIAL_EXPIRED", decodeErr(t, w)["errorCode"])
 }
 
 func TestRequireActiveTenant_TrialExpired_BlocksInvite(t *testing.T) {
@@ -111,7 +111,7 @@ func TestRequireActiveTenant_Suspended_BlocksAllMethods(t *testing.T) {
 			w, called := runGate(t, method, domain.StatusSuspended, []string{"tenant_owner"})
 			assert.False(t, called)
 			assert.Equal(t, http.StatusForbidden, w.Code)
-			assert.Equal(t, "tenant_suspended", decodeErr(t, w)["code"])
+			assert.Equal(t, "TENANT_SUSPENDED", decodeErr(t, w)["errorCode"])
 		})
 	}
 }
@@ -122,7 +122,7 @@ func TestRequireActiveTenant_Offboarded_Returns404(t *testing.T) {
 	w, called := runGate(t, http.MethodGet, domain.StatusOffboarded, []string{"tenant_owner"})
 	assert.False(t, called)
 	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Equal(t, "tenant_not_found", decodeErr(t, w)["code"])
+	assert.Equal(t, "TENANT_NOT_FOUND", decodeErr(t, w)["errorCode"])
 }
 
 // ─── cancelled → reads pass, writes 403 (§16 A53 read-only) ───────────
@@ -139,7 +139,7 @@ func TestRequireActiveTenant_Cancelled_BlocksWrite(t *testing.T) {
 			w, called := runGate(t, method, domain.StatusCancelled, []string{"tenant_owner"})
 			assert.False(t, called)
 			assert.Equal(t, http.StatusForbidden, w.Code)
-			assert.Equal(t, "tenant_read_only", decodeErr(t, w)["code"])
+			assert.Equal(t, "TENANT_READ_ONLY", decodeErr(t, w)["errorCode"])
 		})
 	}
 }

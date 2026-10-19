@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
 	"github.com/google/uuid"
 )
 
@@ -228,48 +229,13 @@ func (r OperatorReassignOwnerRequest) EffectiveUserID() uuid.UUID {
 	return r.NewOwnerUserID
 }
 
-// ── Error envelope (§17) ───────────────────────────────────────────────
+// ── Error envelope (RFC 9457) ─────────────────────────────────────────
 //
-// ErrorResponse is the unified error body for all non-2xx responses.
-// It mirrors the sibling iam-user-profile2 shape so tooling can correlate
-// by trace/request ID. Details is populated for 422 validation failures.
-type ErrorResponse struct {
-	// Error is the machine-readable error code (LLD §17 error taxonomy).
-	Error string `json:"error" example:"not_found"`
-	// Status is the HTTP status code echoed in the body.
-	Status int `json:"status" example:"404"`
-	// TraceID is the OTel W3C trace ID for cross-service correlation.
-	TraceID string `json:"trace_id,omitempty" example:"a3f1b2c8d4e5f60718293a4b5c6d7e8f"`
-	// RequestID is the per-request UUID injected by platform-gincommon.
-	RequestID string `json:"request_id,omitempty" example:"01H8XYZ0000000000000000000"`
-	// Code is a legacy alias for Error kept for backwards compatibility.
-	Code string `json:"code" example:"not_found"`
-	// Message is a human-readable explanation of the error.
-	Message string `json:"message" example:"resource not found"`
-	// Details is populated with per-field errors for 422 validation failures.
-	Details []ValidationError `json:"details,omitempty"`
-	// RecordVersion is populated on 409 optimistic_lock_conflict responses
-	// so the client can re-read and retry (CONC-4).
-	RecordVersion *int64 `json:"record_version,omitempty" example:"5"`
-	// ActiveWorkflows is populated on 409 workflow_resolution_required
-	// responses (§8.8). Count of open workflows blocking the mutation.
-	ActiveWorkflows *int `json:"active_workflows,omitempty" example:"3"`
-	// WorkflowIDs is populated on 409 workflow_resolution_required responses.
-	WorkflowIDs []uuid.UUID `json:"workflow_ids,omitempty"`
-	// AllowedActions lists the P-26 resolution actions the caller may invoke.
-	AllowedActions []string `json:"allowed_actions,omitempty" example:"replace_delegate,stop_workflows"`
-}
-
-// ValidationError is a single field-level validation failure embedded in
-// ErrorResponse.Details for 422 responses.
-type ValidationError struct {
-	// Field is the JSON path of the failing field.
-	Field string `json:"field" example:"mfa_freshness_seconds"`
-	// Code is the machine-readable violation code.
-	Code string `json:"code" example:"out_of_range"`
-	// Message is a human-readable explanation of the field violation.
-	Message string `json:"message" example:"must be between 60 and 900"`
-}
+// ProblemResponse is the RFC 9457 Problem Details type returned for all
+// non-2xx responses (application/problem+json). It is the platform-gincommon
+// canonical type; all @Failure Swagger annotations reference this alias so
+// the generated spec reflects the standardized error contract.
+type ProblemResponse = problem.Problem
 
 // ── Swagger-only wrappers ──────────────────────────────────────────────
 // These structs mirror the gin.H maps returned by list/collection handlers

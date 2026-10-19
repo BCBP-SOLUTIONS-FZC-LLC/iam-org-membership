@@ -25,7 +25,7 @@ func TestG3_ErrNoMutableField_MapsTo400(t *testing.T) {
 	HandleError(c, domain.NewError(domain.ErrNoMutableField, "at least one of name or is_active"))
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "no_mutable_field", body["code"])
+	assert.Equal(t, "NO_MUTABLE_FIELD", body["errorCode"])
 }
 
 func TestG2_ErrCannotRemoveOwner_MapsTo403(t *testing.T) {
@@ -33,7 +33,7 @@ func TestG2_ErrCannotRemoveOwner_MapsTo403(t *testing.T) {
 	HandleError(c, domain.NewError(domain.ErrCannotRemoveOwner, "cannot remove sole owner without operator"))
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "cannot_remove_owner", body["code"])
+	assert.Equal(t, "CANNOT_REMOVE_OWNER", body["errorCode"])
 }
 
 func TestG2_ErrDepartmentAlreadyActivated_MapsTo409(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -32,8 +33,8 @@ func NewMembershipHandler(svc *service.MembershipService) *MembershipHandler {
 // @Param        limit   query     integer                  false  "Page size (1..200, default 50)"
 // @Param        cursor  query     string                   false  "Base64-encoded opaque cursor from previous response"
 // @Success      200     {object}  MembershipListResponse
-// @Failure      400     {object}  ErrorResponse
-// @Failure      403     {object}  ErrorResponse
+// @Failure      400     {object}  ProblemResponse
+// @Failure      403     {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -100,8 +101,8 @@ func (h *MembershipHandler) List(c *gin.Context) {
 // @Param        id       path      string               true  "Tenant UUID"  format(uuid)
 // @Param        user_id  path      string               true  "User UUID"    format(uuid)
 // @Success      200      {object}  MemberItemResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      404      {object}  ErrorResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      404      {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -140,9 +141,9 @@ func (h *MembershipHandler) Get(c *gin.Context) {
 // @Param        user_id  path      string                  true  "User UUID"       format(uuid)
 // @Param        request  body      MembershipPatchRequest  true  "Status payload"
 // @Success      200      {object}  MembershipPatchResponse
-// @Failure      400      {object}  ErrorResponse
-// @Failure      403      {object}  ErrorResponse
-// @Failure      409      {object}  ErrorResponse  "record_version mismatch (CONC-4)"
+// @Failure      400      {object}  ProblemResponse
+// @Failure      403      {object}  ProblemResponse
+// @Failure      409      {object}  ProblemResponse  "record_version mismatch (CONC-4)"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -163,8 +164,8 @@ func (h *MembershipHandler) Patch(c *gin.Context) {
 		return
 	}
 	var req MembershipPatchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	if req.Status == nil {
@@ -208,9 +209,9 @@ func (h *MembershipHandler) Patch(c *gin.Context) {
 // @Param        user_id  path      string           true  "User UUID"    format(uuid)
 // @Param        request  body      RolesPutRequest  true  "Desired roles"
 // @Success      200      {object}  RolesReconcileResponse
-// @Failure      400      {object}  ErrorResponse  "invalid_role (TR-7)"
-// @Failure      403      {object}  ErrorResponse
-// @Failure      422      {object}  ErrorResponse  "last_owner_removal"
+// @Failure      400      {object}  ProblemResponse  "invalid_role (TR-7)"
+// @Failure      403      {object}  ProblemResponse
+// @Failure      422      {object}  ProblemResponse  "last_owner_removal"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -231,8 +232,8 @@ func (h *MembershipHandler) ReconcileRoles(c *gin.Context) {
 		return
 	}
 	var req RolesPutRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	rc, _ := requestctx.FromContext(c.Request.Context())
@@ -272,8 +273,8 @@ func (h *MembershipHandler) ReconcileRoles(c *gin.Context) {
 // @Produce      json
 // @Param        id   path      string             true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  SeatUsageResponse
-// @Failure      403  {object}  ErrorResponse
-// @Failure      404  {object}  ErrorResponse
+// @Failure      403  {object}  ProblemResponse
+// @Failure      404  {object}  ProblemResponse
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -318,8 +319,8 @@ func (h *MembershipHandler) SeatUsage(c *gin.Context) {
 // @Param        id       path  string  true  "Tenant UUID"   format(uuid)
 // @Param        user_id  path  string  true  "User UUID"     format(uuid)
 // @Success      204
-// @Failure      409      {object}  ErrorResponse  "workflow_resolution_required"
-// @Failure      422      {object}  ErrorResponse  "last_owner_removal"
+// @Failure      409      {object}  ProblemResponse  "workflow_resolution_required"
+// @Failure      422      {object}  ProblemResponse  "last_owner_removal"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -357,9 +358,9 @@ func (h *MembershipHandler) Remove(c *gin.Context) {
 // @Param        id       path  string  true  "Tenant UUID"   format(uuid)
 // @Param        user_id  path  string  true  "User UUID"     format(uuid)
 // @Success      204
-// @Failure      404      {object}  ErrorResponse  "member_not_found"
-// @Failure      422      {object}  ErrorResponse  "member_not_active"
-// @Failure      503      {object}  ErrorResponse  "realm_provisioner_unavailable"
+// @Failure      404      {object}  ProblemResponse  "member_not_found"
+// @Failure      422      {object}  ProblemResponse  "member_not_active"
+// @Failure      503      {object}  ProblemResponse  "realm_provisioner_unavailable"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -400,8 +401,8 @@ func (h *MembershipHandler) ResetMFA(c *gin.Context) {
 // @Param        user_id  path  string                       true  "User UUID"     format(uuid)
 // @Param        body     body  RemovalResolutionRequest     true  "action + replacement"
 // @Success      204
-// @Failure      422      {object}  ErrorResponse  "invalid_action | invalid_replacement"
-// @Failure      503      {object}  ErrorResponse  "workflow_service_unavailable"
+// @Failure      422      {object}  ProblemResponse  "invalid_action | invalid_replacement"
+// @Failure      503      {object}  ProblemResponse  "workflow_service_unavailable"
 // @Security     UserID
 // @Security     TenantID
 // @Security     TenantRoles
@@ -422,8 +423,8 @@ func (h *MembershipHandler) RemovalResolution(c *gin.Context) {
 		return
 	}
 	var req RemovalResolutionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "invalid request body"))
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
 		return
 	}
 	rc, _ := requestctx.FromContext(c.Request.Context())

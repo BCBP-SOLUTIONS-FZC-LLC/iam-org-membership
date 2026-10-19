@@ -30,7 +30,7 @@ func TestDeptActivate_MissingDeptID_400(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // P24-AUTH-04: tender_admin → 403 (AUTH-2 excludes tender_admin).
@@ -45,7 +45,7 @@ func TestDeptActivate_TenderAdminForbidden_403(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
 
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // P24-IDEMPOTENT-01: repo returns ErrDepartmentAlreadyActivated → 200 idempotent (LLD §5.4 P-24).
@@ -71,7 +71,7 @@ func TestDeptActivate_AlreadyActivated_409(t *testing.T) {
 	h.Activate(c)
 
 	// P-24 conflict: already-active → 409 department_already_activated (TD-7).
-	assertErrorCode(t, w, http.StatusConflict, "department_already_activated")
+	assertErrorCode(t, w, http.StatusConflict, "DEPARTMENT_ALREADY_ACTIVATED")
 }
 
 // P24-422-01: catalog dept is globally retired → 422 department_retired (Bug B-12 fix).
@@ -91,7 +91,7 @@ func TestDeptActivate_RetiredDept_422(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "department_retired")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "DEPARTMENT_RETIRED")
 }
 
 // P24-NF-01: unknown department_id not in global catalog → 404.
@@ -108,7 +108,7 @@ func TestDeptActivate_UnknownDeptID_404(t *testing.T) {
 	setParams(c, "id", tenantID.String())
 	h.Activate(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "department_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "DEPARTMENT_NOT_FOUND")
 }
 
 // ── P-25 DepartmentHandler.Patch — additional branches ───────────────────────
@@ -128,7 +128,7 @@ func TestDeptPatch_OptimisticLockConflict_409(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", deptID.String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusConflict, "optimistic_lock_conflict")
+	assertErrorCode(t, w, http.StatusConflict, "OPTIMISTIC_LOCK_CONFLICT")
 }
 
 // P25-422-01: deactivate a system department → 422 system_department_cannot_be_retired.
@@ -151,7 +151,7 @@ func TestDeptPatch_SystemDeptRetire_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", deptID.String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "system_department_cannot_be_retired")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "SYSTEM_DEPARTMENT_CANNOT_BE_RETIRED")
 }
 
 // P25-NF-01: dept not activated for tenant → 404.
@@ -169,7 +169,7 @@ func TestDeptPatch_NotActivated_404(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", deptID.String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusNotFound, "department_not_found")
+	assertErrorCode(t, w, http.StatusNotFound, "DEPARTMENT_NOT_FOUND")
 }
 
 // P25-422-02: reactivate (is_active=true) a globally retired dept → 422 department_retired (TD-1/D-5, Bug B-14 fix).
@@ -187,7 +187,7 @@ func TestDeptPatch_ReactivateRetiredDept_422(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", deptID.String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusUnprocessableEntity, "department_retired")
+	assertErrorCode(t, w, http.StatusUnprocessableEntity, "DEPARTMENT_RETIRED")
 }
 
 // P25-M-02: missing is_active field → 400.
@@ -200,5 +200,5 @@ func TestDeptPatch_MissingIsActive_400(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }

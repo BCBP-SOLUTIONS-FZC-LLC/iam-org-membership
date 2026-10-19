@@ -12,7 +12,7 @@
 # first steps, before the expensive build — a lint failure never starts the
 # build, and there's no separate lint-dockerfile job to pay a job-minute for.
 # validate-test runs the race+coverage gate and gates trivy/smoke (correctness).
-# validate-quality gates push/release only (style + lint).
+# validate-quality gates push/release only (style + lint + Helm chart validation).
 # pr-summary posts a status table on pull_request events (skipped if upstream jobs fail).
 #
 # paths-ignore skips this entire (expensive) pipeline for commits that only
@@ -187,6 +187,7 @@ jobs:
           output: trivy-results.sarif
           exit-code: '0'
           ignore-unfixed: true
+          trivyignores: .trivyignore
           cache-dir: /tmp/trivy-cache
 
       - name: Upload SARIF to GitHub Security tab

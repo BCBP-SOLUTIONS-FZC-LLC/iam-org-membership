@@ -23,7 +23,7 @@ func TestMembershipPatch_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestMembershipPatch_InvalidUserID(t *testing.T) {
@@ -32,7 +32,7 @@ func TestMembershipPatch_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "bogus")
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestMembershipPatch_CrossTenant(t *testing.T) {
@@ -42,7 +42,7 @@ func TestMembershipPatch_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{}`, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "user_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 func TestMembershipPatch_MalformedJSON(t *testing.T) {
@@ -51,7 +51,7 @@ func TestMembershipPatch_MalformedJSON(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 func TestMembershipPatch_MissingStatus(t *testing.T) {
@@ -60,7 +60,7 @@ func TestMembershipPatch_MissingStatus(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"record_version":1}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestMembershipPatch_InvalidStatus(t *testing.T) {
@@ -70,5 +70,5 @@ func TestMembershipPatch_InvalidStatus(t *testing.T) {
 		`{"status":"deleted","record_version":1}`, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "validation_error")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }

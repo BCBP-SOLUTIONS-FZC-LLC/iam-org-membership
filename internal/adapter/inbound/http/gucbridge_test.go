@@ -58,9 +58,9 @@ func TestParseBridgedIdentity_InvalidUserIDReturns401(t *testing.T) {
 	})
 	require.Nil(t, rc, "malformed user id yields no rc")
 	require.NotNil(t, er)
-	assert.Equal(t, http.StatusUnauthorized, er.Status)
-	assert.Equal(t, "missing_identity_headers", er.Code)
-	assert.Contains(t, er.Message, "x-user-id")
+	assert.Equal(t, http.StatusUnauthorized, er.Type.Status)
+	assert.Equal(t, "UNAUTHORIZED", er.Type.Code)
+	assert.Contains(t, er.Detail, "x-user-id")
 }
 
 func TestParseBridgedIdentity_InvalidTenantIDReturns401(t *testing.T) {
@@ -70,8 +70,8 @@ func TestParseBridgedIdentity_InvalidTenantIDReturns401(t *testing.T) {
 	})
 	require.Nil(t, rc)
 	require.NotNil(t, er)
-	assert.Equal(t, http.StatusUnauthorized, er.Status)
-	assert.Contains(t, er.Message, "x-tenant-id")
+	assert.Equal(t, http.StatusUnauthorized, er.Type.Status)
+	assert.Contains(t, er.Detail, "x-tenant-id")
 }
 
 func TestParseBridgedIdentity_IamSystemStillRequiresValidTenantID(t *testing.T) {
@@ -83,7 +83,7 @@ func TestParseBridgedIdentity_IamSystemStillRequiresValidTenantID(t *testing.T) 
 	})
 	assert.Nil(t, rc)
 	require.NotNil(t, er)
-	assert.Contains(t, er.Message, "x-tenant-id")
+	assert.Contains(t, er.Detail, "x-tenant-id")
 }
 
 // ── RegisterValidators — idempotency guard ─────────────────────────────

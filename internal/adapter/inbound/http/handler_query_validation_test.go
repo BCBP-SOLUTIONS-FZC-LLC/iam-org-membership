@@ -21,7 +21,7 @@ func TestP4List_InvalidLimit(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/?limit=notanumber", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_limit")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP4List_LimitZero(t *testing.T) {
@@ -30,7 +30,7 @@ func TestP4List_LimitZero(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/?limit=0", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_limit")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP4List_LimitTooHigh(t *testing.T) {
@@ -39,7 +39,7 @@ func TestP4List_LimitTooHigh(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/?limit=500", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_limit")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP4List_InvalidCursorBase64(t *testing.T) {
@@ -48,7 +48,7 @@ func TestP4List_InvalidCursorBase64(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/?cursor=!!!not-b64!!!", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_cursor")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP4List_InvalidCursorJSON(t *testing.T) {
@@ -59,7 +59,7 @@ func TestP4List_InvalidCursorJSON(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/?cursor="+badJSON, ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String())
 	h.List(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_cursor")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── MembershipHandler.Get — user_id param validation ────────────────────
@@ -69,7 +69,7 @@ func TestP5Get_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "not-a-uuid", "user_id", uuid.New().String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP5Get_InvalidUserID(t *testing.T) {
@@ -78,7 +78,7 @@ func TestP5Get_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "not-a-uuid")
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP5Get_CrossTenant(t *testing.T) {
@@ -87,7 +87,7 @@ func TestP5Get_CrossTenant(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", tenantA.String(), "user_id", uuid.New().String())
 	h.Get(c)
-	assertErrorCode(t, w, http.StatusForbidden, "insufficient_role")
+	assertErrorCode(t, w, http.StatusForbidden, "INSUFFICIENT_ROLE")
 }
 
 // ACLHandler.List/Revoke query-validation tests — retired ADR-0007 Wave 3
@@ -103,7 +103,7 @@ func TestP11DeptRemove_InvalidTenantID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(uuid.New()))
 	setParams(c, "id", "bad", "user_id", uuid.New().String(), "dept_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP11DeptRemove_InvalidUserID(t *testing.T) {
@@ -112,7 +112,7 @@ func TestP11DeptRemove_InvalidUserID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", "bad", "dept_id", uuid.New().String())
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 func TestP11DeptRemove_InvalidDeptID(t *testing.T) {
@@ -121,5 +121,5 @@ func TestP11DeptRemove_InvalidDeptID(t *testing.T) {
 	c, w := buildCtx(http.MethodDelete, "/", ``, tenantOwnerCtx(tenant))
 	setParams(c, "id", tenant.String(), "user_id", uuid.New().String(), "dept_id", "bad")
 	h.Remove(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "invalid_uuid")
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
