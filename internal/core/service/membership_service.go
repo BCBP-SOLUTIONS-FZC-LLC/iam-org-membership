@@ -266,7 +266,7 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 		}
 	}
 
-	s.invalidateMember(ctx, tenantID)
+	s.invalidateMember(ctx, tenantID, userID)
 
 	res := &SetStatusResult{Membership: m}
 
@@ -454,10 +454,7 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 		return nil, nil, err
 	}
 
-	s.invalidateMember(ctx, tenantID)
-	if s.cache != nil {
-		_ = s.cache.Delete(ctx, cacheKeyMemberships(tenantID, userID))
-	}
+	s.invalidateMember(ctx, tenantID, userID)
 
 	// AUTH-8: if we revoked any role, best-effort session revoke.
 	if len(revoked) > 0 && s.rp != nil {
@@ -621,7 +618,7 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		return err
 	}
 
-	s.invalidateMember(ctx, tenantID)
+	s.invalidateMember(ctx, tenantID, userID)
 
 	// Step 6 — AUTH-8 best-effort session revoke.
 	if s.rp != nil {
@@ -838,12 +835,15 @@ func (s *MembershipService) SeatUsage(ctx context.Context, tenantID uuid.UUID) (
 	return usage, nil
 }
 
-func (s *MembershipService) invalidateMember(ctx context.Context, tenantID uuid.UUID) {
+// invalidateMember evicts the tenant list projections plus the user's I-8
+// projection (CACHE-7) after a status change, role reconcile or removal.
+func (s *MembershipService) invalidateMember(ctx context.Context, tenantID, userID uuid.UUID) {
 	if s.cache == nil {
 		return
 	}
 	_ = s.cache.Delete(ctx,
 		cacheKeyMembers(tenantID, 50),
 		cacheKeySeatUsage(tenantID),
+		cacheKeyMemberships(tenantID, userID),
 	)
 }

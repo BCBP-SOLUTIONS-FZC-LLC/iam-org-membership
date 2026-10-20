@@ -220,7 +220,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	if err != nil {
 		return nil, err
 	}
-	s.invalidate(ctx, tenantID)
+	s.invalidate(ctx, tenantID, userID)
 	return dm, nil
 }
 
@@ -270,20 +270,25 @@ func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, de
 	if err != nil {
 		return nil, err
 	}
-	s.invalidate(ctx, tenantID)
+	s.invalidate(ctx, tenantID, userID)
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeyDeptMembers(tenantID, deptID))
 	}
 	return dm, nil
 }
 
-func (s *DeptMembershipService) invalidate(ctx context.Context, tenantID uuid.UUID) {
+// invalidate evicts the tenant list projections plus the user's I-8
+// projection (CACHE-7): a dept grant/level change/removal changes the
+// departments[] I-8 serves, so leaving om:memberships behind would let a
+// demoted or removed user keep the old level for up to the 300 s TTL.
+func (s *DeptMembershipService) invalidate(ctx context.Context, tenantID, userID uuid.UUID) {
 	if s.cache == nil {
 		return
 	}
 	_ = s.cache.Delete(ctx,
 		cacheKeyMembers(tenantID, 50),
 		cacheKeySeatUsage(tenantID),
+		cacheKeyMemberships(tenantID, userID),
 	)
 }
 
