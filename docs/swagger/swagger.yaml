@@ -10,6 +10,20 @@ definitions:
     - DeptPreparator
     - DeptReviewer
     - DeptApprover
+  domain.EligibilityReason:
+    enum:
+    - not_member
+    - member_not_active
+    - department_not_active
+    - not_in_department
+    - level_insufficient
+    type: string
+    x-enum-varnames:
+    - EligibilityNotMember
+    - EligibilityMemberNotActive
+    - EligibilityDepartmentNotActive
+    - EligibilityNotInDepartment
+    - EligibilityLevelInsufficient
   domain.InvitationDeptMapping:
     properties:
       department_id:
@@ -71,6 +85,38 @@ definitions:
         description: |-
           Message is a fixed phrase ("is required", "must be in the future"). It never
           echoes the rejected value, which may be PII.
+        type: string
+    type: object
+  http.AssigneeEligibilityResponse:
+    properties:
+      department_id:
+        format: uuid
+        type: string
+      eligible:
+        example: true
+        type: boolean
+      reason:
+        allOf:
+        - $ref: '#/definitions/domain.EligibilityReason'
+        enum:
+        - not_member
+        - member_not_active
+        - department_not_active
+        - not_in_department
+        - level_insufficient
+      required_level:
+        allOf:
+        - $ref: '#/definitions/domain.DeptRole'
+        example: reviewer
+      role_level:
+        allOf:
+        - $ref: '#/definitions/domain.DeptRole'
+        example: approver
+      tenant_id:
+        format: uuid
+        type: string
+      user_id:
+        format: uuid
         type: string
     type: object
   http.AssigneeOverrideRequest:
@@ -1135,6 +1181,64 @@ paths:
       - TenantID: []
       - TenantRoles: []
       summary: I-4 — Keycloak lifecycle status update
+      tags:
+      - internal
+  /internal/tenants/{id}/members/{user_id}/eligibility:
+    get:
+      description: Returns {eligible, reason, role_level}. Eligible iff the user is
+        an active tenant member, department_id is active for the tenant, and the user's
+        level there is at least required_level (preparator < reviewer < approver).
+        reason is one of not_member, member_not_active, department_not_active, not_in_department,
+        level_insufficient, omitted when eligible. Never 404. Uncached. iam-system
+        only.
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User UUID
+        format: uuid
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: Department UUID
+        format: uuid
+        in: query
+        name: department_id
+        required: true
+        type: string
+      - description: Minimum role level
+        enum:
+        - preparator
+        - reviewer
+        - approver
+        in: query
+        name: required_level
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.AssigneeEligibilityResponse'
+        "400":
+          description: invalid_uuid / invalid_role_level
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+        "403":
+          description: x-tenant-roles must be iam-system
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: I-19 — Assignee eligibility (Workflow Services)
       tags:
       - internal
   /internal/tenants/{id}/members/{user_id}/exists:

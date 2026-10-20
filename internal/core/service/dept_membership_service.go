@@ -220,7 +220,7 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	if err != nil {
 		return nil, err
 	}
-	s.invalidate(ctx, tenantID)
+	s.invalidate(ctx, tenantID, userID)
 	return dm, nil
 }
 
@@ -270,20 +270,75 @@ func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, de
 	if err != nil {
 		return nil, err
 	}
-	s.invalidate(ctx, tenantID)
+	s.invalidate(ctx, tenantID, userID)
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeyDeptMembers(tenantID, deptID))
 	}
 	return dm, nil
 }
 
-func (s *DeptMembershipService) invalidate(ctx context.Context, tenantID uuid.UUID) {
+// CheckEligibility is I-19 — may userID hold a Workflow task that needs
+// requiredLevel in deptID? Eligible iff the tenant membership is active, the
+// department is active for the tenant, and the user's level there satisfies
+// requiredLevel (DeptRole.Satisfies — the preparator < reviewer < approver
+// order this service owns, same rule as I-13). Reads Postgres directly, never
+// om:memberships, so a demotion or removal is visible on the next call.
+// "Not eligible" is a normal answer with a reason, never an error.
+func (s *DeptMembershipService) CheckEligibility(ctx context.Context, tenantID, userID, deptID uuid.UUID, requiredLevel domain.DeptRole) (*domain.AssigneeEligibility, error) {
+	if requiredLevel.Rank() < 0 {
+		return nil, domain.NewError(domain.ErrValidation, "required_level must be one of preparator, reviewer, approver").
+			WithDetails(map[string]any{"code": "invalid_role_level"})
+	}
+	m, err := s.memberships.FindByUserID(ctx, tenantID, userID)
+	if err != nil {
+		if errors.Is(err, domain.ErrMemberNotFound) {
+			return &domain.AssigneeEligibility{Reason: domain.EligibilityNotMember}, nil
+		}
+		return nil, err
+	}
+	if m.Status != domain.MembershipActive {
+		return &domain.AssigneeEligibility{Reason: domain.EligibilityMemberNotActive}, nil
+	}
+	// Deactivating a department leaves its dept_memberships rows in place,
+	// so the membership check alone would still pass (same check as P-10).
+	td, err := s.tenantDepts.Find(ctx, tenantID, deptID)
+	if err != nil {
+		if errors.Is(err, domain.ErrDepartmentNotFound) {
+			return &domain.AssigneeEligibility{Reason: domain.EligibilityDepartmentNotActive}, nil
+		}
+		return nil, err
+	}
+	if !td.IsActive {
+		return &domain.AssigneeEligibility{Reason: domain.EligibilityDepartmentNotActive}, nil
+	}
+	dms, err := s.deptMemberships.ListByUser(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, dm := range dms {
+		if dm.DepartmentID != deptID {
+			continue
+		}
+		if !dm.RoleLevel.Satisfies(requiredLevel) {
+			return &domain.AssigneeEligibility{Reason: domain.EligibilityLevelInsufficient, RoleLevel: dm.RoleLevel}, nil
+		}
+		return &domain.AssigneeEligibility{Eligible: true, RoleLevel: dm.RoleLevel}, nil
+	}
+	return &domain.AssigneeEligibility{Reason: domain.EligibilityNotInDepartment}, nil
+}
+
+// invalidate evicts the tenant list projections plus the user's I-8
+// projection (CACHE-7): a dept grant/level change/removal changes the
+// departments[] I-8 serves, so leaving om:memberships behind would let a
+// demoted or removed user keep the old level for up to the 300 s TTL.
+func (s *DeptMembershipService) invalidate(ctx context.Context, tenantID, userID uuid.UUID) {
 	if s.cache == nil {
 		return
 	}
 	_ = s.cache.Delete(ctx,
 		cacheKeyMembers(tenantID, 50),
 		cacheKeySeatUsage(tenantID),
+		cacheKeyMemberships(tenantID, userID),
 	)
 }
 

@@ -454,6 +454,17 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		}
 		return nil
 	})
+	// CACHE-8: evict the removed user's I-8 projection and the list caches
+	// after commit, so AuthZ Enrichment and eligibility readers stop seeing
+	// the deleted membership. Also runs on the idempotent already-deleted
+	// path — harmless, and clears any entry a prior attempt left behind.
+	if err == nil && s.cache != nil {
+		_ = s.cache.Delete(gucCtx,
+			cacheKeyMemberships(tenantID, userID),
+			cacheKeyMembers(tenantID, 50),
+			cacheKeySeatUsage(tenantID),
+		)
+	}
 	// Counted and logged after commit: a rolled-back or retried attempt
 	// must not page.
 	if err == nil && escalated {

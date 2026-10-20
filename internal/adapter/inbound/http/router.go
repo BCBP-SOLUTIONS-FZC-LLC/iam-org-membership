@@ -444,4 +444,6 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses)    // I-16 (§16 RP-C3)
 	internal.GET("/tenants/:id/plan-context", internalH.GetPlanContext)       // I-17 (CD-13)
 	internal.GET("/tenants/:id/plan-change-check", internalH.PlanChangeCheck) // I-18 (CD-20)
+	// I-19 — Workflow Services' assignee eligibility read (uncached).
+	internal.GET("/tenants/:id/members/:user_id/eligibility", internalH.CheckAssigneeEligibility) // I-19
 }

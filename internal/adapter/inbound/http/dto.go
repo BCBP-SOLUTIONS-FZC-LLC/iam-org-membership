@@ -398,6 +398,19 @@ type MemberExistsResponse struct {
 	TenantMembershipID *uuid.UUID `json:"tenant_membership_id,omitempty" format:"uuid"`
 }
 
+// AssigneeEligibilityResponse is the I-19 success shape. Reason is omitted
+// when Eligible is true; RoleLevel is the user's current level in the
+// department, omitted when they hold none.
+type AssigneeEligibilityResponse struct {
+	TenantID      uuid.UUID                `json:"tenant_id" format:"uuid"`
+	UserID        uuid.UUID                `json:"user_id" format:"uuid"`
+	DepartmentID  uuid.UUID                `json:"department_id" format:"uuid"`
+	RequiredLevel domain.DeptRole          `json:"required_level" example:"reviewer"`
+	Eligible      bool                     `json:"eligible" example:"true"`
+	Reason        domain.EligibilityReason `json:"reason,omitempty" enums:"not_member,member_not_active,department_not_active,not_in_department,level_insufficient"`
+	RoleLevel     domain.DeptRole          `json:"role_level,omitempty" example:"approver"`
+}
+
 // PublicTenantResolveResponse is PUB-1's 200 body (LLD §5.4). A no-match is
 // exactly {"found":false}: every other field is omitempty, so the two
 // shapes never differ by a null placeholder (PUBRES-2). tenant_id appears

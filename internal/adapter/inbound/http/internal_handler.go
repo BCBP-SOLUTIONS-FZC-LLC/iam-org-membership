@@ -33,6 +33,7 @@ type InternalHandler struct {
 	groupMappings     *service.GroupMappingService
 	tenants           *service.TenantService
 	subscriptionLapse *service.SubscriptionLapseService
+	deptMemberships   *service.DeptMembershipService
 }
 
 func NewInternalHandler(
@@ -43,10 +44,12 @@ func NewInternalHandler(
 	gm *service.GroupMappingService,
 	tenants *service.TenantService,
 	subscriptionLapse *service.SubscriptionLapseService,
+	deptMemberships *service.DeptMembershipService,
 ) *InternalHandler {
 	return &InternalHandler{
 		provisioning: prov, authz: authz, membership: mem, invitation: inv,
 		groupMappings: gm, tenants: tenants, subscriptionLapse: subscriptionLapse,
+		deptMemberships: deptMemberships,
 	}
 }
 
@@ -617,6 +620,77 @@ func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 	}
 	metrics.IncMembershipExistsCheck(caller, "active")
 	c.JSON(http.StatusOK, gin.H{"active": true, "tenant_membership_id": m.ID})
+}
+
+// ── I-19 GET /tenants/:id/members/:user_id/eligibility ─────────────────
+
+// CheckAssigneeEligibility is I-19 — the Workflow Services' assignee
+// eligibility read (Definition Service at template publish; Execution
+// Service at instance start with overrides, admin override, reassignment
+// and delegation reroute). It answers whether the user may hold a task that
+// needs required_level in department_id, using this service's level order
+// (preparator < reviewer < approver), so Workflow holds no copy of it.
+//
+// Like I-15 this is a check, not a resource fetch: "not eligible" — including
+// "not a member" — is a 200 with a reason, never a 404. It reads Postgres,
+// not the om:memberships I-8 cache, so a demotion or removal is visible on
+// the next call. The path tenant is bound as the RLS tenant, so it is
+// authoritative regardless of the caller's x-tenant-id header.
+//
+// @Summary      I-19 — Assignee eligibility (Workflow Services)
+// @Description  Returns {eligible, reason, role_level}. Eligible iff the user is an active tenant member, department_id is active for the tenant, and the user's level there is at least required_level (preparator < reviewer < approver). reason is one of not_member, member_not_active, department_not_active, not_in_department, level_insufficient, omitted when eligible. Never 404. Uncached. iam-system only.
+// @Tags         internal
+// @Produce      json
+// @Param        id              path      string  true  "Tenant UUID"  format(uuid)
+// @Param        user_id         path      string  true  "User UUID"    format(uuid)
+// @Param        department_id   query     string  true  "Department UUID"  format(uuid)
+// @Param        required_level  query     string  true  "Minimum role level"  Enums(preparator, reviewer, approver)
+// @Success      200             {object}  AssigneeEligibilityResponse
+// @Failure      400             {object}  ProblemResponse  "invalid_uuid / invalid_role_level"
+// @Failure      403             {object}  ProblemResponse  "x-tenant-roles must be iam-system"
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /internal/tenants/{id}/members/{user_id}/eligibility [get]
+func (h *InternalHandler) CheckAssigneeEligibility(c *gin.Context) {
+	tenantID, err := parseTenantIDParam(c)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	userID, err := parseUUIDParam(c, "user_id")
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	deptID, err := uuid.Parse(c.Query("department_id"))
+	if err != nil {
+		HandleError(c, domain.NewError(domain.ErrValidation, "department_id query param required").
+			WithDetails(map[string]any{"code": "invalid_uuid"}))
+		return
+	}
+	required := domain.DeptRole(c.Query("required_level"))
+
+	ctx := requestctx.WithSystemTenant(c.Request.Context(), tenantID)
+	res, err := h.deptMemberships.CheckEligibility(ctx, tenantID, userID, deptID, required)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	result := "eligible"
+	if !res.Eligible {
+		result = string(res.Reason)
+	}
+	metrics.IncAssigneeEligibilityCheck(result)
+	c.JSON(http.StatusOK, AssigneeEligibilityResponse{
+		TenantID:      tenantID,
+		UserID:        userID,
+		DepartmentID:  deptID,
+		RequiredLevel: required,
+		Eligible:      res.Eligible,
+		Reason:        res.Reason,
+		RoleLevel:     res.RoleLevel,
+	})
 }
 
 // ── I-17 GET /tenants/:id/plan-context (CD-13) ─────────────────────────
