@@ -224,7 +224,9 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 		return nil, err
 	}
 	if s.cache != nil {
-		_ = s.cache.Delete(ctx, cacheKeyMembers(tenantID, 50), cacheKeySeatUsage(tenantID))
+		// CACHE-7: JIT may grant depts/levels/roles — evict the user's I-8
+		// projection too, not only the tenant list projections.
+		_ = s.cache.Delete(ctx, cacheKeyMembers(tenantID, 50), cacheKeySeatUsage(tenantID), cacheKeyMemberships(tenantID, userID))
 	}
 	return res, nil
 }

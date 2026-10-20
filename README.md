@@ -45,7 +45,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 ## API overview
 
-**39 active endpoints** across four route prefixes (`/api/v1/*`, `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
+**40 active endpoints** across four route prefixes (`/api/v1/*`, `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
 
 **Middleware chain:** a 1 MB body cap, then `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → Timeout`) and `NormalizeAuthErrors` (adds this service's `code` — `missing_identity_headers`/`ambiguous_identity_headers`/`invalid_request_context` — to gincommon's own 401/400 bodies) on every route; the protected `/api/v1` group adds `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → `GUCBridgeMiddleware` (binds `app.tenant_id` transaction-locally, RLS-6) → `RequireJSONContentType`. The service trusts gateway-injected headers (`x-user-id`, `x-tenant-id`, `x-tenant-roles`) under mesh mTLS — no JWT parsing.
 
@@ -96,6 +96,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | I-16 | `GET /subscription-lapses` | Realm Provisioner (RP-C3 lapse sweep) | Cross-tenant bulk read of tenants past their cancellation grace period |
 | I-17 | `GET /tenants/:id/plan-context` | Entitlements Service | Tenant plan context — `{plan, status, licensed_seats, feature_flags, record_version}` from `om:tenant` cache (CD-13) |
 | I-18 | `GET /tenants/:id/plan-change-check?target_plan=` | Billing Service | Pre-flight check for a plan change — `{allowed, blockers[]}`, current blocker: `sso_configured` (CD-20) |
+| I-19 | `GET /tenants/:id/members/:user_id/eligibility?department_id=&required_level=` | Workflow Services | Assignee eligibility — `{eligible, reason, role_level}`; active member, department active, level ≥ required (preparator < reviewer < approver); uncached |
 
 *Retired, never reused:* I-6/I-7 (quotas → Usage & Metering), I-12 (tender-ACL check → Tender ACL Service).
 
@@ -772,7 +773,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | **Billing** | I-11 (same handler as P-27), I-18 | Seat-usage pre-check before a seat-reduction plan change; SSO-downgrade guard before committing a plan change (CD-20) |
 | **Entitlements Service** | I-17 | Tenant plan context (`plan`, `status`, `licensed_seats`, `feature_flags`) for re-deriving effective entitlement set after billing/tenant events (CD-13) |
 | **LLM Ingestion Service** | I-9 | Tenant default locale for prompt assembly |
-| **Workflow Service** | I-13 | Validate-and-emit on tender assignee override — persists nothing here |
+| **Workflow Service** | I-13, I-19 | Validate-and-emit on tender assignee override — persists nothing here; assignee eligibility read (default assignees at publish, overrides, reassignment, delegation reroute) |
 | **Tender ACL Service** | I-15 | Grant-time membership-existence check (replaces composite FK lost across DB split) |
 | **Delegation Service** | I-15 | Grant-time membership-existence check (replaces composite FK lost across DB split) |
 

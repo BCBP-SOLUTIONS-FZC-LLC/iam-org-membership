@@ -606,7 +606,9 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 		}
 	}
 	if s.cache != nil {
-		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID))
+		// CACHE-7: a rejoining user may still have an I-8 entry from before
+		// their removal; evict it along with the list projections.
+		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID), cacheKeyMembers(tenantID, 50), cacheKeyMemberships(tenantID, userID))
 	}
 	return mem, nil
 }

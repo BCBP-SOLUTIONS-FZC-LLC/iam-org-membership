@@ -560,6 +560,87 @@
                 ]
             }
         },
+        "/internal/tenants/{id}/members/{user_id}/eligibility": {
+            "get": {
+                "description": "Returns {eligible, reason, role_level}. Eligible iff the user is an active tenant member, department_id is active for the tenant, and the user's level there is at least required_level (preparator < reviewer < approver). reason is one of not_member, member_not_active, department_not_active, not_in_department, level_insufficient, omitted when eligible. Never 404. Uncached. iam-system only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "I-19 — Assignee eligibility (Workflow Services)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User UUID",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Department UUID",
+                        "name": "department_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "preparator",
+                            "reviewer",
+                            "approver"
+                        ],
+                        "type": "string",
+                        "description": "Minimum role level",
+                        "name": "required_level",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.AssigneeEligibilityResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid_uuid / invalid_role_level",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "x-tenant-roles must be iam-system",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
+            }
+        },
         "/internal/tenants/{id}/members/{user_id}/exists": {
             "get": {
                 "description": "Returns `{active, tenant_membership_id}` — tenant_membership_id is populated only when active is true. Never 404. Callers must send x-tenant-roles: iam-system (RequireSystemRole gate).",
@@ -2640,6 +2721,23 @@
                 "DeptApprover"
             ]
         },
+        "domain.EligibilityReason": {
+            "type": "string",
+            "enum": [
+                "not_member",
+                "member_not_active",
+                "department_not_active",
+                "not_in_department",
+                "level_insufficient"
+            ],
+            "x-enum-varnames": [
+                "EligibilityNotMember",
+                "EligibilityMemberNotActive",
+                "EligibilityDepartmentNotActive",
+                "EligibilityNotInDepartment",
+                "EligibilityLevelInsufficient"
+            ]
+        },
         "domain.InvitationDeptMapping": {
             "type": "object",
             "properties": {
@@ -2717,6 +2815,57 @@
                 "message": {
                     "description": "Message is a fixed phrase (\"is required\", \"must be in the future\"). It never\nechoes the rejected value, which may be PII.",
                     "type": "string"
+                }
+            }
+        },
+        "http.AssigneeEligibilityResponse": {
+            "type": "object",
+            "properties": {
+                "department_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "eligible": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "reason": {
+                    "enum": [
+                        "not_member",
+                        "member_not_active",
+                        "department_not_active",
+                        "not_in_department",
+                        "level_insufficient"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.EligibilityReason"
+                        }
+                    ]
+                },
+                "required_level": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.DeptRole"
+                        }
+                    ],
+                    "example": "reviewer"
+                },
+                "role_level": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.DeptRole"
+                        }
+                    ],
+                    "example": "approver"
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "user_id": {
+                    "type": "string",
+                    "format": "uuid"
                 }
             }
         },

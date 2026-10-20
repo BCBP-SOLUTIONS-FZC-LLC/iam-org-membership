@@ -73,6 +73,7 @@ Registered for the `iam` domain but not emitted by this service: `iam_auth_event
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
+| `iam_org_membership_assignee_eligibility_check_total` | counter | `result` | I-19 assignee-eligibility reads served to the Workflow Services, by result: eligible, not_member, member_not_active, department_not_active, not_in_department, level_insufficient. |
 | `iam_org_membership_audit_delivery_failed_total` | counter | `entry_type` | AL-5 direct-write calls that returned an error from best-effort fire-and-forget audit goroutines (TenantService, InvitationService). Audit outages are fail-open; a sustained nonzero rate means audit records are silently missing. |
 | `iam_org_membership_catalog_cache_invalidated_total` | counter | - | Catalog cache invalidations via catalog-orgm-q: DepartmentCatalogChanged (om:departments) and PlanCatalogChanged (om:plans) events that successfully cleared their primary+stale cache keys (Gap-12/CAT-GAP-004). |
 | `iam_org_membership_consumed_event_rejected_total` | counter | `event_type`, `reason` | Consumed events rejected as permanent failures (EVT-15 future-time clamp, consumed-schema violation) and forwarded to the DLQ, by event type and reason. |
