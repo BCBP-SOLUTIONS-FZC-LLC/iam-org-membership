@@ -319,13 +319,14 @@ func TestWorkflowQueueDropsOverage(t *testing.T) {
 // ── P12-FILTER-003 ──────────────────────────────────────────────────────────
 
 // TestAuthzQueueOnlyMembershipRoles — membership-authz-q's
-// filter accepts dept-membership + tenant-role events; must drop MembershipRevoked.
+// filter accepts dept-membership + tenant-role events AND MembershipRevoked
+// (AE-20 / AE-OM-GAP-011: authz enrichment must evict cache on full tenant removal).
 func TestAuthzQueueOnlyMembershipRoles(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
 	authzQ := e.createQueue(t, "membership-authz-q", "", 0)
 
-	filter := `{"EventType":["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked"]}`
+	filter := `{"EventType":["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked","MembershipRevoked"]}`
 	e.subscribeQueue(t, topic, authzQ, filter)
 
 	// Should reach.
@@ -334,11 +335,11 @@ func TestAuthzQueueOnlyMembershipRoles(t *testing.T) {
 	got := e.receiveMessages(t, authzQ, 1, 10*time.Second)
 	require.Len(t, got, 1, "P12-FILTER-003: TenantRoleGranted must reach authz queue")
 
-	// Should NOT reach — MembershipRevoked is off the authz filter list.
+	// Must also reach — MembershipRevoked triggers cache eviction in AuthZ Enrichment (AE-20).
 	e.publishEnvelope(t, topic, domain.EventMembershipRevoked,
 		mustMarshal(t, map[string]string{"user_id": uuid.NewString()}), nil)
 	extra := e.drainQueue(t, authzQ, 3*time.Second)
-	assert.Empty(t, extra, "P12-FILTER-003: MembershipRevoked must NOT reach authz queue")
+	require.Len(t, extra, 1, "P12-FILTER-003: MembershipRevoked must reach authz queue")
 }
 
 // ── P12-FILTER-004 ──────────────────────────────────────────────────────────
