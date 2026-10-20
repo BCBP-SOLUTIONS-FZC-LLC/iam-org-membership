@@ -102,7 +102,7 @@ func TestContract_I8_ResponseShape_NoMembership(t *testing.T) {
 	c.Params = gin.Params{
 		{Key: "id", Value: unknownUser.String()},
 	}
-	internalHandler := httpadapter.NewInternalHandler(fx.Provisioning, fx.AuthZ, fx.Membership, nil, nil, nil, nil)
+	internalHandler := httpadapter.NewInternalHandler(fx.Provisioning, fx.AuthZ, fx.Membership, nil, nil, nil, nil, nil)
 	internalHandler.GetMemberships(c)
 
 	assert.Equal(t, http.StatusNotFound, w.Code, "absent membership must return 404 not 200")
@@ -202,7 +202,7 @@ func callI8Handler(t *testing.T, fx *testFixtures, tenantID, userID uuid.UUID) m
 	c.Params = gin.Params{
 		{Key: "id", Value: userID.String()},
 	}
-	internalHandler := httpadapter.NewInternalHandler(fx.Provisioning, fx.AuthZ, fx.Membership, nil, nil, nil, nil)
+	internalHandler := httpadapter.NewInternalHandler(fx.Provisioning, fx.AuthZ, fx.Membership, nil, nil, nil, nil, nil)
 	internalHandler.GetMemberships(c)
 	require.Equal(t, http.StatusOK, w.Code, "I-8 must return 200: %s", w.Body.String())
 	var out map[string]interface{}
@@ -218,7 +218,7 @@ func callI15Handler(t *testing.T, fx *testFixtures, tenantID, userID uuid.UUID, 
 		{Key: "id", Value: tenantID.String()},
 		{Key: "user_id", Value: userID.String()},
 	}
-	internalHandler := httpadapter.NewInternalHandler(fx.Provisioning, fx.AuthZ, fx.Membership, nil, nil, nil, nil)
+	internalHandler := httpadapter.NewInternalHandler(fx.Provisioning, fx.AuthZ, fx.Membership, nil, nil, nil, nil, nil)
 	internalHandler.CheckMemberExists(c)
 	require.Equal(t, wantStatus, w.Code, "I-15 response: %s", w.Body.String())
 	var out map[string]interface{}

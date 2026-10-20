@@ -41,7 +41,7 @@ var _ port.TenantRepository = (*authTestLapseRepo)(nil)
 // buildAuthTestRouter returns a Router wired with the I-16 handler and
 // (optionally) a MembershipHandler for P-34 tests.
 func buildAuthTestRouter(lapseSvc *service.SubscriptionLapseService, memH *MembershipHandler) *Router {
-	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, lapseSvc)
+	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, lapseSvc, nil)
 	return NewRouter(RouterConfig{
 		GinConfig:         gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		InternalHandler:   internalH,

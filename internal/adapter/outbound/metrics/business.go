@@ -243,6 +243,11 @@ var (
 	// (CD-20) by result: allowed, blocked, or error (RP unavailable).
 	PlanChangeCheckTotal *prometheus.CounterVec
 
+	// AssigneeEligibilityCheck counts I-19 assignee-eligibility reads served
+	// to the Workflow Services, by result: eligible or the not-eligible
+	// reason (domain.EligibilityReason).
+	AssigneeEligibilityCheck *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -444,6 +449,14 @@ func IncAuditDeliveryFailed(entryType string) {
 func IncPlanChangeCheck(result string) {
 	if PlanChangeCheckTotal != nil {
 		PlanChangeCheckTotal.WithLabelValues(result).Inc()
+	}
+}
+
+// IncAssigneeEligibilityCheck records one I-19 outcome: "eligible" or a
+// domain.EligibilityReason value. Nil-safe.
+func IncAssigneeEligibilityCheck(result string) {
+	if AssigneeEligibilityCheck != nil {
+		AssigneeEligibilityCheck.WithLabelValues(result).Inc()
 	}
 }
 
@@ -673,6 +686,10 @@ func registerServiceMetrics() {
 		"iam_org_membership_plan_change_check_total",
 		"I-18 plan-change pre-check (CD-20) outcomes by result: allowed (no SSO blocker), blocked (sso_idp_configured), error (RP unavailable — maps to 503).",
 		"result"))
+	AssigneeEligibilityCheck = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_assignee_eligibility_check_total",
+		"I-19 assignee-eligibility reads served to the Workflow Services, by result: eligible, not_member, member_not_active, department_not_active, not_in_department, level_insufficient.",
+		"result"))
 
 	TenantOwnerless = must(gincommon.NewGauge(nil,
 		"iam_org_membership_tenant_ownerless",
@@ -726,6 +743,12 @@ func prewarm() {
 	PublicTenantResolve.WithLabelValues("not_found")
 	for _, r := range []string{"allowed", "blocked", "error"} {
 		PlanChangeCheckTotal.WithLabelValues(r)
+	}
+	for _, r := range []string{
+		"eligible", "not_member", "member_not_active",
+		"department_not_active", "not_in_department", "level_insufficient",
+	} {
+		AssigneeEligibilityCheck.WithLabelValues(r)
 	}
 	for _, et := range []string{
 		"config.tenant_setting.changed",
