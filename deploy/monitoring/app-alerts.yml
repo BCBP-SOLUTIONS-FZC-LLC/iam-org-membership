@@ -253,6 +253,22 @@ groups:
             audit rls_violation_log for the source query.
           runbook: "iam-org-membership/rls-cross-tenant"
 
+      - alert: IAMOrgMembershipTenantHeaderPathMismatch
+        expr: sum by (route, action) (rate(iam_org_membership_tenant_header_path_mismatch_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: info
+          service: iam-org-membership
+        annotations:
+          summary: "Internal caller sends x-tenant-id different from the path tenant (IAPI-6)"
+          description: |
+            {{ $labels.route }} ({{ $labels.action }}): {{ $value }}/s requests whose
+            x-tenant-id differs from the path tenant. The path tenant is
+            authoritative; in strict mode these requests are rejected 400
+            TENANT_MISMATCH. Find the caller from the tenant_header_path_mismatch
+            WARN log and fix its header before enabling strict mode.
+          runbook: "iam-org-membership/tenant-header-path-mismatch"
+
       - alert: IAMTenantOwnerless
         expr: iam_org_membership_tenant_ownerless > 0
         for: 30m

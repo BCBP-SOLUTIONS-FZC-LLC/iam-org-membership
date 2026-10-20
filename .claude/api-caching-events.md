@@ -9,7 +9,7 @@
 | Prefix | Callers | Auth | Ingress |
 |--------|---------|------|---------|
 | `/api/v1/*` | Authenticated tenant users | Gateway-injected `x-user-id`, `x-tenant-id`, `x-tenant-roles` from validated JWT | Public Envoy |
-| `/api/v1/internal/*` | In-mesh services (Realm Provisioner, Event Consumer, LLM, Signup BFF, Workflow, Billing, AuthZ) | Mesh mTLS + NetworkPolicy; **no JWT**; `x-tenant-id` = target tenant | Internal Envoy only; external blocked |
+| `/api/v1/internal/*` | In-mesh services (Realm Provisioner, Event Consumer, LLM, Signup BFF, Workflow, Billing, AuthZ) | Mesh mTLS + NetworkPolicy; **no JWT**; on `/internal/tenants/:id/*` the **path tenant** is the tenant (IAPI-6, `BindPathTenant`), elsewhere `x-tenant-id` (I-8: `?tenant_id=`) | Internal Envoy only; external blocked |
 | `/api/v1/operator/*` | Human operators / operator tooling | Gateway validates JWT, asserts `platform_operator` Keycloak role | **Separate operator ingress** — unreachable from public tenant Envoy (§16 C1 defense-in-depth) |
 | `/api/v1/public/*` (PUB-1 only) | Anonymous, pre-login browser | **None** — no JWT, no gateway headers; registered on the engine outside the protected group (no `RequireAuth`, no GUC-bridge, PUBRES-1) | Public Envoy, `ext_authz` bypass (platform config pending, LLD §16 OQ-10) |
 
@@ -87,11 +87,12 @@
 | I-18 | `GET /tenants/:id/plan-change-check?target_plan=` | Billing Service | **NEW (CD-20)** — returns `{allowed, blockers[]}` where each blocker is `{code, message}`. Current blocker: `sso_configured` (≥1 IdP in Keycloak realm + target plan drops SSO). IDP count fetched from Realm Provisioner RP-11 via `port.RealmIDPReader.GetIDPCount` — fail-open (404/errors = 0 IDPs while RP-11 is being built). `target_plan` unknown → `422 invalid_plan`. |
 | I-19 | `GET /tenants/:id/members/:user_id/eligibility?department_id=&required_level=` | Workflow Definition + Execution Services | **NEW (LLD rev 2.30)** — assignee eligibility read: `{eligible, reason, role_level, …}`; eligible iff active member, department active for the tenant, held level ≥ `required_level` (preparator < reviewer < approver, O&M-owned). `reason` ∈ `not_member`/`member_not_active`/`department_not_active`/`not_in_department`/`level_insufficient`. Never 404; uncached (Postgres, not `om:memberships`); path `:id` bound as the RLS tenant. `iam-system` only. |
 
-**Internal API invariants (IAPI-1..5):**
+**Internal API invariants (IAPI-1..6):**
 - **IAPI-1** — Internal routes callable only by mTLS-authenticated in-mesh services; external ingress blocked.
 - **IAPI-2** — System principal (`…00a1`) accepted only on internal routes.
 - **IAPI-3** — Internal provisioning executes under target tenant's context; still subject to RLS `WITH CHECK` (RLS-5).
 - **IAPI-5** — I-8 is the authoritative membership projection; changes are versioned, not breaking.
+- **IAPI-6** — On every `/internal/tenants/:id/*` route the path tenant is authoritative: `BindPathTenant` (route group only) validates `:id` and binds it as `app.tenant_id` + `RequestContext.TenantID`, caller identity unchanged. A differing `x-tenant-id` is overridden, logged (WARN `tenant_header_path_mismatch`) and counted (`iam_org_membership_tenant_header_path_mismatch_total`); with `STRICT_TENANT_PATH_VALIDATION=true` it is rejected `400 TENANT_MISMATCH` before the handler. I-8 binds `?tenant_id=`; I-1/I-16 keep `x-tenant-id`. Public routes are unchanged (API-2: header authoritative). CI guard: `TestInternalTenantRoutes_AllBindPathTenant`.
 
 ### Operator routes (`/api/v1/operator/*`)
 

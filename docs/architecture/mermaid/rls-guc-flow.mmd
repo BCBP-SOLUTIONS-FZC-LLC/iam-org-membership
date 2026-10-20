@@ -1,5 +1,6 @@
 sequenceDiagram
     participant MW as GUCBridgeMiddleware
+    participant BPT as BindPathTenant (/internal/tenants/:id/*)
     participant RC as requestctx.RequestContext
     participant GUC as pgcommon.GUCSetFromContext
     participant Pool as pgx Pool (platform-pgcommon)
@@ -19,6 +20,16 @@ sequenceDiagram
     MW ->> GUC: g.UserID, g.TenantID, g.TenantRoles = bridged identity
     MW ->> GUC: pgcommon.WithGUCSet(ctx, g)
     Note over MW: GUCSet stored in context — available to every downstream RunInTx call.<br/>pgcommon binds app.user_id, app.tenant_id and app.tenant_roles — the RLS policies key on app.tenant_id only.
+
+    Note over MW,GUC: /api/v1/internal/tenants/:id/* only (IAPI-6) — BindPathTenant runs after RequireInternalCaller.<br/>The path tenant is authoritative; x-tenant-id is compared, never trusted over it.<br/>I-8 (/internal/users/:id) binds its ?tenant_id= in the handler instead; public routes keep x-tenant-id (API-2).
+    BPT ->> BPT: parse :id — 400 VALIDATION_ERROR (invalid_uuid) on failure
+    alt x-tenant-id ≠ path tenant
+        BPT ->> BPT: WARN tenant_header_path_mismatch {route, method, request_id, caller, path/header tenant}<br/>+ iam_org_membership_tenant_header_path_mismatch_total{route,method,action}
+        opt STRICT_TENANT_PATH_VALIDATION=true (Helm iam.strictTenantPathValidation)
+            BPT -->> MW: 400 TENANT_MISMATCH (RFC 9457, …/iam/tenant-mismatch) — handler never runs
+        end
+    end
+    BPT ->> GUC: requestctx.WithTenant(ctx, pathTenant) — app.tenant_id and RequestContext.TenantID = path tenant;<br/>user, roles, client IP, user agent unchanged
 
     Note over Pool,DB: On every pool checkout — pgcommon.NewPool configured with GUCProvider = GUCSetFromContext<br/>Binding happens BEFORE the app query, inside the SAME transaction (RLS-6).
 

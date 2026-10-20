@@ -65,14 +65,14 @@ Both `USING` and `WITH CHECK` route through the same `rls_check_tenant()` — a 
 
 **Cross-tenant admin access** requires the `BYPASSRLS` role **`org_membership_migrator`** (never the app role `org_membership_app` — CI-verified). I-16's `ListSubscriptionLapses` (§16 OQ-9/RP-C3) is the one HTTP-served read that needs this — its `TenantRepository` instance is constructed against `sysPool`, not the RLS-scoped app pool, the same BYPASSRLS binding the reconciler jobs and business-metric exporters already use.
 
-**Provisioning writes** use the reserved system principal `iam-system` (`…00a1`) with the **target tenant's** `x-tenant-id`, so `GUCSet{UserID: system, TenantID: target}` makes the new row's `WITH CHECK` pass. Accepted **only** on `/api/v1/internal/*` routes (RLS-5, IAPI-2).
+**Provisioning writes** use the reserved system principal `iam-system` (`…00a1`) with the **target tenant** — the path `:id` on `/internal/tenants/:id/*` (IAPI-6, `BindPathTenant`), `x-tenant-id` on I-1 — so `GUCSet{UserID: system, TenantID: target}` makes the new row's `WITH CHECK` pass. Accepted **only** on `/api/v1/internal/*` routes (RLS-5, IAPI-2).
 
 **RLS invariants:**
 - **RLS-1** — Every tenant-scoped table runs `ENABLE + FORCE` + policy + `REVOKE ALL FROM PUBLIC` (fail-closed).
 - **RLS-2** — Missing/malformed GUC → 0 rows, no writes (`current_setting(..., true)` is NULL → no row matches).
 - **RLS-3** — Cross-tenant `INSERT`/`UPDATE` rejected by `WITH CHECK`.
 - **RLS-4** — Only `org_membership_migrator` holds `BYPASSRLS`. Operator *domain* actions go through service-layer `platform_operator` check, not a DB bypass.
-- **RLS-5** — Internal provisioning under system principal + target `x-tenant-id` only on `/api/v1/internal/*`.
+- **RLS-5** — Internal provisioning under system principal + target tenant (path `:id` on `/internal/tenants/:id/*`, IAPI-6; `x-tenant-id` on I-1) only on `/api/v1/internal/*`.
 - **RLS-6** — GUC is **transaction-local** on every checkout (writes AND reads). `SET LOCAL` semantics via `set_config(..., is_local => true)`. Auto-resets at `COMMIT`/`ROLLBACK` — can never leak across a pooled backend. **Verified** by RLS test Case 5 (§14.5): tenant A tx → connection returns to pool → tenant B tx on same backend → B sees 0 of A's rows. CI additionally greps for session-scoped `SET app.tenant_id` as a forbidden pattern.
 
 **`rls_violation_log` is the one table with RLS deliberately DISABLED** (`ALTER TABLE ... DISABLE ROW LEVEL SECURITY; ... NO FORCE ROW LEVEL SECURITY;`) — a recursion guard, since `log_rls_violation()` (called from inside `rls_check_tenant()`, which every other table's policy invokes) writes to it and an RLS policy on the log table itself would re-enter `rls_check_tenant()` on its own insert. 1%-sampled (`random() > 0.01` early-return), and the insert's own errors are swallowed (`EXCEPTION WHEN OTHERS THEN NULL`) so a logging failure can never abort the caller's transaction. Backs `iam_rls_violations_total` (§11.2, operations.md).

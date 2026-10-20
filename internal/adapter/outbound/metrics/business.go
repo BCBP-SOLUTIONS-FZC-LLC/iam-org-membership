@@ -248,6 +248,14 @@ var (
 	// reason (domain.EligibilityReason).
 	AssigneeEligibilityCheck *prometheus.CounterVec
 
+	// TenantHeaderPathMismatch counts /internal/tenants/:id/* requests whose
+	// x-tenant-id differed from the path tenant, by route, method and action
+	// (overridden — path tenant bound, request served; rejected — strict
+	// mode 400). Tier 3 stand-in for the proposed domain-shared
+	// iam_tenant_header_path_mismatch_total, which needs a platform-gincommon
+	// registry entry before it can be built.
+	TenantHeaderPathMismatch *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -457,6 +465,30 @@ func IncPlanChangeCheck(result string) {
 func IncAssigneeEligibilityCheck(result string) {
 	if AssigneeEligibilityCheck != nil {
 		AssigneeEligibilityCheck.WithLabelValues(result).Inc()
+	}
+}
+
+// Action label values for TenantHeaderPathMismatch.
+const (
+	TenantMismatchOverridden = "overridden"
+	TenantMismatchRejected   = "rejected"
+)
+
+// IncTenantHeaderPathMismatch records one x-tenant-id / path tenant
+// mismatch. route is the gin route template (bounded). Nil-safe.
+func IncTenantHeaderPathMismatch(route, method, action string) {
+	if TenantHeaderPathMismatch != nil {
+		TenantHeaderPathMismatch.WithLabelValues(route, method, action).Inc()
+	}
+}
+
+// PrewarmTenantHeaderPathMismatch creates the zero series for one route and
+// method (both actions). Called by the router for each tenant-scoped
+// internal route. Nil-safe.
+func PrewarmTenantHeaderPathMismatch(route, method string) {
+	if TenantHeaderPathMismatch != nil {
+		TenantHeaderPathMismatch.WithLabelValues(route, method, TenantMismatchOverridden)
+		TenantHeaderPathMismatch.WithLabelValues(route, method, TenantMismatchRejected)
 	}
 }
 
@@ -690,6 +722,10 @@ func registerServiceMetrics() {
 		"iam_org_membership_assignee_eligibility_check_total",
 		"I-19 assignee-eligibility reads served to the Workflow Services, by result: eligible, not_member, member_not_active, department_not_active, not_in_department, level_insufficient.",
 		"result"))
+	TenantHeaderPathMismatch = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_tenant_header_path_mismatch_total",
+		"Internal /tenants/:id/* requests whose x-tenant-id differed from the path tenant, by route, method and action (overridden: path tenant bound and served; rejected: strict-mode 400).",
+		"route", "method", "action"))
 
 	TenantOwnerless = must(gincommon.NewGauge(nil,
 		"iam_org_membership_tenant_ownerless",

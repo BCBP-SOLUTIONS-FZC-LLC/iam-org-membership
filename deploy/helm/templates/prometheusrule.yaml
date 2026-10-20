@@ -424,6 +424,22 @@ spec:
               and query_text. This alert has no `for` clause — one occurrence
               is enough to page.
 
+        - alert: IAMOrgMembershipTenantHeaderPathMismatch
+          expr: |
+            sum by (route, action) (rate(iam_org_membership_tenant_header_path_mismatch_total[15m])) > 0
+          for: 15m
+          labels:
+            severity: info
+            team: platform
+          annotations:
+            summary: Internal caller sends x-tenant-id different from the path tenant (IAPI-6)
+            description: >-
+              {{ "{{ $labels.route }}" }} ({{ "{{ $labels.action }}" }}): requests whose
+              x-tenant-id differs from the path tenant. The path tenant is
+              authoritative; in strict mode they are rejected 400
+              TENANT_MISMATCH. Fix the caller (tenant_header_path_mismatch WARN
+              log) before enabling iam.strictTenantPathValidation.
+
         - alert: IAMOrgMembershipRLSMissingGUC
           expr: |
             rate(iam_rls_violations_total{violation_type="missing_or_invalid_guc"}[5m]) > 0

@@ -93,6 +93,7 @@ Registered for the `iam` domain but not emitted by this service: `iam_auth_event
 | `iam_org_membership_seat_limit_reached_total` | counter | `plan` | P-6 invites refused because active members plus pending invitations reached licensed_seats (SEAT-1), by tenant plan. |
 | `iam_org_membership_seat_overage_active` | gauge | - | Tenants with overage_since IS NOT NULL (SEAT-5). |
 | `iam_org_membership_seat_overage_started_total` | counter | `cause` | Tenants entering seat overage (SEAT-5), by cause: occupancy (active members plus pending invitations above licensed_seats, detected by the seat-overage reconciler). |
+| `iam_org_membership_tenant_header_path_mismatch_total` | counter | `action`, `method`, `route` | Internal /tenants/:id/* requests whose x-tenant-id differed from the path tenant, by route, method and action (overridden: path tenant bound and served; rejected: strict-mode 400). |
 | `iam_org_membership_tenant_ownerless` | gauge | - | Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages. |
 | `iam_org_membership_tenant_ownerless_escalated_total` | counter | `reason` | Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page. |
 | `iam_org_membership_unknown_event_acknowledged_total` | counter | `event_type` | Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type. |

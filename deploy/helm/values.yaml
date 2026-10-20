@@ -379,6 +379,20 @@ networkPolicy:
           protocol: TCP
   additionalEgressRules: []
 
+# Tenant binding on /api/v1/internal/tenants/:id/* (BindPathTenant). The
+# path tenant is always authoritative. strictTenantPathValidation decides
+# what happens when a caller's x-tenant-id differs from it:
+#   false (default) — override with the path tenant, log
+#                     tenant_header_path_mismatch, count
+#                     iam_org_membership_tenant_header_path_mismatch_total
+#   true            — reject with 400 TENANT_MISMATCH (RFC 9457) before the
+#                     handler runs
+# Rollout: keep false, watch the mismatch counter per route in every
+# environment, fix any caller that shows up, then enable per environment
+# (dev → staging → prod) once the counter has stayed at zero.
+iam:
+  strictTenantPathValidation: false
+
 # CD-19 — Commercial domain callers.
 # Feature-gates both the NetworkPolicy ingress rules and the Istio
 # AuthorizationPolicy that restrict which Commercial services can reach

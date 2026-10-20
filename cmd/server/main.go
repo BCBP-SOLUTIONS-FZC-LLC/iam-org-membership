@@ -648,6 +648,11 @@ func main() {
 		InternalHandler:       internalH,
 		PublicHandler:         publicH,
 
+		// Helm iam.strictTenantPathValidation. Default false: a mismatched
+		// x-tenant-id on /internal/tenants/:id/* is overridden by the path
+		// tenant, logged and counted; true rejects it with 400.
+		StrictTenantPathValidation: envBool("STRICT_TENANT_PATH_VALIDATION", false),
+
 		Postgres: pingerFunc(func(ctx context.Context) error {
 			if hs := pool.Health(ctx); !hs.Healthy {
 				return fmt.Errorf("database not healthy")
@@ -825,6 +830,16 @@ func (f pingerFunc) Health(ctx context.Context) error { return f(ctx) }
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// envBool parses key with strconv.ParseBool; unset or unparsable keeps def.
+func envBool(key string, def bool) bool {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
 	}
 	return def
 }

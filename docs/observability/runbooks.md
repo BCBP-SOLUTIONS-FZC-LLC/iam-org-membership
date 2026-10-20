@@ -187,6 +187,14 @@ These alerts query platform-library metrics that are still `proposed` in the reg
 
 **Triage.** `query_text` in `rls_violation_log` identifies the path. Typical causes are a repository call outside `GUCBridgeMiddleware`, or an internal path that is missing `requestctx.WithSystemTenant` / `WithTenant`.
 
+### IAMOrgMembershipTenantHeaderPathMismatch
+
+**Meaning.** Info, not a page. An in-mesh caller sent an `/api/v1/internal/tenants/:id/*` request whose `x-tenant-id` names a different tenant than the path (IAPI-6). The path tenant is authoritative, so in the default mode the request was served for the path tenant (`action="overridden"`); nothing leaked and the answer was correct. With `STRICT_TENANT_PATH_VALIDATION=true` the same request is rejected with `400 TENANT_MISMATCH` (`action="rejected"`), so the caller is now failing.
+
+**Triage.** `sum by (route, method, action) (rate(iam_org_membership_tenant_header_path_mismatch_total[15m]))` names the route. The WARN log `tenant_header_path_mismatch` carries `request_id`, `caller_user_id`, `caller_roles`, `path_tenant_id` and `header_tenant_id`; the roles and `request_id` identify the calling service (`commercial-system` = Billing/Entitlements; `iam-system` = an IAM service — match `request_id` in its logs). A `header_tenant_id` of `00000000-0000-0000-0000-000000000000` is a caller sending the cross-tenant sentinel to a tenant route.
+
+**Mitigate.** Fix the caller to send `x-tenant-id` equal to the path tenant. Do not enable strict mode in an environment while this alert is firing there. If strict mode was enabled and a caller is now failing, set `iam.strictTenantPathValidation: false` (config-only rollback) and fix the caller first.
+
 ### IAMSessionRevokeFailedSustained
 
 **Meaning.** AUTH-8: Realm Provisioner `RevokeUserSessions` calls are failing at more than 0.1/s. The privilege reduction (suspend, remove, de-privilege) is committed and enforced by this service, but the user's live Keycloak sessions survive until the backstop expires (5-minute access token plus 300s membership cache).

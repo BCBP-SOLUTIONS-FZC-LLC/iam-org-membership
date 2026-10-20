@@ -21,6 +21,7 @@ import (
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
@@ -91,6 +92,12 @@ type RouterConfig struct {
 	// Left empty, no consumer checks are performed (e.g. when all queue
 	// URLs are unset in a dev environment).
 	Consumers []Pinger
+
+	// StrictTenantPathValidation makes BindPathTenant reject (400
+	// TENANT_MISMATCH) an /internal/tenants/:id/* request whose x-tenant-id
+	// differs from the path tenant, instead of overriding the header.
+	// Default false (STRICT_TENANT_PATH_VALIDATION).
+	StrictTenantPathValidation bool
 }
 
 // defaultRequestTimeout is the per-request deadline when RouterConfig's
@@ -137,6 +144,7 @@ func NewRouter(cfg RouterConfig) *Router {
 
 	RegisterValidators()
 
+	prewarmTenantPathMismatch(r)
 	return &Router{engine: r}
 }
 
@@ -422,28 +430,51 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// defence-in-depth. commercial-system (CD-19) is additionally accepted on
 	// I-11/I-17/I-18 only — see commercialSystemAllowedRoutes in middleware.go.
 	internal := v1.Group("/internal", RequireInternalCaller())
-	internal.POST("/tenants", internalH.ProvisionTenant)                            // I-1
-	internal.PATCH("/tenants/:id", internalH.PatchTenantRealm)                      // I-2
-	internal.POST("/tenants/:id/members", internalH.AddMember)                      // I-3 (§8.10 accept + JIT add)
-	internal.POST("/tenants/:id/dept-memberships", internalH.AssignFromGroups)      // I-10 (§8.5 SAML JIT)
-	internal.PATCH("/tenants/:id/members/:user_id", internalH.PatchMemberLifecycle) // I-4
-	internal.DELETE("/tenants/:id/members/:user_id", internalH.DeleteMember)        // I-5
-	internal.GET("/users/:id/memberships", internalH.GetMemberships)                // I-8 HOT PATH
-	internal.GET("/tenants/:id/locale", internalH.GetLocale)                        // I-9
-	internal.GET("/tenants/:id/mfa-freshness", internalH.GetMFAFreshness)           // I-14 (§16 A72)
-	internal.GET("/tenants/:id/seat-usage", internalH.GetSeatUsage)                 // I-11
-	// I-12 (tender ACL check) retired, moved to iam-tender-acl's TAC-4
-	// (ADR-0007 Wave 3). ID never reused.
-	internal.POST("/tenants/:id/tenders/:tender_id/assignee-override", internalH.AssigneeOverride) // I-13
-	internal.GET("/tenants/:id/members/:user_id/exists", internalH.CheckMemberExists)              // I-15
+	internal.POST("/tenants", internalH.ProvisionTenant)             // I-1
+	internal.GET("/users/:id/memberships", internalH.GetMemberships) // I-8 HOT PATH (:id is the user; tenant from ?tenant_id=)
 	// I-16 (§16 RP-C3) is cross-tenant at the DB layer (BYPASSRLS sysPool)
 	// but the caller still authenticates like every other internal route —
 	// gincommon's RequireAuth requires x-tenant-id on every /api/v1 request
 	// regardless, so RP's client sends a sentinel uuid.Nil value for it
 	// (never read by this handler, which queries sysPool unconditionally).
-	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses)    // I-16 (§16 RP-C3)
-	internal.GET("/tenants/:id/plan-context", internalH.GetPlanContext)       // I-17 (CD-13)
-	internal.GET("/tenants/:id/plan-change-check", internalH.PlanChangeCheck) // I-18 (CD-20)
+	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses) // I-16 (§16 RP-C3)
+
+	// Every tenant-scoped internal route lives under this group so the path
+	// tenant — not x-tenant-id — is the RLS tenant (BindPathTenant).
+	// TestInternalTenantRoutes_AllBindPathTenant fails CI for a
+	// /internal/tenants/:id/* route registered outside it.
+	tenantScoped := internal.Group("/tenants/:id", BindPathTenant(PathTenantConfig{
+		Strict: cfg.StrictTenantPathValidation,
+		Logger: cfg.GinConfig.Logger,
+	}))
+	tenantScoped.PATCH("", internalH.PatchTenantRealm)                      // I-2
+	tenantScoped.POST("/members", internalH.AddMember)                      // I-3 (§8.10 accept + JIT add)
+	tenantScoped.POST("/dept-memberships", internalH.AssignFromGroups)      // I-10 (§8.5 SAML JIT)
+	tenantScoped.PATCH("/members/:user_id", internalH.PatchMemberLifecycle) // I-4
+	tenantScoped.DELETE("/members/:user_id", internalH.DeleteMember)        // I-5
+	tenantScoped.GET("/locale", internalH.GetLocale)                        // I-9
+	tenantScoped.GET("/mfa-freshness", internalH.GetMFAFreshness)           // I-14 (§16 A72)
+	tenantScoped.GET("/seat-usage", internalH.GetSeatUsage)                 // I-11
+	// I-12 (tender ACL check) retired, moved to iam-tender-acl's TAC-4
+	// (ADR-0007 Wave 3). ID never reused.
+	tenantScoped.POST("/tenders/:tender_id/assignee-override", internalH.AssigneeOverride) // I-13
+	tenantScoped.GET("/members/:user_id/exists", internalH.CheckMemberExists)              // I-15
+	tenantScoped.GET("/plan-context", internalH.GetPlanContext)                            // I-17 (CD-13)
+	tenantScoped.GET("/plan-change-check", internalH.PlanChangeCheck)                      // I-18 (CD-20)
 	// I-19 — Workflow Services' assignee eligibility read (uncached).
-	internal.GET("/tenants/:id/members/:user_id/eligibility", internalH.CheckAssigneeEligibility) // I-19
+	tenantScoped.GET("/members/:user_id/eligibility", internalH.CheckAssigneeEligibility) // I-19
 }
+
+// prewarmTenantPathMismatch zero-initialises the mismatch counter for every
+// registered /internal/tenants/:id/* route, so the series exist (scrape,
+// inventory, dashboards) before the first mismatch.
+func prewarmTenantPathMismatch(r *gin.Engine) {
+	for _, ri := range r.Routes() {
+		if ri.Path == internalTenantRoutePrefix || strings.HasPrefix(ri.Path, internalTenantRoutePrefix+"/") {
+			metrics.PrewarmTenantHeaderPathMismatch(ri.Path, ri.Method)
+		}
+	}
+}
+
+// internalTenantRoutePrefix is the BindPathTenant route group's full path.
+const internalTenantRoutePrefix = "/api/v1/internal/tenants/:id"

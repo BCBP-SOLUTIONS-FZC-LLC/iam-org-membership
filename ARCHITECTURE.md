@@ -327,7 +327,7 @@ graph LR
 
 ## Request flow
 
-Every HTTP request passes through the full middleware stack before reaching a handler. The public API sits behind gateway-injected identity headers (`x-user-id`/`x-tenant-id`/`x-tenant-roles`, no JWT parsing in this service); `/api/v1/internal/*` additionally requires the `iam-system` role and is reachable only over the mesh.
+Every HTTP request passes through the full middleware stack before reaching a handler. The public API sits behind gateway-injected identity headers (`x-user-id`/`x-tenant-id`/`x-tenant-roles`, no JWT parsing in this service); `/api/v1/internal/*` additionally requires the `iam-system` role and is reachable only over the mesh. On `/api/v1/internal/tenants/:id/*`, `BindPathTenant` then makes the **path tenant** the RLS tenant (IAPI-6) — a differing `x-tenant-id` is overridden, logged and counted, or rejected with `400 TENANT_MISMATCH` in strict mode; I-8 binds its `?tenant_id=` the same way.
 
 > Source: [`docs/architecture/mermaid/request-flow.mmd`](docs/architecture/mermaid/request-flow.mmd)
 
@@ -353,7 +353,7 @@ sequenceDiagram
     Note over AUTH: RequireAuth — 401 missing_/ambiguous_identity_headers if absent or repeated<br/>ContextMiddleware — build RequestContext{UserID,TenantID,Roles}<br/>GUCBridgeMiddleware — pgcommon.WithGUCSet(ctx) + requestctx.WithRequestID,<br/>the pool's GUCProvider binds app.user_id/app.tenant_id/app.tenant_roles<br/>transaction-locally on every checkout (RLS-6)<br/>RequireSystemRole — iam-system only on /internal/* (AUTH-5/IAPI-2)
 
     AUTH ->>+ H: c.Next()
-    Note over H: parse :id and ?tenant_id= (uuid.Parse) → 400 invalid_uuid on fail<br/>RLS still scopes every row to the bound app.tenant_id
+    Note over H: parse :id and ?tenant_id= (uuid.Parse) → 400 invalid_uuid on fail<br/>bind ?tenant_id= as app.tenant_id (requestctx.WithTenant, IAPI-6) — overrides a mismatched x-tenant-id<br/>RLS then scopes every row to that tenant
 
     H ->>+ SVC: GetMembership(ctx, tenantID, userID)
     SVC ->>+ Cache: GET om:memberships:{tenant}:{user}
@@ -1066,6 +1066,7 @@ Every SQL query on the request path runs with `app.tenant_id` bound **transactio
 ```mermaid
 sequenceDiagram
     participant MW as GUCBridgeMiddleware
+    participant BPT as BindPathTenant (/internal/tenants/:id/*)
     participant RC as requestctx.RequestContext
     participant GUC as pgcommon.GUCSetFromContext
     participant Pool as pgx Pool (platform-pgcommon)
@@ -1085,6 +1086,16 @@ sequenceDiagram
     MW ->> GUC: g.UserID, g.TenantID, g.TenantRoles = bridged identity
     MW ->> GUC: pgcommon.WithGUCSet(ctx, g)
     Note over MW: GUCSet stored in context — available to every downstream RunInTx call.<br/>pgcommon binds app.user_id, app.tenant_id and app.tenant_roles — the RLS policies key on app.tenant_id only.
+
+    Note over MW,GUC: /api/v1/internal/tenants/:id/* only (IAPI-6) — BindPathTenant runs after RequireInternalCaller.<br/>The path tenant is authoritative; x-tenant-id is compared, never trusted over it.<br/>I-8 (/internal/users/:id) binds its ?tenant_id= in the handler instead; public routes keep x-tenant-id (API-2).
+    BPT ->> BPT: parse :id — 400 VALIDATION_ERROR (invalid_uuid) on failure
+    alt x-tenant-id ≠ path tenant
+        BPT ->> BPT: WARN tenant_header_path_mismatch {route, method, request_id, caller, path/header tenant}<br/>+ iam_org_membership_tenant_header_path_mismatch_total{route,method,action}
+        opt STRICT_TENANT_PATH_VALIDATION=true (Helm iam.strictTenantPathValidation)
+            BPT -->> MW: 400 TENANT_MISMATCH (RFC 9457, …/iam/tenant-mismatch) — handler never runs
+        end
+    end
+    BPT ->> GUC: requestctx.WithTenant(ctx, pathTenant) — app.tenant_id and RequestContext.TenantID = path tenant;<br/>user, roles, client IP, user agent unchanged
 
     Note over Pool,DB: On every pool checkout — pgcommon.NewPool configured with GUCProvider = GUCSetFromContext<br/>Binding happens BEFORE the app query, inside the SAME transaction (RLS-6).
 

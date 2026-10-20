@@ -242,6 +242,8 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 
 Every caller must run on the internal service mesh (mTLS + NetworkPolicy) for `/api/v1/internal/*`, or forward gateway-validated `x-user-id`/`x-tenant-id`/`x-tenant-roles` headers for `/api/v1/*`. There is no JWT parsing in this service — the gateway/mesh has already done it.
 
+**Tenant on internal routes (IAPI-6).** On `/api/v1/internal/tenants/:id/*` the tenant in the **path** is authoritative. Callers must still send `x-tenant-id`, and should send the same tenant as the path: a differing value is overridden, logged (`tenant_header_path_mismatch`) and counted (`iam_org_membership_tenant_header_path_mismatch_total`), and once `STRICT_TENANT_PATH_VALIDATION` is enabled it is rejected with `400 TENANT_MISMATCH`. I-8 uses its `?tenant_id=`; I-1 and I-16 use `x-tenant-id`.
+
 ### 2. Realm Provisioner — bidirectional
 
 | Direction | Call | Notes |
@@ -604,6 +606,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300` | EVT-15 future-time clamp |
 | `INVITE_REINVITE_COOLDOWN_MINUTES` / `INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR` | `15` / `60` / `10` | PI-11/PI-12 invite throttles (per email / per tenant / per inviting actor, SECURITY-5) |
 | `DOCS_ENABLED` / `DOCS_AUTH_TOKEN` | `false` / — | Swagger UI gating outside dev |
+| `STRICT_TENANT_PATH_VALIDATION` | `false` | Helm `iam.strictTenantPathValidation`. `true` rejects an `/internal/tenants/:id/*` request whose `x-tenant-id` differs from the path tenant (`400 TENANT_MISMATCH`) instead of overriding it |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_INSECURE` | collector (Helm) / `localhost:4317` (dev) | OTLP/gRPC trace export, read by platform-gincommon. An empty value is treated as unset and falls back to `localhost:4317` — it does not disable export |
 | `OTEL_TRACES_SAMPLER_RATIO` | `0.1` (Helm) / `1.0` (dev) | Head sampling ratio in [0,1] |
 | `OTEL_PROPAGATOR_BAGGAGE` / `OTEL_TRACES_IGNORE_REMOTE_PARENT_SAMPLED` | `false` / `false` | W3C baggage propagation; whether a sampled remote parent is re-sampled (true only on edge services) |

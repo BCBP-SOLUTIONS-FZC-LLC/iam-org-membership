@@ -422,7 +422,11 @@ func (h *InternalHandler) GetMemberships(c *gin.Context) {
 			WithDetails(map[string]any{"code": "invalid_uuid"}))
 		return
 	}
-	proj, err := h.authz.GetMembership(c.Request.Context(), tenantID, userID)
+	// :id here is the user, so this route sits outside the BindPathTenant
+	// group; ?tenant_id= is the tenant, bound as the RLS tenant so a
+	// mismatched x-tenant-id cannot turn a real membership into a 404.
+	ctx := requestctx.WithTenant(c.Request.Context(), tenantID)
+	proj, err := h.authz.GetMembership(ctx, tenantID, userID)
 	if err != nil {
 		HandleError(c, err)
 		return
@@ -599,11 +603,7 @@ func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 	// guessing which service made the call.
 	const caller = "unknown"
 
-	// The path tenant, not the caller's x-tenant-id, is the RLS tenant: the
-	// query filters on the path tenant too, so a mismatched header would
-	// otherwise read zero rows and answer a false active:false.
-	ctx := requestctx.WithSystemTenant(c.Request.Context(), tenantID)
-	m, err := h.membership.CheckActiveMembership(ctx, tenantID, userID)
+	m, err := h.membership.CheckActiveMembership(c.Request.Context(), tenantID, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrMemberNotFound) {
 			metrics.IncMembershipExistsCheck(caller, "inactive")
@@ -634,8 +634,8 @@ func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 // Like I-15 this is a check, not a resource fetch: "not eligible" — including
 // "not a member" — is a 200 with a reason, never a 404. It reads Postgres,
 // not the om:memberships I-8 cache, so a demotion or removal is visible on
-// the next call. The path tenant is bound as the RLS tenant, so it is
-// authoritative regardless of the caller's x-tenant-id header.
+// the next call. The path tenant is the RLS tenant (BindPathTenant on the
+// /internal/tenants/:id group), whatever the caller's x-tenant-id says.
 //
 // @Summary      I-19 — Assignee eligibility (Workflow Services)
 // @Description  Returns {eligible, reason, role_level}. Eligible iff the user is an active tenant member, department_id is active for the tenant, and the user's level there is at least required_level (preparator < reviewer < approver). reason is one of not_member, member_not_active, department_not_active, not_in_department, level_insufficient, omitted when eligible. Never 404. Uncached. iam-system only.
@@ -671,8 +671,7 @@ func (h *InternalHandler) CheckAssigneeEligibility(c *gin.Context) {
 	}
 	required := domain.DeptRole(c.Query("required_level"))
 
-	ctx := requestctx.WithSystemTenant(c.Request.Context(), tenantID)
-	res, err := h.deptMemberships.CheckEligibility(ctx, tenantID, userID, deptID, required)
+	res, err := h.deptMemberships.CheckEligibility(c.Request.Context(), tenantID, userID, deptID, required)
 	if err != nil {
 		HandleError(c, err)
 		return
@@ -878,11 +877,8 @@ func (h *InternalHandler) AssigneeOverride(c *gin.Context) {
 	}
 	// I-13 / A55 / OVR-1: validate + emit TenderAssigneeOverridden. Persists
 	// nothing — the assignee_overrides record is Workflow-owned (§2.2/A32(d)).
-	// Path tenant bound as the RLS tenant (see CheckMemberExists) — a
-	// mismatched x-tenant-id would otherwise fail the actor-role and
-	// assignee lookups and reject a valid override.
 	err = h.membership.ValidateAndEmitAssigneeOverride(
-		requestctx.WithSystemTenant(c.Request.Context(), tenantID),
+		c.Request.Context(),
 		tenantID, tenderID, req.NewUserID, req.DepartmentID,
 		domain.DeptRole(req.RequiredLevel), req.ActorID,
 	)

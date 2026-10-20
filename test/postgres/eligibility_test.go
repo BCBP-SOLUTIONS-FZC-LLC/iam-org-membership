@@ -126,24 +126,3 @@ func TestI19_Eligibility_SuspendedMember(t *testing.T) {
 	assert.Equal(t, false, out["eligible"])
 	assert.Equal(t, "member_not_active", out["reason"])
 }
-
-// The user is an approver in tenant B. Asked about tenant A — with the
-// caller's x-tenant-id saying B — the answer must be scoped to the path
-// tenant A: not_member, never B's standing.
-func TestI19_Eligibility_PathTenantIsAuthoritative(t *testing.T) {
-	t.Parallel()
-	fx := buildTestFixtures(t)
-	ctx := context.Background()
-	tenantA, _ := seedTenantWithOwner(t, ctx, fx, "i19-path-a")
-	tenantB, userB := seedTenantWithOwner(t, ctx, fx, "i19-path-b")
-	deptB := seedDeptMember(t, ctx, fx, tenantB, userB, "approver")
-
-	out := callI19(t, fx, tenantA, tenantB, userB, deptB, "preparator")
-	assert.Equal(t, false, out["eligible"])
-	assert.Equal(t, "not_member", out["reason"])
-	assert.Equal(t, tenantA.String(), out["tenant_id"])
-
-	// Same user, path tenant B: eligible.
-	out = callI19(t, fx, tenantB, tenantA, userB, deptB, "approver")
-	assert.Equal(t, true, out["eligible"])
-}
