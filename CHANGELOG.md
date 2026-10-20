@@ -37,6 +37,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Added
 
+- **I-19 assignee eligibility read for the Workflow Services (LLD rev 2.30, 2026-10-21):** `GET /api/v1/internal/tenants/:id/members/:user_id/eligibility?department_id=&required_level=` → `{tenant_id, user_id, department_id, required_level, eligible, reason, role_level}`. Answers the Workflow Services' 2026-10-14 request (Definition publish check; Execution instance start with overrides, admin override, reassignment, delegation reroute). Eligible iff the membership is active, the department is active for the tenant, and the held level is at least `required_level` (preparator < reviewer < approver, owned by this service — same rule as I-13). `reason` ∈ `not_member`/`member_not_active`/`department_not_active`/`not_in_department`/`level_insufficient`. Never 404; uncached; `iam-system` only. New metric `iam_org_membership_assignee_eligibility_check_total{result}`. Endpoint count 39 → 40.
+
 - **Production-readiness hardening (LLD rev 2.20):**
   - **Go 1.26.9:** toolchain bumped from 1.26.6, resolving three stdlib `net/http` CVEs — GO-2026-6617 (HTTP/2 HPACK encoder race → server crash), GO-2026-6519 (request smuggling), GO-2026-6612 (double flow-control refund). `govulncheck` reports 0 vulnerabilities.
   - **Library bumps:** `platform-gincommon` v1.5.0→v1.6.0, `platform-events/v2` v2.0.0→v2.1.0, `platform-pgcommon/v2` v2.0.0→v2.0.1, `golang.org/x/net` v0.59.0→v0.61.0 (upstream CVE), AWS SDK patch, OTel v1.46.0→v1.47.0, `prometheus/client_golang` v1.24.1→v1.25.0.
@@ -46,6 +48,9 @@ This service has never been deployed to any environment — there is no released
   - **2 new CI enforcement scripts:** `check-database-access.sh` (no `database/sql`, no bare pgxpool construction, no `pgcommon.Config{DSN}` outside `postgres/db.go`, all `RunInTx*` wrapped by `wrapConnErr`) and `check-events-platform.sh` (outbox writes isolated to `eventbus/publisher.go`, `inbox.NewStore`/`store.Process` isolated to `postgres/idempotency_repository.go`, `events.InitMetrics` in both cmd binaries). Both wired into `validate-quality.yml`.
 
 ### Fixed
+
+- **I-8 cache eviction (CACHE-7/8, 2026-10-21):** only P-28, I-4 and O-7 evicted `om:memberships:{tenant}:{user}`. Dept assign/level change/remove (P-10/P-11), suspend/reactivate (P-7), removal (P-8), I-5 delete, I-10 SAML JIT and I-3 accept/rejoin left I-8 serving the previous projection for up to the 300 s ± 30 s TTL, so a demoted, removed or suspended user kept their old standing for AuthZ Enrichment. All now evict after commit. Covered by `test/unit/memberships_cache_eviction_test.go`.
+- **`make run` panic on a fresh floci container:** `scripts/init-floci.sh` never registered the `TenantSettingChanged` schema (a produced event on `iam-tenant-events` since rev 2.27), so `GlueCodec`'s startup lookup failed. Now registered; the script's produced-schema count is 15.
 
 - **P-2 `PATCH /tenants/:id` validation gaps:** `tenant_service.go` now enforces (a) `len(*patch.Name) ≤ 255` (same cap as provisioning; DB had only `CHECK(name <> '')`) and (b) BCP-47 structural regex on `default_locale` (same `^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$` as provisioning; previously only empty string was rejected). Both return `400 invalid_request`.
 - **Port-layer OTel import violation:** `internal/core/port/logger.go` imported `go.opentelemetry.io/otel/trace` directly (forbidden vendor import in the port layer). Trace-ID extraction is now injected via `port.SetTraceExtractor(fn func(context.Context) string)`, called once per binary after `gincommon.InitTracingWithConfig`. The OTel import moves to `cmd/server/main.go` and `cmd/reconciler/main.go` (composition roots — permitted).
