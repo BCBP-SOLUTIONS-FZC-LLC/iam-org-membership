@@ -372,35 +372,41 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	activeTenantGate := RequireActiveTenant(cfg.TenantRepo)
 	activeMemberGate := RequireActiveMembership(cfg.MembershipRepo)
 
-	tenants := v1.Group("/tenants", activeTenantGate, activeMemberGate)
+	// Every tenant-facing route lives under /tenants/:id. The x-tenant-id
+	// header is authoritative here (API-2): RequirePathTenantMatch rejects a
+	// path tenant that differs from it with 403 before the activity gates or
+	// any query run — it never rebinds the tenant (that is the internal-route
+	// rule, IAPI-6). TestPublicTenantRoutes_AllRequirePathTenantMatch fails
+	// CI for a tenant-facing route registered outside this group.
+	tenants := v1.Group("/tenants/:id", RequirePathTenantMatch(), activeTenantGate, activeMemberGate)
 	// Tenant — P-1, P-2
-	tenants.GET("/:id", tenantH.Get)
-	tenants.PATCH("/:id", tenantH.Patch)
+	tenants.GET("", tenantH.Get)
+	tenants.PATCH("", tenantH.Patch)
 
 	// Departments (tenant-scoped) — P-3, P-24, P-25
-	tenants.GET("/:id/departments", deptH.List)
-	tenants.POST("/:id/departments", deptH.Activate)
-	tenants.PATCH("/:id/departments/:dept_id", deptH.Patch)
+	tenants.GET("/departments", deptH.List)
+	tenants.POST("/departments", deptH.Activate)
+	tenants.PATCH("/departments/:dept_id", deptH.Patch)
 
 	// Members — P-4, P-5, P-6, P-7, P-8, P-26, P-27, P-28
-	tenants.GET("/:id/members", membershipH.List)
-	tenants.GET("/:id/members/:user_id", membershipH.Get)
-	tenants.POST("/:id/members", invitationH.Invite)                                      // P-6 (invite)
-	tenants.PATCH("/:id/members/:user_id", membershipH.Patch)                             // P-7
-	tenants.DELETE("/:id/members/:user_id", membershipH.Remove)                           // P-8 (§8.8)
-	tenants.POST("/:id/users/:user_id/removal-resolution", membershipH.RemovalResolution) // P-26 (§8.8.3)
-	tenants.PUT("/:id/members/:user_id/roles", membershipH.ReconcileRoles)
-	tenants.POST("/:id/members/:user_id/reset-mfa", membershipH.ResetMFA) // P-34 (§16 OQ-8/F6)
-	tenants.GET("/:id/seat-usage", membershipH.SeatUsage)
+	tenants.GET("/members", membershipH.List)
+	tenants.GET("/members/:user_id", membershipH.Get)
+	tenants.POST("/members", invitationH.Invite)                                      // P-6 (invite)
+	tenants.PATCH("/members/:user_id", membershipH.Patch)                             // P-7
+	tenants.DELETE("/members/:user_id", membershipH.Remove)                           // P-8 (§8.8)
+	tenants.POST("/users/:user_id/removal-resolution", membershipH.RemovalResolution) // P-26 (§8.8.3)
+	tenants.PUT("/members/:user_id/roles", membershipH.ReconcileRoles)
+	tenants.POST("/members/:user_id/reset-mfa", membershipH.ResetMFA) // P-34 (§16 OQ-8/F6)
+	tenants.GET("/seat-usage", membershipH.SeatUsage)
 
 	// Dept memberships — P-9, P-10, P-11
-	tenants.GET("/:id/departments/:dept_id/members", deptMemH.List)
-	tenants.PUT("/:id/departments/:dept_id/members/:user_id", deptMemH.Assign)
-	tenants.DELETE("/:id/departments/:dept_id/members/:user_id", deptMemH.Remove)
+	tenants.GET("/departments/:dept_id/members", deptMemH.List)
+	tenants.PUT("/departments/:dept_id/members/:user_id", deptMemH.Assign)
+	tenants.DELETE("/departments/:dept_id/members/:user_id", deptMemH.Remove)
 
 	// Role labels — P-12, P-13
-	tenants.GET("/:id/roles", roleLabelH.List)
-	tenants.PATCH("/:id/roles/:role_code", roleLabelH.Patch)
+	tenants.GET("/roles", roleLabelH.List)
+	tenants.PATCH("/roles/:role_code", roleLabelH.Patch)
 
 	// Group mappings (P-14, P-15, P-16, P-17, P-29) — retired, moved to
 	// Group Mapping Service (GM-1..GM-6, ADR-0007 Wave 2). IDs never reused.
@@ -409,8 +415,8 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// TAC-1/2/3 (ADR-0007 Wave 3). IDs never reused.
 
 	// Invitations — P-30, P-31
-	tenants.GET("/:id/invitations", invitationH.List)
-	tenants.DELETE("/:id/invitations/:invitation_id", invitationH.Revoke)
+	tenants.GET("/invitations", invitationH.List)
+	tenants.DELETE("/invitations/:invitation_id", invitationH.Revoke)
 
 	// Delegations (P-18, P-19, P-20, P-32, P-33) — retired, moved to the
 	// standalone Delegation Service's DLG-1..5 (ADR-0008 v2). IDs never

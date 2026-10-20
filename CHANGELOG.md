@@ -8,6 +8,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **API-2 guard on tenant-facing routes (LLD rev 2.32, 2026-10-21):** the 21 `/api/v1/tenants/:id/*` routes are now one `/tenants/:id` route group behind `RequirePathTenantMatch`, which rejects a path tenant that differs from `x-tenant-id` with `403 INSUFFICIENT_ROLE` before the active-tenant/active-member gates (no query on a mismatch). Same status and errorCode the handlers already returned; only the `detail` text of a mismatch changes. The header stays authoritative (no rebinding). Handlers keep their own check as defence in depth. New CI guard `TestPublicTenantRoutes_AllRequirePathTenantMatch`; `TestPublicTenantRoutes_PathsUnchanged` pins all 21 URLs.
+
 - **Path tenant is authoritative on `/api/v1/internal/tenants/:id/*` (LLD rev 2.31, IAPI-6, 2026-10-21):**
   - **Why:** repositories filtered on the path tenant while RLS filtered on the tenant from `x-tenant-id`. When a caller's header and path disagreed, reads returned false `404`/`active:false`/`not_member` (and a cache hit vs. miss could disagree on I-9/I-11/I-14/I-17), and writes (I-3, I-10, I-13) failed RLS `WITH CHECK` and counted as RLS violations. It failed closed — no cross-tenant data was ever returned.
   - **What:** new `BindPathTenant` middleware on the `/internal/tenants/:id` route group binds the path tenant as `app.tenant_id` and `RequestContext.TenantID`; the caller's user, roles, client IP and user agent are unchanged. I-8 binds its `?tenant_id=` in the handler. The per-handler binding added for I-13/I-15/I-19 is removed. Public and operator routes are unchanged (the header stays authoritative there, API-2).

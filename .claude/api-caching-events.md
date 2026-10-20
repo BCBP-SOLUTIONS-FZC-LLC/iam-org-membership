@@ -26,6 +26,7 @@
 
 **AUTH-1..AUTH-8:**
 - **AUTH-1** — Tenant-level reads require **active** membership in target tenant.
+- **API-2 guard** — every `/api/v1/tenants/:id/*` route sits in one `/tenants/:id` group behind `RequirePathTenantMatch` (`path_tenant.go`): a path tenant ≠ `x-tenant-id` → `403 INSUFFICIENT_ROLE` before the activity gates or any query. Never rebinds (header authoritative; contrast IAPI-6). Handlers keep their own check. CI guard `TestPublicTenantRoutes_AllRequirePathTenantMatch` — register new tenant-facing routes on the `tenants` group.
 - **AUTH-2** — Tenant-admin mutations (add/remove/change roles/group mappings/dept activation) require `tenant_admin` OR `tenant_owner`.
 - **AUTH-3** — *Retired* — tender-ACL management authz moved to the Tender ACL Service (`iam-tender-acl`, ADR-0007 Wave 3) along with the ACL endpoints themselves (P-21/22/23, I-12).
 - **AUTH-4** — *Retired* — delegation create/cancel authz moved to the standalone Delegation Service (`iam-delegation`, ADR-0008) along with the delegation endpoints themselves (P-18/19/20/32/33).

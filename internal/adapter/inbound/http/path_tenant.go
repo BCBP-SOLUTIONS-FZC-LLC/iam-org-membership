@@ -96,3 +96,42 @@ func parsePathTenant(raw string) (uuid.UUID, error) {
 	}
 	return id, nil
 }
+
+// PublicTenantMismatchDetail is RequirePathTenantMatch's problem detail. The
+// status and errorCode (403 INSUFFICIENT_ROLE) are the ones every public
+// handler's own same-tenant check already returns; this distinct detail is
+// what lets the route-registration test tell the middleware's rejection apart
+// from a handler's.
+const PublicTenantMismatchDetail = "tenant in path does not match the caller's tenant"
+
+// RequirePathTenantMatch guards every tenant-facing /api/v1/tenants/:id/*
+// route: the caller's x-tenant-id (from the validated JWT, via the gateway)
+// is authoritative there (API-2) and a client-supplied path tenant that
+// differs from it is rejected with 403 INSUFFICIENT_ROLE before the activity
+// gates or any query run. Unlike BindPathTenant it never rebinds the tenant —
+// on public routes the path is client-controlled.
+//
+// Every public handler also checks this itself; the middleware makes the
+// check impossible to forget for a new route.
+func RequirePathTenantMatch() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		pathTenant, err := parsePathTenant(c.Param("id"))
+		if err != nil {
+			HandleError(c, err)
+			c.Abort()
+			return
+		}
+		rc, ok := requestctx.FromContext(c.Request.Context())
+		if !ok {
+			HandleError(c, domain.NewError(domain.ErrMissingIdentity, "missing identity"))
+			c.Abort()
+			return
+		}
+		if rc.TenantID != pathTenant {
+			HandleError(c, domain.NewError(domain.ErrInsufficientRole, PublicTenantMismatchDetail))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
