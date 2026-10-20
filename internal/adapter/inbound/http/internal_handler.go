@@ -8,6 +8,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -595,7 +596,11 @@ func (h *InternalHandler) CheckMemberExists(c *gin.Context) {
 	// guessing which service made the call.
 	const caller = "unknown"
 
-	m, err := h.membership.CheckActiveMembership(c.Request.Context(), tenantID, userID)
+	// The path tenant, not the caller's x-tenant-id, is the RLS tenant: the
+	// query filters on the path tenant too, so a mismatched header would
+	// otherwise read zero rows and answer a false active:false.
+	ctx := requestctx.WithSystemTenant(c.Request.Context(), tenantID)
+	m, err := h.membership.CheckActiveMembership(ctx, tenantID, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrMemberNotFound) {
 			metrics.IncMembershipExistsCheck(caller, "inactive")
@@ -799,8 +804,11 @@ func (h *InternalHandler) AssigneeOverride(c *gin.Context) {
 	}
 	// I-13 / A55 / OVR-1: validate + emit TenderAssigneeOverridden. Persists
 	// nothing — the assignee_overrides record is Workflow-owned (§2.2/A32(d)).
+	// Path tenant bound as the RLS tenant (see CheckMemberExists) — a
+	// mismatched x-tenant-id would otherwise fail the actor-role and
+	// assignee lookups and reject a valid override.
 	err = h.membership.ValidateAndEmitAssigneeOverride(
-		c.Request.Context(),
+		requestctx.WithSystemTenant(c.Request.Context(), tenantID),
 		tenantID, tenderID, req.NewUserID, req.DepartmentID,
 		domain.DeptRole(req.RequiredLevel), req.ActorID,
 	)
