@@ -10,7 +10,7 @@
 #   8 fan-out SQS    — §7.3.2 consumer queues on the two O&M topics (+ DLQs)
 #   SNS→SQS subs     — with filter policies on the `EventType` attribute
 #   2 Glue registries — iam-membership-events, iam-tenant-events
-#   14 Glue schemas  — every event this service produces (domain.IsProducedEvent),
+#   15 Glue schemas  — every event this service produces (domain.IsProducedEvent),
 #                      registered from the same JSON Schema Draft-07 files
 #                      eventbus.GlueCodec ships, so GLUE_REGISTRY_MEMBERSHIP_NAME
 #                      / GLUE_REGISTRY_TENANT_NAME can be set in .env and the
@@ -230,6 +230,7 @@ register_schema iam-membership-events tender_assignee_overridden.json          T
 
 register_schema iam-tenant-events tenant_created.json TenantCreated
 register_schema iam-tenant-events trial_started.json  TrialStarted
+register_schema iam-tenant-events tenant_setting_changed.json TenantSettingChanged
 
 # ────────────────────────────────────────────────────────────────────────
 # Summary
