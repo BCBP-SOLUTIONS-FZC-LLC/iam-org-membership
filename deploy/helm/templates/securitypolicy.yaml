@@ -2,11 +2,17 @@
 {{- $anyPolicyEnabled := or .Values.ingress.securityPolicy.cors.enabled .Values.ingress.securityPolicy.rateLimit.enabled }}
 {{- if and $httpRouteEnabled .Values.ingress.securityPolicy.enabled $anyPolicyEnabled }}
 # Envoy Gateway SecurityPolicy — attaches CORS and/or rate limiting to the
-# HTTPRoute at the gateway layer. Requires Envoy Gateway v0.6+ (gateway.envoyproxy.io/v1alpha1 CRD).
+# HTTPRoute at the gateway layer. Requires Envoy Gateway v1.8+ (mergeType, below; gateway.envoyproxy.io/v1alpha1 CRD).
 #
 # NOTE: The in-process token-bucket rate limiter remains active regardless.
 # The gateway-level limit here is a coarser burst shield applied before requests
 # reach the service.
+# mergeType (ingress.securityPolicy.mergeType, default StrategicMerge) merges
+# this route policy with the Gateway-level SecurityPolicy. Unset, Envoy
+# Gateway applies only the most specific policy, so this one would REPLACE the
+# gateway's — dropping its JWT validation and ext_authz (AuthZ Enrichment,
+# which sets the trusted x-tenant-id / x-user-id / ... identity headers) on
+# these routes. mergeType needs Envoy Gateway v1.8+.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
@@ -18,6 +24,9 @@ spec:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: {{ include "iam-org-membership.fullname" . }}
+  {{- with .Values.ingress.securityPolicy.mergeType }}
+  mergeType: {{ . }}
+  {{- end }}
   {{- if .Values.ingress.securityPolicy.cors.enabled }}
   cors:
     allowOrigins:

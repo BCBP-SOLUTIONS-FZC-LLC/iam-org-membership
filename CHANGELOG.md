@@ -63,6 +63,7 @@ This service has never been deployed to any environment — there is no released
 
 ### Fixed
 
+- **Helm: the route SecurityPolicy now merges with the Gateway-level policy** (`ingress.securityPolicy.mergeType`, default `StrategicMerge`, rendered into the SecurityPolicy spec only when non-empty). Without `mergeType`, Envoy Gateway applies only the most specific SecurityPolicy, so enabling this chart's HTTPRoute policy REPLACED the Gateway's on these routes — dropping its JWT validation and ext_authz (AuthZ Enrichment, which sets the trusted identity headers; IAM HLD §11.1). `mergeType` requires Envoy Gateway ≥ v1.8; set `""` only on an older gateway, and there leave the policy disabled. Dormant by default (`securityPolicy.enabled: false`).
 - **I-8 cache eviction (CACHE-7/8, 2026-10-21):** only P-28, I-4 and O-7 evicted `om:memberships:{tenant}:{user}`. Dept assign/level change/remove (P-10/P-11), suspend/reactivate (P-7), removal (P-8), I-5 delete, I-10 SAML JIT and I-3 accept/rejoin left I-8 serving the previous projection for up to the 300 s ± 30 s TTL, so a demoted, removed or suspended user kept their old standing for AuthZ Enrichment. All now evict after commit. Covered by `test/unit/memberships_cache_eviction_test.go`.
 - **`make run` panic on a fresh floci container:** `scripts/init-floci.sh` never registered the `TenantSettingChanged` schema (a produced event on `iam-tenant-events` since rev 2.27), so `GlueCodec`'s startup lookup failed. Now registered; the script's produced-schema count is 15.
 
