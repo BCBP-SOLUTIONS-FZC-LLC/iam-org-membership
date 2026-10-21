@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -15,6 +16,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,22 +128,32 @@ func TestCheckAssigneeEligibility_NotMember_200Not404(t *testing.T) {
 	assert.NotContains(t, body, "role_level")
 }
 
-// I19-RLS-01: the path tenant — not the caller's x-tenant-id — is bound as
-// app.tenant_id for the reads.
+// I19-RLS-01: behind BindPathTenant (its production registration), the path
+// tenant — not the caller's x-tenant-id — is the RLS tenant for the reads.
 func TestCheckAssigneeEligibility_BindsPathTenantAsRLSTenant(t *testing.T) {
 	pathTenant, deptID := uuid.New(), uuid.New()
 	mem := activeMem()
 	h := newEligibilityHandler(mem, deptID, domain.DeptApprover)
 
-	c, w := buildCtx(http.MethodGet, "/?department_id="+deptID.String()+"&required_level=reviewer", ``, systemCtx())
-	// Caller's own GUC carries a different tenant, as GUCBridgeMiddleware
-	// would set from a mismatched x-tenant-id header.
-	g, _ := pgcommon.GUCSetFromContext(c.Request.Context())
-	g.TenantID = uuid.New().String()
-	c.Request = c.Request.WithContext(pgcommon.WithGUCSet(c.Request.Context(), g))
-	setParams(c, "id", pathTenant.String(), "user_id", uuid.New().String())
+	r := gin.New()
+	r.GET("/api/v1/internal/tenants/:id/members/:user_id/eligibility",
+		func(c *gin.Context) {
+			// Caller's own context/GUC carries a different tenant, as
+			// GUCBridgeMiddleware would set from a mismatched x-tenant-id.
+			other := uuid.New()
+			ctx := requestctx.WithContext(c.Request.Context(), &requestctx.RequestContext{TenantID: other, Roles: []string{"iam-system"}})
+			g, _ := pgcommon.GUCSetFromContext(ctx)
+			g.TenantID = other.String()
+			c.Request = c.Request.WithContext(pgcommon.WithGUCSet(ctx, g))
+			c.Next()
+		},
+		BindPathTenant(PathTenantConfig{}),
+		h.CheckAssigneeEligibility)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/v1/internal/tenants/"+pathTenant.String()+"/members/"+uuid.New().String()+
+			"/eligibility?department_id="+deptID.String()+"&required_level=reviewer", nil))
 
-	h.CheckAssigneeEligibility(c)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, pathTenant.String(), mem.gucTID, "path :id must be the RLS tenant")
 }

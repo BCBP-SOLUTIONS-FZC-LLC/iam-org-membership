@@ -153,6 +153,10 @@ These alerts query platform-library metrics that are still `proposed` in the reg
 
 **Mitigate.** Inspect the `DLQReason` attribute, fix the cause, then redrive. Never discard without the owning team's sign-off.
 
+Two cases specific to signup provisioning (LLD rev 2.33):
+- **`DLQReason=provisioning_rejected`** on a `TenantIdentityProvisioned`: I-1 can never accept the payload (validation failure, or the slug belongs to another tenant). The user exists in Keycloak with no tenant. The ERROR log `TenantIdentityProvisioned rejected` has the cause; resolve it with the Signup BFF team (e.g. a different slug), complete the signup via I-1, and discard the message.
+- **No `DLQReason`, any lifecycle/billing type, tenant has no row** (EVT-17): the event kept arriving before its tenant existed and ran out of receives. Usually the `TenantIdentityProvisioned` for that tenant failed too (Catalog outage) — redrive it first, confirm the tenant exists, then redrive the rest.
+
 ### IAMOrgMembershipDBPoolSaturated
 
 **Meaning.** More than 90% of a pool's connections have been checked out for 10 minutes on the busiest replica. `pool="default"` is the API pool, `pool="system"` the BYPASSRLS pool (reconciler sweeps, gauge exporters, I-16, PUB-1).
@@ -186,6 +190,14 @@ These alerts query platform-library metrics that are still `proposed` in the reg
 **Meaning.** Queries ran without a valid `app.tenant_id` GUC (`violation_type="missing_or_invalid_guc"`). RLS returns zero rows rather than leaking data, but the request silently sees nothing.
 
 **Triage.** `query_text` in `rls_violation_log` identifies the path. Typical causes are a repository call outside `GUCBridgeMiddleware`, or an internal path that is missing `requestctx.WithSystemTenant` / `WithTenant`.
+
+### IAMOrgMembershipTenantHeaderPathMismatch
+
+**Meaning.** Info, not a page. An in-mesh caller sent an `/api/v1/internal/tenants/:id/*` request whose `x-tenant-id` names a different tenant than the path (IAPI-6). The path tenant is authoritative, so in the default mode the request was served for the path tenant (`action="overridden"`); nothing leaked and the answer was correct. With `STRICT_TENANT_PATH_VALIDATION=true` the same request is rejected with `400 TENANT_MISMATCH` (`action="rejected"`), so the caller is now failing.
+
+**Triage.** `sum by (route, method, action) (rate(iam_org_membership_tenant_header_path_mismatch_total[15m]))` names the route. The WARN log `tenant_header_path_mismatch` carries `request_id`, `caller_user_id`, `caller_roles`, `path_tenant_id` and `header_tenant_id`; the roles and `request_id` identify the calling service (`commercial-system` = Billing/Entitlements; `iam-system` = an IAM service — match `request_id` in its logs). A `header_tenant_id` of `00000000-0000-0000-0000-000000000000` is a caller sending the cross-tenant sentinel to a tenant route.
+
+**Mitigate.** Fix the caller to send `x-tenant-id` equal to the path tenant. Do not enable strict mode in an environment while this alert is firing there. If strict mode was enabled and a caller is now failing, set `iam.strictTenantPathValidation: false` (config-only rollback) and fix the caller first.
 
 ### IAMSessionRevokeFailedSustained
 

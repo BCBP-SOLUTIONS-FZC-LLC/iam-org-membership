@@ -11,6 +11,8 @@ Signup BFF → `POST /internal/tenants` (I-1). One `RunInTx`:
 6. `outbox.Enqueue(TenantCreated)` + `outbox.Enqueue(TrialStarted)`
 7. COMMIT
 
+**Provisioning backstop (BFF-2, LLD rev 2.33).** RP-1/RP-2 run first and emit `TenantIdentityProvisioned` from RP's outbox once the admin's Keycloak user exists. If the BFF's I-1 never succeeds (retries exhausted, pod restart, Valkey loss, tab closed), the `tenant-orgm-q` consumer runs this same I-1 flow from the event payload — no tenant row → create; row exists → no-op. I-1's `ON CONFLICT (id) DO NOTHING` makes the BFF and the backstop race safely (first writer decides slug/name/plan, so the BFF must send I-1 exactly what it sent RP). RP's other events for the new tenant may arrive first: EVT-17 retries them until the tenant exists.
+
 Returns `201 {tenant_id}`. Outbox runner publishes both events to `iam.tenant.events`.
 
 ## 8.1b Direct-Paid Signup (F11, RP↔O&M alignment review)
@@ -248,6 +250,27 @@ GET /internal/subscription-lapses  -- cross-tenant by design; RP sends a sentine
 ```
 
 Deliberately **pull, not push** — unlike RP-4's resolution for trial-expiry (§8.1b's sibling case), a cancellation is reversible (`TenantReactivated` before grace elapses), so a push/event model would force RP to also consume and reconcile an "un-cancel" signal against its own local state. Pull sidesteps that: O&M's `tenants` row is already the source of truth. Self-idempotent — once RP suspends a tenant (emitting `TenantSuspended`), it drops off the next poll on its own.
+
+## 8.13 Internal Tenant Resolution (IAPI-6)
+
+`/api/v1/internal/tenants/:id/*` (I-2..5, I-9..11, I-13..15, I-17..19):
+
+```
+RequireAuth → ContextMiddleware → GUCBridge (app.tenant_id = x-tenant-id)
+  → RequireInternalCaller (iam-system / commercial-system allow-list)
+  → BindPathTenant
+       parse :id                         → 400 VALIDATION_ERROR (invalid_uuid)
+       x-tenant-id ≠ path tenant?
+         WARN tenant_header_path_mismatch + iam_org_membership_tenant_header_path_mismatch_total
+         STRICT_TENANT_PATH_VALIDATION=true → 400 TENANT_MISMATCH, handler not run
+       requestctx.WithTenant(ctx, path)  → app.tenant_id = RequestContext.TenantID = path tenant
+                                           (user, roles, client IP, user agent unchanged)
+  → handler (repositories filter on the path tenant; RLS now agrees)
+```
+
+Before IAPI-6, RLS used the header tenant while repositories used the path tenant, so a mismatched header produced a false 404 / `active:false` / `not_member` on reads and an RLS `WITH CHECK` failure (counted as an RLS violation) on writes. It failed closed; no cross-tenant data was returned. I-8 (`/internal/users/:id`, `:id` is a user) binds `?tenant_id=` in its handler; I-1 and I-16 have no path tenant and keep `x-tenant-id`. Tenant-facing `/api/v1/tenants/:id/*` routes are unchanged — the header stays authoritative there (API-2).
+
+**Rollout of strict mode:** ship with `iam.strictTenantPathValidation: false`; watch `sum by (route) (rate(iam_org_membership_tenant_header_path_mismatch_total[1h]))` and the `tenant_header_path_mismatch` logs in each environment; fix any caller that appears; then enable per environment, dev → staging → prod, once the counter has stayed at zero there. Turning it off again is a config-only rollback.
 
 ## 9. Concurrency, Consistency, Failure
 

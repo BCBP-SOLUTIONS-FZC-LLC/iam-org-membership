@@ -2,7 +2,7 @@
 
 This document describes the internal structure, dependency rules, and runtime data flows of `iam-org-membership`.
 
-`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.9) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.28, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 7 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
+`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.10) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.28, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 7 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service. This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -327,7 +327,7 @@ graph LR
 
 ## Request flow
 
-Every HTTP request passes through the full middleware stack before reaching a handler. The public API sits behind gateway-injected identity headers (`x-user-id`/`x-tenant-id`/`x-tenant-roles`, no JWT parsing in this service); `/api/v1/internal/*` additionally requires the `iam-system` role and is reachable only over the mesh.
+Every HTTP request passes through the full middleware stack before reaching a handler. The public API sits behind gateway-injected identity headers (`x-user-id`/`x-tenant-id`/`x-tenant-roles`, no JWT parsing in this service); `/api/v1/internal/*` additionally requires the `iam-system` role and is reachable only over the mesh. On `/api/v1/internal/tenants/:id/*`, `BindPathTenant` then makes the **path tenant** the RLS tenant (IAPI-6) — a differing `x-tenant-id` is overridden, logged and counted, or rejected with `400 TENANT_MISMATCH` in strict mode; I-8 binds its `?tenant_id=` the same way.
 
 > Source: [`docs/architecture/mermaid/request-flow.mmd`](docs/architecture/mermaid/request-flow.mmd)
 
@@ -353,7 +353,7 @@ sequenceDiagram
     Note over AUTH: RequireAuth — 401 missing_/ambiguous_identity_headers if absent or repeated<br/>ContextMiddleware — build RequestContext{UserID,TenantID,Roles}<br/>GUCBridgeMiddleware — pgcommon.WithGUCSet(ctx) + requestctx.WithRequestID,<br/>the pool's GUCProvider binds app.user_id/app.tenant_id/app.tenant_roles<br/>transaction-locally on every checkout (RLS-6)<br/>RequireSystemRole — iam-system only on /internal/* (AUTH-5/IAPI-2)
 
     AUTH ->>+ H: c.Next()
-    Note over H: parse :id and ?tenant_id= (uuid.Parse) → 400 invalid_uuid on fail<br/>RLS still scopes every row to the bound app.tenant_id
+    Note over H: parse :id and ?tenant_id= (uuid.Parse) → 400 invalid_uuid on fail<br/>bind ?tenant_id= as app.tenant_id (requestctx.WithTenant, IAPI-6) — overrides a mismatched x-tenant-id<br/>RLS then scopes every row to that tenant
 
     H ->>+ SVC: GetMembership(ctx, tenantID, userID)
     SVC ->>+ Cache: GET om:memberships:{tenant}:{user}
@@ -520,7 +520,7 @@ sequenceDiagram
 
 ## Provisioning flow
 
-Tenants enter the system through **I-1**, called by Realm Provisioner (or the Signup BFF) after it has created the realm/owner in Keycloak; a subsequently-consumed `TrialTenantProvisioned` event, if one arrives, is an idempotent no-op reconcile rather than the creation trigger itself.
+Tenants enter the system through **I-1**, called by the Signup BFF after Realm Provisioner has created the realm/owner in Keycloak. If that call never completes, RP's `TenantIdentityProvisioned` event (consumed on `tenant-orgm-q`) runs the same I-1 flow from its payload — the signup provisioning backstop; when the BFF's I-1 got there first it is a no-op (LLD rev 2.33).
 
 > Source: [`docs/architecture/mermaid/provisioning-flow.mmd`](docs/architecture/mermaid/provisioning-flow.mmd)
 
@@ -583,7 +583,7 @@ sequenceDiagram
     Router ->> SNS_T: TenantCreated, TrialStarted (Core's only two produced events on this topic, §7.3)
     Router ->> SNS_M: TenantRoleGranted
 
-    Note over EC: A TrialTenantProvisioned consumed later on tenant-orgm-q is an idempotent<br/>no-op reconcile (processed_events claim + EVT-14 guard, no state change) —<br/>never the creation trigger. Core does not consume its own TenantCreated/TrialStarted<br/>(tenant-orgm-q's filter excludes them, HLD §9.1.1 disjoint produce/consume sets).
+    Note over EC: Backstop: RP's TenantIdentityProvisioned on tenant-orgm-q runs this same I-1 flow<br/>(ProvisioningService.TrialSignup) when no tenant row exists — the BFF's call never completed;<br/>a no-op when the row exists (ON CONFLICT (id) DO NOTHING; first writer wins). Core does not<br/>consume its own TenantCreated/TrialStarted (HLD §9.1.1 disjoint produce/consume sets).
 ```
 
 `TrialReactivated` (a `billing-orgm-q` event, not shown above) follows the same shape but resolves `plan.trial_duration_days` via a pre-tx `port.PlanCatalogReader.PlanByCode` call — this mirrors `TrialSignup`'s own pattern and was a deliberate fix: an earlier version of this handler read a local `plans` table subquery that no longer exists post-ADR-0007, which failed on every occurrence until integration tests (added specifically to close that gap) caught it. `AddMember` (I-3, both the SAML JIT-add path and the invitation-acceptance path) and `AssignFromGroups` (I-10) share the same RunInTx-then-outbox discipline; I-10's group→role resolution itself is a `GroupMappingService` client call made **before** the transaction opens, exactly like the two Catalog calls above.
@@ -1066,6 +1066,7 @@ Every SQL query on the request path runs with `app.tenant_id` bound **transactio
 ```mermaid
 sequenceDiagram
     participant MW as GUCBridgeMiddleware
+    participant BPT as BindPathTenant (/internal/tenants/:id/*)
     participant RC as requestctx.RequestContext
     participant GUC as pgcommon.GUCSetFromContext
     participant Pool as pgx Pool (platform-pgcommon)
@@ -1085,6 +1086,16 @@ sequenceDiagram
     MW ->> GUC: g.UserID, g.TenantID, g.TenantRoles = bridged identity
     MW ->> GUC: pgcommon.WithGUCSet(ctx, g)
     Note over MW: GUCSet stored in context — available to every downstream RunInTx call.<br/>pgcommon binds app.user_id, app.tenant_id and app.tenant_roles — the RLS policies key on app.tenant_id only.
+
+    Note over MW,GUC: /api/v1/internal/tenants/:id/* only (IAPI-6) — BindPathTenant runs after RequireInternalCaller.<br/>The path tenant is authoritative; x-tenant-id is compared, never trusted over it.<br/>I-8 (/internal/users/:id) binds its ?tenant_id= in the handler instead; public routes keep x-tenant-id (API-2).
+    BPT ->> BPT: parse :id — 400 VALIDATION_ERROR (invalid_uuid) on failure
+    alt x-tenant-id ≠ path tenant
+        BPT ->> BPT: WARN tenant_header_path_mismatch {route, method, request_id, caller, path/header tenant}<br/>+ iam_org_membership_tenant_header_path_mismatch_total{route,method,action}
+        opt STRICT_TENANT_PATH_VALIDATION=true (Helm iam.strictTenantPathValidation)
+            BPT -->> MW: 400 TENANT_MISMATCH (RFC 9457, …/iam/tenant-mismatch) — handler never runs
+        end
+    end
+    BPT ->> GUC: requestctx.WithTenant(ctx, pathTenant) — app.tenant_id and RequestContext.TenantID = path tenant;<br/>user, roles, client IP, user agent unchanged
 
     Note over Pool,DB: On every pool checkout — pgcommon.NewPool configured with GUCProvider = GUCSetFromContext<br/>Binding happens BEFORE the app query, inside the SAME transaction (RLS-6).
 
@@ -1217,7 +1228,7 @@ if tag.RowsAffected() == 0 {
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs. `RECONCILER_STATEMENT_TIMEOUT` (default 2m) applies to both pools; each run pushes its metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | Schema migrator (`cmd/migrate`): `postgres.MigrateSchema` runs platform-events' `outbox.ApplySchema`, then the domain migrations, and exits 0 or 1. Reads `MIGRATION_DATABASE_URL` (falls back to the app DSN), bounded by `MIGRATE_TIMEOUT` (default 10m). `explainMigrationError` adds a recovery hint for a dirty schema or a version missing from the binary |
 
-Two-stage `Dockerfile`: `golang:1.26.9-alpine` builder (pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root UID 65532) — only the three compiled binaries are copied in (`make build` builds the same three into `bin/`), which is why `api/asyncapi.yaml` is compiled in via `//go:embed` rather than read from disk at runtime.
+Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.26.10-alpine` builder; a `debian:bookworm-slim` `certs` stage, whose patched CA bundle (ca-certificates deb12u2, DLA-4845-1) replaces distroless's until distroless ships it; and the `gcr.io/distroless/static-debian12:nonroot` runtime (no shell, non-root UID 65532), into which only the three compiled binaries and that CA bundle are copied (`make build` builds the same three into `bin/`), which is why `api/asyncapi.yaml` is compiled in via `//go:embed` rather than read from disk at runtime.
 
 ### Helm chart
 

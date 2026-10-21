@@ -56,4 +56,4 @@ sequenceDiagram
     Router ->> SNS_T: TenantCreated, TrialStarted (Core's only two produced events on this topic, §7.3)
     Router ->> SNS_M: TenantRoleGranted
 
-    Note over EC: A TrialTenantProvisioned consumed later on tenant-orgm-q is an idempotent<br/>no-op reconcile (processed_events claim + EVT-14 guard, no state change) —<br/>never the creation trigger. Core does not consume its own TenantCreated/TrialStarted<br/>(tenant-orgm-q's filter excludes them, HLD §9.1.1 disjoint produce/consume sets).
+    Note over EC: Backstop: RP's TenantIdentityProvisioned on tenant-orgm-q runs this same I-1 flow<br/>(ProvisioningService.TrialSignup) when no tenant row exists — the BFF's call never completed;<br/>a no-op when the row exists (ON CONFLICT (id) DO NOTHING; first writer wins). Core does not<br/>consume its own TenantCreated/TrialStarted (HLD §9.1.1 disjoint produce/consume sets).

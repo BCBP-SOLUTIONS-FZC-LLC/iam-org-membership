@@ -3,7 +3,7 @@
 The Org & Membership (Core) Service — the **organizational/business system of record** in the IAM subsystem. It owns tenants (plan, subscription lifecycle, trial/cancellation/suspension timers, MFA freshness), department activation, tenant memberships and elevated tenant-level roles, department-level role grants, the two-step invite→accept staging flow, and per-tenant feature-flag overrides. It is the hot-path source of truth AuthZ Enrichment reads on every authenticated request via I-8.
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`
-**Module:** Go 1.26.9 · private module · deployed as three binaries from one image (`cmd/server`, `cmd/reconciler`, `cmd/migrate`)
+**Module:** Go 1.26.10 · private module · deployed as three binaries from one image (`cmd/server`, `cmd/reconciler`, `cmd/migrate`)
 **Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.20** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
 
 ---
@@ -242,6 +242,8 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 
 Every caller must run on the internal service mesh (mTLS + NetworkPolicy) for `/api/v1/internal/*`, or forward gateway-validated `x-user-id`/`x-tenant-id`/`x-tenant-roles` headers for `/api/v1/*`. There is no JWT parsing in this service — the gateway/mesh has already done it.
 
+**Tenant on internal routes (IAPI-6).** On `/api/v1/internal/tenants/:id/*` the tenant in the **path** is authoritative. Callers must still send `x-tenant-id`, and should send the same tenant as the path: a differing value is overridden, logged (`tenant_header_path_mismatch`) and counted (`iam_org_membership_tenant_header_path_mismatch_total`), and once `STRICT_TENANT_PATH_VALIDATION` is enabled it is rejected with `400 TENANT_MISMATCH`. I-8 uses its `?tenant_id=`; I-1 and I-16 use `x-tenant-id`.
+
 ### 2. Realm Provisioner — bidirectional
 
 | Direction | Call | Notes |
@@ -318,7 +320,7 @@ The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_me
 
 ### Prerequisites
 
-- Go 1.26.9+
+- Go 1.26.10+
 - Docker (Postgres, PgBouncer, Valkey, floci — `make docker-up`)
 - `GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/*` (`GONOSUMDB` too) and an SSH key registered with the BCBP org
 
@@ -604,6 +606,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300` | EVT-15 future-time clamp |
 | `INVITE_REINVITE_COOLDOWN_MINUTES` / `INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR` | `15` / `60` / `10` | PI-11/PI-12 invite throttles (per email / per tenant / per inviting actor, SECURITY-5) |
 | `DOCS_ENABLED` / `DOCS_AUTH_TOKEN` | `false` / — | Swagger UI gating outside dev |
+| `STRICT_TENANT_PATH_VALIDATION` | `false` | Helm `iam.strictTenantPathValidation`. `true` rejects an `/internal/tenants/:id/*` request whose `x-tenant-id` differs from the path tenant (`400 TENANT_MISMATCH`) instead of overriding it |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_INSECURE` | collector (Helm) / `localhost:4317` (dev) | OTLP/gRPC trace export, read by platform-gincommon. An empty value is treated as unset and falls back to `localhost:4317` — it does not disable export |
 | `OTEL_TRACES_SAMPLER_RATIO` | `0.1` (Helm) / `1.0` (dev) | Head sampling ratio in [0,1] |
 | `OTEL_PROPAGATOR_BAGGAGE` / `OTEL_TRACES_IGNORE_REMOTE_PARENT_SAMPLED` | `false` / `false` | W3C baggage propagation; whether a sampled remote parent is re-sampled (true only on edge services) |
@@ -659,7 +662,7 @@ Alert rules live in `deploy/monitoring/app-alerts.yml` (26), `slo-rules.yml` (5)
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | One-shot schema migration (`cmd/migrate` → `postgres.MigrateSchema`: platform-events' `outbox.ApplySchema`, then the domain migrations); exits 0 on success or "already up to date", 1 on failure, with operator hints for a dirty migration or a version missing from the build |
 
-Two-stage `Dockerfile`: `golang:1.26.9-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the three compiled binaries are copied in. `EXPOSE 8080 9090`.
+Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.26.10-alpine` builder; a `debian:bookworm-slim` `certs` stage, whose patched CA bundle (ca-certificates deb12u2, DLA-4845-1) replaces distroless's until distroless ships it; and the `gcr.io/distroless/static-debian12:nonroot` runtime (no shell, non-root, UID 65532), into which only the three compiled binaries and that CA bundle are copied. `EXPOSE 8080 9090`.
 
 ### Helm chart
 
@@ -783,7 +786,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | Queue | Producer | Events |
 |---|---|---|
-| `tenant-orgm-q` | Realm Provisioner | `TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated` |
+| `tenant-orgm-q` | Realm Provisioner | `TenantIdentityProvisioned` (signup provisioning backstop: creates the tenant via I-1 if missing), `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated` |
 | `billing-orgm-q` | Billing | `TenantSeatsChanged`, `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated` |
 | `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (Gap 12) — **inert today**: consumer is done/tested, but `iam-catalog-admin` has no publisher side yet and `SQS_CATALOG_ORGM_QUEUE_URL` is unset everywhere |
 

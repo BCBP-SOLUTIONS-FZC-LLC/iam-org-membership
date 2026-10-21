@@ -67,6 +67,9 @@ spec:
             # The migrate hook Job owns the schema; replicas never migrate.
             - name: RUN_MIGRATIONS
               value: {{ (not .Values.migrations.job.enabled) | quote }}
+            # Helm iam.strictTenantPathValidation → BindPathTenant strict mode.
+            - name: STRICT_TENANT_PATH_VALIDATION
+              value: {{ (.Values.iam).strictTenantPathValidation | default false | quote }}
             {{- range $key, $val := .Values.env }}
             - name: {{ $key }}
               value: {{ $val | quote }}

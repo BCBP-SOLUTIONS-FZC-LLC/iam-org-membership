@@ -380,7 +380,18 @@ func main() {
 	// processed_events dedup through platform-events' inbox: the claim, the
 	// projection and the relay events commit in one transaction (IDEMP-1..4).
 	inbox := pgadapter.NewInboxRepository(pool, outboxPublisher)
-	membershipConsumer := consumeradapter.NewMembershipEventConsumer(inbox, pgadapter.NewTenantRepository(pool), catalogReader, cache, skew, log)
+	// The TenantIdentityProvisioned signup backstop runs I-1. The consumers
+	// start before the HTTP services below are built, so this is its own
+	// ProvisioningService over the same pool (TrialSignup needs no Realm
+	// Provisioner client, hence nil).
+	backstopProvisioning := service.NewProvisioningService(
+		pgadapter.NewTenantRepository(pool), pgadapter.NewMembershipRepository(pool),
+		pgadapter.NewTenantRoleRepository(pool), pgadapter.NewDeptMembershipRepository(pool),
+		pgadapter.NewDeptRoleLabelRepository(pool), pgadapter.NewTenantDepartmentRepository(pool),
+		catalogReader, catalogReader, txRunner, cache, nil,
+	).WithLogger(log)
+	membershipConsumer := consumeradapter.NewMembershipEventConsumer(inbox, pgadapter.NewTenantRepository(pool), catalogReader, cache, skew, log).
+		WithTenantProvisioner(backstopProvisioning)
 
 	// LoadSQS supplies region / endpoint / long-poll / visibility / max-receive
 	// from the library env contract. Per-queue URL + concurrency overlay
@@ -648,6 +659,11 @@ func main() {
 		InternalHandler:       internalH,
 		PublicHandler:         publicH,
 
+		// Helm iam.strictTenantPathValidation. Default false: a mismatched
+		// x-tenant-id on /internal/tenants/:id/* is overridden by the path
+		// tenant, logged and counted; true rejects it with 400.
+		StrictTenantPathValidation: envBool("STRICT_TENANT_PATH_VALIDATION", false),
+
 		Postgres: pingerFunc(func(ctx context.Context) error {
 			if hs := pool.Health(ctx); !hs.Healthy {
 				return fmt.Errorf("database not healthy")
@@ -825,6 +841,16 @@ func (f pingerFunc) Health(ctx context.Context) error { return f(ctx) }
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// envBool parses key with strconv.ParseBool; unset or unparsable keeps def.
+func envBool(key string, def bool) bool {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
 	}
 	return def
 }

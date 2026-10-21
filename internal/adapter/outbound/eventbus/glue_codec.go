@@ -293,9 +293,9 @@ func allSchemaNamesFromFS(schemas fs.FS) ([]string, error) {
 // extract 0.4's snake_case output) to its PascalCase Glue schema name /
 // envelope.type — the same hand-maintained, one-line-per-event convention
 // as the sibling services' eventschema.ByEventType maps, rather than
-// deriving it at runtime from each file's JSON content. Covers all 28
-// embedded files: the 14 this service produces (domain.IsProducedEvent)
-// plus the 14 consumed, other-service-owned extracts kept here only for
+// deriving it at runtime from each file's JSON content. Covers all 30
+// embedded files: the 15 this service produces (domain.IsProducedEvent)
+// plus the 15 consumed, other-service-owned extracts kept here only for
 // schema-gov coverage (LLD §16). A new schema file needs one entry added
 // here.
 var schemaFileNames = map[string]string{
@@ -309,6 +309,7 @@ var schemaFileNames = map[string]string{
 	"mfa_reset.json":                           domain.EventMFAReset,
 	"tenant_converted.json":                    "TenantConverted",
 	"tenant_created.json":                      domain.EventTenantCreated,
+	"tenant_identity_provisioned.json":         "TenantIdentityProvisioned",
 	"tenant_setting_changed.json":              domain.EventTenantSettingChanged,
 	"tenant_memberships_purged.json":           domain.EventTenantMembershipsPurged,
 	"tenant_offboarded.json":                   "TenantOffboarded",
@@ -328,7 +329,6 @@ var schemaFileNames = map[string]string{
 	"trial_expired.json":                       "TrialExpired",
 	"trial_reactivated.json":                   "TrialReactivated",
 	"trial_started.json":                       domain.EventTrialStarted,
-	"trial_tenant_provisioned.json":            "TrialTenantProvisioned",
 }
 
 // eventTypeFromSchemaFile returns the PascalCase event / Glue schema name

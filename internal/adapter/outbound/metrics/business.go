@@ -248,6 +248,21 @@ var (
 	// reason (domain.EligibilityReason).
 	AssigneeEligibilityCheck *prometheus.CounterVec
 
+	// TenantHeaderPathMismatch counts /internal/tenants/:id/* requests whose
+	// x-tenant-id differed from the path tenant, by route, method and action
+	// (overridden — path tenant bound, request served; rejected — strict
+	// mode 400). Tier 3 stand-in for the proposed domain-shared
+	// iam_tenant_header_path_mismatch_total, which needs a platform-gincommon
+	// registry entry before it can be built.
+	TenantHeaderPathMismatch *prometheus.CounterVec
+
+	// ProvisioningBackstop counts TenantIdentityProvisioned events handled
+	// by the signup provisioning backstop, by result: created (the tenant
+	// did not exist — the signup's own I-1 call had not completed, so the
+	// backstop created it) or already_exists. A rising created rate means
+	// signups are leaning on the backstop (BFF-side I-1 failures).
+	ProvisioningBackstop *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -460,6 +475,44 @@ func IncAssigneeEligibilityCheck(result string) {
 	}
 }
 
+// Action label values for TenantHeaderPathMismatch.
+const (
+	TenantMismatchOverridden = "overridden"
+	TenantMismatchRejected   = "rejected"
+)
+
+// IncTenantHeaderPathMismatch records one x-tenant-id / path tenant
+// mismatch. route is the gin route template (bounded). Nil-safe.
+func IncTenantHeaderPathMismatch(route, method, action string) {
+	if TenantHeaderPathMismatch != nil {
+		TenantHeaderPathMismatch.WithLabelValues(route, method, action).Inc()
+	}
+}
+
+// PrewarmTenantHeaderPathMismatch creates the zero series for one route and
+// method (both actions). Called by the router for each tenant-scoped
+// internal route. Nil-safe.
+func PrewarmTenantHeaderPathMismatch(route, method string) {
+	if TenantHeaderPathMismatch != nil {
+		TenantHeaderPathMismatch.WithLabelValues(route, method, TenantMismatchOverridden)
+		TenantHeaderPathMismatch.WithLabelValues(route, method, TenantMismatchRejected)
+	}
+}
+
+// Result label values for ProvisioningBackstop.
+const (
+	ProvisioningBackstopCreated       = "created"
+	ProvisioningBackstopAlreadyExists = "already_exists"
+)
+
+// IncProvisioningBackstop records one TenantIdentityProvisioned outcome.
+// Nil-safe.
+func IncProvisioningBackstop(result string) {
+	if ProvisioningBackstop != nil {
+		ProvisioningBackstop.WithLabelValues(result).Inc()
+	}
+}
+
 // ObserveLifecycleEventLag records the seconds between event.time and the
 // moment this consumer applied the projection — the SLO-3 primary drift
 // signal. Nil-safe, see ObserveDependencyLatency.
@@ -601,7 +654,8 @@ func AddRLSViolations(violationType string, n float64) {
 // handledEventTypes is every event type this consumer handles (and so may
 // reject to the DLQ), used to pre-warm label combinations.
 var handledEventTypes = []string{
-	"TrialTenantProvisioned", "TenantRealmReady", "TenantConverted",
+	"TenantIdentityProvisioned",
+	"TenantRealmReady", "TenantConverted",
 	"DirectPaidSignup", "TrialExpired", "TrialReactivated",
 	"TenantSuspended", "TenantOffboarded",
 	"TenantPlanChanged", "TenantPaymentPastDue",
@@ -690,6 +744,14 @@ func registerServiceMetrics() {
 		"iam_org_membership_assignee_eligibility_check_total",
 		"I-19 assignee-eligibility reads served to the Workflow Services, by result: eligible, not_member, member_not_active, department_not_active, not_in_department, level_insufficient.",
 		"result"))
+	ProvisioningBackstop = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_tenant_provisioning_backstop_total",
+		"TenantIdentityProvisioned events handled by the signup provisioning backstop, by result: created (tenant was missing and was created) or already_exists.",
+		"result"))
+	TenantHeaderPathMismatch = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_tenant_header_path_mismatch_total",
+		"Internal /tenants/:id/* requests whose x-tenant-id differed from the path tenant, by route, method and action (overridden: path tenant bound and served; rejected: strict-mode 400).",
+		"route", "method", "action"))
 
 	TenantOwnerless = must(gincommon.NewGauge(nil,
 		"iam_org_membership_tenant_ownerless",
@@ -715,12 +777,18 @@ func prewarm() {
 		AuthSessionRevokeFailed.WithLabelValues(reason)
 	}
 	for _, et := range handledEventTypes {
-		if et != "DepartmentCatalogChanged" { // not a lifecycle event: no recency guard
+		switch et {
+		case "DepartmentCatalogChanged", "TenantIdentityProvisioned":
+			// no EVT-14 recency guard on these
+		default:
 			LifecycleEventSkipped.WithLabelValues(et)
 		}
 		ConsumedEventRejected.WithLabelValues(et, "future_time_clamp")
 		ConsumedEventRejected.WithLabelValues(et, "schema_violation")
 	}
+	ConsumedEventRejected.WithLabelValues("TenantIdentityProvisioned", "provisioning_rejected")
+	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopCreated)
+	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopAlreadyExists)
 	RealmSyncFailed.WithLabelValues("patch_realm_config")
 	RealmSyncFailed.WithLabelValues("clear_marker")
 	for _, scope := range []string{DelegateBlockScopeTenantRemoval, DelegateBlockScopeDeptRemoval, DelegateBlockScopeDeptDemotion} {

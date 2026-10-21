@@ -21,6 +21,7 @@ import (
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/problem"
@@ -91,6 +92,12 @@ type RouterConfig struct {
 	// Left empty, no consumer checks are performed (e.g. when all queue
 	// URLs are unset in a dev environment).
 	Consumers []Pinger
+
+	// StrictTenantPathValidation makes BindPathTenant reject (400
+	// TENANT_MISMATCH) an /internal/tenants/:id/* request whose x-tenant-id
+	// differs from the path tenant, instead of overriding the header.
+	// Default false (STRICT_TENANT_PATH_VALIDATION).
+	StrictTenantPathValidation bool
 }
 
 // defaultRequestTimeout is the per-request deadline when RouterConfig's
@@ -137,6 +144,7 @@ func NewRouter(cfg RouterConfig) *Router {
 
 	RegisterValidators()
 
+	prewarmTenantPathMismatch(r)
 	return &Router{engine: r}
 }
 
@@ -364,35 +372,41 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	activeTenantGate := RequireActiveTenant(cfg.TenantRepo)
 	activeMemberGate := RequireActiveMembership(cfg.MembershipRepo)
 
-	tenants := v1.Group("/tenants", activeTenantGate, activeMemberGate)
+	// Every tenant-facing route lives under /tenants/:id. The x-tenant-id
+	// header is authoritative here (API-2): RequirePathTenantMatch rejects a
+	// path tenant that differs from it with 403 before the activity gates or
+	// any query run — it never rebinds the tenant (that is the internal-route
+	// rule, IAPI-6). TestPublicTenantRoutes_AllRequirePathTenantMatch fails
+	// CI for a tenant-facing route registered outside this group.
+	tenants := v1.Group("/tenants/:id", RequirePathTenantMatch(), activeTenantGate, activeMemberGate)
 	// Tenant — P-1, P-2
-	tenants.GET("/:id", tenantH.Get)
-	tenants.PATCH("/:id", tenantH.Patch)
+	tenants.GET("", tenantH.Get)
+	tenants.PATCH("", tenantH.Patch)
 
 	// Departments (tenant-scoped) — P-3, P-24, P-25
-	tenants.GET("/:id/departments", deptH.List)
-	tenants.POST("/:id/departments", deptH.Activate)
-	tenants.PATCH("/:id/departments/:dept_id", deptH.Patch)
+	tenants.GET("/departments", deptH.List)
+	tenants.POST("/departments", deptH.Activate)
+	tenants.PATCH("/departments/:dept_id", deptH.Patch)
 
 	// Members — P-4, P-5, P-6, P-7, P-8, P-26, P-27, P-28
-	tenants.GET("/:id/members", membershipH.List)
-	tenants.GET("/:id/members/:user_id", membershipH.Get)
-	tenants.POST("/:id/members", invitationH.Invite)                                      // P-6 (invite)
-	tenants.PATCH("/:id/members/:user_id", membershipH.Patch)                             // P-7
-	tenants.DELETE("/:id/members/:user_id", membershipH.Remove)                           // P-8 (§8.8)
-	tenants.POST("/:id/users/:user_id/removal-resolution", membershipH.RemovalResolution) // P-26 (§8.8.3)
-	tenants.PUT("/:id/members/:user_id/roles", membershipH.ReconcileRoles)
-	tenants.POST("/:id/members/:user_id/reset-mfa", membershipH.ResetMFA) // P-34 (§16 OQ-8/F6)
-	tenants.GET("/:id/seat-usage", membershipH.SeatUsage)
+	tenants.GET("/members", membershipH.List)
+	tenants.GET("/members/:user_id", membershipH.Get)
+	tenants.POST("/members", invitationH.Invite)                                      // P-6 (invite)
+	tenants.PATCH("/members/:user_id", membershipH.Patch)                             // P-7
+	tenants.DELETE("/members/:user_id", membershipH.Remove)                           // P-8 (§8.8)
+	tenants.POST("/users/:user_id/removal-resolution", membershipH.RemovalResolution) // P-26 (§8.8.3)
+	tenants.PUT("/members/:user_id/roles", membershipH.ReconcileRoles)
+	tenants.POST("/members/:user_id/reset-mfa", membershipH.ResetMFA) // P-34 (§16 OQ-8/F6)
+	tenants.GET("/seat-usage", membershipH.SeatUsage)
 
 	// Dept memberships — P-9, P-10, P-11
-	tenants.GET("/:id/departments/:dept_id/members", deptMemH.List)
-	tenants.PUT("/:id/departments/:dept_id/members/:user_id", deptMemH.Assign)
-	tenants.DELETE("/:id/departments/:dept_id/members/:user_id", deptMemH.Remove)
+	tenants.GET("/departments/:dept_id/members", deptMemH.List)
+	tenants.PUT("/departments/:dept_id/members/:user_id", deptMemH.Assign)
+	tenants.DELETE("/departments/:dept_id/members/:user_id", deptMemH.Remove)
 
 	// Role labels — P-12, P-13
-	tenants.GET("/:id/roles", roleLabelH.List)
-	tenants.PATCH("/:id/roles/:role_code", roleLabelH.Patch)
+	tenants.GET("/roles", roleLabelH.List)
+	tenants.PATCH("/roles/:role_code", roleLabelH.Patch)
 
 	// Group mappings (P-14, P-15, P-16, P-17, P-29) — retired, moved to
 	// Group Mapping Service (GM-1..GM-6, ADR-0007 Wave 2). IDs never reused.
@@ -401,8 +415,8 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// TAC-1/2/3 (ADR-0007 Wave 3). IDs never reused.
 
 	// Invitations — P-30, P-31
-	tenants.GET("/:id/invitations", invitationH.List)
-	tenants.DELETE("/:id/invitations/:invitation_id", invitationH.Revoke)
+	tenants.GET("/invitations", invitationH.List)
+	tenants.DELETE("/invitations/:invitation_id", invitationH.Revoke)
 
 	// Delegations (P-18, P-19, P-20, P-32, P-33) — retired, moved to the
 	// standalone Delegation Service's DLG-1..5 (ADR-0008 v2). IDs never
@@ -422,28 +436,51 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// defence-in-depth. commercial-system (CD-19) is additionally accepted on
 	// I-11/I-17/I-18 only — see commercialSystemAllowedRoutes in middleware.go.
 	internal := v1.Group("/internal", RequireInternalCaller())
-	internal.POST("/tenants", internalH.ProvisionTenant)                            // I-1
-	internal.PATCH("/tenants/:id", internalH.PatchTenantRealm)                      // I-2
-	internal.POST("/tenants/:id/members", internalH.AddMember)                      // I-3 (§8.10 accept + JIT add)
-	internal.POST("/tenants/:id/dept-memberships", internalH.AssignFromGroups)      // I-10 (§8.5 SAML JIT)
-	internal.PATCH("/tenants/:id/members/:user_id", internalH.PatchMemberLifecycle) // I-4
-	internal.DELETE("/tenants/:id/members/:user_id", internalH.DeleteMember)        // I-5
-	internal.GET("/users/:id/memberships", internalH.GetMemberships)                // I-8 HOT PATH
-	internal.GET("/tenants/:id/locale", internalH.GetLocale)                        // I-9
-	internal.GET("/tenants/:id/mfa-freshness", internalH.GetMFAFreshness)           // I-14 (§16 A72)
-	internal.GET("/tenants/:id/seat-usage", internalH.GetSeatUsage)                 // I-11
-	// I-12 (tender ACL check) retired, moved to iam-tender-acl's TAC-4
-	// (ADR-0007 Wave 3). ID never reused.
-	internal.POST("/tenants/:id/tenders/:tender_id/assignee-override", internalH.AssigneeOverride) // I-13
-	internal.GET("/tenants/:id/members/:user_id/exists", internalH.CheckMemberExists)              // I-15
+	internal.POST("/tenants", internalH.ProvisionTenant)             // I-1
+	internal.GET("/users/:id/memberships", internalH.GetMemberships) // I-8 HOT PATH (:id is the user; tenant from ?tenant_id=)
 	// I-16 (§16 RP-C3) is cross-tenant at the DB layer (BYPASSRLS sysPool)
 	// but the caller still authenticates like every other internal route —
 	// gincommon's RequireAuth requires x-tenant-id on every /api/v1 request
 	// regardless, so RP's client sends a sentinel uuid.Nil value for it
 	// (never read by this handler, which queries sysPool unconditionally).
-	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses)    // I-16 (§16 RP-C3)
-	internal.GET("/tenants/:id/plan-context", internalH.GetPlanContext)       // I-17 (CD-13)
-	internal.GET("/tenants/:id/plan-change-check", internalH.PlanChangeCheck) // I-18 (CD-20)
+	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses) // I-16 (§16 RP-C3)
+
+	// Every tenant-scoped internal route lives under this group so the path
+	// tenant — not x-tenant-id — is the RLS tenant (BindPathTenant).
+	// TestInternalTenantRoutes_AllBindPathTenant fails CI for a
+	// /internal/tenants/:id/* route registered outside it.
+	tenantScoped := internal.Group("/tenants/:id", BindPathTenant(PathTenantConfig{
+		Strict: cfg.StrictTenantPathValidation,
+		Logger: cfg.GinConfig.Logger,
+	}))
+	tenantScoped.PATCH("", internalH.PatchTenantRealm)                      // I-2
+	tenantScoped.POST("/members", internalH.AddMember)                      // I-3 (§8.10 accept + JIT add)
+	tenantScoped.POST("/dept-memberships", internalH.AssignFromGroups)      // I-10 (§8.5 SAML JIT)
+	tenantScoped.PATCH("/members/:user_id", internalH.PatchMemberLifecycle) // I-4
+	tenantScoped.DELETE("/members/:user_id", internalH.DeleteMember)        // I-5
+	tenantScoped.GET("/locale", internalH.GetLocale)                        // I-9
+	tenantScoped.GET("/mfa-freshness", internalH.GetMFAFreshness)           // I-14 (§16 A72)
+	tenantScoped.GET("/seat-usage", internalH.GetSeatUsage)                 // I-11
+	// I-12 (tender ACL check) retired, moved to iam-tender-acl's TAC-4
+	// (ADR-0007 Wave 3). ID never reused.
+	tenantScoped.POST("/tenders/:tender_id/assignee-override", internalH.AssigneeOverride) // I-13
+	tenantScoped.GET("/members/:user_id/exists", internalH.CheckMemberExists)              // I-15
+	tenantScoped.GET("/plan-context", internalH.GetPlanContext)                            // I-17 (CD-13)
+	tenantScoped.GET("/plan-change-check", internalH.PlanChangeCheck)                      // I-18 (CD-20)
 	// I-19 — Workflow Services' assignee eligibility read (uncached).
-	internal.GET("/tenants/:id/members/:user_id/eligibility", internalH.CheckAssigneeEligibility) // I-19
+	tenantScoped.GET("/members/:user_id/eligibility", internalH.CheckAssigneeEligibility) // I-19
 }
+
+// prewarmTenantPathMismatch zero-initialises the mismatch counter for every
+// registered /internal/tenants/:id/* route, so the series exist (scrape,
+// inventory, dashboards) before the first mismatch.
+func prewarmTenantPathMismatch(r *gin.Engine) {
+	for _, ri := range r.Routes() {
+		if ri.Path == internalTenantRoutePrefix || strings.HasPrefix(ri.Path, internalTenantRoutePrefix+"/") {
+			metrics.PrewarmTenantHeaderPathMismatch(ri.Path, ri.Method)
+		}
+	}
+}
+
+// internalTenantRoutePrefix is the BindPathTenant route group's full path.
+const internalTenantRoutePrefix = "/api/v1/internal/tenants/:id"

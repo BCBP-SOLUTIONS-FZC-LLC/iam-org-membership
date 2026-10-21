@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -137,4 +139,36 @@ func TestValidateConsumed_TenantRealmReady_MatchesRealmProvisionerShape(t *testi
 			assert.Zero(t, inner.calls)
 		})
 	}
+}
+
+// TenantIdentityProvisioned's consumed schema is embedded and enforced: a
+// payload missing a field I-1 needs never reaches the backstop.
+func TestValidateConsumed_TenantIdentityProvisioned(t *testing.T) {
+	valid := `{"tenant_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","owner_user_id":"5717c1e2-0b8d-4f2e-9d3a-1c2b3a4d5e6f",` +
+		`"slug":"acme","name":"Acme","plan":"pro","signup_type":"trial","realm":"trial","realm_type":"shared"}`
+	inner := &recordingHandler{}
+	h := validateConsumed(inner.handle, realValidator(t), nil)
+	require.NoError(t, h(context.Background(), envelopeOf("TenantIdentityProvisioned", valid)))
+	assert.Equal(t, 1, inner.calls)
+
+	for name, payload := range map[string]string{
+		"missing slug":          `{"tenant_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","owner_user_id":"5717c1e2-0b8d-4f2e-9d3a-1c2b3a4d5e6f","name":"Acme","plan":"pro","signup_type":"trial"}`,
+		"unknown plan":          `{"tenant_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","owner_user_id":"5717c1e2-0b8d-4f2e-9d3a-1c2b3a4d5e6f","slug":"acme","name":"Acme","plan":"trial","signup_type":"trial"}`,
+		"unknown signup_type":   `{"tenant_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","owner_user_id":"5717c1e2-0b8d-4f2e-9d3a-1c2b3a4d5e6f","slug":"acme","name":"Acme","plan":"pro","signup_type":"enterprise_sales"}`,
+		"missing owner_user_id": `{"tenant_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","slug":"acme","name":"Acme","plan":"pro","signup_type":"trial"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner := &recordingHandler{}
+			h := validateConsumed(inner.handle, realValidator(t), nil)
+			assert.ErrorIs(t, h(context.Background(), envelopeOf("TenantIdentityProvisioned", payload)), errSchemaViolation)
+			assert.Zero(t, inner.calls)
+		})
+	}
+}
+
+func TestDLQReason_ProvisioningRejected(t *testing.T) {
+	err := fmt.Errorf("%w: slug already taken", consumeradapter.ErrProvisioningRejected)
+	reason, ok := dlqReason(err)
+	assert.True(t, ok, "a payload I-1 can never accept goes straight to the DLQ")
+	assert.Equal(t, provisioningRejectedReason, reason)
 }

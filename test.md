@@ -646,7 +646,7 @@ Two SQS queues that O&M subscribes to. These aren't testable via curl but refere
 
 | Queue | Source topic | Events O&M consumes |
 |---|---|---|
-| `tenant-orgm-q` | `iam.tenant.events` (RP-produced) | `TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded` |
+| `tenant-orgm-q` | `iam.tenant.events` (RP-produced) | `TenantIdentityProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded` |
 | `billing-orgm-q` | `billing.events` (Billing-produced) | `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantSeatsChanged` |
 
 Every consumed event that changes `tenants.status` or `tenants.plan` triggers an **EVT-16 relay** emit of **`TenantStateChanged`** on `iam.membership.events` in the same transaction. Guards: EVT-14 recency (stale events silently skipped but dedup-recorded), EVT-15 future-time clamp (>5 min ahead → DLQ, no dedup).

@@ -38,9 +38,8 @@ type TenantRepository interface {
 	// Idempotent; no optimistic-lock (setting the flag is safe to repeat).
 	SetRealmSyncPending(ctx context.Context, tenantID uuid.UUID) error
 
-	// Insert creates a new tenant row (used by I-1 in Phase 4 and by the
-	// TrialTenantProvisioned consumer in Phase 3). Phase 2 exposes it for
-	// admin-side seeding paths only.
+	// Insert creates a new tenant row — I-1, called by the Signup BFF and by
+	// the TenantIdentityProvisioned signup provisioning backstop.
 	//
 	// LLD I-1 idempotency: on ON CONFLICT (id) DO NOTHING the row already
 	// existed; the returned bool wasCreated=false signals the caller should

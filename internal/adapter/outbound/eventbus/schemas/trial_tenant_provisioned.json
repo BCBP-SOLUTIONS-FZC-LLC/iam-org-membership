@@ -1,7 +1,0 @@
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "TrialTenantProvisionedPayload",
-  "type": "object",
-  "additionalProperties": true,
-  "properties": {}
-}

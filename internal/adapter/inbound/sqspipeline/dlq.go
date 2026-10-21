@@ -18,8 +18,9 @@ import (
 // reason label of iam_org_membership_consumed_event_rejected_total, counted
 // at each reject site.
 const (
-	poisonPillReason      = "future_time_clamp"
-	schemaViolationReason = "schema_violation"
+	poisonPillReason           = "future_time_clamp"
+	schemaViolationReason      = "schema_violation"
+	provisioningRejectedReason = "provisioning_rejected"
 )
 
 // dlqStartupTimeout bounds the startup DLQ preflight per queue.
@@ -33,6 +34,8 @@ func dlqReason(err error) (string, bool) {
 		return poisonPillReason, true
 	case errors.Is(err, errSchemaViolation):
 		return schemaViolationReason, true
+	case errors.Is(err, consumeradapter.ErrProvisioningRejected):
+		return provisioningRejectedReason, true
 	default:
 		return "", false
 	}
