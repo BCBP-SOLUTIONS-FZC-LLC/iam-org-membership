@@ -8,6 +8,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **Workflow queue filter (LLD rev 2.34, 2026-10-21):** `membership-workflow-q` now also accepts `MembershipRevoked` (a removed user's templates and assignments) and `TenantMembershipsPurged` (tenant purge — the only signal for a trial hard-delete, which emits no `TenantStateChanged`), per the Workflow Services' open question I2. Contract and local wiring only (`api/asyncapi.yaml`, `scripts/init-floci.sh`, wire test); no producer change. The production SNS filter is managed outside this repo.
+
 - **Runtime CA bundle (DLA-4845-1, 2026-10-21):** distroless static-debian12 (pinned digest already the latest upstream) ships ca-certificates 20250419~deb12u1; deb12u2 removes the distrusted Comodo "AAA Certificate Services" and "emSign ECC Root CA - G3" roots. A new digest-pinned `debian:bookworm-slim` `certs` stage installs deb12u2 and its bundle replaces distroless's `/etc/ssl/certs/ca-certificates.crt` (verified in the built image: 150 → 148 certs, both roots absent). The Alpine builder's bundle is not used — it still carries the emSign root. `.trivyignore` gains `DLA-4845-1 exp:2026-11-21` (Trivy still reads distroless's dpkg metadata); `.docker-digests` and `make pin-base-images` (also brought up from a stale 1.26.6) cover the new stage. Remove all three once distroless ships deb12u2.
 
 - **Go 1.26.10 (2026-10-21):** toolchain and the digest-pinned builder image (`golang:1.26.10-alpine@sha256:9ce231b2…f7ca`) bumped from 1.26.9, fixing GO-2026-6809 in `crypto/x509` (reachable via `auditlog.HTTPClient.WriteEntry` → `x509.Certificate.Verify`). `govulncheck` reports no reachable vulnerabilities.

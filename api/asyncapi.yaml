@@ -416,10 +416,14 @@ servers:
       Owned and managed by: Workflow Service
       SNS subscription filter: EventType IN [TenderAssigneeOverridden,
         DepartmentMembershipGranted, DepartmentMembershipRevoked,
-        DepartmentMembershipLevelChanged, TenantStateChanged]
+        DepartmentMembershipLevelChanged, TenantStateChanged,
+        MembershipRevoked, TenantMembershipsPurged]
         (Workflow drives assignee reconciliation and tenant-state
          pause/resume/terminate/queue-routing via the §7.1 EVT-16 relay of
-         tenant-lifecycle events onto iam-membership-events; delegation
+         tenant-lifecycle events onto iam-membership-events; a removed
+         user's templates and assignments on MembershipRevoked; the tenant
+         purge on TenantMembershipsPurged, the only signal for a trial
+         hard-delete; delegation
          routing itself is now the Delegation Service's concern, sourced
          from its own iam.delegation.events topic, not this one)
     security:
@@ -695,7 +699,7 @@ channels:
       AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*, MembershipRevoked
       Realm Provisioner membership-realm-q            membership-realm-q-dlq            DepartmentMembership{Granted,LevelChanged}, TenantRole*
       Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, TenantSeatOverage*
-      Workflow          membership-workflow-q         membership-workflow-q-dlq         TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged
+      Workflow          membership-workflow-q         membership-workflow-q-dlq         TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged, MembershipRevoked, TenantMembershipsPurged
       Billing           membership-billing-q          membership-billing-q-dlq          TenantSeatOverage{Started,Resolved}
       Entitlements      membership-entitlements-q     membership-entitlements-q-dlq     TenantMembershipsPurged  (CD-25)
       Usage & Metering  membership-usage-q            membership-usage-q-dlq            TenantMembershipsPurged  (CD-25)
@@ -978,7 +982,10 @@ channels:
       - $ref: '#/servers/sqsMembershipWorkflow'
     description: |
       SQS queue subscribed to the events Workflow uses for tender-assignee
-      reconciliation and tenant-state driven pause/resume/terminate.
+      reconciliation, tenant-state driven pause/resume/terminate, removed-user
+      cleanup (MembershipRevoked) and the tenant purge
+      (TenantMembershipsPurged — the only signal for a trial hard-delete,
+      which emits no TenantStateChanged).
       Delegation routing is now the Delegation Service's concern, sourced
       from its own iam.delegation.events topic — this queue no longer
       carries delegation events. The TenantStateChanged relay (§7.1 EVT-16)
@@ -989,7 +996,9 @@ channels:
                         "DepartmentMembershipGranted",
                         "DepartmentMembershipRevoked",
                         "DepartmentMembershipLevelChanged",
-                        "TenantStateChanged"] }
+                        "TenantStateChanged",
+                        "MembershipRevoked",
+                        "TenantMembershipsPurged"] }
     messages:
       TenderAssigneeOverridden:
         $ref: '#/components/messages/TenderAssigneeOverridden'
@@ -1001,6 +1010,10 @@ channels:
         $ref: '#/components/messages/DepartmentMembershipLevelChanged'
       TenantStateChanged:
         $ref: '#/components/messages/TenantStateChanged'
+      MembershipRevoked:
+        $ref: '#/components/messages/MembershipRevoked'
+      TenantMembershipsPurged:
+        $ref: '#/components/messages/TenantMembershipsPurged'
     bindings:
       sqs:
         queue:
