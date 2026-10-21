@@ -5,9 +5,7 @@ package http
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"maps"
 	"net/http"
 	"strings"
 
@@ -353,52 +351,22 @@ func RegisterValidators() {
 // errors (classified to 503/409). All error responses are written as
 // application/problem+json via gincommon.AbortWithProblem.
 //
-// When a *domain.DomainError carries a non-empty Details map, the response
-// is written via abortWithDetailedProblem, which merges those fields as
-// RFC 9457 §3.1 extension members (e.g. active_workflows, licensed_seats).
+// A *domain.DomainError's Details become RFC 9457 §3.2 extension members
+// (e.g. active_workflows, licensed_seats, record_version,
+// retry_after_seconds) through platform-gincommon's extension support, so
+// the library owns their serialisation along with traceId, instance,
+// tenantId and logging.
 func HandleError(c *gin.Context, err error) {
 	if leaveToRequestContext(c, err) {
-		return
-	}
-	var de *domain.DomainError
-	if errors.As(err, &de) && len(de.Details) > 0 {
-		abortWithDetailedProblem(c, domainErrorToProblem(de), de.Details)
 		return
 	}
 	gincommon.AbortWithProblem(c, toDomainProblem(err))
 }
 
-// abortWithDetailedProblem writes an RFC 9457 problem response extended with
-// domain-level fields from details (RFC 9457 §3.1 extension members). Used
-// when a DomainError carries structured context that API clients depend on
-// (e.g. active_workflows, licensed_seats, record_version, retry_after_seconds).
-func abortWithDetailedProblem(c *gin.Context, pe *problem.Error, details map[string]any) {
-	if c.Writer.Written() {
-		c.Abort()
-		return
-	}
-	traceID := problem.ResolveTraceID(
-		c.GetHeader("traceparent"),
-		c.GetHeader("x-request-id"),
-		"")
-	p := problem.BuilderFor(pe).
-		Instance(c.Request.URL.Path).
-		TraceID(traceID).
-		Build()
-
-	// Marshal standard problem to a map, then overlay extension members.
-	var base map[string]any
-	raw, _ := json.Marshal(p)
-	_ = json.Unmarshal(raw, &base)
-	maps.Copy(base, details)
-	body, _ := json.Marshal(base)
-	c.Abort()
-	c.Data(p.Status, problem.ContentType, body)
-}
-
 // toDomainProblem converts any service error to the correct *problem.Error
 // for RFC 9457 rendering. *problem.Error passes through; *domain.DomainError
-// is mapped via domainErrorToProblem; pg errors are classified by SQLSTATE;
+// is mapped via domainErrorToProblem, its Details attached as extension
+// members; pg errors are classified by SQLSTATE;
 // anything else is returned as-is for gincommon's FromError fallback (which
 // maps DeadlineExceeded→503, MaxBytesError→413, else→500).
 func toDomainProblem(err error) error {
@@ -409,7 +377,7 @@ func toDomainProblem(err error) error {
 
 	var de *domain.DomainError
 	if errors.As(err, &de) {
-		return domainErrorToProblem(de)
+		return domainErrorToProblem(de).WithExtensions(de.Details)
 	}
 
 	// Leaked pgconn.PgError not wrapped by the service layer — classify by

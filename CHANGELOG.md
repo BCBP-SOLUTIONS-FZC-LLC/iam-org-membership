@@ -8,6 +8,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **Problem extension members via platform-gincommon (LLD rev 2.35, 2026-10-21):** `DomainError.Details` are attached with v2.1.0's `problem.Error.WithExtensions` and sent through `gincommon.AbortWithProblem`; the hand-written serialiser `abortWithDetailedProblem` is removed. Same top-level members on the wire (`record_version`, `active_workflows`, `licensed_seats`, `retry_after_seconds`, …), now with the library's logging, verified `tenantId` and span `traceId`; a detail can no longer overwrite a standard member such as `status` or `errorCode`.
+
 - **platform-gincommon/v2 v2.0.0 → v2.1.0 (2026-10-21):** additive release — RFC 9457 extension members on problems (`Error.WithExtension`, `Builder.Extension`, `Problem.Extension`) and the library's go1.26.10 toolchain. No code change; problems without extensions serialise byte-identically. Adopting extension members in place of `abortWithDetailedProblem`'s hand serialisation is a separate follow-up. Stale library versions in VERSIONING and `.claude/` docs corrected (pgcommon v2.0.2).
 
 - **Workflow queue filter (LLD rev 2.34, 2026-10-21):** `membership-workflow-q` now also accepts `MembershipRevoked` (a removed user's templates and assignments) and `TenantMembershipsPurged` (tenant purge — the only signal for a trial hard-delete, which emits no `TenantStateChanged`), per the Workflow Services' open question I2. Contract and local wiring only (`api/asyncapi.yaml`, `scripts/init-floci.sh`, wire test); no producer change. The production SNS filter is managed outside this repo.
