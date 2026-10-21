@@ -172,12 +172,15 @@ create_queue_with_dlq membership-notification-q
 subscribe_queue iam-membership-events membership-notification-q \
   '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked","TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
 
-# Workflow Service — override + membership + tenant-state relay.
+# Workflow Service — override + membership + tenant-state relay, plus
+# MembershipRevoked (removed user's templates/assignments) and
+# TenantMembershipsPurged (tenant purge; the only signal for a trial
+# hard-delete).
 # Note: DelegationStarted/DelegationEnded were removed (ADR-0008) — Workflow
 # subscribes to those via iam-delegation's own topic (iam.delegation.events).
 create_queue_with_dlq membership-workflow-q
 subscribe_queue iam-membership-events membership-workflow-q \
-  '{"EventType": ["TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged"]}'
+  '{"EventType": ["TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged","MembershipRevoked","TenantMembershipsPurged"]}'
 
 # Billing Service — narrow filter, seat-overage only (§16 A59, SEAT-3/5).
 create_queue_with_dlq membership-billing-q

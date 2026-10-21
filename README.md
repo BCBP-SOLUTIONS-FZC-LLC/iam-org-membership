@@ -798,7 +798,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | **AuthZ Enrichment** | `membership-authz-q` | `DepartmentMembership*`, `TenantRole*`, `MembershipRevoked` — cache invalidation for `om:memberships:{tenant}:{user}` |
 | **Realm Provisioner** | `membership-realm-q` | `DepartmentMembershipGranted`/`LevelChanged`, `TenantRoleGranted`/`Revoked` — add/drop `requires-mfa` realm role |
 | **Notification** | `membership-notification-q` | `DepartmentMembership*`, `TenantRole*`, `TenantSeatOverage*` — user/admin emails + seat-overage banner |
-| **Workflow Service** | `membership-workflow-q` | `TenderAssigneeOverridden`, `DepartmentMembership*`, `TenantStateChanged` — assignee reconciliation + tenant-state pause/resume/terminate |
+| **Workflow Service** | `membership-workflow-q` | `TenderAssigneeOverridden`, `DepartmentMembership*`, `TenantStateChanged`, `MembershipRevoked`, `TenantMembershipsPurged` — assignee reconciliation + tenant-state pause/resume/terminate + removed-user cleanup + tenant purge |
 | **Billing** | `membership-billing-q` | `TenantSeatOverageStarted`/`Resolved` only — seat-overage grace/enforcement |
 | **Entitlements Service** | `membership-entitlements-q` | `TenantMembershipsPurged` only (CD-25) — purge per-tenant snapshots on offboarding |
 | **Usage & Metering** | `membership-usage-q` | `TenantMembershipsPurged` only (CD-25) — purge raw usage events on offboarding |

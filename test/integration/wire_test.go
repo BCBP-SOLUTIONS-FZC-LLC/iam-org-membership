@@ -293,14 +293,14 @@ func TestBillingQueueOnlyOverage(t *testing.T) {
 // ── P12-FILTER-002 ──────────────────────────────────────────────────────────
 
 // TestWorkflowQueueDropsOverage — the membership-workflow-q
-// filter policy accepts membership-revocation/override/membership/relay
+// filter policy accepts membership-revocation/purge/override/membership/relay
 // events. An overage event must be dropped.
 func TestWorkflowQueueDropsOverage(t *testing.T) {
 	e := newPhase12Env(t)
 	topic := e.createTopic(t, "iam-membership-events")
 	workflowQ := e.createQueue(t, "membership-workflow-q", "", 0)
 
-	filter := `{"EventType":["MembershipRevoked","TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged"]}`
+	filter := `{"EventType":["TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged","MembershipRevoked","TenantMembershipsPurged"]}`
 	e.subscribeQueue(t, topic, workflowQ, filter)
 
 	// Should reach workflow queue — MembershipRevoked is on the accept list.
@@ -308,6 +308,13 @@ func TestWorkflowQueueDropsOverage(t *testing.T) {
 		mustMarshal(t, map[string]string{"user_id": uuid.NewString()}), nil)
 	got := e.receiveMessages(t, workflowQ, 1, 10*time.Second)
 	require.Len(t, got, 1, "P12-FILTER-002: MembershipRevoked must reach workflow queue")
+
+	// Should reach workflow queue — TenantMembershipsPurged is on the accept
+	// list (the only signal Workflow gets for a trial hard-delete).
+	e.publishEnvelope(t, topic, domain.EventTenantMembershipsPurged,
+		mustMarshal(t, map[string]string{"tenant_id": uuid.NewString()}), nil)
+	got = e.receiveMessages(t, workflowQ, 1, 10*time.Second)
+	require.Len(t, got, 1, "P12-FILTER-002: TenantMembershipsPurged must reach workflow queue")
 
 	// Should NOT reach workflow queue — overage is off the accept list.
 	e.publishEnvelope(t, topic, domain.EventTenantSeatOverageStarted,
