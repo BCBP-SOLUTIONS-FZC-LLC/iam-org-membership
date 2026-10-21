@@ -600,7 +600,7 @@ func registerShared() {
 	DLQMessages = mustShared(gincommon.NewSharedCounterVec(nil, "platform_dlq_messages_total"))
 	DependencyRequestSeconds = mustShared(gincommon.NewSharedHistogramVec(nil, "platform_dependency_request_seconds"))
 
-	// Tier 2 — domain-shared iam_* entries (platform-gincommon v1.6.0):
+	// Tier 2 — domain-shared iam_* entries (platform-gincommon registry):
 	// name, help, labels and buckets come from the registry, so every IAM
 	// service emitting them stays identical.
 	RLSViolations = mustShared(gincommon.NewSharedCounterVec(nil, "iam_rls_violations_total"))
