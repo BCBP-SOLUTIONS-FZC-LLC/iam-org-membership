@@ -398,6 +398,27 @@ iam:
 # AuthorizationPolicy that restrict which Commercial services can reach
 # which internal routes on Core.
 #
+# Workflow services (Definition and Execution, namespace workflow-app — the
+# platform namespace list in docs/HLD/aws-dev-environment-ap-south-1.md and the
+# Workflow LLDs §11.1) call I-13 (assignee override), I-15 (membership
+# exists) and I-19 (assignee eligibility). They run outside this release's
+# namespace, so the same-namespace rule never admitted them.
+#   - NetworkPolicy: admits workflow-app (optionally narrowed by
+#     podSelector) to the API port whenever enabled. NetworkPolicy is L4, so
+#     without the mesh the only gate on every other internal route is the
+#     iam-system x-tenant-roles header — the same posture as same-namespace
+#     callers today.
+#   - Istio AuthorizationPolicy (commercialCallers.istio.enabled): a rule for
+#     source namespace workflow-app limited to POST */assignee-override and
+#     GET */exists, */eligibility (suffix match; each suffix is unique to its
+#     internal route, and Istio ignores the query string).
+workflowCallers:
+  enabled: true
+  namespace: workflow-app
+  namespaceSelector:
+    kubernetes.io/metadata.name: workflow-app
+  podSelector: {}   # {} = any Workflow pod in that namespace
+
 # Default false — override to true in each env values file (values-dev.yaml,
 # values-staging.yaml, values-prod.yaml) that should admit Commercial callers.
 # Set commercialCallers.istio.enabled=true only when Istio (service mesh)

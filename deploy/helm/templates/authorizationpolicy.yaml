@@ -1,4 +1,7 @@
-{{- if and .Values.commercialCallers.enabled .Values.commercialCallers.istio.enabled }}
+{{- if and .Values.commercialCallers.istio.enabled (or .Values.commercialCallers.enabled .Values.workflowCallers.enabled) }}
+{{- if not .Values.commercialCallers.istio.existingCallerNamespaces }}
+{{- fail "commercialCallers.istio.existingCallerNamespaces is required when the Istio AuthorizationPolicy renders: it is an ALLOW policy, so every caller not listed (gateway, same-namespace IAM services, monitoring) would be denied." }}
+{{- end }}
 # CD-19 — Istio AuthorizationPolicy for Commercial domain callers.
 #
 # This policy grants Billing and Entitlements the minimum path-level access
@@ -24,9 +27,21 @@
 #
 # Route definitions (must stay in sync with commercialSystemAllowedRoutes
 # in internal/adapter/inbound/http/middleware.go):
-#   Billing     → I-11 GET /api/v1/internal/tenants/*/seat-usage
-#               → I-18 GET /api/v1/internal/tenants/*/plan-change-check
-#   Entitlements → I-17 GET /api/v1/internal/tenants/*/plan-context
+#   Billing     → I-11 GET /api/v1/internal/tenants/:id/seat-usage
+#               → I-18 GET /api/v1/internal/tenants/:id/plan-change-check
+#   Entitlements → I-17 GET /api/v1/internal/tenants/:id/plan-context
+#   Workflow    → I-13 POST /api/v1/internal/tenants/:id/tenders/:tender_id/assignee-override
+#               → I-15 GET  /api/v1/internal/tenants/:id/members/:user_id/exists
+#               → I-19 GET  /api/v1/internal/tenants/:id/members/:user_id/eligibility
+#
+# Path matching: Istio supports only exact, prefix ("abc*"), suffix ("*abc")
+# and presence ("*") matches — a "*" in the MIDDLE of a path is literal, so
+# the earlier "/api/v1/internal/tenants/*/seat-usage" form never matched and
+# denied Billing/Entitlements wherever this policy rendered (prod). Rules now
+# use suffix matches. Every suffix below is unique to its internal route,
+# except /seat-usage, which also exists as a public /api/v1/tenants/:id route
+# — that one is excluded with notPaths. Istio strips the query string before
+# matching (I-19's ?department_id=…&required_level=…).
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
@@ -55,6 +70,7 @@ spec:
             namespaces:
               {{- toYaml .Values.commercialCallers.istio.existingCallerNamespaces | nindent 14 }}
     {{- end }}
+    {{- if .Values.commercialCallers.enabled }}
     # Billing (commercial-billing SA) — I-11 and I-18 only.
     - from:
         - source:
@@ -64,8 +80,10 @@ spec:
         - operation:
             methods: ["GET"]
             paths:
-              - "/api/v1/internal/tenants/*/seat-usage"
-              - "/api/v1/internal/tenants/*/plan-change-check"
+              - "*/seat-usage"
+              - "*/plan-change-check"
+            notPaths:
+              - "/api/v1/tenants/*"
     # Entitlements (commercial-entitlements SA) — I-17 only.
     - from:
         - source:
@@ -75,5 +93,20 @@ spec:
         - operation:
             methods: ["GET"]
             paths:
-              - "/api/v1/internal/tenants/*/plan-context"
+              - "*/plan-context"
+    {{- end }}
+    {{- if .Values.workflowCallers.enabled }}
+    # Workflow services (workflow-app) — I-13, I-15 and I-19 only.
+    - from:
+        - source:
+            namespaces:
+              - {{ .Values.workflowCallers.namespace | quote }}
+      to:
+        - operation:
+            methods: ["POST"]
+            paths: ["*/assignee-override"]
+        - operation:
+            methods: ["GET"]
+            paths: ["*/exists", "*/eligibility"]
+    {{- end }}
 {{- end }}

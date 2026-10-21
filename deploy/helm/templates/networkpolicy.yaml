@@ -36,8 +36,9 @@ spec:
           protocol: TCP
 
     # Allow internal service-to-service traffic within the same namespace.
-    # Required so AuthZ Enrichment, User Profile, Workflow, and Realm Provisioner
+    # Required so AuthZ Enrichment, User Profile, and Realm Provisioner
     # can call I-8 /internal/users/:id/memberships and the other internal routes.
+    # (Workflow runs in its own namespace — see the workflowCallers rule below.)
     - from:
         - podSelector: {}
       ports:
@@ -60,6 +61,22 @@ spec:
           protocol: TCP
     {{- end }}
 
+    # Workflow services (workflowCallers) — I-13 / I-15 / I-19. L4 only: the
+    # Istio AuthorizationPolicy, where enabled, limits them to those routes.
+    {{- if .Values.workflowCallers.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.workflowCallers.namespaceSelector | nindent 14 }}
+          {{- with .Values.workflowCallers.podSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    {{- end }}
     # CD-19 — Commercial domain callers (Billing + Entitlements).
     # Billing (ns: billing, SA: commercial-billing) calls I-11 and I-18.
     # Entitlements (ns: commercial, SA: commercial-entitlements) calls I-17.
