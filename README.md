@@ -3,7 +3,7 @@
 The Org & Membership (Core) Service — the **organizational/business system of record** in the IAM subsystem. It owns tenants (plan, subscription lifecycle, trial/cancellation/suspension timers, MFA freshness), department activation, tenant memberships and elevated tenant-level roles, department-level role grants, the two-step invite→accept staging flow, and per-tenant feature-flag overrides. It is the hot-path source of truth AuthZ Enrichment reads on every authenticated request via I-8.
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`
-**Module:** Go 1.26.9 · private module · deployed as three binaries from one image (`cmd/server`, `cmd/reconciler`, `cmd/migrate`)
+**Module:** Go 1.26.10 · private module · deployed as three binaries from one image (`cmd/server`, `cmd/reconciler`, `cmd/migrate`)
 **Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.20** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
 
 ---
@@ -320,7 +320,7 @@ The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_me
 
 ### Prerequisites
 
-- Go 1.26.9+
+- Go 1.26.10+
 - Docker (Postgres, PgBouncer, Valkey, floci — `make docker-up`)
 - `GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/*` (`GONOSUMDB` too) and an SSH key registered with the BCBP org
 
@@ -662,7 +662,7 @@ Alert rules live in `deploy/monitoring/app-alerts.yml` (26), `slo-rules.yml` (5)
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | One-shot schema migration (`cmd/migrate` → `postgres.MigrateSchema`: platform-events' `outbox.ApplySchema`, then the domain migrations); exits 0 on success or "already up to date", 1 on failure, with operator hints for a dirty migration or a version missing from the build |
 
-Two-stage `Dockerfile`: `golang:1.26.9-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the three compiled binaries are copied in. `EXPOSE 8080 9090`.
+Two-stage `Dockerfile`: `golang:1.26.10-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the three compiled binaries are copied in. `EXPOSE 8080 9090`.
 
 ### Helm chart
 

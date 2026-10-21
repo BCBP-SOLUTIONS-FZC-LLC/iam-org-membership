@@ -8,6 +8,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **Go 1.26.10 (2026-10-21):** toolchain and the digest-pinned builder image (`golang:1.26.10-alpine@sha256:9ce231b2…f7ca`) bumped from 1.26.9, fixing GO-2026-6809 in `crypto/x509` (reachable via `auditlog.HTTPClient.WriteEntry` → `x509.Certificate.Verify`). `govulncheck` reports no reachable vulnerabilities.
+
 - **EVT-17 — events for a tenant with no row yet are retried, not dropped (LLD rev 2.33):** delivery on `iam.tenant.events`/`billing.events` is unordered, so an event could arrive before its tenant was created and was recorded and discarded (e.g. a direct-paid `TenantRealmReady`, leaving the realm unset). Such events are now retried until the tenant exists or they reach the DLQ. Offboarded (soft-deleted) tenants and `TenantOffboarded` still drop.
 
 - **API-2 guard on tenant-facing routes (LLD rev 2.32, 2026-10-21):** the 21 `/api/v1/tenants/:id/*` routes are now one `/tenants/:id` route group behind `RequirePathTenantMatch`, which rejects a path tenant that differs from `x-tenant-id` with `403 INSUFFICIENT_ROLE` before the active-tenant/active-member gates (no query on a mismatch). Same status and errorCode the handlers already returned; only the `detail` text of a mismatch changes. The header stays authoritative (no rebinding). Handlers keep their own check as defence in depth. New CI guard `TestPublicTenantRoutes_AllRequirePathTenantMatch`; `TestPublicTenantRoutes_PathsUnchanged` pins all 21 URLs.
