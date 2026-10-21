@@ -232,6 +232,31 @@ func TestP11MW022_SeatLimitDetailsMerged(t *testing.T) {
 	assert.Equal(t, float64(10), body["licensed_seats"])
 }
 
+// Test Case ID:      P11-MW-023
+// Feature:           §17 · Details are extension members written by platform-gincommon
+// Priority: P1 · Severity: Major · Automation Status: Automated
+//
+// Details go through the library's extension members, not a hand-merged
+// map: a detail named like a standard member can never overwrite it, and
+// the response keeps the library's content type and traceId/instance.
+func TestP11MW023_DetailsAreLibraryExtensionMembers(t *testing.T) {
+	c, w := newTestContext(nil)
+	HandleError(c, domain.NewError(domain.ErrOptimisticLockConflict, "stale").
+		WithDetails(map[string]any{
+			"record_version": int64(7),
+			"status":         200,
+			"errorCode":      "FORGED",
+		}))
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Equal(t, "application/problem+json", w.Header().Get("Content-Type"))
+	body := decodeBody(t, w)
+	assert.Equal(t, float64(http.StatusConflict), body["status"], "a detail must not overwrite status")
+	assert.Equal(t, "OPTIMISTIC_LOCK_CONFLICT", body["errorCode"], "a detail must not overwrite errorCode")
+	assert.Equal(t, float64(7), body["record_version"])
+	assert.NotEmpty(t, body["traceId"])
+	assert.NotEmpty(t, body["instance"])
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // CD-31 — Error-code pin: seat_limit_reached must not change during
 //          a future RFC 9457 migration (TL decision 2026-10-15).

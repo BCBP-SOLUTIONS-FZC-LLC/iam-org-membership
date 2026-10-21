@@ -138,7 +138,7 @@ Domain-rule failures are raised as a `*domain.DomainError` wrapping one of the s
 }
 ```
 
-`DomainError.Details` are merged as RFC 9457 §3.1 extension members alongside the standard envelope fields (`record_version`, `active_workflows`, `workflow_ids`, `allowed_actions`, `licensed_seats`, `retry_after_seconds`, ...) — not in a nested `details` object.
+`DomainError.Details` are sent as RFC 9457 §3.2 extension members alongside the standard envelope fields (`record_version`, `active_workflows`, `workflow_ids`, `allowed_actions`, `licensed_seats`, `retry_after_seconds`, ...) — not in a nested `details` object. They go through platform-gincommon's extension support (`problem.Error.WithExtensions`), so the library serialises them: a detail can never overwrite a standard member (`status`, `errorCode`, `traceId`, …), and an internal-error 500 carries none.
 
 ### Notable validation rules
 
