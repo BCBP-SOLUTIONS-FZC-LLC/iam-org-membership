@@ -41,6 +41,19 @@ RUN CGO_ENABLED=0 GOOS=linux \
     -ldflags="-s -w" \
     -o bin/migrate ./cmd/migrate
 
+# Debian bookworm's current CA bundle for the runtime image. The pinned
+# distroless static-debian12 image (still the latest upstream, checked
+# 2026-10-21) ships ca-certificates 20250419~deb12u1; deb12u2 (DLA-4845-1)
+# removes two distrusted roots, Comodo "AAA Certificate Services" and
+# "emSign ECC Root CA - G3", and the Go binaries trust exactly this file for
+# every outbound TLS connection. The Alpine builder's bundle is no substitute:
+# it still carries the emSign root. Drop this stage, the COPY below and the
+# .trivyignore entry once distroless ships deb12u2.
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS certs
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 ARG BUILD_VERSION=dev
@@ -54,6 +67,8 @@ LABEL org.opencontainers.image.title="iam-org-membership" \
 COPY --from=builder /build/bin/iam-org-membership /iam-org-membership
 COPY --from=builder /build/bin/reconciler /reconciler
 COPY --from=builder /build/bin/migrate /migrate
+# Patched CA bundle (deb12u2) over distroless's deb12u1 — see the certs stage.
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 8080 9090
 

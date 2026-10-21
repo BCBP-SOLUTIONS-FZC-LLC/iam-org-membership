@@ -662,7 +662,7 @@ Alert rules live in `deploy/monitoring/app-alerts.yml` (26), `slo-rules.yml` (5)
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | One-shot schema migration (`cmd/migrate` → `postgres.MigrateSchema`: platform-events' `outbox.ApplySchema`, then the domain migrations); exits 0 on success or "already up to date", 1 on failure, with operator hints for a dirty migration or a version missing from the build |
 
-Two-stage `Dockerfile`: `golang:1.26.10-alpine` builder (base image pinned to a SHA digest), runtime is `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, UID 65532) — only the three compiled binaries are copied in. `EXPOSE 8080 9090`.
+Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.26.10-alpine` builder; a `debian:bookworm-slim` `certs` stage, whose patched CA bundle (ca-certificates deb12u2, DLA-4845-1) replaces distroless's until distroless ships it; and the `gcr.io/distroless/static-debian12:nonroot` runtime (no shell, non-root, UID 65532), into which only the three compiled binaries and that CA bundle are copied. `EXPOSE 8080 9090`.
 
 ### Helm chart
 

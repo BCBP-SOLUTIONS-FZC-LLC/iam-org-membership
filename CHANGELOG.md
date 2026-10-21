@@ -8,6 +8,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **Runtime CA bundle (DLA-4845-1, 2026-10-21):** distroless static-debian12 (pinned digest already the latest upstream) ships ca-certificates 20250419~deb12u1; deb12u2 removes the distrusted Comodo "AAA Certificate Services" and "emSign ECC Root CA - G3" roots. A new digest-pinned `debian:bookworm-slim` `certs` stage installs deb12u2 and its bundle replaces distroless's `/etc/ssl/certs/ca-certificates.crt` (verified in the built image: 150 → 148 certs, both roots absent). The Alpine builder's bundle is not used — it still carries the emSign root. `.trivyignore` gains `DLA-4845-1 exp:2026-11-21` (Trivy still reads distroless's dpkg metadata); `.docker-digests` and `make pin-base-images` (also brought up from a stale 1.26.6) cover the new stage. Remove all three once distroless ships deb12u2.
+
 - **Go 1.26.10 (2026-10-21):** toolchain and the digest-pinned builder image (`golang:1.26.10-alpine@sha256:9ce231b2…f7ca`) bumped from 1.26.9, fixing GO-2026-6809 in `crypto/x509` (reachable via `auditlog.HTTPClient.WriteEntry` → `x509.Certificate.Verify`). `govulncheck` reports no reachable vulnerabilities.
 
 - **EVT-17 — events for a tenant with no row yet are retried, not dropped (LLD rev 2.33):** delivery on `iam.tenant.events`/`billing.events` is unordered, so an event could arrive before its tenant was created and was recorded and discarded (e.g. a direct-paid `TenantRealmReady`, leaving the realm unset). Such events are now retried until the tenant exists or they reach the DLQ. Offboarded (soft-deleted) tenants and `TenantOffboarded` still drop.
