@@ -7,7 +7,7 @@
 # observability.platform/metric-status: proposed.
 #
 # Deploy into the namespace where prometheus-adapter runs (typically kube-system
-# or monitoring). Merge with any existing prometheus-adapter ConfigMap rather
+# or observability). Merge with any existing prometheus-adapter ConfigMap rather
 # than replacing it.
 #
 # Reference:
@@ -19,7 +19,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-adapter-config
-  namespace: monitoring   # adjust to match your prometheus-adapter deployment namespace
+  namespace: observability   # adjust to match your prometheus-adapter deployment namespace
   labels:
     app.kubernetes.io/name: prometheus-adapter
     app.kubernetes.io/component: metrics

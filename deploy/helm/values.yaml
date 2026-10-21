@@ -349,12 +349,12 @@ cronjobs:
 networkPolicy:
   enabled: true
   ingressControllerNamespaceSelector:
-    kubernetes.io/metadata.name: envoy-gateway-system
+    kubernetes.io/metadata.name: gateway
   ingressControllerPodSelector: {}
   metricsIngress:
     enabled: true
     namespaceSelector:
-      kubernetes.io/metadata.name: monitoring
+      kubernetes.io/metadata.name: observability
     podSelector:
       app.kubernetes.io/name: prometheus
   # TAC-GAP-010 / EC-OM-GAP-003: explicit ingress rules for services that call

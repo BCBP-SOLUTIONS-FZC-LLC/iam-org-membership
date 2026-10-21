@@ -17,5 +17,5 @@ commercialCallers:
     trustDomain: cluster.local
     existingCallerNamespaces:
       - iam                  # IAM namespace: AuthZ Enrichment, Group Mapping, Audit Log, Tender ACL, Delegation, Event Consumer
-      - envoy-gateway-system # Ingress controller / Envoy Gateway data plane
-      - monitoring           # Prometheus scrape (port 9090 only — enforced at L3 by metricsIngress)
+      - gateway              # Ingress controller / Envoy Gateway data plane
+      - observability        # Prometheus scrape (port 9090 only — enforced at L3 by metricsIngress)
