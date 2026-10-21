@@ -109,8 +109,8 @@ Failure modes and fixes:
 lane instead. Without that, every live schema was reported as an orphan and
 `--execute` would have deleted them.
 
-`iam-tenant-events` is **shared** with iam-realm-provisioner: its 9 schemas
-(`TrialTenantProvisioned`, `TenantRealmReady`, …) have no file here, so they
+`iam-tenant-events` is **shared** with iam-realm-provisioner: its schemas
+(`TenantIdentityProvisioned`, `TenantRealmReady`, …) have no file here, so they
 always appear as orphans on the tenant leg — expected, never actioned.
 `schema-prune.yml`'s "Guard — exclude realm-provisioner-owned
 shared-registry schemas" step refuses `--execute` on that registry while any

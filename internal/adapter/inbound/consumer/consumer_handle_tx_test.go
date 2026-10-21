@@ -74,6 +74,14 @@ type htTenantRepo struct {
 	applyLifecyclePatchFn func(ctx context.Context, id uuid.UUID, patch port.TenantLifecyclePatch) (int64, error)
 	wipeTenantChildrenFn  func(ctx context.Context, id uuid.UUID) error
 	findByIDFn            func(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+	findInclDeletedFn     func(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+}
+
+func (r *htTenantRepo) FindByIDIncludingDeleted(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	if r.findInclDeletedFn != nil {
+		return r.findInclDeletedFn(ctx, id)
+	}
+	return nil, nil
 }
 
 func (r *htTenantRepo) LockForProjection(ctx context.Context, id uuid.UUID) (*port.TenantProjectionLock, error) {
@@ -208,14 +216,20 @@ func (r *spyRunnerDetect) RunInTx(ctx context.Context, fn func(ctx context.Conte
 	return fn(ctx)
 }
 
-// TestHandle_NilLockedTenant_DropsSilentlyWithDedup verifies the
-// "tenant absent" branch (line 174-178): when LockForProjection returns
-// (nil, nil), Handle records MarkProcessed and returns nil (silent drop).
-func TestHandle_NilLockedTenant_DropsSilentlyWithDedup(t *testing.T) {
+// TestHandle_NilLockedTenant_SoftDeleted_DropsSilentlyWithDedup verifies
+// the "tenant absent" branch for an offboarded tenant: LockForProjection
+// returns (nil, nil) because the row is soft-deleted, so Handle records
+// MarkProcessed and returns nil (silent drop). A tenant with no row at all is
+// retried instead — see consumer_provisioning_backstop_test.go.
+func TestHandle_NilLockedTenant_SoftDeleted_DropsSilentlyWithDedup(t *testing.T) {
 	idemp := &htIdempotency{}
 	tenants := &htTenantRepo{
 		lockForProjectionFn: func(_ context.Context, _ uuid.UUID) (*port.TenantProjectionLock, error) {
-			return nil, nil // tenant absent
+			return nil, nil // no live row
+		},
+		findInclDeletedFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+			deleted := time.Now().UTC()
+			return &domain.Tenant{ID: id, Status: domain.StatusOffboarded, DeletedAt: &deleted}, nil
 		},
 	}
 	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, idemp), tenants, nil, nil, 5*time.Minute, nil)

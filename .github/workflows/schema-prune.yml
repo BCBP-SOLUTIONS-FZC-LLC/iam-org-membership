@@ -131,7 +131,7 @@ jobs:
           rm -rf .tmp/glue-schemas
           bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
 
-      # iam-tenant-events is SHARED with iam-realm-provisioner, which owns 9
+      # iam-tenant-events is SHARED with iam-realm-provisioner, which owns its
       # schemas there. They have no file in this repo, so prune ALWAYS lists
       # them as orphans, and platform-schemagov has no --exclude flag —
       # --execute deletes every candidate. Hard-stop before any --execute on
@@ -143,7 +143,7 @@ jobs:
           REGISTRY_NAME: ${{ matrix.registry }}
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
-          EXCLUDED=(DirectPaidSignup TenantConverted TenantOffboarded TenantReactivated TenantRealmReady TenantSuspended TrialExpired TrialReactivated TrialTenantProvisioned)
+          EXCLUDED=(DirectPaidSignup TenantConverted TenantIdentityProvisioned TenantOffboarded TenantReactivated TenantRealmReady TenantSuspended TrialExpired TrialReactivated)
           # Fail closed on an AWS API error — a failed list must never read as
           # "none of RP's schemas are present".
           if ! NAMES=$(aws glue list-schemas \
@@ -275,7 +275,7 @@ jobs:
           rm -rf .tmp/glue-schemas
           bash .github/scripts/stage-produced-event-schemas.sh .tmp/glue-schemas "$LANE"
 
-      # iam-tenant-events is SHARED with iam-realm-provisioner, which owns 9
+      # iam-tenant-events is SHARED with iam-realm-provisioner, which owns its
       # schemas there. They have no file in this repo, so prune ALWAYS lists
       # them as orphans, and platform-schemagov has no --exclude flag —
       # --execute deletes every candidate. Hard-stop before any --execute on
@@ -287,7 +287,7 @@ jobs:
           REGISTRY_NAME: ${{ matrix.registry }}
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
-          EXCLUDED=(DirectPaidSignup TenantConverted TenantOffboarded TenantReactivated TenantRealmReady TenantSuspended TrialExpired TrialReactivated TrialTenantProvisioned)
+          EXCLUDED=(DirectPaidSignup TenantConverted TenantIdentityProvisioned TenantOffboarded TenantReactivated TenantRealmReady TenantSuspended TrialExpired TrialReactivated)
           # Fail closed on an AWS API error — a failed list must never read as
           # "none of RP's schemas are present".
           if ! NAMES=$(aws glue list-schemas \

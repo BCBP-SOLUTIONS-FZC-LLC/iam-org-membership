@@ -89,9 +89,9 @@ func TestP19AsyncEdges_SnsEventType_PascalCasePreferred(t *testing.T) {
 sns:
   messageAttributes:
     EventType:
-      value: TrialTenantProvisioned
+      value: TenantIdentityProvisioned
 `), &root))
-	assert.Equal(t, "TrialTenantProvisioned", snsEventType(&root))
+	assert.Equal(t, "TenantIdentityProvisioned", snsEventType(&root))
 }
 
 func TestP19AsyncEdges_SnsEventType_FallsBackToSnakeCase(t *testing.T) {

@@ -528,7 +528,7 @@ servers:
       SQS queue owned and managed by this service, subscribed to the
       iam.tenant.events SNS topic (owned by the Realm Provisioner).
       Queue: tenant-orgm-q  |  DLQ: tenant-orgm-q-dlq  (maxReceiveCount=5)
-      SNS subscription filter: EventType IN [TrialTenantProvisioned,
+      SNS subscription filter: EventType IN [TenantIdentityProvisioned,
         TenantRealmReady, TenantConverted, DirectPaidSignup, TrialExpired,
         TrialReactivated, TenantSuspended, TenantOffboarded, TenantReactivated]
         (this service never subscribes to its own co-produced TenantCreated/
@@ -768,7 +768,7 @@ channels:
       Backing Glue registry: iam-tenant-events (ap-south-1, JSON data format).
 
       Ordering: TenantCreated is emitted exactly once per tenant, and TrialStarted
-      follows within the same TrialTenantProvisioned business transaction — the
+      follows within the same I-1 provisioning transaction — the
       two events for a single tenant are effectively adjacent on the outbox but
       SNS may deliver them out of order. Consumers should treat TrialStarted as
       independently meaningful (it carries plan + trial_ends_at), not as a
@@ -1229,8 +1229,8 @@ channels:
       signal — both re-emitted onto iam-membership-events, this service's
       own published topic.
     messages:
-      TrialTenantProvisioned:
-        $ref: '#/components/messages/TrialTenantProvisioned'
+      TenantIdentityProvisioned:
+        $ref: '#/components/messages/TenantIdentityProvisioned'
       TenantRealmReady:
         $ref: '#/components/messages/TenantRealmReady'
       TenantConverted:
@@ -1515,8 +1515,9 @@ operations:
     description: |
       iam-org-membership co-produces onto iam-tenant-events alongside Realm
       Provisioner and Billing (HLD §9.1.1). This service emits three event types
-      on this topic: TenantCreated and TrialStarted (from the TrialTenantProvisioned
-      consumer that provisions the initial tenant row), and TenantSettingChanged
+      on this topic: TenantCreated and TrialStarted (from I-1, which provisions the
+      initial tenant row — called by the Signup BFF, or by the
+      TenantIdentityProvisioned backstop consumer), and TenantSettingChanged
       (from P-2 PATCH when residency_mode is mutated — CD-37, TL decision
       2026-10-15, outbox-atomic with the DB write).
 
@@ -1811,7 +1812,7 @@ operations:
       Consumer: this service (iam-org-membership)
       Producer: Realm Provisioner
       Queue   : tenant-orgm-q  |  DLQ: tenant-orgm-q-dlq
-      Filter  : EventType IN [TrialTenantProvisioned, TenantRealmReady,
+      Filter  : EventType IN [TenantIdentityProvisioned, TenantRealmReady,
                               TenantConverted, DirectPaidSignup, TrialExpired,
                               TrialReactivated, TenantSuspended, TenantOffboarded,
                               TenantReactivated]
@@ -1864,7 +1865,7 @@ operations:
       processed_events — both inbound queues share this one consumer
       identity (see consumerName in membership_event_consumer.go).
     messages:
-      - $ref: '#/channels/tenantOrgmQueue/messages/TrialTenantProvisioned'
+      - $ref: '#/channels/tenantOrgmQueue/messages/TenantIdentityProvisioned'
       - $ref: '#/channels/tenantOrgmQueue/messages/TenantRealmReady'
       - $ref: '#/channels/tenantOrgmQueue/messages/TenantConverted'
       - $ref: '#/channels/tenantOrgmQueue/messages/DirectPaidSignup'
@@ -2541,9 +2542,10 @@ components:
       title: Tenant Created
       summary: |
         Emitted onto iam-tenant-events when a new tenant row is committed —
-        for this service, from within the TrialTenantProvisioned consumer that
-        runs the initial tenant + 5 default department + owner-grant provisioning
-        transaction (§8.1).
+        for this service, from within I-1 (called by the Signup BFF, or by the
+        TenantIdentityProvisioned backstop consumer), which runs the initial
+        tenant + 5 default department + owner-grant provisioning transaction
+        (§8.1).
       x-lifecycle:
         status: active
       x-owner:
@@ -2665,49 +2667,6 @@ components:
     # here as this service's consumer-side contract — see the "consumed" tag
     # description and the tenantOrgmQueue/billingOrgmQueue channel notes for
     # the ownership caveat.
-    TrialTenantProvisioned:
-      name: TrialTenantProvisioned
-      title: Trial Tenant Provisioned
-      summary: |
-        Consumed by this service, not published. Classified as a known
-        tenant-lifecycle type so it is dedup-recorded rather than falling
-        into the kindUnknown silent-ack path, but applyProjection treats it
-        as a no-op — it does NOT mutate tenants.status/plan here. The actual
-        trial-tenant provisioning transaction (5 default departments + 3
-        dept-role labels + owner role grant + TenantCreated/TrialStarted,
-        §8.1) runs synchronously via I-1 POST /api/v1/internal/tenants,
-        called directly over HTTP by Realm Provisioner's own
-        TrialTenantProvisioned handler once the Keycloak realm is ready —
-        not via this SQS event.
-      x-lifecycle:
-        status: active
-      x-owner:
-        team: team-tenant-lifecycle
-        slack: "#tenant-lifecycle"
-      tags:
-        - $ref: '#/components/tags/consumed'
-      contentType: application/json
-      traits:
-        - $ref: '#/components/messageTraits/glueWireFormat'
-      payload:
-        $ref: '#/components/schemas/TrialTenantProvisionedEnvelope'
-      bindings:
-        sns:
-          messageAttributes:
-            EventType:
-              dataType: String
-              value: TrialTenantProvisioned
-              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
-            TenantID:
-              dataType: String
-              description: Dynamic — the tenant being provisioned. Matches envelope.tenant_id.
-            Source:
-              dataType: String
-              description: Publishing service identifier — expected "iam-realm-provisioner".
-            EventID:
-              dataType: String
-              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
-
     TenantRealmReady:
       name: TenantRealmReady
       title: Tenant Realm Ready
@@ -2777,6 +2736,53 @@ components:
             TenantID:
               dataType: String
               description: Dynamic — the tenant converting from trial to paid. Matches envelope.tenant_id.
+            Source:
+              dataType: String
+              description: Publishing service identifier — expected "iam-realm-provisioner".
+            EventID:
+              dataType: String
+              description: Dynamic — envelope id. Used as the processed_events dedup key (consumer="iam-org-membership").
+
+    TenantIdentityProvisioned:
+      name: TenantIdentityProvisioned
+      title: Tenant Identity Provisioned
+      summary: |
+        Consumed by this service, not published. Emitted by the Realm
+        Provisioner (RP LLD v1.32, RP-D16) from RP-1 (trial) and RP-2 (direct
+        paid) once the tenant's admin Keycloak user exists — written to RP's
+        outbox in the same transaction as its tenant_realms row, so the event
+        exists if and only if RP-1/RP-2 succeeded. The signup provisioning
+        backstop (Signup BFF BFF-2, option B): if the tenants row does not
+        exist, this service runs its I-1 flow (ProvisioningService.TrialSignup)
+        from the payload, so a signup whose BFF-side I-1 call never succeeded
+        still completes. If the row exists (created by I-1, or soft-deleted /
+        offboarded), nothing happens. I-1 is idempotent on tenant_id, so this
+        and the BFF's own I-1 retries can race safely; whichever runs first
+        decides slug, name and plan. realm/realm_type are not read: I-1
+        creates every tenant on the shared trial realm and RP's
+        TenantRealmReady sets the dedicated realm for direct-paid tenants.
+      x-lifecycle:
+        status: active
+      x-owner:
+        team: team-tenant-lifecycle
+        slack: "#tenant-lifecycle"
+      tags:
+        - $ref: '#/components/tags/consumed'
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/glueWireFormat'
+      payload:
+        $ref: '#/components/schemas/TenantIdentityProvisionedEnvelope'
+      bindings:
+        sns:
+          messageAttributes:
+            EventType:
+              dataType: String
+              value: TenantIdentityProvisioned
+              description: Set by the producer (Realm Provisioner). Matches this service's SNS filter policy on tenant-orgm-q.
+            TenantID:
+              dataType: String
+              description: Dynamic — the tenant being provisioned. Matches envelope.tenant_id and data.tenant_id.
             Source:
               dataType: String
               description: Publishing service identifier — expected "iam-realm-provisioner".
@@ -3352,7 +3358,7 @@ components:
               record for this action (actor_id + user_id), per HLD §8.2.6.
             TenantCreated: >-
               New tenant row committed on iam-tenant-events (from this service,
-              via TrialTenantProvisioned).
+              via I-1).
             TrialStarted: >-
               Trial window begins — payload carries plan and trial_ends_at.
         subject:
@@ -4078,7 +4084,7 @@ components:
         type:
           type: string
           enum:
-            - TrialTenantProvisioned
+            - TenantIdentityProvisioned
             - TenantRealmReady
             - TenantConverted
             - DirectPaidSignup
@@ -4132,14 +4138,6 @@ components:
           example: "2026-06-13T10:30:00Z"
 
     # ── Per-event envelopes (base + typed data) ──────────────────────────────
-    TrialTenantProvisionedEnvelope:
-      allOf:
-        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
-        - type: object
-          properties:
-            data:
-              $ref: '#/components/schemas/TrialTenantProvisionedPayload'
-
     TenantRealmReadyEnvelope:
       allOf:
         - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
@@ -4157,6 +4155,14 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/TenantConvertedPayload'
+
+    TenantIdentityProvisionedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ConsumedTenantLifecycleEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TenantIdentityProvisionedPayload'
 
     DirectPaidSignupEnvelope:
       allOf:
@@ -4282,14 +4288,6 @@ components:
     # membership_event_consumer.go actually unmarshals; the producing
     # service's own schema is free to carry additional fields this consumer
     # ignores.
-    TrialTenantProvisionedPayload:
-      type: object
-      additionalProperties: true
-      description: |
-        No fields are read by this consumer — applyProjection's
-        TrialTenantProvisioned case is a deliberate no-op (see the message
-        summary above for why).
-
     TenantRealmReadyPayload:
       type: object
       additionalProperties: true
@@ -4324,6 +4322,33 @@ components:
           description: |
             New plan code. If absent or empty, the previous plan is
             preserved rather than cleared.
+
+    TenantIdentityProvisionedPayload:
+      type: object
+      additionalProperties: true
+      description: |
+        The fields this consumer reads to run I-1 (Realm Provisioner's frozen
+        payload, RP-D16). realm and realm_type are also sent but not read.
+        No PII: the admin's email and name are deliberately not carried.
+      required: [tenant_id, owner_user_id, slug, name, plan, signup_type]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        owner_user_id:
+          type: string
+          format: uuid
+          description: Keycloak sub of the tenant's admin user — I-1's owner_user_id.
+        slug:
+          type: string
+        name:
+          type: string
+        plan:
+          type: string
+          enum: [starter, pro, enterprise]
+        signup_type:
+          type: string
+          enum: [trial, direct_paid]
 
     DirectPaidSignupPayload:
       type: object

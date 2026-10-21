@@ -68,7 +68,7 @@ type internalProvisionRequest struct {
 // ProvisionTenant is I-1 — trial signup (5 depts + 3 labels + owner + 3 events in one tx).
 //
 // @Summary      I-1 — Provision tenant (trial signup)
-// @Description  Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called directly by the Signup BFF / Realm Provisioner over the internal mesh — every tenant is created trial-shaped regardless of plan; a consumed TrialTenantProvisioned event, if received, is an idempotent no-op reconcile, not a trigger for this handler.
+// @Description  Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called directly by the Signup BFF / Realm Provisioner over the internal mesh — every tenant is created trial-shaped regardless of plan; if the BFF never completes this call, the TenantIdentityProvisioned consumer runs it from RP's event (signup provisioning backstop), not a trigger for this handler.
 // @Tags         internal
 // @Accept       json
 // @Produce      json

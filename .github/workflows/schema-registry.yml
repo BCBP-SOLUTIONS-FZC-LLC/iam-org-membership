@@ -183,7 +183,7 @@ jobs:
             --env      staging \
             --output   ${{ runner.temp }}/schema-prune-metrics.json
           case "${{ matrix.registry }}" in
-            *tenant*) echo "::notice title=Shared registry::${{ matrix.registry }} is shared with iam-realm-provisioner — its 9 schemas (TrialTenantProvisioned, TenantRealmReady, ...) appear above as 'orphaned' because they have no file here. They are not orphaned; schema-prune.yml's guard blocks --execute on this registry." ;;
+            *tenant*) echo "::notice title=Shared registry::${{ matrix.registry }} is shared with iam-realm-provisioner — its schemas (TenantIdentityProvisioned, TenantRealmReady, ...) appear above as 'orphaned' because they have no file here. They are not orphaned; schema-prune.yml's guard blocks --execute on this registry." ;;
           esac
 
       # Source selection (v0.4+):
@@ -438,7 +438,7 @@ jobs:
             --env      production \
             --output   ${{ runner.temp }}/schema-prune-metrics.json
           case "${{ matrix.registry }}" in
-            *tenant*) echo "::notice title=Shared registry::${{ matrix.registry }} is shared with iam-realm-provisioner — its 9 schemas (TrialTenantProvisioned, TenantRealmReady, ...) appear above as 'orphaned' because they have no file here. They are not orphaned; schema-prune.yml's guard blocks --execute on this registry." ;;
+            *tenant*) echo "::notice title=Shared registry::${{ matrix.registry }} is shared with iam-realm-provisioner — its schemas (TenantIdentityProvisioned, TenantRealmReady, ...) appear above as 'orphaned' because they have no file here. They are not orphaned; schema-prune.yml's guard blocks --execute on this registry." ;;
           esac
 
       # Source selection (v0.4+):

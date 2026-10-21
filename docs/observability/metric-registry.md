@@ -96,5 +96,6 @@ Registered for the `iam` domain but not emitted by this service: `iam_auth_event
 | `iam_org_membership_tenant_header_path_mismatch_total` | counter | `action`, `method`, `route` | Internal /tenants/:id/* requests whose x-tenant-id differed from the path tenant, by route, method and action (overridden: path tenant bound and served; rejected: strict-mode 400). |
 | `iam_org_membership_tenant_ownerless` | gauge | - | Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages. |
 | `iam_org_membership_tenant_ownerless_escalated_total` | counter | `reason` | Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page. |
+| `iam_org_membership_tenant_provisioning_backstop_total` | counter | `result` | TenantIdentityProvisioned events handled by the signup provisioning backstop, by result: created (tenant was missing and was created) or already_exists. |
 | `iam_org_membership_unknown_event_acknowledged_total` | counter | `event_type` | Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type. |
 

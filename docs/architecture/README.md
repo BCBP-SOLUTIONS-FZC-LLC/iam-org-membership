@@ -9,7 +9,7 @@ Standalone Mermaid source files. `ARCHITECTURE.md` embeds every one of these `.m
 | [`request-flow.mmd`](mermaid/request-flow.mmd) | Full HTTP request lifecycle (I-8 hot path: `InternalHandler` → `AuthZService` → Valkey / `AuthZRepository`) | ARCHITECTURE.md § Request flow, LLD §8.3 |
 | [`public-tenant-resolve-flow.mmd`](mermaid/public-tenant-resolve-flow.mmd) | PUB-1 pre-login tenant/realm resolution on the BYPASSRLS `sysPool` | ARCHITECTURE.md § PUB-1, LLD §8.11 |
 | [`write-flow.mmd`](mermaid/write-flow.mmd) | Transactional write + validated, ordered outbox enqueue (P-10 example) and the runner's routed publish | LLD §8.4 |
-| [`provisioning-flow.mmd`](mermaid/provisioning-flow.mmd) | I-1 `ProvisionTenant` → `ProvisioningService.TrialSignup` tenant bootstrap; a consumed `TrialTenantProvisioned` is a no-op reconcile | LLD §8.1 |
+| [`provisioning-flow.mmd`](mermaid/provisioning-flow.mmd) | I-1 `ProvisionTenant` → `ProvisioningService.TrialSignup` tenant bootstrap; the `TenantIdentityProvisioned` backstop runs the same flow when the BFF's call never completed | LLD §8.1 |
 | [`ooo-delegate-flow.mmd`](mermaid/ooo-delegate-flow.mmd) | Core's only remaining delegation-adjacent touchpoints — the §8.8 tenant-wide delegate-impact gate on P-8 and the §8.8.4 dept removal/demotion gates via `DelegationCheckClient`. Core owns no `delegations` table or OOO-coordination flow any more (ADR-0008) — both moved to the standalone Delegation Service. | LLD §8.8, §8.8.4 |
 | [`cache-strategy.mmd`](mermaid/cache-strategy.mmd) | Valkey key namespace, TTLs, read/write/invalidation paths, offboarding wipe | LLD §6 |
 | [`data-model.mmd`](mermaid/data-model.mmd) | ER diagram of the 8 tables in `org_membership` | ARCHITECTURE.md § Data model, LLD §4 |

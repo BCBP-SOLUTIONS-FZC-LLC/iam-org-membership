@@ -11,6 +11,8 @@ Signup BFF → `POST /internal/tenants` (I-1). One `RunInTx`:
 6. `outbox.Enqueue(TenantCreated)` + `outbox.Enqueue(TrialStarted)`
 7. COMMIT
 
+**Provisioning backstop (BFF-2, LLD rev 2.33).** RP-1/RP-2 run first and emit `TenantIdentityProvisioned` from RP's outbox once the admin's Keycloak user exists. If the BFF's I-1 never succeeds (retries exhausted, pod restart, Valkey loss, tab closed), the `tenant-orgm-q` consumer runs this same I-1 flow from the event payload — no tenant row → create; row exists → no-op. I-1's `ON CONFLICT (id) DO NOTHING` makes the BFF and the backstop race safely (first writer decides slug/name/plan, so the BFF must send I-1 exactly what it sent RP). RP's other events for the new tenant may arrive first: EVT-17 retries them until the tenant exists.
+
 Returns `201 {tenant_id}`. Outbox runner publishes both events to `iam.tenant.events`.
 
 ## 8.1b Direct-Paid Signup (F11, RP↔O&M alignment review)

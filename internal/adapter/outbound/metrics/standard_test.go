@@ -104,5 +104,6 @@ func exerciseEveryCollector(t *testing.T) {
 	IncPublicTenantResolve("found")
 	IncPlanChangeCheck("allowed")
 	IncAssigneeEligibilityCheck("eligible")
+	IncProvisioningBackstop(ProvisioningBackstopCreated)
 	IncTenantHeaderPathMismatch("/api/v1/internal/tenants/:id/locale", "GET", TenantMismatchOverridden)
 }

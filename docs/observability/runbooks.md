@@ -153,6 +153,10 @@ These alerts query platform-library metrics that are still `proposed` in the reg
 
 **Mitigate.** Inspect the `DLQReason` attribute, fix the cause, then redrive. Never discard without the owning team's sign-off.
 
+Two cases specific to signup provisioning (LLD rev 2.33):
+- **`DLQReason=provisioning_rejected`** on a `TenantIdentityProvisioned`: I-1 can never accept the payload (validation failure, or the slug belongs to another tenant). The user exists in Keycloak with no tenant. The ERROR log `TenantIdentityProvisioned rejected` has the cause; resolve it with the Signup BFF team (e.g. a different slug), complete the signup via I-1, and discard the message.
+- **No `DLQReason`, any lifecycle/billing type, tenant has no row** (EVT-17): the event kept arriving before its tenant existed and ran out of receives. Usually the `TenantIdentityProvisioned` for that tenant failed too (Catalog outage) — redrive it first, confirm the tenant exists, then redrive the rest.
+
 ### IAMOrgMembershipDBPoolSaturated
 
 **Meaning.** More than 90% of a pool's connections have been checked out for 10 minutes on the busiest replica. `pool="default"` is the API pool, `pool="system"` the BYPASSRLS pool (reconciler sweeps, gauge exporters, I-16, PUB-1).

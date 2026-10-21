@@ -115,7 +115,7 @@ const docTemplate = `{
         },
         "/internal/tenants": {
             "post": {
-                "description": "Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called directly by the Signup BFF / Realm Provisioner over the internal mesh — every tenant is created trial-shaped regardless of plan; a consumed TrialTenantProvisioned event, if received, is an idempotent no-op reconcile, not a trigger for this handler.",
+                "description": "Activates the 5 default system departments, creates 3 dept-role labels, grants tenant_owner, and emits TenantCreated + TrialStarted in one transaction. Called directly by the Signup BFF / Realm Provisioner over the internal mesh — every tenant is created trial-shaped regardless of plan; if the BFF never completes this call, the TenantIdentityProvisioned consumer runs it from RP's event (signup provisioning backstop), not a trigger for this handler.",
                 "consumes": [
                     "application/json"
                 ],

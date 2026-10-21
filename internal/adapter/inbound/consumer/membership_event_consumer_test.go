@@ -75,17 +75,11 @@ func lastPatch(t *testing.T, tenants *recordingTenants) port.TenantLifecyclePatc
 	return tenants.patches[len(tenants.patches)-1]
 }
 
-// The Trial signup path is a no-op projection (the TrialTenantProvisioned
-// consumer handles it directly, not this projection).
-func TestApplyProjection_TrialTenantProvisioned_IsNoop(t *testing.T) {
-	c, tenants := newConsumer()
-	st, pl, err := applyOn(c,
-		mkEnv("TrialTenantProvisioned", struct{}{}),
-		domain.StatusTrial, domain.TenantPlan("starter"))
-	require.NoError(t, err)
-	assert.Equal(t, domain.StatusTrial, st, "no state change")
-	assert.Equal(t, domain.TenantPlan("starter"), pl)
-	assert.Empty(t, tenants.patches, "no UPDATE for TrialTenantProvisioned")
+// TrialTenantProvisioned was retired by RP (replaced by
+// TenantIdentityProvisioned): it is no longer a known type, so an in-flight
+// one is acknowledged through the unknown-type path.
+func TestClassify_TrialTenantProvisioned_Retired(t *testing.T) {
+	assert.Equal(t, kindUnknown, classify("TrialTenantProvisioned"))
 }
 
 func TestApplyProjection_TenantRealmReady_UpdatesRealmColumns(t *testing.T) {

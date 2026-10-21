@@ -786,7 +786,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | Queue | Producer | Events |
 |---|---|---|
-| `tenant-orgm-q` | Realm Provisioner | `TrialTenantProvisioned`, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated` |
+| `tenant-orgm-q` | Realm Provisioner | `TenantIdentityProvisioned` (signup provisioning backstop: creates the tenant via I-1 if missing), `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated` |
 | `billing-orgm-q` | Billing | `TenantSeatsChanged`, `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated` |
 | `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (Gap 12) — **inert today**: consumer is done/tested, but `iam-catalog-admin` has no publisher side yet and `SQS_CATALOG_ORGM_QUEUE_URL` is unset everywhere |
 

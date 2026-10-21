@@ -50,6 +50,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
@@ -66,13 +67,38 @@ const consumerName = "iam-org-membership"
 // (cmd/server/dlq.go routeRejectsToDLQ), not by the SQS runner itself.
 var ErrPoisonPill = errors.New("event rejected as poison pill (EVT-15 future-time clamp)")
 
+// ErrProvisioningRejected marks a TenantIdentityProvisioned event whose
+// payload I-1 can never accept (validation failure, or the slug is held by a
+// different tenant): retrying cannot succeed, so it goes straight to the DLQ
+// (reason provisioning_rejected) and processed_events is not recorded.
+var ErrProvisioningRejected = errors.New("TenantIdentityProvisioned rejected: I-1 cannot accept the payload")
+
+// errTenantNotYetProvisioned is returned, so the message is redelivered,
+// when a lifecycle/billing event names a tenant with no tenants row at all.
+// Delivery on iam.tenant.events is unordered, so RP's events for a new tenant
+// can arrive before the tenant is created (by the BFF's I-1 call or by the
+// TenantIdentityProvisioned backstop). Before the backstop these were
+// recorded and dropped, which lost e.g. a direct-paid TenantRealmReady.
+var errTenantNotYetProvisioned = errors.New("tenant not provisioned yet — retrying")
+
+// eventTenantIdentityProvisioned is RP's signup event (RP-D16) that drives the
+// tenant provisioning backstop.
+const eventTenantIdentityProvisioned = "TenantIdentityProvisioned"
+
+// TenantProvisioner runs I-1 (ProvisioningService.TrialSignup) for the
+// TenantIdentityProvisioned backstop.
+type TenantProvisioner interface {
+	TrialSignup(ctx context.Context, req service.TrialSignupInput) (*domain.Tenant, bool, error)
+}
+
 type MembershipEventConsumer struct {
-	inbox   port.Inbox
-	tenants port.TenantRepository
-	catalog port.PlanCatalogReader
-	cache   port.Cache
-	skew    time.Duration
-	logger  port.SlogStyleLogger
+	inbox       port.Inbox
+	tenants     port.TenantRepository
+	catalog     port.PlanCatalogReader
+	cache       port.Cache
+	provisioner TenantProvisioner
+	skew        time.Duration
+	logger      port.SlogStyleLogger
 }
 
 // NewMembershipEventConsumer builds a MembershipEventConsumer. logger may be
@@ -92,6 +118,14 @@ func NewMembershipEventConsumer(inbox port.Inbox, tenants port.TenantRepository,
 		skew = 300 * time.Second
 	}
 	return &MembershipEventConsumer{inbox: inbox, tenants: tenants, catalog: catalog, cache: cache, skew: skew, logger: port.NewSlogStyleLogger(logger)}
+}
+
+// WithTenantProvisioner wires the I-1 flow the TenantIdentityProvisioned
+// backstop runs. Production wiring always sets it; without it such an event
+// is retried and lands in the DLQ rather than being silently dropped.
+func (c *MembershipEventConsumer) WithTenantProvisioner(p TenantProvisioner) *MembershipEventConsumer {
+	c.provisioner = p
+	return c
 }
 
 // Handle is the entry point for platform-events SQS consumer.
@@ -120,6 +154,10 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
+
+	if env.Type == eventTenantIdentityProvisioned {
+		return c.handleTenantIdentityProvisioned(ctx, gucCtx, tenantID, env)
+	}
 
 	// TrialReactivated (§8.10.3/TR2) needs the tenant's current plan's
 	// trial_duration_days from the Catalog Service to compute the new
@@ -160,9 +198,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			return err
 		}
 		if locked == nil {
-			// Tenant absent (already offboarded / never provisioned) —
-			// record dedup and drop silently.
-			return nil
+			return c.tenantAbsent(txCtx, tenantID, env)
 		}
 
 		// ── EVT-14 recency guard ─────────────────────────────────────────
@@ -316,8 +352,9 @@ func gdprWipeCacheKeys(tenantID uuid.UUID) []string {
 func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int) (domain.SubscriptionStatus, domain.TenantPlan, error) {
 	switch env.Type {
 	// ── tenant-orgm-q (Realm-Provisioner-produced) ──────────────────────
-	case "TrialTenantProvisioned":
-		return prevStatus, prevPlan, nil
+	// TenantIdentityProvisioned never reaches here (handled before the
+	// projection tx); TrialTenantProvisioned was retired by RP, which emits
+	// TenantIdentityProvisioned instead — an in-flight one is acked as unknown.
 	case "TenantRealmReady":
 		// RP's frozen TenantRealmReadyPayload (§25) carries the realm name
 		// under json:"realm", not "realm_id" — and has no realm_type field
@@ -528,7 +565,7 @@ const (
 )
 
 var knownEvents = map[string]eventKind{
-	"TrialTenantProvisioned":      kindTenantLifecycle,
+	"TenantIdentityProvisioned":   kindTenantLifecycle,
 	"TenantRealmReady":            kindTenantLifecycle,
 	"TenantConverted":             kindTenantLifecycle,
 	"DirectPaidSignup":            kindTenantLifecycle,
@@ -548,4 +585,118 @@ func classify(eventType string) eventKind {
 		return k
 	}
 	return kindUnknown
+}
+
+// ── tenant provisioning backstop (TenantIdentityProvisioned) ─────────────
+
+// tenantIdentityProvisionedPayload is the subset of RP's frozen payload
+// (RP-D16) that I-1 needs. realm/realm_type are not read: I-1 creates every
+// tenant on the shared trial realm and RP's TenantRealmReady (retried until
+// the tenant exists) sets a direct-paid tenant's dedicated realm.
+type tenantIdentityProvisionedPayload struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	OwnerUserID uuid.UUID `json:"owner_user_id"`
+	Slug        string    `json:"slug"`
+	Name        string    `json:"name"`
+	Plan        string    `json:"plan"`
+	SignupType  string    `json:"signup_type"`
+}
+
+// handleTenantIdentityProvisioned is the signup provisioning backstop
+// (Signup BFF BFF-2, option B). RP emits the event once the admin's Keycloak
+// user exists; if the tenant was never created — the BFF's I-1 call failed
+// and nobody retried — run I-1 from the payload. I-1 is idempotent on
+// tenant_id, so racing the BFF's own retries is safe. A tenant that already
+// exists, including a soft-deleted (offboarded) one, is left alone.
+//
+// I-1 calls the Catalog Service before its transaction, and an HTTP call has
+// no business inside the processed_events claim transaction, so I-1 runs
+// first and the dedup claim afterwards. A crash between the two redelivers
+// the event; I-1 then finds the tenant and the claim is recorded.
+func (c *MembershipEventConsumer) handleTenantIdentityProvisioned(ctx, gucCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) error {
+	var p tenantIdentityProvisionedPayload
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return c.rejectProvisioning(env, fmt.Errorf("decode payload: %w", err))
+	}
+	if p.TenantID != tenantID {
+		return c.rejectProvisioning(env, fmt.Errorf("payload tenant_id %s does not match envelope tenant_id %s", p.TenantID, tenantID))
+	}
+
+	result := metrics.ProvisioningBackstopAlreadyExists
+	_, err := c.tenants.FindByIDIncludingDeleted(gucCtx, tenantID)
+	switch {
+	case err == nil:
+		// Created already (by the BFF's I-1, or an earlier delivery), or
+		// offboarded: never recreate.
+	case !errors.Is(err, domain.ErrTenantNotFound):
+		return fmt.Errorf("TenantIdentityProvisioned: look up tenant: %w", err)
+	case c.provisioner == nil:
+		return errors.New("TenantIdentityProvisioned: no TenantProvisioner configured")
+	default:
+		_, created, perr := c.provisioner.TrialSignup(ctx, service.TrialSignupInput{
+			TenantID:    p.TenantID,
+			Slug:        p.Slug,
+			Name:        p.Name,
+			Plan:        domain.TenantPlan(p.Plan),
+			OwnerUserID: p.OwnerUserID,
+		})
+		switch {
+		case perr == nil && created:
+			result = metrics.ProvisioningBackstopCreated
+		case perr == nil:
+			// Lost the race to the BFF's own I-1 call — the tenant exists.
+		case isPermanentProvisioningError(perr):
+			return c.rejectProvisioning(env, perr)
+		default:
+			return fmt.Errorf("TenantIdentityProvisioned: provision tenant: %w", perr)
+		}
+	}
+
+	if err := processOnce(gucCtx, c.inbox, consumerName, env, func(context.Context) error { return nil }); err != nil {
+		return err
+	}
+	metrics.IncProvisioningBackstop(result)
+	if result == metrics.ProvisioningBackstopCreated {
+		c.logger.Warn("tenant_provisioned_by_backstop — signup's own I-1 call had not completed",
+			"event_id", env.ID, "tenant_id", tenantID, "signup_type", p.SignupType)
+	}
+	return nil
+}
+
+// isPermanentProvisioningError reports I-1 failures no retry can fix: the
+// payload fails I-1's validation, or the slug belongs to another tenant.
+func isPermanentProvisioningError(err error) bool {
+	return errors.Is(err, domain.ErrValidation) ||
+		errors.Is(err, domain.ErrInvalidPlan) ||
+		errors.Is(err, domain.ErrSlugAlreadyTaken)
+}
+
+func (c *MembershipEventConsumer) rejectProvisioning(env events.Envelope[json.RawMessage], cause error) error {
+	metrics.IncConsumedEventRejected(env.Type, "provisioning_rejected")
+	c.logger.Error("TenantIdentityProvisioned rejected — DLQ; the signup needs manual completion",
+		"event_id", env.ID, "tenant_id", env.TenantID, "error", cause.Error())
+	return fmt.Errorf("%w: %v", ErrProvisioningRejected, cause)
+}
+
+// tenantAbsent decides what happens to a lifecycle/billing event whose
+// tenant has no live row. A soft-deleted (offboarded) row: record and drop,
+// as before. No row at all: the tenant may simply not be created yet
+// (unordered delivery), so retry — the tx rolls back, processed_events is
+// not recorded, and SQS redelivers until the tenant exists or the message
+// reaches the DLQ. TenantOffboarded (nothing to offboard) is still dropped.
+func (c *MembershipEventConsumer) tenantAbsent(txCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) error {
+	if env.Type == "TenantOffboarded" {
+		return nil
+	}
+	_, err := c.tenants.FindByIDIncludingDeleted(txCtx, tenantID)
+	switch {
+	case err == nil:
+		return nil // soft-deleted: drop
+	case errors.Is(err, domain.ErrTenantNotFound):
+		c.logger.Info("event for a tenant not provisioned yet — retrying",
+			"event_id", env.ID, "event_type", env.Type, "tenant_id", tenantID)
+		return errTenantNotYetProvisioned
+	default:
+		return err
+	}
 }

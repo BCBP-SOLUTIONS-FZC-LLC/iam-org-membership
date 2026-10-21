@@ -8,6 +8,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **EVT-17 — events for a tenant with no row yet are retried, not dropped (LLD rev 2.33):** delivery on `iam.tenant.events`/`billing.events` is unordered, so an event could arrive before its tenant was created and was recorded and discarded (e.g. a direct-paid `TenantRealmReady`, leaving the realm unset). Such events are now retried until the tenant exists or they reach the DLQ. Offboarded (soft-deleted) tenants and `TenantOffboarded` still drop.
+
 - **API-2 guard on tenant-facing routes (LLD rev 2.32, 2026-10-21):** the 21 `/api/v1/tenants/:id/*` routes are now one `/tenants/:id` route group behind `RequirePathTenantMatch`, which rejects a path tenant that differs from `x-tenant-id` with `403 INSUFFICIENT_ROLE` before the active-tenant/active-member gates (no query on a mismatch). Same status and errorCode the handlers already returned; only the `detail` text of a mismatch changes. The header stays authoritative (no rebinding). Handlers keep their own check as defence in depth. New CI guard `TestPublicTenantRoutes_AllRequirePathTenantMatch`; `TestPublicTenantRoutes_PathsUnchanged` pins all 21 URLs.
 
 - **Path tenant is authoritative on `/api/v1/internal/tenants/:id/*` (LLD rev 2.31, IAPI-6, 2026-10-21):**
@@ -37,6 +39,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Added
 
+- **Signup provisioning backstop (LLD rev 2.33, Signup BFF BFF-2, 2026-10-21):** the `tenant-orgm-q` consumer handles RP's new `TenantIdentityProvisioned` (RP-D16, emitted by RP-1/RP-2 once the admin's Keycloak user exists). If the tenant has no row, it runs I-1 from the payload, so a signup whose BFF-side I-1 call never succeeded still completes; an existing (or offboarded) tenant is left alone. A payload I-1 can never accept goes to the DLQ (`provisioning_rejected`); transient failures retry. New metric `iam_org_membership_tenant_provisioning_backstop_total{result}`. Consumed schema `tenant_identity_provisioned.json` + AsyncAPI message; `tenant-orgm-q`'s declared SNS filter gains the type (**update the production subscription filter to match**).
+
 - **I-19 assignee eligibility read for the Workflow Services (LLD rev 2.30, 2026-10-21):** `GET /api/v1/internal/tenants/:id/members/:user_id/eligibility?department_id=&required_level=` → `{tenant_id, user_id, department_id, required_level, eligible, reason, role_level}`. Answers the Workflow Services' 2026-10-14 request (Definition publish check; Execution instance start with overrides, admin override, reassignment, delegation reroute). Eligible iff the membership is active, the department is active for the tenant, and the held level is at least `required_level` (preparator < reviewer < approver, owned by this service — same rule as I-13). `reason` ∈ `not_member`/`member_not_active`/`department_not_active`/`not_in_department`/`level_insufficient`. Never 404; uncached; `iam-system` only. New metric `iam_org_membership_assignee_eligibility_check_total{result}`. Endpoint count 39 → 40.
 
 - **Production-readiness hardening (LLD rev 2.20):**
@@ -57,6 +61,8 @@ This service has never been deployed to any environment — there is no released
 - **arch-lint violation:** `internal/adapter/outbound/auditlog` was imported by `cmd` but not declared as a component in `.go-arch-lint.yml`. Added to `adapters_outbound`.
 
 ### Removed
+
+- **`TrialTenantProvisioned` consumption (2026-10-21):** Realm Provisioner retired the event (nothing is deployed) and emits `TenantIdentityProvisioned`, a strict superset, from RP-1 and RP-2 instead. O&M's no-op handler, consumed schema `trial_tenant_provisioned.json`, AsyncAPI message and `tenant-orgm-q` filter entry are removed; an in-flight one is acknowledged as an unknown type. RP has deleted its Glue schema, so it is also gone from `schema-prune.yml`'s shared-registry guard, which now lists `TenantIdentityProvisioned` instead.
 
 - **Mock server files:** `tools/mockwf/main.go` (Workflow Service mock) and `scripts/mockserver/main.go` (multi-service mock) deleted. Both are superseded by Go test fakes (`scenarioCatalogClient`, etc.) and `testcontainers-go` integration tests. The `make mock-servers` Makefile target is removed.
 

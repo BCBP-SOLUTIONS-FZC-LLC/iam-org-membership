@@ -520,7 +520,7 @@ sequenceDiagram
 
 ## Provisioning flow
 
-Tenants enter the system through **I-1**, called by Realm Provisioner (or the Signup BFF) after it has created the realm/owner in Keycloak; a subsequently-consumed `TrialTenantProvisioned` event, if one arrives, is an idempotent no-op reconcile rather than the creation trigger itself.
+Tenants enter the system through **I-1**, called by the Signup BFF after Realm Provisioner has created the realm/owner in Keycloak. If that call never completes, RP's `TenantIdentityProvisioned` event (consumed on `tenant-orgm-q`) runs the same I-1 flow from its payload — the signup provisioning backstop; when the BFF's I-1 got there first it is a no-op (LLD rev 2.33).
 
 > Source: [`docs/architecture/mermaid/provisioning-flow.mmd`](docs/architecture/mermaid/provisioning-flow.mmd)
 
@@ -583,7 +583,7 @@ sequenceDiagram
     Router ->> SNS_T: TenantCreated, TrialStarted (Core's only two produced events on this topic, §7.3)
     Router ->> SNS_M: TenantRoleGranted
 
-    Note over EC: A TrialTenantProvisioned consumed later on tenant-orgm-q is an idempotent<br/>no-op reconcile (processed_events claim + EVT-14 guard, no state change) —<br/>never the creation trigger. Core does not consume its own TenantCreated/TrialStarted<br/>(tenant-orgm-q's filter excludes them, HLD §9.1.1 disjoint produce/consume sets).
+    Note over EC: Backstop: RP's TenantIdentityProvisioned on tenant-orgm-q runs this same I-1 flow<br/>(ProvisioningService.TrialSignup) when no tenant row exists — the BFF's call never completed;<br/>a no-op when the row exists (ON CONFLICT (id) DO NOTHING; first writer wins). Core does not<br/>consume its own TenantCreated/TrialStarted (HLD §9.1.1 disjoint produce/consume sets).
 ```
 
 `TrialReactivated` (a `billing-orgm-q` event, not shown above) follows the same shape but resolves `plan.trial_duration_days` via a pre-tx `port.PlanCatalogReader.PlanByCode` call — this mirrors `TrialSignup`'s own pattern and was a deliberate fix: an earlier version of this handler read a local `plans` table subquery that no longer exists post-ADR-0007, which failed on every occurrence until integration tests (added specifically to close that gap) caught it. `AddMember` (I-3, both the SAML JIT-add path and the invitation-acceptance path) and `AssignFromGroups` (I-10) share the same RunInTx-then-outbox discipline; I-10's group→role resolution itself is a `GroupMappingService` client call made **before** the transaction opens, exactly like the two Catalog calls above.
