@@ -164,7 +164,7 @@ Both should match a `v[0-9]*.[0-9]*.[0-9]*-*` tag trigger and produce a signed, 
 
 | iam-org-membership | Go (`go.mod`) | Shared platform libraries | `platform-schemagov` (`schema-gov` CLI) |
 |---|---|---|---|
-| Unreleased (`main`) | `1.26.6` | `platform-gincommon` v1.5.0, `platform-events/v2` v2.0.0, `platform-pgcommon/v2` v2.0.0 | `0.4` (`SCHEMA_GOV_IMAGE` in `.env-example`) |
+| Unreleased (`main`) | `1.26.10` | `platform-gincommon/v2` v2.1.0, `platform-events/v2` v2.1.0, `platform-pgcommon/v2` v2.0.2 | `0.4` (`SCHEMA_GOV_IMAGE` in `.env-example`) |
 
 None of those libraries is re-exported — a consumer of this *service* never needs them as a direct dependency of *this* module. Callers depend on the HTTP/event contract, not on any Go package here. This service has no Keycloak Admin API dependency of its own (see the note above the Guarantees section) — Keycloak server version is entirely Realm Provisioner's and Keycloak ops' concern, invisible to this compatibility matrix.
 
