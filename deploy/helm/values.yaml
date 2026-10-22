@@ -419,6 +419,28 @@ workflowCallers:
     kubernetes.io/metadata.name: workflow-app
   podSelector: {}   # {} = any Workflow pod in that namespace
 
+# Signup BFF (Signup BFF decision BFF-1 / C-5) — the one public-facing caller
+# of an internal route. It calls only I-1 (POST /api/v1/internal/tenants) and
+# runs in its own namespace (bff), never in iam. Admission is per pod, not per
+# namespace, so a future service placed in bff gets nothing without its own
+# explicit grant:
+#   - NetworkPolicy: admits only pods matching podSelector in the bff
+#     namespace to the API port. podSelector is required — an empty selector
+#     would admit the whole namespace, so the chart fails instead.
+#   - Istio AuthorizationPolicy (commercialCallers.istio.enabled): a rule for
+#     the bff-signup ServiceAccount's SPIFFE principal, limited to the exact
+#     path POST /api/v1/internal/tenants.
+# podSelector must match the labels on the bff-signup pods (the
+# BCBP-SOLUTIONS-FZC-LLC/bff-signup chart).
+signupBffCaller:
+  enabled: true
+  namespace: bff
+  serviceAccountName: bff-signup
+  namespaceSelector:
+    kubernetes.io/metadata.name: bff
+  podSelector:
+    app.kubernetes.io/name: bff-signup
+
 # Default false — override to true in each env values file (values-dev.yaml,
 # values-staging.yaml, values-prod.yaml) that should admit Commercial callers.
 # Set commercialCallers.istio.enabled=true only when Istio (service mesh)

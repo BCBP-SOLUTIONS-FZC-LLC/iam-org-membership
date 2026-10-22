@@ -1,4 +1,4 @@
-{{- if and .Values.commercialCallers.istio.enabled (or .Values.commercialCallers.enabled .Values.workflowCallers.enabled) }}
+{{- if and .Values.commercialCallers.istio.enabled (or .Values.commercialCallers.enabled .Values.workflowCallers.enabled .Values.signupBffCaller.enabled) }}
 {{- if not .Values.commercialCallers.istio.existingCallerNamespaces }}
 {{- fail "commercialCallers.istio.existingCallerNamespaces is required when the Istio AuthorizationPolicy renders: it is an ALLOW policy, so every caller not listed (gateway, same-namespace IAM services, monitoring) would be denied." }}
 {{- end }}
@@ -33,6 +33,8 @@
 #   Workflow    → I-13 POST /api/v1/internal/tenants/:id/tenders/:tender_id/assignee-override
 #               → I-15 GET  /api/v1/internal/tenants/:id/members/:user_id/exists
 #               → I-19 GET  /api/v1/internal/tenants/:id/members/:user_id/eligibility
+#   Signup BFF  → I-1  POST /api/v1/internal/tenants (exact path; bff-signup
+#                 ServiceAccount principal only — BFF-1 pod-level admission)
 #
 # Path matching: Istio supports only exact, prefix ("abc*"), suffix ("*abc")
 # and presence ("*") matches — a "*" in the MIDDLE of a path is literal, so
@@ -108,5 +110,17 @@ spec:
         - operation:
             methods: ["GET"]
             paths: ["*/exists", "*/eligibility"]
+    {{- end }}
+    {{- if .Values.signupBffCaller.enabled }}
+    # Signup BFF (bff-signup SA in bff) — I-1 only. Admitted by principal,
+    # not namespace, so no other workload in bff is granted anything (BFF-1).
+    - from:
+        - source:
+            principals:
+              - "{{ .Values.commercialCallers.istio.trustDomain }}/ns/{{ .Values.signupBffCaller.namespace }}/sa/{{ .Values.signupBffCaller.serviceAccountName }}"
+      to:
+        - operation:
+            methods: ["POST"]
+            paths: ["/api/v1/internal/tenants"]
     {{- end }}
 {{- end }}

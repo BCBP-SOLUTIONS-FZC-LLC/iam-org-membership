@@ -77,6 +77,25 @@ spec:
         - port: {{ .Values.service.port }}
           protocol: TCP
     {{- end }}
+
+    # Signup BFF (signupBffCaller) — the bff-signup pods only, never the whole
+    # bff namespace (BFF-1). L4 only: the Istio AuthorizationPolicy, where
+    # enabled, limits them to POST /api/v1/internal/tenants (I-1).
+    {{- if .Values.signupBffCaller.enabled }}
+    {{- if not .Values.signupBffCaller.podSelector }}
+    {{- fail "signupBffCaller.podSelector is required: an empty selector would admit every pod in the bff namespace (BFF-1 requires pod-level admission)." }}
+    {{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.signupBffCaller.namespaceSelector | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.signupBffCaller.podSelector | nindent 14 }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    {{- end }}
     # CD-19 — Commercial domain callers (Billing + Entitlements).
     # Billing (ns: billing, SA: commercial-billing) calls I-11 and I-18.
     # Entitlements (ns: commercial, SA: commercial-entitlements) calls I-17.
