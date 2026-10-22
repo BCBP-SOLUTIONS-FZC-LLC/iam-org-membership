@@ -35,6 +35,8 @@
 #               → I-19 GET  /api/v1/internal/tenants/:id/members/:user_id/eligibility
 #   Signup BFF  → I-1  POST /api/v1/internal/tenants (exact path; bff-signup
 #                 ServiceAccount principal only — BFF-1 pod-level admission)
+#               → PUB-1 GET /api/v1/public/tenants/resolve (exact; the slug
+#                 pre-check before RP-1, BFF open gap A-3)
 #
 # Path matching: Istio supports only exact, prefix ("abc*"), suffix ("*abc")
 # and presence ("*") matches — a "*" in the MIDDLE of a path is literal, so
@@ -112,8 +114,9 @@ spec:
             paths: ["*/exists", "*/eligibility"]
     {{- end }}
     {{- if .Values.signupBffCaller.enabled }}
-    # Signup BFF (bff-signup SA in bff) — I-1 only. Admitted by principal,
-    # not namespace, so no other workload in bff is granted anything (BFF-1).
+    # Signup BFF (bff-signup SA in bff) — I-1, plus PUB-1 for the slug
+    # pre-check before RP-1 (BFF open gap A-3). Admitted by principal, not
+    # namespace, so no other workload in bff is granted anything (BFF-1).
     - from:
         - source:
             principals:
@@ -122,5 +125,8 @@ spec:
         - operation:
             methods: ["POST"]
             paths: ["/api/v1/internal/tenants"]
+        - operation:
+            methods: ["GET"]
+            paths: ["/api/v1/public/tenants/resolve"]
     {{- end }}
 {{- end }}

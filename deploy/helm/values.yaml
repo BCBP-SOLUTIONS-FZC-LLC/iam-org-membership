@@ -420,7 +420,9 @@ workflowCallers:
   podSelector: {}   # {} = any Workflow pod in that namespace
 
 # Signup BFF (Signup BFF decision BFF-1 / C-5) — the one public-facing caller
-# of an internal route. It calls only I-1 (POST /api/v1/internal/tenants) and
+# of an internal route. It calls only I-1 (POST /api/v1/internal/tenants) —
+# plus PUB-1 (GET /api/v1/public/tenants/resolve) server-side, as the slug
+# pre-check before RP-1 (BFF open gap A-3) — and
 # runs in its own namespace (bff), never in iam. Admission is per pod, not per
 # namespace, so a future service placed in bff gets nothing without its own
 # explicit grant:
@@ -429,7 +431,7 @@ workflowCallers:
 #     would admit the whole namespace, so the chart fails instead.
 #   - Istio AuthorizationPolicy (commercialCallers.istio.enabled): a rule for
 #     the bff-signup ServiceAccount's SPIFFE principal, limited to the exact
-#     path POST /api/v1/internal/tenants.
+#     paths POST /api/v1/internal/tenants and GET /api/v1/public/tenants/resolve.
 # podSelector must match the labels on the bff-signup pods (the
 # BCBP-SOLUTIONS-FZC-LLC/bff-signup chart).
 signupBffCaller:

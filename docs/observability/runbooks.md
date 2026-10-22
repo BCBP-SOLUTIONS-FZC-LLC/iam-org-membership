@@ -85,6 +85,14 @@ Common starting points:
 
 **Mitigate.** Fix the wrong side, then redrive. See [`../runbook-schema-registry.md`](../runbook-schema-registry.md).
 
+### IAMSignupProvisioningRejected
+
+**Meaning.** The signup backstop could not create a tenant: a `TenantIdentityProvisioned` event failed I-1 in a way no retry can fix (validation failure, or — most often — the slug belongs to another tenant), and was dead-lettered with `DLQReason=provisioning_rejected`. The Keycloak user exists with no tenant. This is the abandoned-signup case of Signup BFF open gap A-3: the user got `409 slug_already_taken`, did not pick another slug (SB-4), and left. The BFF's slug pre-check (PUB-1) makes it rare but cannot close the race, and misses slugs retained by offboarded tenants (T-6).
+
+**Impact.** One signup, not the service. Until the orphan is removed, that email cannot sign up again (Realm Provisioner RP-1 answers `409 USER_EMAIL_CONFLICT`).
+
+**Mitigate.** Usually nothing: Realm Provisioner's `orphaned-signup-reap` job deletes the orphaned Keycloak user and scrubs its `tenant_realms` row after `ORPHAN_SIGNUP_AFTER` (default 48h), which frees the email. Discard the DLQ message (it can never succeed; redriving it re-fails). If the user contacts support before then and wants the original signup, complete it by calling I-1 with the same `tenant_id`, `owner_user_id` and a **free** slug, then discard the message.
+
 ### IAMMalformedInboundMessage
 
 **Meaning.** platform-events could not parse an inbound body: `reason="malformed"` (not a valid envelope) or `decode_error` (codec failure). It forwarded the original message to the DLQ instead of dropping it.
@@ -154,7 +162,7 @@ These alerts query platform-library metrics that are still `proposed` in the reg
 **Mitigate.** Inspect the `DLQReason` attribute, fix the cause, then redrive. Never discard without the owning team's sign-off.
 
 Two cases specific to signup provisioning (LLD rev 2.33):
-- **`DLQReason=provisioning_rejected`** on a `TenantIdentityProvisioned`: I-1 can never accept the payload (validation failure, or the slug belongs to another tenant). The user exists in Keycloak with no tenant. The ERROR log `TenantIdentityProvisioned rejected` has the cause; resolve it with the Signup BFF team (e.g. a different slug), complete the signup via I-1, and discard the message.
+- **`DLQReason=provisioning_rejected`** on a `TenantIdentityProvisioned`: see [IAMSignupProvisioningRejected](#iamsignupprovisioningrejected). These can be discarded without further sign-off: Realm Provisioner's `orphaned-signup-reap` job removes the orphaned Keycloak user, and redriving only re-fails.
 - **No `DLQReason`, any lifecycle/billing type, tenant has no row** (EVT-17): the event kept arriving before its tenant existed and ran out of receives. Usually the `TenantIdentityProvisioned` for that tenant failed too (Catalog outage) — redrive it first, confirm the tenant exists, then redrive the rest.
 
 ### IAMOrgMembershipDBPoolSaturated
