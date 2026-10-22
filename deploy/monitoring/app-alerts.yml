@@ -217,6 +217,28 @@ groups:
             schema_violation), fix the side that is wrong, then redrive.
           runbook: "iam-org-membership/consumed-schema-violation"
 
+      - alert: IAMSignupProvisioningRejected
+        # The signup backstop (TenantIdentityProvisioned → I-1) dead-lettered
+        # an event no retry can fix (DLQReason=provisioning_rejected) — usually
+        # a slug held by another tenant on an abandoned signup (BFF open gap
+        # A-3). A signup needing follow-up, not an outage: warning, never a
+        # page. Realm Provisioner's orphaned-signup-reap job removes the
+        # orphaned Keycloak user after ORPHAN_SIGNUP_AFTER.
+        expr: sum by (domain, service, environment) (increase(iam_org_membership_consumed_event_rejected_total{event_type="TenantIdentityProvisioned", reason="provisioning_rejected"}[15m])) > 0
+        labels:
+          severity: warning
+          service: iam-org-membership
+        annotations:
+          summary: "A signup could not be completed by the provisioning backstop"
+          description: |
+            iam-org-membership dead-lettered {{ $value }} TenantIdentityProvisioned
+            events (DLQReason=provisioning_rejected): I-1 can never accept the
+            payload, typically a slug held by another tenant. The user exists in
+            Keycloak with no tenant until Realm Provisioner's
+            orphaned-signup-reap job removes it. No action unless the user
+            contacts support; then discard the DLQ message.
+          runbook: "iam-org-membership/signup-provisioning-rejected"
+
       - alert: IAMMalformedInboundMessage
         # platform-events forwarded a message it could not parse as an event
         # envelope (malformed) or whose Glue payload it could not decode

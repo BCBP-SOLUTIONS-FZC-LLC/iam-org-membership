@@ -386,6 +386,30 @@ spec:
               api/asyncapi.yaml is stale. Inspect a DLQ message
               (DLQReason=schema_violation), fix the wrong side, then redrive.
 
+        - alert: IAMSignupProvisioningRejected
+          # The signup backstop (TenantIdentityProvisioned → I-1) hit a
+          # failure no retry can fix — usually the slug belongs to another
+          # tenant and the user abandoned the signup (BFF open gap A-3) — and
+          # dead-lettered the event (DLQReason=provisioning_rejected). A
+          # signup needing follow-up, not an outage: warning, never a page.
+          # Realm Provisioner's orphaned-signup-reap job removes the orphaned
+          # Keycloak user after ORPHAN_SIGNUP_AFTER, freeing the email.
+          expr: |
+            sum by (domain, service, environment) (increase(iam_org_membership_consumed_event_rejected_total{event_type="TenantIdentityProvisioned", reason="provisioning_rejected"}[15m])) > 0
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: A signup could not be completed by the provisioning backstop
+            description: >-
+              iam-org-membership dead-lettered {{ "{{ $value }}" }} TenantIdentityProvisioned
+              events (DLQReason=provisioning_rejected): I-1 can never accept the
+              payload, typically a slug held by another tenant. The user exists in
+              Keycloak with no tenant until Realm Provisioner's orphaned-signup-reap
+              job removes it. No action unless the user contacts support; then
+              discard the DLQ message.
+            runbook: "iam-org-membership/signup-provisioning-rejected"
+
         - alert: IAMMalformedInboundMessage
           # platform-events forwarded an unparseable (malformed) or
           # undecodable (decode_error) message to the queue's DLQ. These used
