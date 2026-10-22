@@ -66,7 +66,7 @@ go test ./test/postgres/... -run TestRLS_Case5_NoCrossTenantLeakAcrossPool -v
 
 ## Architecture
 
-Clean Architecture — dependencies point inward; outer layers never import inner layers. Full directory tree, shared library dependencies (`platform-gincommon/v2` v2.1.0, `platform-events/v2` v2.1.0, `platform-pgcommon/v2` v2.0.2), `RoutingPublisher` two-topic wiring, and `go-arch-lint` dependency rules are in **[`.claude/architecture.md`](architecture.md)**.
+Clean Architecture — dependencies point inward; outer layers never import inner layers. Full directory tree, shared library dependencies (`platform-gincommon/v2` v2.1.0, `platform-events/v2` v2.2.1, `platform-pgcommon/v2` v2.0.2), `RoutingPublisher` two-topic wiring, and `go-arch-lint` dependency rules are in **[`.claude/architecture.md`](architecture.md)**.
 
 ## Key Files to Know
 
