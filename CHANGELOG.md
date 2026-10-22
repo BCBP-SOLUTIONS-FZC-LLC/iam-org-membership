@@ -8,6 +8,8 @@ This service has never been deployed to any environment — there is no released
 
 ### Changed
 
+- **Dependabot: Moby test dependencies (2026-10-23).** `github.com/moby/go-archive` v0.2.0 → v0.3.3 (GHSA-hfg8-hc9c-6c3h, high: a crafted tar can write outside the extraction directory) and `github.com/moby/sys/user` v0.4.0 → v0.4.1 (GHSA-mjcv-p78q-w5fw, medium: unbounded parsing DoS). Both are indirect, pulled only by `testcontainers-go` in the test suites, never into the server binary; `testcontainers-go` itself is unchanged (v0.44.0).
+
 - **Abandoned slug-conflict signups (LLD rev 2.38, 2026-10-22; Signup BFF open gap A-3):** the Signup BFF's mesh rule (`signupBffCaller`) now also admits exact `GET /api/v1/public/tenants/resolve` (PUB-1), for a server-side slug pre-check before RP-1 — a pre-check, not a reservation (races and offboarded slugs, T-6, still reach I-1's 409). New warning alert `IAMSignupProvisioningRejected` (both `prometheusrule.yaml` and `deploy/monitoring/app-alerts.yml`) on backstop-dead-lettered signups, with a runbook; such DLQ messages can be discarded — Realm Provisioner's new `orphaned-signup-reap` job removes the orphaned Keycloak user.
 
 - **Signup BFF admitted per pod, I-1 only (LLD rev 2.37, 2026-10-22):** new Helm `signupBffCaller` (default enabled) implements Signup BFF decision BFF-1 / C-5, which never reached this chart (the BFF's I-1 call would have been denied). NetworkPolicy admits only `bff`-namespace pods matching `podSelector` (default `app.kubernetes.io/name: bff-signup`; an empty selector fails the render, so the whole `bff` namespace can never be admitted). The Istio AuthorizationPolicy admits only `cluster.local/ns/bff/sa/bff-signup`, on exact `POST /api/v1/internal/tenants`. LLD §10.2 / IAPI-1 updated.
