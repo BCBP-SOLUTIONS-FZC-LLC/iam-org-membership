@@ -34,10 +34,10 @@ TEST_E2E_PKGS      := ./test/e2e/...
 TEST_POSTGRES_PARALLEL ?= 4
 
 # Every build tag the test/ tree declares (integration: test/postgres +
-# test/integration, e2e: test/e2e). vet and lint run a second pass with all of
+# test/integration, e2e: test/e2e, helm: test/helm). vet and lint run a second pass with all of
 # them — CI's quality gate calls `make vet`/`make lint`, so without it the 42
 # tagged test files were never vetted or linted.
-ALL_TEST_TAGS := integration,e2e
+ALL_TEST_TAGS := integration,e2e,helm
 
 # White-box (package-internal) tests included in unit runs.
 TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
@@ -132,6 +132,7 @@ help:
 	@echo "  make cover-func      - coverage summary by function"
 	@echo "  make ci              - tidy + fmt-check + vet + lint + arch-lint + test-ci + build"
 	@echo "  make helm-check      - helm lint + template (4 value combos) + kubeconform (mirrors validate-helm.yml)"
+	@echo "  make helm-access-check - CD-19 access matrix: assert rendered Istio + NetworkPolicy rules (staging, prod)"
 	@echo "  make docker-up       - start local infra incl. floci (SNS/SQS/Glue, always free) + floci-ui web console"
 	@echo "  make docker-down     - stop local containers"
 	@echo "  make mod-verify      - go mod verify"
@@ -350,6 +351,16 @@ ci: tidy fmt-check vet lint arch-lint test-ci build
 .PHONY: helm-check
 helm-check:
 	bash .github/scripts/helm-check.sh
+
+# helm-access-check: CD-19 access matrix (LLD §10.2). Renders the chart with
+# the staging and prod overlays (same --set stubs as helm-check.sh) and
+# asserts, by parsing the YAML, which routes each cross-namespace caller can
+# reach (Istio AuthorizationPolicy) and that billing/commercial/bff are only
+# admitted per pod (NetworkPolicy). Needs helm on PATH (helm-check installs
+# it). CI runs it right after helm-check in validate-quality.yml.
+.PHONY: helm-access-check
+helm-access-check:
+	$(GO) test -tags=helm -count=1 -v ./test/helm/...
 
 # -----------------------------
 # COVERAGE
