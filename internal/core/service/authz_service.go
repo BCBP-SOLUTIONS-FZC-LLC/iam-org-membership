@@ -76,8 +76,14 @@ func readOnlyForStatus(status domain.SubscriptionStatus) bool {
 // GetMembership implements I-8. Cache-through with 300 s ± 30 s jitter
 // (CACHE-4). Miss/timeout/outage falls through to Postgres (CACHE-9 /
 // I8-2). 404 when the caller has no membership (active or suspended) in the tenant.
+//
+// A cached entry is also a miss when its plan generation no longer matches
+// om:plans:gen:{plan} (CACHE-11, LLD §6.3): a PlanCatalogChanged for that
+// plan has landed since the entry was built, so its feature_flags may carry
+// the old planDefaults.
 func (s *AuthZService) GetMembership(ctx context.Context, tenantID, userID uuid.UUID) (*MembershipProjection, error) {
-	if cached := s.getCached(ctx, tenantID, userID); cached != nil {
+	cached, gens := s.getCached(ctx, tenantID, userID)
+	if cached != nil {
 		return cached, nil
 	}
 	proj, err := s.readFromDB(ctx, tenantID, userID)
@@ -87,7 +93,7 @@ func (s *AuthZService) GetMembership(ctx context.Context, tenantID, userID uuid.
 	if proj == nil {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "no active membership in this tenant")
 	}
-	s.setCached(ctx, proj)
+	s.setCached(ctx, proj, gens)
 	return proj, nil
 }
 
@@ -186,26 +192,63 @@ const (
 	membershipCacheJitter  = 30 * time.Second
 )
 
-func (s *AuthZService) getCached(ctx context.Context, tenantID, userID uuid.UUID) *MembershipProjection {
-	if s.cache == nil {
-		return nil
-	}
-	raw, err := s.cache.Get(ctx, cacheKeyMemberships(tenantID, userID))
-	if err != nil || raw == nil {
-		return nil
-	}
-	var proj MembershipProjection
-	if err := json.Unmarshal(raw, &proj); err != nil {
-		return nil
-	}
-	return &proj
+// cachedMembership is the om:memberships value: the I-8 projection plus the
+// plan generation it was built under. Kept out of MembershipProjection so the
+// I-8 response never carries it.
+type cachedMembership struct {
+	MembershipProjection
+	PlanGen string `json:"plan_gen,omitempty"`
 }
 
-func (s *AuthZService) setCached(ctx context.Context, proj *MembershipProjection) {
-	if s.cache == nil || proj == nil {
+// getCached reads om:memberships:{tenant}:{user} and every
+// om:plans:gen:{plan} key in one MGET, so the generation check costs no extra
+// round trip on the hot path. It returns the hit (nil on a miss, a decode
+// failure or a stale generation) and the generations it read. gens is nil
+// when the cache could not be read at all; setCached then skips the
+// back-fill.
+//
+// The generations are read before readFromDB resolves planDefaults. The
+// catalog consumer clears om:plans before it bumps the generation, so a
+// back-fill stamped with the generation it read either saw the cleared
+// om:plans or carries an older generation and is discarded on its next read.
+func (s *AuthZService) getCached(ctx context.Context, tenantID, userID uuid.UUID) (*MembershipProjection, map[domain.TenantPlan]string) {
+	if s.cache == nil {
+		return nil, nil
+	}
+	plans := domain.KnownPlans()
+	keys := make([]string, 0, 1+len(plans))
+	keys = append(keys, cacheKeyMemberships(tenantID, userID))
+	for _, p := range plans {
+		keys = append(keys, port.PlanGenerationKey(p))
+	}
+	vals, err := s.cache.MGet(ctx, keys)
+	if err != nil {
+		return nil, nil
+	}
+	gens := make(map[domain.TenantPlan]string, len(plans))
+	for i, p := range plans {
+		if 1+i < len(vals) && vals[1+i] != nil {
+			gens[p] = string(vals[1+i])
+		}
+	}
+	if len(vals) == 0 || vals[0] == nil {
+		return nil, gens
+	}
+	var entry cachedMembership
+	if err := json.Unmarshal(vals[0], &entry); err != nil {
+		return nil, gens
+	}
+	if entry.PlanGen != gens[entry.Plan] {
+		return nil, gens // built before the plan's last PlanCatalogChanged
+	}
+	return &entry.MembershipProjection, gens
+}
+
+func (s *AuthZService) setCached(ctx context.Context, proj *MembershipProjection, gens map[domain.TenantPlan]string) {
+	if s.cache == nil || proj == nil || gens == nil {
 		return
 	}
-	raw, err := json.Marshal(proj)
+	raw, err := json.Marshal(cachedMembership{MembershipProjection: *proj, PlanGen: gens[proj.Plan]})
 	if err != nil {
 		return
 	}

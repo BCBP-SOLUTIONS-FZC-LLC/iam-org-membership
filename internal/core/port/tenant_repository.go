@@ -92,19 +92,6 @@ type TenantRepository interface {
 	// Zero rows → ErrTenantNotFound or ErrOptimisticLockConflict.
 	SetFeatureFlags(ctx context.Context, id uuid.UUID, flags []byte, expectedVersion int64) error
 
-	// MergeFeatureFlagsForPlan bulk-merges planFeatureSet into tenants.feature_flags
-	// for every active (non-deleted) tenant on the given plan using:
-	//   SET feature_flags = $planFeatureSet::jsonb || feature_flags
-	// The || operator in Postgres JSONB merges with the RIGHT side winning on
-	// key conflicts, so existing per-tenant overrides always win over the new
-	// plan default — T-9 is preserved. New plan-baseline keys not present in
-	// an individual tenant's override are added transparently.
-	//
-	// Returns the UUIDs of all tenants whose feature_flags were touched, so the
-	// caller can evict their om:tenant:{id} cache entries. MUST be called on a
-	// BYPASSRLS (sysPool) repository — this is a cross-tenant bulk write.
-	MergeFeatureFlagsForPlan(ctx context.Context, plan domain.TenantPlan, planFeatureSet []byte) ([]uuid.UUID, error)
-
 	// ClearOwnerlessSince is O-7: owner reassignment clears the TM-12 flag.
 	ClearOwnerlessSince(ctx context.Context, id uuid.UUID) error
 
@@ -214,9 +201,6 @@ func (TenantRepositoryNoop) ListSubscriptionLapses(context.Context, int) ([]doma
 func (TenantRepositoryNoop) LockByID(context.Context, uuid.UUID) error { return nil }
 func (TenantRepositoryNoop) LicensedSeatsForUpdate(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
-}
-func (TenantRepositoryNoop) MergeFeatureFlagsForPlan(context.Context, domain.TenantPlan, []byte) ([]uuid.UUID, error) {
-	return nil, nil
 }
 func (TenantRepositoryNoop) SetFeatureFlags(context.Context, uuid.UUID, []byte, int64) error {
 	return nil

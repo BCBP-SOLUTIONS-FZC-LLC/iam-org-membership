@@ -420,3 +420,44 @@ func TestPublisherStampsEventTypeAttribute(t *testing.T) {
 	assert.Equal(t, domain.EventMembershipRevoked, *attr.StringValue,
 		"P12-ATTR-001: EventType attribute must equal event Type")
 }
+
+// ── P12-FILTER-CATALOG ──────────────────────────────────────────────────────
+
+// TestCatalogQueueCarriesBothCatalogEvents — catalog-orgm-q is the one queue
+// on Catalog's iam-catalog-events topic (LLD §7.1, rev 2.39, which folded in
+// catalog-orgm-plans-q). Its filter must admit DepartmentCatalogChanged and
+// PlanCatalogChanged — the latter drives the I-8 plan-generation bump — and
+// nothing else. Same filter as scripts/init-floci.sh.
+func TestCatalogQueueCarriesBothCatalogEvents(t *testing.T) {
+	e := newPhase12Env(t)
+	topic := e.createTopic(t, "iam-catalog-events")
+	catalogQ := e.createQueue(t, "catalog-orgm-q", "", 0)
+
+	filter := `{"EventType":["DepartmentCatalogChanged","PlanCatalogChanged"]}`
+	e.subscribeQueue(t, topic, catalogQ, filter)
+
+	catalogEnvelope := func(eventType string, payload any) []byte {
+		return mustMarshal(t, events.Envelope[json.RawMessage]{
+			ID: uuid.NewString(), Type: eventType, Source: "iam-catalog-admin",
+			Timestamp: time.Now().UTC(), Payload: mustMarshal(t, payload),
+		})
+	}
+	e.publishEnvelope(t, topic, "DepartmentCatalogChanged", catalogEnvelope("DepartmentCatalogChanged",
+		map[string]string{"department_id": uuid.NewString(), "code": "ENGINEERING", "change_type": "renamed"}), nil)
+	e.publishEnvelope(t, topic, "PlanCatalogChanged", catalogEnvelope("PlanCatalogChanged",
+		map[string]any{"code": "enterprise", "change_type": "updated", "feature_set": map[string]any{}}), nil)
+	got := e.receiveMessages(t, catalogQ, 2, 10*time.Second)
+	require.Len(t, got, 2, "P12-FILTER-CATALOG: both catalog event types must reach catalog-orgm-q")
+
+	types := map[string]bool{}
+	for _, m := range got {
+		var env events.Envelope[json.RawMessage]
+		require.NoError(t, json.Unmarshal([]byte(*m.Body), &env))
+		types[env.Type] = true
+	}
+	assert.Equal(t, map[string]bool{"DepartmentCatalogChanged": true, "PlanCatalogChanged": true}, types)
+
+	e.publishEnvelope(t, topic, "SomeOtherCatalogEvent", catalogEnvelope("SomeOtherCatalogEvent", map[string]string{}), nil)
+	extra := e.drainQueue(t, catalogQ, 3*time.Second)
+	assert.Empty(t, extra, "P12-FILTER-CATALOG: an off-list type must be dropped by the filter")
+}

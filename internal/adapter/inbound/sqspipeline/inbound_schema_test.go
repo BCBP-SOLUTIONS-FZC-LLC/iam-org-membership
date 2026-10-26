@@ -141,6 +141,30 @@ func TestValidateConsumed_TenantRealmReady_MatchesRealmProvisionerShape(t *testi
 	}
 }
 
+// TestValidateConsumed_PlanCatalogChanged_MatchesCatalogShape pins the
+// consumed schema to iam-catalog-admin's registered PlanCatalogChanged
+// ("code", not "plan_code"). Before LLD rev 2.39 the extract required
+// plan_code, so every real event would have been rejected to the DLQ.
+func TestValidateConsumed_PlanCatalogChanged_MatchesCatalogShape(t *testing.T) {
+	catalogPayload := `{"code":"enterprise","change_type":"updated","feature_set":{"dedicated_workflow_queue":true}}`
+	inner := &recordingHandler{}
+	h := validateConsumed(inner.handle, realValidator(t), nil)
+	require.NoError(t, h(context.Background(), envelopeOf("PlanCatalogChanged", catalogPayload)))
+	assert.Equal(t, 1, inner.calls)
+
+	for name, payload := range map[string]string{
+		"stale plan_code shape": `{"plan_code":"enterprise","feature_set":{}}`,
+		"unknown code":          `{"code":"platinum","change_type":"updated","feature_set":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner := &recordingHandler{}
+			h := validateConsumed(inner.handle, realValidator(t), nil)
+			assert.ErrorIs(t, h(context.Background(), envelopeOf("PlanCatalogChanged", payload)), errSchemaViolation)
+			assert.Zero(t, inner.calls)
+		})
+	}
+}
+
 // TenantIdentityProvisioned's consumed schema is embedded and enforced: a
 // payload missing a field I-1 needs never reaches the backstop.
 func TestValidateConsumed_TenantIdentityProvisioned(t *testing.T) {

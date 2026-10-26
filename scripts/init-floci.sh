@@ -5,8 +5,9 @@
 # /etc/floci/init/ready.d/.
 #
 # Creates:
-#   3 SNS topics     — iam-membership-events, iam-tenant-events, billing-events
-#   2 inbound SQS    — tenant-orgm-q, billing-orgm-q (+ DLQs, maxReceiveCount=5)
+#   4 SNS topics     — iam-membership-events, iam-tenant-events, billing-events,
+#                      iam-catalog-events (Catalog's; stands in for its Terraform)
+#   3 inbound SQS    — tenant-orgm-q, billing-orgm-q, catalog-orgm-q (+ DLQs, maxReceiveCount=5)
 #   8 fan-out SQS    — §7.3.2 consumer queues on the two O&M topics (+ DLQs)
 #   SNS→SQS subs     — with filter policies on the `EventType` attribute
 #   2 Glue registries — iam-membership-events, iam-tenant-events
@@ -120,6 +121,9 @@ register_schema() {
 aws sns create-topic --name iam-membership-events >/dev/null
 aws sns create-topic --name iam-tenant-events     >/dev/null
 aws sns create-topic --name billing-events        >/dev/null
+# Owned by iam-catalog-admin in real deployments; created here so the local
+# stack carries catalog-orgm-q's subscription (LLD §7.1, rev 2.39).
+aws sns create-topic --name iam-catalog-events    >/dev/null
 
 # ────────────────────────────────────────────────────────────────────────
 # Inbound SQS — this service reads these (LLD §7.1)
@@ -127,6 +131,7 @@ aws sns create-topic --name billing-events        >/dev/null
 
 create_queue_with_dlq tenant-orgm-q
 create_queue_with_dlq billing-orgm-q
+create_queue_with_dlq catalog-orgm-q
 
 # tenant-orgm-q ← iam-tenant-events (no filter — consumes all RP-produced
 # lifecycle events on this topic; produce/consume sets are disjoint so O&M
@@ -141,6 +146,13 @@ subscribe_queue iam-tenant-events tenant-orgm-q
 
 # billing-orgm-q ← billing-events (no filter — consumes all Billing events).
 subscribe_queue billing-events billing-orgm-q
+
+# catalog-orgm-q ← iam-catalog-events — both catalog event types (LLD §7.1,
+# rev 2.39): DepartmentCatalogChanged clears om:departments,
+# PlanCatalogChanged clears om:plans and retires cached I-8 projections of
+# the plan's tenants. Production: SRE/platform Terraform, same filter.
+subscribe_queue iam-catalog-events catalog-orgm-q \
+  '{"EventType": ["DepartmentCatalogChanged","PlanCatalogChanged"]}'
 
 # ────────────────────────────────────────────────────────────────────────
 # Downstream fan-out — LLD §7.3.2, one queue per subscribing service.
@@ -248,7 +260,7 @@ schema_count=$(( \
 ))
 
 echo "Floci init complete."
-echo "  SNS topics:        ${topic_count} (expected 3)"
-echo "  SQS queues+DLQs:   ${queue_count} (expected 20 = 10 pairs)"
-echo "  SNS subscriptions: ${sub_count} (expected 10)"
+echo "  SNS topics:        ${topic_count} (expected 4)"
+echo "  SQS queues+DLQs:   ${queue_count} (expected 22 = 11 pairs)"
+echo "  SNS subscriptions: ${sub_count} (expected 11)"
 echo "  Glue schemas:      ${schema_count} (expected 14 across 2 registries)"

@@ -177,7 +177,7 @@ Table below is verified against the current `.env-example`, `deploy/helm/values.
 | `SNS_TOPIC_TENANT_ARN` | (required outside dev) | `iam.tenant.events` |
 | `SQS_TENANT_ORGM_QUEUE_URL` | (required outside dev) | `tenant-orgm-q` |
 | `SQS_BILLING_ORGM_QUEUE_URL` | (required outside dev) | `billing-orgm-q` |
-| `SQS_CATALOG_ORGM_QUEUE_URL` | — (unset everywhere today) | `catalog-orgm-q` ← `DepartmentCatalogChanged` (Gap 12) — consumer done/tested, queue inert until this is set **and** `iam-catalog-admin` ships a publisher |
+| `SQS_CATALOG_ORGM_QUEUE_URL` | required in staging/prod (startup check); optional in dev | `catalog-orgm-q` ← `DepartmentCatalogChanged` / `PlanCatalogChanged` (LLD rev 2.39). Queue + SNS subscription (filter: both types) are SRE/platform Terraform; Catalog's TF example still lists only `DepartmentCatalogChanged` |
 | `SQS_TENANT_ORGM_CONCURRENCY` / `SQS_BILLING_ORGM_CONCURRENCY` / `SQS_CATALOG_ORGM_CONCURRENCY` | `4` / `2` / `2` | Per-queue consumer concurrency, overlaid onto `platform-events`' shared `eventcfg.LoadSQS()` env contract (`sqspipeline.EnvForQueue`). Code defaults only — not in `.env-example` or Helm values |
 | `OUTBOX_RETENTION_DAYS` | `8` | `outbox-prune` CronJob retention, consumed by `outbox.Runner.PrunePublished` (code default; not in `.env-example`/Helm) |
 | `RECONCILER_TIMEOUT` / `RECONCILER_BATCH_LIMIT` / `TRIAL_GRACE_DAYS` | `5m` / `500` / `15` | cmd/reconciler only (code defaults): whole-job deadline / rows per batch (trial-cleanup, prune loops) / trial-cleanup grace |
