@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,7 +36,23 @@ func (c *cfgCache) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 	return nil, nil
 }
-func (c *cfgCache) MGet(context.Context, []string) ([][]byte, error) { return nil, nil }
+
+// MGet routes the I-8 key through getFn (the hot path reads it in one MGET
+// with the om:plans:gen:{plan} keys); generation keys are always unset here.
+func (c *cfgCache) MGet(ctx context.Context, keys []string) ([][]byte, error) {
+	out := make([][]byte, len(keys))
+	for i, k := range keys {
+		if strings.HasPrefix(k, "om:plans:gen:") {
+			continue
+		}
+		v, err := c.Get(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
 func (c *cfgCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	c.setCalls = append(c.setCalls, key)
 	if c.setFn != nil {

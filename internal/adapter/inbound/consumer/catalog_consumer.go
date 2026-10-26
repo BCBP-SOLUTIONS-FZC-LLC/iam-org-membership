@@ -1,18 +1,30 @@
 // Package consumer — CatalogConsumer handles DepartmentCatalogChanged and
-// PlanCatalogChanged events from catalog-orgm-q (published by iam-catalog-admin).
-// Its job is to clear the om:departments / om:plans cache keys (primary + stale)
-// so the next CatalogService call fetches fresh data instead of serving stale
-// entries for up to 10 minutes.
+// PlanCatalogChanged events from catalog-orgm-q (published by iam-catalog-admin
+// on iam-catalog-events). It is the only catalog queue: the separate
+// catalog-orgm-plans-q was folded in here in LLD rev 2.39, once the plan
+// handler stopped writing tenants.feature_flags (T-9).
 //
-// Gap-12 / CAT-GAP-004 fix: active cache invalidation eliminates the 600–660 s
-// worst-case propagation delay for both department and plan catalog changes.
-// Previously both caches had fixed TTLs with no active invalidation; now every
-// DepartmentCatalogChanged and PlanCatalogChanged event immediately clears the
-// corresponding primary and stale-if-error keys.
+// DepartmentCatalogChanged clears om:departments (primary + stale) so the next
+// CatalogService call fetches fresh data instead of serving the cached catalog
+// for up to 10 minutes (Gap-12 / CAT-GAP-004). No processed_events dedup:
+// clearing a cache key twice is always safe, so the DB round-trip is
+// unnecessary overhead.
 //
-// No processed_events dedup: clearing either cache key twice is always safe
-// (idempotent by construction), so the DB round-trip is unnecessary overhead
-// for these consumers. Unknown event types still record via ackUnknown.
+// PlanCatalogChanged (LLD §6.3 / §7.1, rev 2.39) never writes Postgres. It
+//  1. clears om:plans + om:plans:stale, so the next planDefaults lookup reads
+//     the new catalog from Catalog's CAT-I2;
+//  2. sets om:plans:gen:{plan} to the event id, which retires every cached I-8
+//     projection (om:memberships:{tenant}:{user}) of every tenant on that plan:
+//     AuthZService compares each entry's stamped generation with the current
+//     one and treats a mismatch as a miss (CACHE-11). One SET per plan, however
+//     many tenants or members are on it.
+//
+// The effective flags are planDefaults(plan) ∪ tenants.feature_flags, computed
+// at read time (PLAN-6); feature_flags holds only the per-tenant override delta
+// (T-9) and is never touched here. Unknown or missing plan code → every plan's
+// generation is bumped. Runs through processOnce like the lifecycle consumers;
+// a Valkey failure returns an error so SQS redelivers instead of leaving I-8 on
+// the old flags until the TTL.
 package consumer
 
 import (
@@ -23,13 +35,14 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	events "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
 const (
-	// catalogConsumerName is the consumer bucket used by ackUnknown when
-	// recording unrecognised event types in processed_events.
+	// catalogConsumerName is the processed_events consumer bucket for
+	// catalog-orgm-q (PlanCatalogChanged and unknown types).
 	catalogConsumerName = "catalog"
 
 	// eventDepartmentCatalogChanged is the event type emitted by
@@ -37,8 +50,7 @@ const (
 	eventDepartmentCatalogChanged = "DepartmentCatalogChanged"
 
 	// eventPlanCatalogChanged is the event type emitted by iam-catalog-admin
-	// whenever a plan entitlement is changed (e.g. workflow_template_limit,
-	// sso_enabled, audit_query_window_days). CAT-GAP-004.
+	// after every CAT-5 plan PATCH (CAT-GAP-004).
 	eventPlanCatalogChanged = "PlanCatalogChanged"
 
 	// om:departments cache keys — must match cache_keys.go values exactly.
@@ -50,6 +62,14 @@ const (
 	omPlansStaleKey = "om:plans:stale"
 )
 
+// planCatalogChangedPayload is the subset of Catalog's PlanCatalogChanged
+// payload this consumer reads. The producer field is `code` (iam-catalog-admin
+// schemas/plan_catalog_changed.json); feature_set is deliberately ignored —
+// planDefaults is always re-read from Catalog, never copied into Core.
+type planCatalogChangedPayload struct {
+	Code string `json:"code"`
+}
+
 // CatalogConsumer handles catalog-orgm-q messages from iam-catalog-admin.
 type CatalogConsumer struct {
 	cache port.Cache
@@ -60,13 +80,11 @@ type CatalogConsumer struct {
 // ProcessedEventsConsumers returns every consumer name this service records
 // in processed_events, for the processed-events-prune job.
 func ProcessedEventsConsumers() []string {
-	return []string{consumerName, catalogConsumerName, catalogPlansConsumerName}
+	return []string{consumerName, catalogConsumerName}
 }
 
-// NewCatalogConsumer builds a CatalogConsumer. inbox is used only by
-// ackUnknown (unknown event types are recorded in processed_events);
-// DepartmentCatalogChanged itself does not dedup — clearing the cache twice
-// is always safe and the DB round-trip is unnecessary for a cache-invalidation signal.
+// NewCatalogConsumer builds a CatalogConsumer. inbox dedups PlanCatalogChanged
+// and records unknown event types (ackUnknown).
 func NewCatalogConsumer(cache port.Cache, inbox port.Inbox, log port.Logger) *CatalogConsumer {
 	return &CatalogConsumer{
 		cache: cache,
@@ -76,19 +94,9 @@ func NewCatalogConsumer(cache port.Cache, inbox port.Inbox, log port.Logger) *Ca
 }
 
 // Handle implements events.Handler for catalog-orgm-q.
-//
-// Processing steps:
-//  1. Route by event type: DepartmentCatalogChanged → clear om:departments keys;
-//     PlanCatalogChanged → clear om:plans keys; unknown → ackUnknown.
-//  2. Parse event_id as UUID; invalid → hard error (stays on queue for retry).
-//  3. Clear primary + stale-if-error cache keys from Valkey (best-effort).
 func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
-	var primaryKey, staleKey string
 	switch env.Type {
-	case eventDepartmentCatalogChanged:
-		primaryKey, staleKey = omDepartmentsKey, omDepartmentsStaleKey
-	case eventPlanCatalogChanged:
-		primaryKey, staleKey = omPlansKey, omPlansStaleKey
+	case eventDepartmentCatalogChanged, eventPlanCatalogChanged:
 	default:
 		return ackUnknown(ctx, c.inbox, c.log, catalogConsumerName, env)
 	}
@@ -98,17 +106,62 @@ func (c *CatalogConsumer) Handle(ctx context.Context, env events.Envelope[json.R
 		return fmt.Errorf("catalog consumer: invalid event id %q: %w", env.ID, err)
 	}
 
-	// Clear both the primary and stale-if-error cache keys. A DELETE failure
-	// is best-effort — the TTL self-heals. Redelivery of the same event is
-	// safe: clearing an already-cleared key is a no-op.
-	if err := c.cache.Delete(ctx, primaryKey, staleKey); err != nil {
-		c.log.WarnContext(ctx, "catalog consumer: failed to clear cache — will self-heal on TTL expiry",
-			"event_type", env.Type, "primary_key", primaryKey, "event_id", env.ID, "error", err)
-	} else {
-		metrics.IncCatalogCacheInvalidated()
-		c.log.InfoContext(ctx, "catalog consumer: cleared catalog cache keys",
-			"event_type", env.Type, "primary_key", primaryKey, "stale_key", staleKey, "event_id", env.ID)
+	if env.Type == eventPlanCatalogChanged {
+		return c.handlePlanChanged(ctx, env)
 	}
-
+	c.clearDepartments(ctx, env)
 	return nil
+}
+
+// clearDepartments clears om:departments + om:departments:stale. A DELETE
+// failure is best-effort — the 600 s TTL self-heals.
+func (c *CatalogConsumer) clearDepartments(ctx context.Context, env events.Envelope[json.RawMessage]) {
+	if err := c.cache.Delete(ctx, omDepartmentsKey, omDepartmentsStaleKey); err != nil {
+		c.log.WarnContext(ctx, "catalog consumer: failed to clear cache — will self-heal on TTL expiry",
+			"event_type", env.Type, "primary_key", omDepartmentsKey, "event_id", env.ID, "error", err)
+		return
+	}
+	metrics.IncCatalogCacheInvalidated()
+	c.log.InfoContext(ctx, "catalog consumer: cleared catalog cache keys",
+		"event_type", env.Type, "primary_key", omDepartmentsKey, "stale_key", omDepartmentsStaleKey, "event_id", env.ID)
+}
+
+// handlePlanChanged invalidates om:plans and bumps the generation of each
+// affected plan. Order matters: om:plans is cleared first, so an I-8 back-fill
+// that reads the new generation also reads the new catalog (AuthZService.getCached).
+func (c *CatalogConsumer) handlePlanChanged(ctx context.Context, env events.Envelope[json.RawMessage]) error {
+	plans := c.affectedPlans(ctx, env)
+	return processOnce(ctx, c.inbox, catalogConsumerName, env, func(txCtx context.Context) error {
+		if err := c.cache.Delete(txCtx, omPlansKey, omPlansStaleKey); err != nil {
+			return fmt.Errorf("catalog consumer: clear om:plans: %w", err)
+		}
+		// The event id is the new generation: unique per change, and a
+		// redelivery writes the same value, so it retires nothing twice.
+		for _, p := range plans {
+			if err := c.cache.Set(txCtx, port.PlanGenerationKey(p), []byte(env.ID), port.PlanGenerationTTL); err != nil {
+				return fmt.Errorf("catalog consumer: bump %s: %w", port.PlanGenerationKey(p), err)
+			}
+		}
+		metrics.IncCatalogCacheInvalidated()
+		c.log.InfoContext(txCtx, "catalog consumer: plan catalog changed — cleared om:plans and retired cached I-8 projections",
+			"event_id", env.ID, "plans", plans)
+		return nil
+	})
+}
+
+// affectedPlans returns the plan named by the payload's code, or every known
+// plan when the code is missing, unparseable or not a tenant_plan value.
+func (c *CatalogConsumer) affectedPlans(ctx context.Context, env events.Envelope[json.RawMessage]) []domain.TenantPlan {
+	var payload planCatalogChangedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &payload)
+	}
+	for _, p := range domain.KnownPlans() {
+		if string(p) == payload.Code {
+			return []domain.TenantPlan{p}
+		}
+	}
+	c.log.WarnContext(ctx, "catalog consumer: PlanCatalogChanged without a known plan code — retiring cached I-8 projections for every plan",
+		"event_id", env.ID, "code", payload.Code)
+	return domain.KnownPlans()
 }

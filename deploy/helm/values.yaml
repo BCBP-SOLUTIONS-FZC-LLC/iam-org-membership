@@ -198,16 +198,15 @@ envFromSecret:
   - SNS_TOPIC_TENANT_ARN
   - SQS_TENANT_ORGM_QUEUE_URL
   - SQS_BILLING_ORGM_QUEUE_URL
-  # CAT-GAP-005: CatalogConsumer polls this queue for DepartmentCatalogChanged
-  # events. Set to the catalog-orgm-q ARN. When unset the consumer goroutine
-  # never starts and om:departments cache is TTL-invalidated only (11-min worst case).
+  # catalog-orgm-q (LLD §7.1, rev 2.39) — the one queue on Catalog's
+  # iam-catalog-events topic, filter EventType IN [DepartmentCatalogChanged,
+  # PlanCatalogChanged]. DepartmentCatalogChanged clears om:departments;
+  # PlanCatalogChanged clears om:plans and retires the cached I-8 projections
+  # of the plan's tenants (seconds, not the 600 s + 330 s TTLs). Required:
+  # the server refuses to start without it in staging and production. The
+  # queue, DLQ and SNS subscription are SRE/platform Terraform. (The former
+  # SQS_CATALOG_ORGM_PLANS_QUEUE_URL / catalog-orgm-plans-q is gone.)
   - SQS_CATALOG_ORGM_QUEUE_URL
-  # Dedicated queue for PlanCatalogChanged with feature_set propagation. On receipt,
-  # merges the plan's new feature_set into tenants.feature_flags for all active tenants
-  # on the affected plan (sysPool BYPASSRLS) and evicts om:tenant caches.
-  # Set to the catalog-orgm-plans-q ARN. When unset, plan feature_set changes
-  # only clear the om:plans cache (TTL-based propagation, up to 600 s lag).
-  - SQS_CATALOG_ORGM_PLANS_QUEUE_URL
   - GLUE_REGISTRY_MEMBERSHIP_ARN
   - GLUE_REGISTRY_TENANT_ARN
   - AWS_ACCESS_KEY_ID
@@ -240,7 +239,6 @@ secretValues:
   SQS_TENANT_ORGM_QUEUE_URL: ""
   SQS_BILLING_ORGM_QUEUE_URL: ""
   SQS_CATALOG_ORGM_QUEUE_URL: ""
-  SQS_CATALOG_ORGM_PLANS_QUEUE_URL: ""
   GLUE_REGISTRY_MEMBERSHIP_ARN: ""
   GLUE_REGISTRY_TENANT_ARN: ""
   AWS_ACCESS_KEY_ID: ""

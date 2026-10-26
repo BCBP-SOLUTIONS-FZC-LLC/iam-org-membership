@@ -171,7 +171,7 @@ iam-org-membership/
 │   └── adapter/
 │       ├── inbound/
 │       │   ├── http/                  # Gin handlers (P-*/I-*/O-*), DTOs, middleware, router.go, Swagger UI
-│       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged — Gap 12, inert until iam-catalog-admin's publisher side ships); dedup.go (processOnce/ackUnknown over port.Inbox)
+│       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged / PlanCatalogChanged — cache invalidation, CACHE-11); dedup.go (processOnce/ackUnknown over port.Inbox)
 │       │   └── sqspipeline/           # Inbound pipeline every queue runs: NewConsumer/EnvForQueue (consumer.go), RequireDLQ + routeRejectsToDLQ (dlq.go), consumed-schema Validator + Handler (inbound_schema.go)
 │       └── outbound/
 │           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx)
@@ -223,7 +223,7 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 | **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 8 tables, `FORCE ROW LEVEL SECURITY` on all 7 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
 | **Cache** | Valkey (Redis-compatible) via `go-redis/v9` | Advisory-only (CACHE-2/9) — a miss or outage falls through to Postgres, never a hard failure |
 | **Events (outbound)** | AWS SNS + transactional outbox (`platform-events`) | Two topics via `RoutingPublisher`: `iam.membership.events` (12 event types) and `iam.tenant.events` (2 — `TenantCreated`/`TrialStarted`) |
-| **Events (inbound)** | AWS SQS, 3 queues | `tenant-orgm-q`, `billing-orgm-q` (+ inert `catalog-orgm-q`), each with its own `-dlq`; Glue header stripped by `events.GlueDecodeCodec`, payload validated against the embedded consumed schema, permanent rejects sent straight to the DLQ; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
+| **Events (inbound)** | AWS SQS, 3 queues | `tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q` (cache invalidation only), each with its own `-dlq`; Glue header stripped by `events.GlueDecodeCodec`, payload validated against the embedded consumed schema, permanent rejects sent straight to the DLQ; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
 | **Schema registry** | AWS Glue, one registry per topic (SCHEMA-7) | `iam-membership-events`, `iam-tenant-events`; governed by `platform-schemagov`. Version UUIDs resolved once at startup by definition (`GetSchemaByDefinition`) — no per-event Glue call, no refresher |
 
 ### Shared library dependencies
@@ -585,7 +585,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `VALKEY_URL` | `localhost:6380` (dev) | Advisory cache; `rediss://` required outside dev |
 | `SNS_TOPIC_MEMBERSHIP_ARN` / `SNS_TOPIC_TENANT_ARN` | — | **Required outside dev.** The two `RoutingPublisher` topic ARNs |
 | `SQS_TENANT_ORGM_QUEUE_URL` / `SQS_BILLING_ORGM_QUEUE_URL` | — | Inbound lifecycle-event queues |
-| `SQS_CATALOG_ORGM_QUEUE_URL` | — (unset in every environment today) | Inbound `catalog-orgm-q` ← `DepartmentCatalogChanged` (Gap 12). The consumer (`catalog_consumer.go`) is done and tested, but this queue is inert until both this var is set **and** `iam-catalog-admin` ships its publisher side |
+| `SQS_CATALOG_ORGM_QUEUE_URL` | required in staging/prod; set in `.env-example` | Inbound `catalog-orgm-q` ← `DepartmentCatalogChanged` / `PlanCatalogChanged` (LLD rev 2.39). The queue and its SNS subscription are SRE/platform Terraform |
 | `SQS_TENANT_ORGM_CONCURRENCY` / `SQS_BILLING_ORGM_CONCURRENCY` / `SQS_CATALOG_ORGM_CONCURRENCY` | `4` / `2` / `2` | Per-queue consumer concurrency overlay onto the shared `platform-events` `eventcfg.LoadSQS()` env contract |
 | `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_TENANT_NAME` | — | Unset → `NoopCodec` (plain JSON) |
 | `AWS_REGION` / `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `ap-south-1` / — | floci override in dev; IRSA in production |
@@ -788,7 +788,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 |---|---|---|
 | `tenant-orgm-q` | Realm Provisioner | `TenantIdentityProvisioned` (signup provisioning backstop: creates the tenant via I-1 if missing), `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated` |
 | `billing-orgm-q` | Billing | `TenantSeatsChanged`, `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated` |
-| `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (Gap 12) — **inert today**: consumer is done/tested, but `iam-catalog-admin` has no publisher side yet and `SQS_CATALOG_ORGM_QUEUE_URL` is unset everywhere |
+| `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (clears `om:departments`), `PlanCatalogChanged` (clears `om:plans`, retires the plan's cached I-8 entries via `om:plans:gen:{plan}`; never writes `feature_flags`) |
 
 **Events this service produces** (via `iam.membership.events` / `iam.tenant.events`) and their downstream consumers:
 
@@ -818,7 +818,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 8 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
 | **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
 | **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
-| **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` is implemented but inert until `iam-catalog-admin`'s publisher side ships and `SQS_CATALOG_ORGM_QUEUE_URL` is set |
+| **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` subscribes to Catalog's `iam-catalog-events` with filter `[DepartmentCatalogChanged, PlanCatalogChanged]` (SRE/platform Terraform) |
 | **AWS Glue Schema Registry** | `iam-membership-events` and `iam-tenant-events` — version UUIDs resolved once at startup by definition (publish); consumers only strip the header, and validate against embedded consumed schemas |
 
 ---

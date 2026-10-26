@@ -3,17 +3,24 @@
   "title": "PlanCatalogChangedPayload",
   "type": "object",
   "required": [
-    "plan_code",
+    "code",
+    "change_type",
     "feature_set"
   ],
   "additionalProperties": true,
   "properties": {
-    "plan_code": {
+    "code": {
       "type": "string",
       "enum": [
         "starter",
         "pro",
         "enterprise"
+      ]
+    },
+    "change_type": {
+      "type": "string",
+      "enum": [
+        "updated"
       ]
     },
     "feature_set": {

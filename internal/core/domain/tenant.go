@@ -15,6 +15,13 @@ const (
 	PlanEnterprise TenantPlan = "enterprise"
 )
 
+// KnownPlans returns every tenant_plan enum value, in a fixed order. Used
+// where a caller must cover each tier, e.g. the per-plan generation keys
+// that a PlanCatalogChanged bumps (port.PlanGenerationKey, LLD §6.3).
+func KnownPlans() []TenantPlan {
+	return []TenantPlan{PlanStarter, PlanPro, PlanEnterprise}
+}
+
 // SubscriptionStatus mirrors the subscription_status enum (§4.1).
 type SubscriptionStatus string
 
