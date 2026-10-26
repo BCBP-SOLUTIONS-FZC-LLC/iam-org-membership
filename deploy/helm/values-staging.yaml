@@ -6,13 +6,18 @@ env:
   LOG_LEVEL: "info"
   OTEL_TRACES_SAMPLER_RATIO: "0.5"
 
-# CD-19: Commercial domain callers admitted in staging to mirror prod admission.
-# Istio not yet confirmed in the staging cluster; promote istio.enabled to true
-# once PeerAuthentication STRICT mode is active in the iam namespace.
+# CD-19: Commercial domain callers admitted in staging exactly as in prod —
+# NetworkPolicy (L3/L4) AND the Istio AuthorizationPolicy (L7 mTLS), so the
+# first staging deployment exercises the same mesh rules as prod (LLD §10.2,
+# rev 2.40). Prerequisite, same as prod: Istio installed and
+# PeerAuthentication STRICT active in the iam namespace before deploying.
+# test/helm/access_matrix_test.go (make helm-access-check, CI) pins the
+# rendered rules for staging and prod.
 commercialCallers:
   enabled: true
   istio:
-    enabled: false
+    enabled: true            # L7 mTLS enforcement active in staging (matches prod)
+    trustDomain: cluster.local
     existingCallerNamespaces:
       - iam                    # IAM namespace: AuthZ Enrichment, Group Mapping, Audit Log, Tender ACL, Delegation, Event Consumer
       - gateway                # Ingress controller / Envoy Gateway data plane
