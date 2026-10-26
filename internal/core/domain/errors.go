@@ -60,6 +60,10 @@ var (
 	ErrDepartmentAlreadyActivated = errors.New("department_already_activated")
 	ErrRoleAlreadyGranted         = errors.New("role_already_granted")
 	ErrMemberNotActive            = errors.New("member_not_active")
+	// ErrTrialAlreadyUsed is CR-4: the email hash is present in
+	// trial_signup_ledger, meaning this address was already used for a trial.
+	// Maps to 409 Conflict with errorCode TRIAL_ALREADY_USED.
+	ErrTrialAlreadyUsed = errors.New("trial_already_used")
 
 	// Domain-rule (§17 422 family)
 	ErrCannotDeleteSystemDepartment = errors.New("cannot_delete_system_department")

@@ -583,7 +583,9 @@ func main() {
 	inviteMaxPerActorPerHour := envInt("INVITE_MAX_PER_ACTOR_PER_HOUR", 10) // SECURITY-5
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
-	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
+	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).
+		WithLogger(log).
+		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool))
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
 		WithAuditLog(auditLogClient).
 		WithPlanCatalog(catalogReader).

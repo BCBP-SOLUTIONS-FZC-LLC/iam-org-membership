@@ -28,7 +28,8 @@ type ProvisioningService struct {
 	txRunner    port.TxRunner
 	cache       port.Cache
 	rp          port.RealmProvisionerClient
-	log         port.SlogStyleLogger // optional — see WithLogger
+	log         port.SlogStyleLogger             // optional — see WithLogger
+	ledger      port.TrialSignupLedgerRepository // optional — see WithTrialLedger
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -36,6 +37,16 @@ type ProvisioningService struct {
 // consumer/outbound-client logs. Optional — the zero value is a no-op.
 func (s *ProvisioningService) WithLogger(log port.Logger) *ProvisioningService {
 	s.log = port.NewSlogStyleLogger(log)
+	return s
+}
+
+// WithTrialLedger wires the CR-4 trial_signup_ledger repository so
+// CheckTrialEligibility and the ledger write inside TrialSignup are active.
+// Optional — when nil, CheckTrialEligibility always returns eligible (fail-open
+// for backward compat with callers that don't need the check, e.g. the
+// TenantIdentityProvisioned backstop).
+func (s *ProvisioningService) WithTrialLedger(ledger port.TrialSignupLedgerRepository) *ProvisioningService {
+	s.ledger = ledger
 	return s
 }
 
@@ -65,6 +76,13 @@ type TrialSignupInput struct {
 	Plan          domain.TenantPlan
 	OwnerUserID   uuid.UUID
 	DefaultLocale string
+	// EmailHash is the HMAC-SHA256 hex of the owner's lower-cased email,
+	// supplied by the Signup BFF (CR-4). When non-empty and ledger is wired,
+	// a row is inserted atomically inside the I-1 transaction so that a
+	// successful TrialSignup always marks the email as used. Optional: callers
+	// that do not perform the eligibility pre-check (e.g. the
+	// TenantIdentityProvisioned backstop, Realm Provisioner) leave this empty.
+	EmailHash string
 }
 
 // TrialSignup is I-1: creates the tenant row + 5 system dept activations
@@ -187,6 +205,15 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			// Idempotent replay: the tenant already exists. Per LLD I-1
 			// "no re-seed", so short-circuit the tx here.
 			return nil
+		}
+
+		// CR-4: record the email hash so the eligibility check can gate
+		// re-signup attempts. ON CONFLICT DO NOTHING in the repo makes this
+		// idempotent. Skip when the BFF did not send a hash (RP backstop).
+		if req.EmailHash != "" && s.ledger != nil {
+			if err := s.ledger.InsertEmailHash(txCtx, req.EmailHash); err != nil {
+				return err
+			}
 		}
 
 		// 2) Activate the pre-fetched system departments (§8.1) — the
@@ -478,6 +505,26 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		)
 	}
 	return err
+}
+
+// CheckTrialEligibility is CR-4: the Signup BFF calls this before I-1 to
+// verify the email_hash has not been used for a prior trial. Returns nil when
+// the email is eligible (no ledger row found). Returns ErrTrialAlreadyUsed
+// (→ 409) when the hash is present. When the ledger is not wired (nil),
+// always returns nil (fail-open for callers that don't need the gate).
+func (s *ProvisioningService) CheckTrialEligibility(ctx context.Context, emailHash string) error {
+	if s.ledger == nil {
+		return nil
+	}
+	exists, err := s.ledger.ExistsEmailHash(ctx, emailHash)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return domain.NewError(domain.ErrTrialAlreadyUsed,
+			"this email address has already been used for a trial")
+	}
+	return nil
 }
 
 // ── validation helpers (GAP-I1-3/I1-4/I1-5) ──────────────────────────────

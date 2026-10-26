@@ -248,6 +248,11 @@ var (
 	// reason (domain.EligibilityReason).
 	AssigneeEligibilityCheck *prometheus.CounterVec
 
+	// TrialEligibilityCheck counts CR-4 POST /internal/trial-eligibility
+	// calls by result: eligible (no ledger row, signup may proceed) or
+	// already_used (hash present, 409 returned to the BFF).
+	TrialEligibilityCheck *prometheus.CounterVec
+
 	// TenantHeaderPathMismatch counts /internal/tenants/:id/* requests whose
 	// x-tenant-id differed from the path tenant, by route, method and action
 	// (overridden — path tenant bound, request served; rejected — strict
@@ -513,6 +518,14 @@ func IncProvisioningBackstop(result string) {
 	}
 }
 
+// IncTrialEligibilityCheck records one CR-4 eligibility check outcome.
+// result is "eligible" or "already_used". Nil-safe.
+func IncTrialEligibilityCheck(result string) {
+	if TrialEligibilityCheck != nil {
+		TrialEligibilityCheck.WithLabelValues(result).Inc()
+	}
+}
+
 // ObserveLifecycleEventLag records the seconds between event.time and the
 // moment this consumer applied the projection — the SLO-3 primary drift
 // signal. Nil-safe, see ObserveDependencyLatency.
@@ -748,6 +761,10 @@ func registerServiceMetrics() {
 		"iam_org_membership_tenant_provisioning_backstop_total",
 		"TenantIdentityProvisioned events handled by the signup provisioning backstop, by result: created (tenant was missing and was created) or already_exists.",
 		"result"))
+	TrialEligibilityCheck = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_trial_eligibility_check_total",
+		"CR-4 POST /internal/trial-eligibility calls by result: eligible (no ledger row) or already_used (409 returned to the BFF).",
+		"result"))
 	TenantHeaderPathMismatch = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_tenant_header_path_mismatch_total",
 		"Internal /tenants/:id/* requests whose x-tenant-id differed from the path tenant, by route, method and action (overridden: path tenant bound and served; rejected: strict-mode 400).",
@@ -789,6 +806,8 @@ func prewarm() {
 	ConsumedEventRejected.WithLabelValues("TenantIdentityProvisioned", "provisioning_rejected")
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopCreated)
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopAlreadyExists)
+	TrialEligibilityCheck.WithLabelValues("eligible")
+	TrialEligibilityCheck.WithLabelValues("already_used")
 	RealmSyncFailed.WithLabelValues("patch_realm_config")
 	RealmSyncFailed.WithLabelValues("clear_marker")
 	for _, scope := range []string{DelegateBlockScopeTenantRemoval, DelegateBlockScopeDeptRemoval, DelegateBlockScopeDeptDemotion} {

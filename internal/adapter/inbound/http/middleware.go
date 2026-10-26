@@ -446,7 +446,8 @@ func domainErrorToProblem(de *domain.DomainError) *problem.Error {
 		errors.Is(de.Cause, domain.ErrInvitationAlreadyExists),
 		errors.Is(de.Cause, domain.ErrTenantOffboarded),
 		errors.Is(de.Cause, domain.ErrDepartmentAlreadyActivated),
-		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted):
+		errors.Is(de.Cause, domain.ErrRoleAlreadyGranted),
+		errors.Is(de.Cause, domain.ErrTrialAlreadyUsed):
 		return problem.NewConflictError(msg).WithCode(code)
 	case errors.Is(de.Cause, domain.ErrReinviteTooSoon),
 		errors.Is(de.Cause, domain.ErrInviteRateLimited):

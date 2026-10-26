@@ -63,6 +63,10 @@ type internalProvisionRequest struct {
 	OwnerUserID   uuid.UUID `json:"owner_user_id"`
 	DefaultLocale string    `json:"default_locale,omitempty"`
 	LicensedSeats int       `json:"licensed_seats"`
+	// EmailHash is the HMAC-SHA256 hex of the owner's lower-cased email (CR-4).
+	// Optional: Realm Provisioner and the TenantIdentityProvisioned backstop
+	// do not send it; only the Signup BFF does.
+	EmailHash string `json:"email_hash,omitempty"`
 }
 
 // ProvisionTenant is I-1 — trial signup (5 depts + 3 labels + owner + 3 events in one tx).
@@ -116,6 +120,7 @@ func (h *InternalHandler) ProvisionTenant(c *gin.Context) {
 		Plan:          domain.TenantPlan(req.Plan),
 		OwnerUserID:   req.OwnerUserID,
 		DefaultLocale: req.DefaultLocale,
+		EmailHash:     req.EmailHash,
 	})
 	if err != nil {
 		HandleError(c, err)
@@ -893,4 +898,56 @@ func (h *InternalHandler) AssigneeOverride(c *gin.Context) {
 		"tenant_id": tenantID,
 		"user_id":   req.NewUserID,
 	})
+}
+
+// ── CR-4 POST /internal/trial-eligibility ─────────────────────────────────
+
+type trialEligibilityRequest struct {
+	EmailHash string `json:"email_hash"`
+}
+
+// CheckTrialEligibility is CR-4 — the Signup BFF's pre-signup gate (step E).
+// Called before every I-1 (RP-1 pair) to verify the email address has not
+// already been used for a trial. The BFF sends only the HMAC-SHA256 hex of
+// the lower-cased email address, never the plain email.
+//
+// Unlike tenant-scoped internal endpoints this route carries no path tenant
+// (the tenant does not exist yet), so it sits directly on the /internal group
+// rather than under /tenants/:id. The RequireInternalCaller (iam-system)
+// gate on that group applies.
+//
+// @Summary      CR-4 — Trial signup eligibility check (Signup BFF)
+// @Description  Checks whether the HMAC-SHA256 hex of the owner's lower-cased email has already been used for a trial. 200 = eligible; 409 TRIAL_ALREADY_USED = not eligible.
+// @Tags         internal
+// @Accept       json
+// @Produce      json
+// @Param        request  body      trialEligibilityRequest  true  "Email hash payload"
+// @Success      200      {object}  map[string]bool          "eligible: true"
+// @Failure      400      {object}  ProblemResponse          "email_hash required"
+// @Failure      403      {object}  ProblemResponse          "iam-system role required"
+// @Failure      409      {object}  ProblemResponse          "TRIAL_ALREADY_USED"
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /internal/trial-eligibility [post]
+func (h *InternalHandler) CheckTrialEligibility(c *gin.Context) {
+	var req trialEligibilityRequest
+	if err := gincommon.ShouldBindJSON(c, &req); err != nil {
+		HandleError(c, err)
+		return
+	}
+	if req.EmailHash == "" {
+		HandleError(c, domain.NewError(domain.ErrValidation, "email_hash is required"))
+		return
+	}
+	err := h.provisioning.CheckTrialEligibility(c.Request.Context(), req.EmailHash)
+	if err != nil {
+		if errors.Is(err, domain.ErrTrialAlreadyUsed) {
+			metrics.IncTrialEligibilityCheck("already_used")
+		}
+		HandleError(c, err)
+		return
+	}
+	metrics.IncTrialEligibilityCheck("eligible")
+	c.JSON(http.StatusOK, gin.H{"eligible": true})
 }
