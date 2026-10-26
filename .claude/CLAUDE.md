@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with the **Org & Membership (Core) Service** (`iam-org-membership`), a Go microservice in the IAM subsystem (Tender Management SaaS platform). Refines **IAM HLD v1.41 §5.6**; LLD v2.39 ("Org & Membership (Core) Service — Low-Level Design"), owner database `org_membership` on shared RDS PostgreSQL. Where LLD and HLD disagree, HLD is authoritative.
+This file provides guidance to Claude Code when working with the **Org & Membership (Core) Service** (`iam-org-membership`), a Go microservice in the IAM subsystem (Tender Management SaaS platform). Refines **IAM HLD v1.41 §5.6**; LLD v2.40 ("Org & Membership (Core) Service — Low-Level Design"), owner database `org_membership` on shared RDS PostgreSQL. Where LLD and HLD disagree, HLD is authoritative.
 
 This repo is the end-state of a completed **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to **Catalog / Admin Config Service** (`iam-catalog-admin`), SAML group→dept/role mapping moved to **Group Mapping / JIT Config Service** (`iam-group-mapping`), tender ACL overlays moved to **Tender ACL Service** (`iam-tender-acl`), and delegation grants + OOO coordination moved to **Delegation Service** (`iam-delegation`). This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -31,6 +31,8 @@ make fmt-check         # Verify gofmt formatting without modifying files (mirror
 make vet               # go vet ./... — default build + a second pass with every test build tag (integration,e2e)
 make lint              # golangci-lint (via go tool) — default build + every test build tag
 make arch-lint         # go-arch-lint against .go-arch-lint.yml (same script CI runs)
+make helm-check        # helm lint + template (base/dev/staging/prod) + kubeconform (same script CI runs)
+make helm-access-check # CD-19 access matrix: parse rendered staging+prod Istio AuthorizationPolicy + NetworkPolicy, assert per-caller routes (test/helm, tag helm)
 make metrics-lint      # platform-gincommon metricslint on a real /metrics scrape + alert/dashboard refs + inventory drift (same script CI runs)
 make metrics-inventory # regenerate docs/observability/metric-registry.md (commit it with any metric change)
 make mod-verify        # go mod verify (check module download integrity)
@@ -106,7 +108,7 @@ Detailed reference docs in `.claude/`:
 - [`request-flows.md`](request-flows.md) — provisioning, delegation, delegate-impact resolution (§8.8), invite→accept (§8.10), concurrency, GDPR
 - [`operations.md`](operations.md) — security, observability, configuration, CI/CD, integration points, dependency degradation matrix
 
-Full LLD (v2.39, "Org & Membership (Core) Service — Low-Level Design", reflects the post-decomposition end-state in this file), checked into this repo: [`docs/lld/iam-lld-org-membership-service.md`](../docs/lld/iam-lld-org-membership-service.md) — §16 open-question register, §17 error taxonomy, §19 migration strategy.
+Full LLD (v2.40, "Org & Membership (Core) Service — Low-Level Design", reflects the post-decomposition end-state in this file), checked into this repo: [`docs/lld/iam-lld-org-membership-service.md`](../docs/lld/iam-lld-org-membership-service.md) — §16 open-question register, §17 error taxonomy, §19 migration strategy.
 
 Observability docs in [`docs/observability/`](../docs/observability/README.md): how the standard is implemented here, the generated metric inventory (`metric-registry.md`), renamed/removed metric names (`migration.md`) and per-alert runbooks (`runbooks.md`).
 
