@@ -272,7 +272,7 @@ This service is deployed as a containerised microservice (HPA 2–8 replicas on 
 4. Docker image is built (`linux/amd64`, distroless static-debian12:nonroot) with layers cached in GHA + GHCR registry cache.
 5. Trivy CVE scan and smoke tests run in parallel, gated on `validate-test` + `build-image`.
 6. On success the image is pushed to GHCR and signed with Cosign keyless signing (Sigstore OIDC).
-7. The Helm chart in `deploy/helm/` is applied by the platform CD pipeline (single Deployment + 7 CronJobs, all dispatched by the same image with a `command: ["/reconciler", "--job=<name>"]` override).
+7. The Helm chart in `deploy/helm/` is applied by the platform CD pipeline (single Deployment + 8 CronJobs, all dispatched by the same image with a `command: ["/reconciler", "--job=<name>"]` override).
 
 **On `v*` tag (release):** validate → build binary → docker (CVE scan + SBOM + Cosign sign) → GitHub Release with `checksums.txt`, CycloneDX SBOM, and SLSA provenance. Schema registry jobs register event schemas to AWS Glue via `schema-gov register`.
 

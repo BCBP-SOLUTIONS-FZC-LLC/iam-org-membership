@@ -10,7 +10,7 @@ iam-org-membership/
 │   ├── server/
 │   │   ├── main.go                     # HTTP composition root, pool + middleware wiring, 3 SQS consumers, outbox runner, graceful shutdown; runMigrationsAtStartup() (RUN_MIGRATIONS)
 │   │   ├── wiring.go                   # buildTopicPublisher / buildTopicCodec (one SNS publisher + Glue codec per topic)
-│   │   ├── exporters.go                # runBusinessExporters — the 5 metric-exporter goroutines over pgadapter.GaugeRepository
+│   │   ├── exporters.go                # runBusinessExporters — the 6 metric-exporter goroutines over pgadapter.GaugeRepository
 │   │   ├── consumer_heartbeat.go       # per-queue ConsumerHeartbeat health check
 │   │   ├── identity.go                 # APP_ENV/ENVIRONMENT resolution
 │   │   └── swagger_info.go
@@ -19,7 +19,7 @@ iam-org-membership/
 │   └── reconciler/
 │       ├── main.go                     # CronJob dispatcher, --job=<name> (or RECONCILER_JOB); RECONCILER_TIMEOUT (5m), RECONCILER_STATEMENT_TIMEOUT (2m) on both pools; Pushgateway push
 │       ├── identity.go
-│       └── jobs/                       # invitation-expiry, invitation-kc-cleanup, realm-config-sync, seat-overage-reconcile, trial-cleanup, outbox-prune, processed-events-prune (7 jobs) + context.go (jobs.Context)
+│       └── jobs/                       # invitation-expiry, invitation-kc-cleanup, realm-config-sync, seat-overage-reconcile, trial-cleanup, outbox-prune, processed-events-prune, parked-events-replay (8 jobs) + context.go (jobs.Context)
 ├── internal/
 │   ├── core/
 │   │   ├── domain/                     # entities, value objects, DomainError; NO external deps

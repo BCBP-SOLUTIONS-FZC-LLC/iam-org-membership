@@ -163,7 +163,7 @@ These alerts query platform-library metrics that are still `proposed` in the reg
 
 Two cases specific to signup provisioning (LLD rev 2.33):
 - **`DLQReason=provisioning_rejected`** on a `TenantIdentityProvisioned`: see [IAMSignupProvisioningRejected](#iamsignupprovisioningrejected). These can be discarded without further sign-off: Realm Provisioner's `orphaned-signup-reap` job removes the orphaned Keycloak user, and redriving only re-fails.
-- **No `DLQReason`, any lifecycle/billing type, tenant has no row** (EVT-17): the event kept arriving before its tenant existed and ran out of receives. Usually the `TenantIdentityProvisioned` for that tenant failed too (Catalog outage) — redrive it first, confirm the tenant exists, then redrive the rest.
+- **No `DLQReason`, any lifecycle/billing type, tenant has no row:** since EVT-18 (LLD rev 2.41) such events are parked in `pending_tenant_events`, not retried, so this should not happen with production wiring. If it does, the consumer was running without a parked-event store (EVT-17 fallback): redrive the tenant's `TenantIdentityProvisioned` first, confirm the tenant exists, then redrive the rest. Parked events that never replay show up as `IAMParkedTenantEventsStale`.
 
 ### IAMOrgMembershipDBPoolSaturated
 
@@ -243,6 +243,17 @@ Two cases specific to signup provisioning (LLD rev 2.33):
 **Meaning.** Pending invitations past `expires_at` have not been flipped to `expired`, so the `invitation-expiry` CronJob is probably not running.
 
 **Triage.** The CronJob's last successful run and pod logs (`kubectl get jobs -l app.kubernetes.io/component=reconciler`).
+
+### IAMParkedTenantEventsStale
+
+**Meaning.** EVT-18 (CD-50): a lifecycle or billing event arrived before its tenant row existed, was parked in `pending_tenant_events`, and is still there after 10 minutes. I-1 replays a tenant's parked events as soon as it creates the row, so either the tenant's signup never completed, or a replay keeps failing.
+
+**Triage.**
+1. Find the events: `SELECT tenant_id, event_type, occurred_at, parked_at FROM pending_tenant_events ORDER BY parked_at` (as `admin_readonly`).
+2. If the tenant has no `tenants` row, the signup stopped between Realm Provisioner and I-1, and the `TenantIdentityProvisioned` backstop did not run either. Check `tenant-orgm-q-dlq` for a `provisioning_rejected` backstop event and `iam_org_membership_tenant_provisioning_backstop_total`.
+3. If the row exists, check the `parked-events-replay` CronJob's last run and its `replay failed` log lines. A parked `TrialReactivated` cannot replay from the CronJob, which has no Catalog client; it replays on the tenant's next I-1.
+
+**Mitigate.** Complete the signup (re-drive I-1 or the backstop event). The CronJob, or I-1 itself, then replays the parked events in order. An event for a signup that was abandoned can be deleted once confirmed.
 
 ### IAMSeatOverageActive / IAMSeatOverageActiveApproachingGrace
 

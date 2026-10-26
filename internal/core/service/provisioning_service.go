@@ -29,6 +29,10 @@ type ProvisioningService struct {
 	cache       port.Cache
 	rp          port.RealmProvisionerClient
 	log         port.SlogStyleLogger // optional — see WithLogger
+	// parked / replayer are the EVT-18 park-and-replay hooks (CD-50) — see
+	// WithParkedEvents. Optional: nil skips both.
+	parked   port.ParkedTenantEventStore
+	replayer port.ParkedTenantEventReplayer
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -58,6 +62,17 @@ func NewProvisioningService(
 
 // TrialSignupInput carries the I-1 payload from Realm Provisioner /
 // Signup BFF after the shared trial-realm user has been created (§8.1).
+// WithParkedEvents wires EVT-18 (CD-50). TrialSignup takes the tenant's
+// provisioning lock (store) while it creates the row, then replays the
+// events the consumer parked because they arrived before the tenant existed
+// (replayer). The consumer takes the same lock before it parks, so no event
+// can be parked after this replay has run.
+func (s *ProvisioningService) WithParkedEvents(store port.ParkedTenantEventStore, replayer port.ParkedTenantEventReplayer) *ProvisioningService {
+	s.parked = store
+	s.replayer = replayer
+	return s
+}
+
 type TrialSignupInput struct {
 	TenantID      uuid.UUID
 	Slug          string
@@ -159,6 +174,14 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	var created *domain.Tenant
 	var wasCreated bool
 	err = s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+		// EVT-18: hold the provisioning lock so the consumer cannot park an
+		// event for this tenant between our commit and the replay below.
+		if s.parked != nil {
+			if err := s.parked.LockTenantProvisioning(txCtx, req.TenantID); err != nil {
+				return err
+			}
+		}
+
 		// 1) Create the tenant row. LLD I-1 ON CONFLICT (id) DO NOTHING —
 		// if the row already exists (idempotent replay), skip the whole
 		// seeding + event storm and return the existing row so the handler
@@ -267,7 +290,22 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	if err != nil {
 		return nil, false, err
 	}
+	s.replayParked(ctx, req.TenantID)
 	return created, wasCreated, nil
+}
+
+// replayParked applies the events parked for this tenant before it existed
+// (EVT-18, CD-50). It runs on every successful I-1 — a replayed I-1 is
+// cheap and also retries a replay that failed earlier. A failure never fails
+// I-1: the tenant is created, and the parked-events-replay CronJob retries.
+func (s *ProvisioningService) replayParked(ctx context.Context, tenantID uuid.UUID) {
+	if s.replayer == nil {
+		return
+	}
+	if _, err := s.replayer.ReplayParked(ctx, tenantID); err != nil {
+		s.log.WarnContext(ctx, "I-1: replay of parked tenant events failed — the parked-events-replay CronJob will retry",
+			"tenant_id", tenantID, "error", err)
+	}
 }
 
 // SetRealmFields is I-2: RP updates realm_id/realm_type/keycloak_shard

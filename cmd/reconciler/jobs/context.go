@@ -1,4 +1,4 @@
-// Package jobs holds the concrete reconciler bodies for each of the 7
+// Package jobs holds the concrete reconciler bodies for each of the 8
 // CronJobs (§13.1). Every job is package-visible so the top-level
 // cmd/reconciler dispatcher can wire it into the --job registry without
 // touching implementation details.
@@ -16,6 +16,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
+	"github.com/google/uuid"
 )
 
 // Metrics is the minimal recorder seam reconciler jobs need for counters
@@ -36,6 +37,12 @@ type OutboxPruner interface {
 
 var _ OutboxPruner = (*outbox.Runner)(nil)
 
+// ParkedReplayer replays one tenant's parked events (EVT-18) for the
+// parked-events-replay sweep. Satisfied by the event consumer.
+type ParkedReplayer interface {
+	ReplayParkedSweep(ctx context.Context, tenantID uuid.UUID) (int, error)
+}
+
 // Context is the dependency bag every reconciler function accepts.
 // Populated by cmd/reconciler/main.go from env + Postgres/AWS clients.
 // Pools stay in main.go — jobs talk to repositories, TxRunner, and
@@ -49,6 +56,7 @@ type Context struct {
 	Inbox            port.InboxPruner            // platform-events inbox prune (ProcessedEventsPrune)
 	InboxConsumers   []string                    // consumer names recorded in processed_events
 	RealmProvisioner port.RealmProvisionerClient // PI-9 DeleteUser, T-15 PatchRealmConfig
+	ParkedReplayer   ParkedReplayer              // EVT-18 parked-events-replay (app pool)
 	// Logger is the shared gincommon-backed Logger, wrapped for slog-style
 	// call sites (Warn/Info(msg, "key", val, ...)) — every job file calls it
 	// exactly as it called *slog.Logger before this switch.

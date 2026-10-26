@@ -47,6 +47,7 @@ var registry = map[string]jobs.Func{
 	"trial-cleanup":          jobs.TrialCleanup,
 	"outbox-prune":           jobs.OutboxPrune,
 	"processed-events-prune": jobs.ProcessedEventsPrune,
+	"parked-events-replay":   jobs.ParkedEventsReplay,
 }
 
 func main() {
@@ -278,6 +279,13 @@ func run() int {
 		return 1
 	}
 
+	// EVT-18 replay runs the consumer's own projection under each tenant's
+	// GUC on the RLS-scoped app pool. No inbox (the events were already
+	// claimed when parked) and no Catalog client: a parked TrialReactivated
+	// fails here and stays parked for I-1's replay or a later fix — the
+	// stale gauge surfaces it.
+	parkedReplayer := consumeradapter.NewMembershipEventConsumer(nil, pgadapter.NewTenantRepository(pool), nil, nil, 0, rawLog).
+		WithParkedEvents(pgadapter.NewParkedTenantEventRepository(pool), pgadapter.NewTxRunner(pool, outboxPublisher))
 	jctx := &jobs.Context{
 		TxRunner:               pgadapter.NewTxRunner(pool, outboxPublisher),
 		Tenants:                pgadapter.NewTenantRepository(pool),
@@ -287,6 +295,7 @@ func run() int {
 		Inbox:                  pgadapter.NewInboxRepository(sysPool, nil),
 		InboxConsumers:         consumeradapter.ProcessedEventsConsumers(),
 		RealmProvisioner:       realmprovisionerclient.New(rawLog),
+		ParkedReplayer:         parkedReplayer,
 		Logger:                 log,
 		Metrics:                metrics.Recorder{},
 		AuditLog:               auditlogclient.New(rawLog),

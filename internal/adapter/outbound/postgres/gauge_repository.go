@@ -69,6 +69,18 @@ func (r *GaugeRepository) CountPendingInvitationsStale(ctx context.Context) (int
 	return r.count(ctx, pendingInvitationsStaleSQL)
 }
 
+const parkedTenantEventsStaleSQL = `
+SELECT count(*) FROM pending_tenant_events
+ WHERE parked_at < now() - interval '10 minutes'`
+
+// CountParkedTenantEventsStale returns events parked for over 10 minutes
+// (CD-50, EVT-18): I-1 replays a tenant's parked events as soon as it
+// creates the row, so one still parked after that is either a tenant whose
+// signup never completed or a replay that keeps failing.
+func (r *GaugeRepository) CountParkedTenantEventsStale(ctx context.Context) (int64, error) {
+	return r.count(ctx, parkedTenantEventsStaleSQL)
+}
+
 func (r *GaugeRepository) count(ctx context.Context, sql string) (int64, error) {
 	var n int64
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {

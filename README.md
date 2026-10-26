@@ -148,7 +148,7 @@ Domain-rule failures are raised as a `*domain.DomainError` wrapping one of the s
 | A tenant-role reconcile (P-28) can never assign `member` | `chk_tr_no_member` CHECK, backstopped by service-layer validation (`400 invalid_role`) — `member` is derived at read time, never stored (TR-7) |
 | A `tenant_owner`-affecting mutation can never leave zero active owners | `422 last_owner_removal` (TM-8), serialized via `SELECT ... FOR UPDATE` on the `tenants` row (TM-13) so two concurrent removals can't both pass |
 | Seat cap is enforced transactionally, not just pre-flight | `SELECT ... FOR UPDATE` on `tenants` under the same tx that counts `active + pending` against `licensed_seats` (SEAT-1) |
-| Optimistic locking | 7 of 8 tables carry `record_version` (`touch_row` DB trigger); a version mismatch returns `409 optimistic_lock_conflict` with the current version in the body |
+| Optimistic locking | 7 of 9 tables carry `record_version` (`touch_row` DB trigger); a version mismatch returns `409 optimistic_lock_conflict` with the current version in the body |
 | Invitation rate limiting | Per-email cooldown (`INVITE_REINVITE_COOLDOWN_MINUTES`, `429 reinvite_too_soon`) and per-tenant / per-actor hourly ceilings (`INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR`, `429 invite_rate_limited`) — all checked pre-flight, before any Realm Provisioner call |
 
 ---
@@ -160,7 +160,7 @@ Clean Architecture — dependencies point inward; outer layers never import inne
 ```
 iam-org-membership/
 ├── cmd/
-│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrate-at-startup unless RUN_MIGRATIONS=false, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 5 metric-exporter goroutines (exporters.go — 4 gauges + iam_rls_violations_total counter); wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
+│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrate-at-startup unless RUN_MIGRATIONS=false, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 6 metric-exporter goroutines (exporters.go — 4 gauges + iam_rls_violations_total counter); wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
 │   ├── reconciler/                    # Single binary, --job=<name>; jobs/ holds the 7 CronJob entry points
 │   └── migrate/                       # One-shot schema migration (postgres.MigrateSchema: platform-events outbox schema, then domain migrations) — the Helm pre-install/pre-upgrade hook Job
 ├── internal/
@@ -220,7 +220,7 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 
 | Concern | Technology | Notes |
 |---|---|---|
-| **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 8 tables, `FORCE ROW LEVEL SECURITY` on all 7 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
+| **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 9 tables, `FORCE ROW LEVEL SECURITY` on all 8 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
 | **Cache** | Valkey (Redis-compatible) via `go-redis/v9` | Advisory-only (CACHE-2/9) — a miss or outage falls through to Postgres, never a hard failure |
 | **Events (outbound)** | AWS SNS + transactional outbox (`platform-events`) | Two topics via `RoutingPublisher`: `iam.membership.events` (12 event types) and `iam.tenant.events` (2 — `TenantCreated`/`TrialStarted`) |
 | **Events (inbound)** | AWS SQS, 3 queues | `tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q` (cache invalidation only), each with its own `-dlq`; Glue header stripped by `events.GlueDecodeCodec`, payload validated against the embedded consumed schema, permanent rejects sent straight to the DLQ; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
@@ -300,7 +300,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 
 ### 10. Background reconcilers you may observe
 
-7 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
+8 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
 
 | CronJob (`--job=`) | Schedule | Purpose |
 |---|---|---|
@@ -311,6 +311,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 | `trial-cleanup` | `0 2 * * *` | Hard-deletes trial tenants past grace beyond `trial_expired` |
 | `outbox-prune` | `0 3 * * *` | Prunes published `outbox_events` past `OUTBOX_RETENTION_DAYS` |
 | `processed-events-prune` | `0 4 * * *` | Prunes `processed_events` rows past `PROCESSED_EVENTS_TTL_DAYS` |
+| `parked-events-replay` | `*/5 * * * *` | EVT-18 backstop: replays events parked for a tenant before its row existed, once the row exists (I-1 normally replays them immediately) |
 
 The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`), plus a 5th exporter for the `iam_rls_violations_total` counter (`pgadapter.GaugeRepository.RLSViolationCounts`, mirrors `iam-user-profile`'s `runRLSViolationExporter`), run as **ticker goroutines inside `cmd/server`** (`runBusinessExporters`, `exporters.go`), not CronJobs.
 
@@ -659,7 +660,7 @@ Alert rules live in `deploy/monitoring/app-alerts.yml` (26), `slo-rules.yml` (5)
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers + 6 metric-exporter goroutines (5 gauges + `iam_rls_violations_total` counter) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | One-shot schema migration (`cmd/migrate` → `postgres.MigrateSchema`: platform-events' `outbox.ApplySchema`, then the domain migrations); exits 0 on success or "already up to date", 1 on failure, with operator hints for a dirty migration or a version missing from the build |
 
@@ -816,7 +817,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | System | Role |
 |---|---|
-| **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 8 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
+| **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 9 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
 | **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
 | **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
 | **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` subscribes to Catalog's `iam-catalog-events` with filter `[DepartmentCatalogChanged, PlanCatalogChanged]` (SRE/platform Terraform) |
@@ -850,7 +851,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 |---|---|
 | [`.claude/CLAUDE.md`](.claude/CLAUDE.md) | Top-level guidance for Claude Code working in this repo |
 | [`.claude/architecture.md`](.claude/architecture.md) | Clean Architecture directory tree, shared library integration, dep rules |
-| [`.claude/database-schema.md`](.claude/database-schema.md) | 8 tables, enums, RLS/tenant/seat/migration/trigger invariants |
+| [`.claude/database-schema.md`](.claude/database-schema.md) | 9 tables, enums, RLS/tenant/seat/migration/trigger invariants |
 | [`.claude/api-caching-events.md`](.claude/api-caching-events.md) | Full endpoint catalogue, cache TTLs, event catalogue, status-code table |
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |

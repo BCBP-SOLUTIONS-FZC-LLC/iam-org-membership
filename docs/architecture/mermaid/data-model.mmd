@@ -102,6 +102,15 @@ erDiagram
         timestamptz processed_at
     }
 
+    pending_tenant_events {
+        uuid event_id PK "envelope id; event parked before its tenant row existed (EVT-18)"
+        uuid tenant_id "no FK - the tenants row does not exist yet; RLS on app.tenant_id"
+        text event_type
+        timestamptz occurred_at "replay order"
+        jsonb envelope "as consumed; replayed by I-1 or parked-events-replay"
+        timestamptz parked_at
+    }
+
     tenants ||--o{ tenant_departments  : "fk_td_tenant, ON DELETE CASCADE"
     tenants ||--o{ tenant_memberships  : "fk_tm_tenant, ON DELETE CASCADE"
     tenants ||--o{ tenant_roles        : "fk_tnr_tenant, ON DELETE CASCADE"

@@ -338,6 +338,21 @@ groups:
             CronJob's last successful run and pod logs.
           runbook: "iam-org-membership/invitation-expiry"
 
+      - alert: IAMParkedTenantEventsStale
+        expr: iam_org_membership_parked_tenant_events_stale > 0
+        for: 15m
+        labels:
+          severity: ticket
+          service: iam-org-membership
+        annotations:
+          summary: "Tenant events parked for a tenant that does not exist yet (EVT-18)"
+          description: |
+            {{ $value }} events have waited over 10 minutes for their tenant
+            row. Check whether the tenant's signup completed (I-1 or the
+            TenantIdentityProvisioned backstop) and the parked-events-replay
+            CronJob's last run.
+          runbook: "iam-org-membership/parked-tenant-events"
+
       - alert: IAMSeatOverageActive
         expr: iam_org_membership_seat_overage_active > 0
         for: 24h

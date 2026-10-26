@@ -304,7 +304,7 @@ readinessProbe:
   failureThreshold: 3
   timeoutSeconds: 3
 
-# CronJobs — 7 reconcilers per LLD §13.1 (exporters run as goroutines in
+# CronJobs — 8 reconcilers per LLD §13.1 (exporters run as goroutines in
 # cmd/server/main.go per our Option A decision, not as CronJobs). Each entry
 # dispatches the same reconciler binary with a different --job flag.
 # See templates/cronjobs.yaml.
@@ -339,6 +339,9 @@ cronjobs:
   processed-events-prune:
     schedule: "0 4 * * *"
     job: processed-events-prune
+  parked-events-replay:
+    schedule: "*/5 * * * *"
+    job: parked-events-replay
 
 # NetworkPolicy — enabled by default. Restricts traffic to the ingress
 # controller / gateway namespace and the monitoring namespace (/metrics).
