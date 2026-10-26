@@ -61,6 +61,14 @@ This service has never been deployed to any environment — there is no released
 
 ### Added
 
+- **Gap 3 fix — I-2 response shape aligned with Swagger (2026-10-26):** `InternalTenantRealmResponse` now includes `RecordVersion int64 json:"record_version"` (was missing from the DTO despite the handler always sending it). The `PatchTenantRealm` handler now returns the typed struct instead of `gin.H{}`, so the Swagger `@Success 200 {object} InternalTenantRealmResponse` annotation matches the actual wire response. Callers (Realm Provisioner) that already read `record_version` are unaffected; callers relying on the Swagger spec now see the correct shape.
+
+- **Gap 2 fix — DirectPaidSignup comment corrected (2026-10-26):** The `applyProjection` `DirectPaidSignup` case had an incorrect comment claiming RP's payload never sends a `plan` field. RP's `DirectPaidSignupPayload` does include `plan`; the fallback to `prevPlan` is intentional only for empty-plan payloads (older RP versions / safety net). Comment corrected; no behaviour change.
+
+- **Gap 4 doc — Catalog Service not fail-open on I-1 (2026-10-26):** Explicit note added to README.md (I-1 row + Cross-service dependencies table) and ARCHITECTURE.md (ProvisioningService node) that I-1's two Catalog calls (`PlanByCode` + `Departments()`) run **before** the Postgres transaction and are NOT fail-open — `503 catalog_unavailable` on cold-cache + Catalog outage. bff-signup retries and the backstop handle this correctly; no code change needed.
+
+- **Gap 1 deferred — `licensed_seats` Phase 1.5 TODO (2026-10-26):** Added a clearly-labelled Phase 1.5 comment in `ProvisionTenant` explaining that `req.LicensedSeats` is intentionally not forwarded to `TrialSignupInput` for trial signups (default 10 is correct). When Phase 1.5 (paid signup) activates: add `LicensedSeats` to `TrialSignupInput`, pass `req.LicensedSeats`, remove the hardcoded `10` from the tenant INSERT.
+
 - **CR-4: Trial signup eligibility gate — `POST /api/v1/internal/trial-eligibility` (2026-10-26):** the Signup BFF's step-E pre-check before every RP-1/I-1 pair. Accepts `{"email_hash":"<HMAC-SHA256 hex of lower-cased email>"}` under the `RequireInternalCaller` (iam-system) gate; returns `200` when the email has not been used for a trial, `409 TRIAL_ALREADY_USED` when it has. Blocks Phase 1 trial signup end-to-end otherwise (BFF was getting 404).
   - **New table** `trial_signup_ledger(email_hash TEXT PK, created_at TIMESTAMPTZ)` — cross-tenant, no RLS, append-only; migration `000004_cr4_trial_signup_ledger`.
   - **Atomic ledger write in I-1:** `internalProvisionRequest` gains optional `email_hash` field; `TrialSignupInput.EmailHash` is passed through and written inside the TrialSignup transaction (ON CONFLICT DO NOTHING for idempotent replay). RP backstop and Realm Provisioner's own I-1 calls omit it — fail-open by design.

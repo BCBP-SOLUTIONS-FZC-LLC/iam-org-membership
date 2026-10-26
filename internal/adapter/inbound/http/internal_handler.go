@@ -113,6 +113,10 @@ func (h *InternalHandler) ProvisionTenant(c *gin.Context) {
 			WithDetails(map[string]any{"received": req.Plan}))
 		return
 	}
+	// Phase 1.5 (Gap 1): req.LicensedSeats is bound from the request body but
+	// intentionally not passed here — trial signups use the hardcoded default (10).
+	// When Phase 1.5 (paid signup) activates: add LicensedSeats to TrialSignupInput,
+	// pass req.LicensedSeats, and remove the hardcoded 10 in the tenant INSERT.
 	t, wasCreated, err := h.provisioning.TrialSignup(c.Request.Context(), service.TrialSignupInput{
 		TenantID:      req.TenantID,
 		Slug:          req.Slug,
@@ -198,7 +202,12 @@ func (h *InternalHandler) PatchTenantRealm(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "realm_id": req.RealmID, "realm_type": req.RealmType, "record_version": req.RecordVersion + 1})
+	c.JSON(http.StatusOK, InternalTenantRealmResponse{
+		TenantID:      tenantID,
+		RealmID:       req.RealmID,
+		RealmType:     req.RealmType,
+		RecordVersion: req.RecordVersion + 1,
+	})
 }
 
 // ── I-4 PATCH /tenants/:id/members/:user_id (KC lifecycle) ─────────────

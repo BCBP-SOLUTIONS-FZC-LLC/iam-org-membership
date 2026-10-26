@@ -81,7 +81,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 | # | Method & Path | Caller | Purpose |
 |---|---|---|---|
-| I-1 | `POST /tenants` | Realm Provisioner / Signup BFF | Provision a new tenant row |
+| I-1 | `POST /tenants` | Realm Provisioner / Signup BFF | Provision a new tenant row. **Requires Catalog Service** (plan lookup + dept seeding) — returns `503 catalog_unavailable` on cold-cache + Catalog outage. bff-signup retries I-1 up to `maxI1InlineRetries=2` inline, then falls back to `202 tenant_pending`; the backstop also retries on redelivery. |
 | I-2 | `PATCH /tenants/:id` | Realm Provisioner | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` |
 | I-3 | `POST /tenants/:id/members` | Event Consumer | Add membership from Keycloak `REGISTER` — also the invitation-acceptance path |
 | I-4 | `PATCH /tenants/:id/members/:user_id` | Event Consumer | Update membership status from a Keycloak lifecycle event |
@@ -761,6 +761,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | Session revoke on suspend/remove (AUTH-8) | Realm Provisioner | `outbound/realmprovisioner/` | fail-open (best-effort) | Cutoff falls back to access-token TTL + 300 s cache TTL |
 | User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow Service | `outbound/workflow/` | fail-closed | `503 workflow_service_unavailable`, no change committed |
 | Suspension advisory (P-7) | Workflow Service | `outbound/workflow/` | fail-open | Suspend commits; advisory call omitted |
+| I-1 plan lookup + dept seeding (ProvisioningService.TrialSignup) | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` on cold-cache + failure — calls happen BEFORE the Postgres tx opens (§8.1). bff-signup retries handle this correctly. |
 | Any P-6/P-24/P-10 catalog validation | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` — the one dependency deliberately not fail-open |
 | I-10 SAML JIT group resolution | Group Mapping / JIT Config Service | `outbound/groupmappingclient/` | fail-open | Empty resolution — never fails a login |
 | Dept-scope precision leg of delegate-impact pre-check (§8.8.4) | Delegation Service | `outbound/delegationcheck/` | degrade | Falls back to tenant-wide impact scoping (correct, less precise) |

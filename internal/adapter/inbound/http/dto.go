@@ -355,9 +355,10 @@ type InternalMembershipPatchRequest struct {
 
 // InternalTenantRealmResponse is the I-2 success shape.
 type InternalTenantRealmResponse struct {
-	TenantID  uuid.UUID `json:"tenant_id" format:"uuid"`
-	RealmID   string    `json:"realm_id"`
-	RealmType string    `json:"realm_type" enums:"shared,dedicated"`
+	TenantID      uuid.UUID `json:"tenant_id" format:"uuid"`
+	RealmID       string    `json:"realm_id"`
+	RealmType     string    `json:"realm_type" enums:"shared,dedicated"`
+	RecordVersion int64     `json:"record_version" example:"2"`
 }
 
 // InternalMembershipPatchResponse is the I-4 success shape.

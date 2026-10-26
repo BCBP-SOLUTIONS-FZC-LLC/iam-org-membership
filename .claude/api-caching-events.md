@@ -70,7 +70,7 @@
 | # | Method & Path | Caller | Purpose |
 |---|---|---|---|
 | I-1 | `POST /tenants` | Realm Provisioner / Signup BFF | Provision tenant row |
-| I-2 | `PATCH /tenants/:id` | internal (tenant-orgm-q consumer, via `TenantRealmReady` event) | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` (all together) after dedicated realm provisioning — driven event-side, not by a direct RP HTTP call; RP has no HTTP client for this endpoint |
+| I-2 | `PATCH /tenants/:id` | internal (tenant-orgm-q consumer, via `TenantRealmReady` event) | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` (all together) after dedicated realm provisioning. Response: `{tenant_id, realm_id, realm_type, record_version}` — `record_version` is the incremented post-update version (Gap 3 fix: DTO now matches wire). |
 | I-3 | `POST /tenants/:id/members` | Event Consumer | Add membership from Keycloak `REGISTER` — **also invitation-acceptance path** (§8.10, PI-4): flips matching pending row to `accepted`, applies queued roles/depts |
 | I-4 | `PATCH /tenants/:id/members/:user_id` | Event Consumer | Update status from Keycloak lifecycle |
 | I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — **delegate-impact gated** (§8.8, WFI-1); sets `ownerless_since` if last owner (TM-12/T-13) |
