@@ -2,7 +2,7 @@
 
 This document describes the internal structure, dependency rules, and runtime data flows of `iam-org-membership`.
 
-`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.10) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.28, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 7 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
+`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.10) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.28, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 8 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service. This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -21,7 +21,7 @@ graph TD
     subgraph cmd["Composition Roots  —  cmd/ (three binaries, one image)"]
         main["server/main.go + wiring.go + exporters.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6) + BYPASSRLS sysPool (PoolName=system)\nRUN_MIGRATIONS unset/true → MigrateSchema at startup (Helm sets false — the migrate hook Job owns it)\nrouter registration + gincommon.ObservabilityMiddlewares\n/metrics = gincommon.MetricsHandler() on METRICS_PORT (9090)\n3 SQS consumers via sqspipeline (tenant-orgm-q · billing-orgm-q · catalog-orgm-q)\n5 in-process metric exporters (ticker goroutines, 5 min):\n  iam_org_membership_tenant_ownerless · iam_org_membership_realm_sync_pending\n  iam_org_membership_seat_overage_active · iam_org_membership_pending_invitations_stale\n  iam_rls_violations_total (counter, rls_violation_log scrape)\nRoutingPublisher (2 SNS topics, each with its own GlueCodec) + outbox runner\ngraceful shutdown: SIGTERM → HTTP + SQS drain (parallel, ≤30s) → outbox (30s) → both pools (parallel, fresh 10s)\nterminationGracePeriodSeconds=75"]
         swagger_info["server/swagger_info.go\nSwaggo API metadata annotations"]
-        reconciler["reconciler/main.go\nsingle binary, --job=<name> dispatch\nselects one of 7 CronJobs (§13.1):\n  invitation-expiry · invitation-kc-cleanup\n  realm-config-sync · seat-overage-reconcile\n  trial-cleanup · outbox-prune · processed-events-prune\nRECONCILER_STATEMENT_TIMEOUT (2m) on both pools\nmetrics pushed to PROMETHEUS_PUSHGATEWAY_URL, grouped by cronjob"]
+        reconciler["reconciler/main.go\nsingle binary, --job=<name> dispatch\nselects one of 8 CronJobs (§13.1):\n  invitation-expiry · invitation-kc-cleanup\n  realm-config-sync · seat-overage-reconcile\n  trial-cleanup · outbox-prune · processed-events-prune\n  parked-events-replay\nRECONCILER_STATEMENT_TIMEOUT (2m) on both pools\nmetrics pushed to PROMETHEUS_PUSHGATEWAY_URL, grouped by cronjob"]
         jobs["reconciler/jobs/\none file per CronJob, depends on port/domain only"]
         migrate["migrate/main.go\npostgres.MigrateSchema: outbox.ApplySchema → domain RunMigrations\nMIGRATION_DATABASE_URL (direct, non-PgBouncer), MIGRATE_TIMEOUT=10m\nHelm pre-install/pre-upgrade hook Job, exits 0/1"]
     end
@@ -145,7 +145,7 @@ Arrows represent Go `import` relationships (module-internal only) — this graph
 ```mermaid
 graph LR
     main(["cmd/server"])
-    reconciler(["cmd/reconciler\n--job=<name> dispatcher (7 CronJobs)"])
+    reconciler(["cmd/reconciler\n--job=<name> dispatcher (8 CronJobs)"])
     jobs(["cmd/reconciler/jobs\n(reconciler_jobs)"])
     migrate(["cmd/migrate\n(Helm pre-install/pre-upgrade hook)"])
 
@@ -731,7 +731,7 @@ Note the honest gap this diagram documents: four key builders exist on `valkey.C
 
 ## Data model
 
-Database `org_membership` on shared RDS PostgreSQL (Multi-AZ, PgBouncer transaction pooling). **8 tables**, RLS via the `app.tenant_id` GUC on the 7 tenant-scoped ones — no cross-database foreign keys (the composite FKs the ADR-0007/ADR-0008 decomposition lost are replaced by app-level checks against read-through caches, or by other services' new I-15 existence check, described below the diagram). Since this service has never been deployed, the schema is one consolidated migration (`000000_initial_schema`) rather than an incremental history with dead expand/contract steps to carry forward, followed by three additive ones: `000001_check_constraints`, `000002_pub1_pending_invitations_email_idx` (PUB-1's pending-email index), and `000003_cd37_residency_mode` (`tenants.residency_mode TEXT NOT NULL DEFAULT 'standard'`, CD-37). `processed_events.event_id` is `uuid`, the shape platform-events' inbox requires.
+Database `org_membership` on shared RDS PostgreSQL (Multi-AZ, PgBouncer transaction pooling). **9 tables**, RLS via the `app.tenant_id` GUC on the 8 tenant-scoped ones — no cross-database foreign keys (the composite FKs the ADR-0007/ADR-0008 decomposition lost are replaced by app-level checks against read-through caches, or by other services' new I-15 existence check, described below the diagram). Since this service has never been deployed, the schema is one consolidated migration (`000000_initial_schema`) rather than an incremental history with dead expand/contract steps to carry forward, followed by three additive ones: `000001_check_constraints`, `000002_pub1_pending_invitations_email_idx` (PUB-1's pending-email index), and `000003_cd37_residency_mode` (`tenants.residency_mode TEXT NOT NULL DEFAULT 'standard'`, CD-37). `processed_events.event_id` is `uuid`, the shape platform-events' inbox requires.
 
 > Source: [`docs/architecture/mermaid/data-model.mmd`](docs/architecture/mermaid/data-model.mmd)
 
@@ -853,7 +853,7 @@ erDiagram
 
 `rls_violation_log` also exists (not a business table — a 1%-sampled RLS-disabled audit sink written by `log_rls_violation()`, disabled specifically so its own insert can't recurse into a policy check) and is omitted from the ER diagram for that reason, same convention as `iam-delegation`'s own data model.
 
-7 of the 8 tables carry `record_version` (all but `processed_events`), bumped by the shared `touch_row()` `BEFORE UPDATE` trigger, guarded by `WHEN (OLD.* IS DISTINCT FROM NEW.*)` so a no-op write never spuriously advances the version or triggers a redundant event (TRG-1/TRG-3). Partial unique indexes (`WHERE deleted_at IS NULL` on `tenant_memberships`/`tenant_roles`/`dept_memberships`, `WHERE status = 'pending'` on `pending_invitations`) let a user rejoin a tenant or department previously left.
+7 of the 9 tables carry `record_version` (all but `processed_events` and `pending_tenant_events`), bumped by the shared `touch_row()` `BEFORE UPDATE` trigger, guarded by `WHEN (OLD.* IS DISTINCT FROM NEW.*)` so a no-op write never spuriously advances the version or triggers a redundant event (TRG-1/TRG-3). Partial unique indexes (`WHERE deleted_at IS NULL` on `tenant_memberships`/`tenant_roles`/`dept_memberships`, `WHERE status = 'pending'` on `pending_invitations`) let a user rejoin a tenant or department previously left.
 
 **Three Postgres roles** (`rls_check_tenant`/`app_tenant_id` are the enforcement functions the policies call):
 
@@ -1021,8 +1021,8 @@ graph LR
         exp5["iam_rls_violations_total\n· RLSViolationCounts over rls_violation_log"]
     end
 
-    subgraph cron["cmd/reconciler — 7 CronJobs (§13.1, deploy/helm/values.yaml)"]
-        c1["invitation-expiry (*/5)  ·  invitation-kc-cleanup (*/10)\nrealm-config-sync (*/10)  ·  seat-overage-reconcile (0 */6 * * *)\ntrial-cleanup (0 2 *)  ·  outbox-prune (0 3 *)  ·  processed-events-prune (0 4 *)\n(delegation-expiry/review/cleanup moved to Delegation Service,\n acl-cleanup moved to Tender ACL Service — none run here)"]
+    subgraph cron["cmd/reconciler — 8 CronJobs (§13.1, deploy/helm/values.yaml)"]
+        c1["invitation-expiry (*/5)  ·  invitation-kc-cleanup (*/10)\nrealm-config-sync (*/10)  ·  seat-overage-reconcile (0 */6 * * *)\ntrial-cleanup (0 2 *)  ·  outbox-prune (0 3 *)  ·  processed-events-prune (0 4 *)\nparked-events-replay (*/5)\n(delegation-expiry/review/cleanup moved to Delegation Service,\n acl-cleanup moved to Tender ACL Service — none run here)"]
         pgw["Pushgateway (PROMETHEUS_PUSHGATEWAY_URL)\n· each run pushes gincommon.MetricsGatherer()\n· grouped by cronjob, replaces the previous run\n· never scraped directly"]
     end
 
@@ -1128,7 +1128,7 @@ sequenceDiagram
 
 ## Concurrency and optimistic locking
 
-7 of 8 domain tables carry `record_version` (all but `processed_events`). Writers pass back the version they last read; a mismatch returns 0 rows affected, which the repository maps to `409 optimistic_lock_conflict` — the response body's `record_version` field lets the caller re-read and retry:
+7 of 9 domain tables carry `record_version` (all but `processed_events` and `pending_tenant_events`). Writers pass back the version they last read; a mismatch returns 0 rows affected, which the repository maps to `409 optimistic_lock_conflict` — the response body's `record_version` field lets the caller re-read and retry:
 
 ```go
 tag, err := tx.Exec(ctx,
@@ -1167,7 +1167,7 @@ if tag.RowsAffected() == 0 {
 - **FAIL-1** — A dependency failure never leaves partial local state. Every multi-step write (trial signup's 7 steps, removal's cascade) is one `RunInTx`; a failure at any step rolls back everything, business row and outbox row alike.
 - **FAIL-2** — Cache failures degrade latency only. A Valkey outage costs one extra Postgres round-trip per request; `/readyz` still fails on it (unlike most advisory caches) specifically so a degraded pod is pulled from rotation before every cache miss amplifies DB load platform-wide.
 - **FAIL-3** — Outbox delivery is at-least-once (SNS→SQS); `processed_events` makes consumption exactly-once at each consumer.
-- **FAIL-4** — All 7 CronJobs are safe to re-run; each re-selects only still-eligible rows (`WHERE status = 'pending'`-style predicates), so a restart mid-batch never double-applies.
+- **FAIL-4** — All 8 CronJobs are safe to re-run; each re-selects only still-eligible rows (`WHERE status = 'pending'`-style predicates), so a restart mid-batch never double-applies.
 - **FAIL-5** — Missing tenant context fails closed. The app pool with no bound GUC returns 0 rows under RLS rather than leaking; only the deliberately-separate `sysPool` (no `GUCProvider` at all) can see across tenants.
 
 **Dependency degradation matrix** — reads have no synchronous cross-service dependency (I-8, list endpoints, I-15 are Postgres + Valkey only):
@@ -1192,9 +1192,9 @@ if tag.RowsAffected() == 0 {
 
 | Invariant | Where enforced |
 |---|---|
-| Sole writer for tenants/memberships/tenant-roles/dept-memberships/invitations | This service's 7 tenant-scoped tables; no sibling service holds a write path into any of them |
+| Sole writer for tenants/memberships/tenant-roles/dept-memberships/invitations | This service's 8 tenant-scoped tables; no sibling service holds a write path into any of them |
 | `member` is never persisted (TR-7) | `AuthZService.readFromDB` prepends `domain.RoleMember` to the DB-sourced role list at read time; `chk_tr_no_member` CHECK backstops the write path |
-| No cross-tenant data access | `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` on all 7 tenant-scoped tables + `GUCBridgeMiddleware` + transaction-local GUC (RLS-1..RLS-6) |
+| No cross-tenant data access | `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` on all 8 tenant-scoped tables + `GUCBridgeMiddleware` + transaction-local GUC (RLS-1..RLS-6) |
 | Event atomicity | Business row + outbox row committed in the same `pgcommon.RunInTx` (EVT-10 / CONS-1) |
 | Last-owner protection is race-free (TM-8/TM-13) | `SELECT ... FOR UPDATE` on `tenants` before any owner-affecting mutation |
 | Seat cap is enforced transactionally, not just pre-flight (SEAT-1) | Same `FOR UPDATE` row lock backs the seat count and the insert |
@@ -1224,7 +1224,7 @@ if tag.RowsAffected() == 0 {
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 3 SQS consumers (`tenant-orgm-q`/`billing-orgm-q`/`catalog-orgm-q`) + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all three route prefixes, runs the outbox runner + 3 SQS consumers (`tenant-orgm-q`/`billing-orgm-q`/`catalog-orgm-q`) + 6 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs. `RECONCILER_STATEMENT_TIMEOUT` (default 2m) applies to both pools; each run pushes its metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | Schema migrator (`cmd/migrate`): `postgres.MigrateSchema` runs platform-events' `outbox.ApplySchema`, then the domain migrations, and exits 0 or 1. Reads `MIGRATION_DATABASE_URL` (falls back to the app DSN), bounded by `MIGRATE_TIMEOUT` (default 10m). `explainMigrationError` adds a recovery hint for a dirty schema or a version missing from the binary |
 
@@ -1232,7 +1232,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Helm chart
 
-`deploy/helm/` renders one `Deployment`, a migrate hook `Job` and the 7 `CronJob`s (schedules: `invitation-expiry` `*/5 * * * *`, `invitation-kc-cleanup`/`realm-config-sync` both `*/10 * * * *`, `seat-overage-reconcile` `0 */6 * * *`, `trial-cleanup` `0 2 * * *`, `outbox-prune` `0 3 * * *`, `processed-events-prune` `0 4 * * *`) from the same image reference. HPA: `minReplicas: 2` / `maxReplicas: 8`, CPU 70% / memory 75%. PDB `minAvailable: 1`. The migrate `Job` (`deploy/helm/templates/migrate-job.yaml`, `migrations.job.enabled: true`) is a `pre-install,pre-upgrade` hook at weight 0, after the chart `Secret` (a hook at weight -10, since the Job reads `MIGRATION_DATABASE_URL` from it). Its pod deliberately does not carry the chart's selector labels, so the Service, PDB and NetworkPolicy never select it. The Deployment sets `RUN_MIGRATIONS=false` while the Job is enabled, so 2–8 replicas never contend for the migration lock and a failed migration fails the release instead of crash-looping pods. Unset or true (local dev, tests), `cmd/server` migrates at startup itself. `terminationGracePeriodSeconds: 75` (max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain + 10 s pool drain + 5 s buffer) — matches `main.go`'s own shutdown ordering: HTTP + metrics-server `Shutdown` in parallel with every SQS consumer's `Stop` → outbox `Stop` → background context cancel → `pool.DrainAndClose` and `sysPool.DrainAndClose` in parallel (fresh 10 s budget) → tracing/logger flush. NetworkPolicy is scoped to `gateway`-namespace ingress plus an `observability`-namespace `prometheus` scrape on the metrics port.
+`deploy/helm/` renders one `Deployment`, a migrate hook `Job` and the 8 `CronJob`s (schedules: `invitation-expiry` `*/5 * * * *`, `invitation-kc-cleanup`/`realm-config-sync` both `*/10 * * * *`, `seat-overage-reconcile` `0 */6 * * *`, `trial-cleanup` `0 2 * * *`, `outbox-prune` `0 3 * * *`, `processed-events-prune` `0 4 * * *`, `parked-events-replay` `*/5 * * * *`) from the same image reference. HPA: `minReplicas: 2` / `maxReplicas: 8`, CPU 70% / memory 75%. PDB `minAvailable: 1`. The migrate `Job` (`deploy/helm/templates/migrate-job.yaml`, `migrations.job.enabled: true`) is a `pre-install,pre-upgrade` hook at weight 0, after the chart `Secret` (a hook at weight -10, since the Job reads `MIGRATION_DATABASE_URL` from it). Its pod deliberately does not carry the chart's selector labels, so the Service, PDB and NetworkPolicy never select it. The Deployment sets `RUN_MIGRATIONS=false` while the Job is enabled, so 2–8 replicas never contend for the migration lock and a failed migration fails the release instead of crash-looping pods. Unset or true (local dev, tests), `cmd/server` migrates at startup itself. `terminationGracePeriodSeconds: 75` (max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain + 10 s pool drain + 5 s buffer) — matches `main.go`'s own shutdown ordering: HTTP + metrics-server `Shutdown` in parallel with every SQS consumer's `Stop` → outbox `Stop` → background context cancel → `pool.DrainAndClose` and `sysPool.DrainAndClose` in parallel (fresh 10 s budget) → tracing/logger flush. NetworkPolicy is scoped to `gateway`-namespace ingress plus an `observability`-namespace `prometheus` scrape on the metrics port.
 
 ### Migration safety
 
@@ -1244,7 +1244,7 @@ Since this service has never been deployed, the schema is one consolidated `0000
 
 - **Unit** (`test/unit/`, no Docker) — `membership_removeuser_test.go`/`membership_removal_test.go` (§8.8 delegate-impact branches); `invitation_service_test.go`/`invitation_scenarios_test.go` (§8.10 invite→accept); `authz_service_test.go` (I-8's TR-7/PLAN-6 composition, fully Docker-free since `AuthZService` depends on `port.AuthZRepository` rather than `*pgcommon.Pool` directly — this was a deliberate Clean Architecture fix during this service's decomposition pass, moving the four-table join into `postgres.AuthZRepository` and leaving only cross-port business logic in the service); `internal/adapter/inbound/http/*_test.go` (functional `fake*` mocks of every port — request binding, path/param parsing, every `domain.DomainError` code's HTTP-status mapping); `internal/adapter/outbound/postgres/db_test.go` (pure-logic branches — `withPool`, `wrapConnErr`, SQLSTATE classification — that don't need a live database).
 
-- **Postgres / RLS** (`test/postgres/`, testcontainers-go, real PG, full migration suite): `rls_test.go`'s **Case 5** (critical, RLS-6) — no cross-tenant leak across a pooled backend, `MaxConns=1`, tenant A tx → return connection → tenant B tx on the same backend → assert B sees 0 of A's rows; `subscription_lapse_test.go` (I-16's BYPASSRLS cross-tenant read, and its self-idempotence once a lapsed tenant is suspended); `consumer_evt_test.go` (EVT-14/15/16); `concurrency_extra_test.go` (SEAT-1/TM-13 races); `reconciler_convergence_test.go`/`reconcilers_test.go` (each of the 7 CronJobs' idempotent re-run behavior). CI additionally greps for the forbidden non-`LOCAL` `SET app.tenant_id`.
+- **Postgres / RLS** (`test/postgres/`, testcontainers-go, real PG, full migration suite): `rls_test.go`'s **Case 5** (critical, RLS-6) — no cross-tenant leak across a pooled backend, `MaxConns=1`, tenant A tx → return connection → tenant B tx on the same backend → assert B sees 0 of A's rows; `subscription_lapse_test.go` (I-16's BYPASSRLS cross-tenant read, and its self-idempotence once a lapsed tenant is suspended); `consumer_evt_test.go` (EVT-14/15/16); `concurrency_extra_test.go` (SEAT-1/TM-13 races); `reconciler_convergence_test.go`/`reconcilers_test.go` (each of the 8 CronJobs' idempotent re-run behavior). CI additionally greps for the forbidden non-`LOCAL` `SET app.tenant_id`.
 
 - **Integration** (`test/integration/`, testcontainers, capped at `TEST_INTEGRATION_PARALLEL`) — real Postgres + Valkey + floci SNS/SQS: `relay_test.go` (EVT-16's wire path — a consumed event's `TenantStateChanged` relay actually reaching the second topic); `dlq_idemp_test.go` (DLQ + `processed_events` dedup under redelivery); `wire_test.go` (the full `RoutingPublisher`/two-Glue-registry publish path); `glue_codec_test.go` (floci Glue — version resolved by definition: a build keeps stamping its own version after a newer one is registered, every produced schema resolves, an unregistered definition fails startup). `pipeline_dlq_test.go` runs the real `sqspipeline` against floci: a poison pill is forwarded to the DLQ on its first delivery, and a transient failure is forwarded at receive count 4. In-package tests in `internal/adapter/inbound/sqspipeline` (`consumer_test.go`, `dlq_test.go`, `inbound_schema_test.go` — including a real Glue-framed message decoded by the actual consumer) cover the same pipeline without Docker, and `eventbus/glue_codec_test.go` pins `registeredDefinition` byte-for-byte against Python for all 28 embedded schemas.
 
@@ -1305,7 +1305,7 @@ STRIDE analysis of `iam-org-membership`. Every row is grounded in a real mechani
 |--------|--------|-----------|------------|
 | **Spoofing** | A forged caller reaches `/api/v1/internal/*` and mutates tenant/membership state platform-wide, or spoofs the `iam-system` principal to bypass tenant scoping | HTTP inbound (`RequireSystemRole`) | Mesh mTLS + NetworkPolicy is the primary boundary (no public route to `/internal/*`); `RequireSystemRole` is defense-in-depth; every internal call still binds `app.tenant_id` via `GUCBridgeMiddleware` — a forged `iam-system` header alone cannot escape RLS unless the tenant header is also forged |
 | **Spoofing** | A gateway-injected identity header is forged to impersonate another user or tenant | `GUCBridgeMiddleware` / `parseBridgedIdentity` | The gateway strips client-supplied identity headers before mesh entry (Envoy is the trust boundary); this service parses and validates the header shape (`uuid.Parse`) but does not itself re-authenticate — a compromised gateway is out of this service's blast-radius control, consistent with the mesh-mTLS model shared across the platform |
-| **Tampering** | Direct PostgreSQL write bypasses RLS and tenant isolation | PostgreSQL | `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` + `REVOKE ALL FROM PUBLIC` on all 7 tenant-scoped tables; only `org_membership_migrator`/`admin_readonly` (`BYPASSRLS`) can bypass, and `org_membership_app` is actively stripped of `BYPASSRLS` if ever found set (RLS-4) |
+| **Tampering** | Direct PostgreSQL write bypasses RLS and tenant isolation | PostgreSQL | `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` + `REVOKE ALL FROM PUBLIC` on all 8 tenant-scoped tables; only `org_membership_migrator`/`admin_readonly` (`BYPASSRLS`) can bypass, and `org_membership_app` is actively stripped of `BYPASSRLS` if ever found set (RLS-4) |
 | **Tampering** | A record is updated concurrently by two requests, silently discarding one's change | `record_version` optimistic locking | `UPDATE ... WHERE record_version=$N` returns 0 rows on a stale write → `409 optimistic_lock_conflict`, never a silent last-write-wins |
 | **Repudiation** | A mutation with no auditable actor | All write paths | `actor`/`tenant_id` on every outbox envelope and event; the outbox is an immutable per-tenant event log; `MFAReset`'s emission is the sole audit signal Audit Log has for a P-34 reset |
 | **Information Disclosure** | Cross-tenant row read via a missing or malformed GUC | PostgreSQL | `rls_check_tenant`/`app_tenant_id` fail closed (`NULL` on any error) rather than open; RLS Case 5 in `test/postgres/rls_test.go` covers the pooled-backend leakage case specifically (RLS-6) |
@@ -1392,7 +1392,7 @@ graph LR
 | Document | Description |
 |----------|-------------|
 | [`.claude/architecture.md`](.claude/architecture.md) | Clean Architecture directory tree, shared library integration, dep rules |
-| [`.claude/database-schema.md`](.claude/database-schema.md) | 8 tables, enums, RLS/tenant/seat/migration/trigger invariants |
+| [`.claude/database-schema.md`](.claude/database-schema.md) | 9 tables, enums, RLS/tenant/seat/migration/trigger invariants |
 | [`.claude/api-caching-events.md`](.claude/api-caching-events.md) | Full endpoint catalogue (P-*/I-*/O-*), cache TTLs, event catalogue |
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |

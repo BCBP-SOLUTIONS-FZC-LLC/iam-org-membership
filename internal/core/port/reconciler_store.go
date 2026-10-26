@@ -26,6 +26,10 @@ type ReconcilerStore interface {
 	// 'trial_expired' and trial_ends_at is older than graceDays. The caller is
 	// responsible for deleting each tenant atomically with its purge event.
 	ListExpiredTrialTenants(ctx context.Context, graceDays, limit int) ([]uuid.UUID, error)
+	// ListTenantsWithParkedEvents returns at most limit tenant IDs that have
+	// parked events (CD-50, EVT-18) and a tenants row (live or soft-deleted),
+	// i.e. parked events a replay can now resolve.
+	ListTenantsWithParkedEvents(ctx context.Context, limit int) ([]uuid.UUID, error)
 }
 
 // RealmSyncCandidate is one tenants row waiting for T-15 realm-config push.

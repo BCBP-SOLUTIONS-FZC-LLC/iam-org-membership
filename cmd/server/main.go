@@ -390,8 +390,14 @@ func main() {
 		pgadapter.NewDeptRoleLabelRepository(pool), pgadapter.NewTenantDepartmentRepository(pool),
 		catalogReader, catalogReader, txRunner, cache, nil,
 	).WithLogger(log)
+	// EVT-18 (CD-50): an event for a tenant with no row yet is parked and
+	// replayed by I-1 once the tenant exists — on both I-1 paths, the
+	// backstop above and the HTTP handler's provisioningSvc below.
+	parkedEvents := pgadapter.NewParkedTenantEventRepository(pool)
 	membershipConsumer := consumeradapter.NewMembershipEventConsumer(inbox, pgadapter.NewTenantRepository(pool), catalogReader, cache, skew, log).
-		WithTenantProvisioner(backstopProvisioning)
+		WithTenantProvisioner(backstopProvisioning).
+		WithParkedEvents(parkedEvents, txRunner)
+	backstopProvisioning.WithParkedEvents(parkedEvents, membershipConsumer)
 
 	// LoadSQS supplies region / endpoint / long-poll / visibility / max-receive
 	// from the library env contract. Per-queue URL + concurrency overlay
@@ -558,7 +564,8 @@ func main() {
 	inviteMaxPerActorPerHour := envInt("INVITE_MAX_PER_ACTOR_PER_HOUR", 10) // SECURITY-5
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
-	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log)
+	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log).
+		WithParkedEvents(parkedEvents, membershipConsumer)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
 		WithAuditLog(auditLogClient).
 		WithPlanCatalog(catalogReader).
