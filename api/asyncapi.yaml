@@ -687,8 +687,7 @@ channels:
         Tender-ACL Service                    (queue name owned by them)  MembershipRevoked, TenantMembershipsPurged
         Group-Mapping Service                 (queue name owned by them)  TenantMembershipsPurged
         LLM Ingestion Service (proposed)      (name TBD — OI-82)          TenantMembershipsPurged
-        LLM Retrieval & Generation (proposed) iam-rag-purge-q             TenantMembershipsPurged  (OQ-29/OQ-75)
-        LLM Retrieval & Generation (proposed) iam-rag-membership-q        TenantStateChanged       (OQ-71)
+        LLM Retrieval & Generation (proposed) membership-rag-q            TenantMembershipsPurged, TenantStateChanged  (CD-44; OQ-29/OQ-75, OQ-71)
 
       Queue security: every SQS queue that subscribes to this topic MUST enforce
       a resource-based policy restricting delivery to this SNS topic ARN. Without

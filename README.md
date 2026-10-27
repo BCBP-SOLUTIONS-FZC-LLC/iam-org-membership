@@ -808,8 +808,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | **Tender ACL Service** | (queue name owned by them) | `MembershipRevoked`, `TenantMembershipsPurged` — async cascade-delete of ACL overlays |
 | **Group Mapping / JIT Config Service** | (queue name owned by them) | `TenantMembershipsPurged` — async wipe of group→dept/role mapping rows |
 | **LLM Ingestion Service** (**proposed**) | (name TBD — OI-82) | `TenantMembershipsPurged` — purge ingestion corpus on tenant offboarding |
-| **LLM Retrieval & Generation** (**proposed**) | `iam-rag-purge-q` | `TenantMembershipsPurged` — purge artefacts, retrieval sets, reports on offboarding (OQ-29/OQ-75) |
-| **LLM Retrieval & Generation** (**proposed**) | `iam-rag-membership-q` | `TenantStateChanged` — freeze/thaw collections on tenant status changes (OQ-71) |
+| **LLM Retrieval & Generation** (**proposed**) | `membership-rag-q` (CD-44) | `TenantMembershipsPurged` — purge artefacts, retrieval sets, reports on offboarding (OQ-29/OQ-75); `TenantStateChanged` — freeze/thaw collections on tenant status changes (OQ-71) |
 | **Realm Provisioner** | `tenant-realm-q` | `TrialStarted` on `iam.tenant.events` — seeds RP's own trial-expiry sweep |
 | **Notification** | `tenant-notification-q` | `TenantCreated`, `TrialStarted` on `iam.tenant.events` — welcome + trial-start emails |
 
