@@ -28,8 +28,11 @@ type ProvisioningService struct {
 	txRunner    port.TxRunner
 	cache       port.Cache
 	rp          port.RealmProvisionerClient
-	log         port.SlogStyleLogger             // optional — see WithLogger
-	ledger      port.TrialSignupLedgerRepository // optional — see WithTrialLedger
+	log         port.SlogStyleLogger // optional — see WithLogger
+	// parked / replayer are the EVT-18 park-and-replay hooks (CD-50) — see
+	// WithParkedEvents. Optional: nil skips both.
+	parked   port.ParkedTenantEventStore
+	replayer port.ParkedTenantEventReplayer
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -37,16 +40,6 @@ type ProvisioningService struct {
 // consumer/outbound-client logs. Optional — the zero value is a no-op.
 func (s *ProvisioningService) WithLogger(log port.Logger) *ProvisioningService {
 	s.log = port.NewSlogStyleLogger(log)
-	return s
-}
-
-// WithTrialLedger wires the CR-4 trial_signup_ledger repository so
-// CheckTrialEligibility and the ledger write inside TrialSignup are active.
-// Optional — when nil, CheckTrialEligibility always returns eligible (fail-open
-// for backward compat with callers that don't need the check, e.g. the
-// TenantIdentityProvisioned backstop).
-func (s *ProvisioningService) WithTrialLedger(ledger port.TrialSignupLedgerRepository) *ProvisioningService {
-	s.ledger = ledger
 	return s
 }
 
@@ -69,6 +62,17 @@ func NewProvisioningService(
 
 // TrialSignupInput carries the I-1 payload from Realm Provisioner /
 // Signup BFF after the shared trial-realm user has been created (§8.1).
+// WithParkedEvents wires EVT-18 (CD-50). TrialSignup takes the tenant's
+// provisioning lock (store) while it creates the row, then replays the
+// events the consumer parked because they arrived before the tenant existed
+// (replayer). The consumer takes the same lock before it parks, so no event
+// can be parked after this replay has run.
+func (s *ProvisioningService) WithParkedEvents(store port.ParkedTenantEventStore, replayer port.ParkedTenantEventReplayer) *ProvisioningService {
+	s.parked = store
+	s.replayer = replayer
+	return s
+}
+
 type TrialSignupInput struct {
 	TenantID      uuid.UUID
 	Slug          string
@@ -76,13 +80,6 @@ type TrialSignupInput struct {
 	Plan          domain.TenantPlan
 	OwnerUserID   uuid.UUID
 	DefaultLocale string
-	// EmailHash is the HMAC-SHA256 hex of the owner's lower-cased email,
-	// supplied by the Signup BFF (CR-4). When non-empty and ledger is wired,
-	// a row is inserted atomically inside the I-1 transaction so that a
-	// successful TrialSignup always marks the email as used. Optional: callers
-	// that do not perform the eligibility pre-check (e.g. the
-	// TenantIdentityProvisioned backstop, Realm Provisioner) leave this empty.
-	EmailHash string
 }
 
 // TrialSignup is I-1: creates the tenant row + 5 system dept activations
@@ -177,6 +174,14 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	var created *domain.Tenant
 	var wasCreated bool
 	err = s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+		// EVT-18: hold the provisioning lock so the consumer cannot park an
+		// event for this tenant between our commit and the replay below.
+		if s.parked != nil {
+			if err := s.parked.LockTenantProvisioning(txCtx, req.TenantID); err != nil {
+				return err
+			}
+		}
+
 		// 1) Create the tenant row. LLD I-1 ON CONFLICT (id) DO NOTHING —
 		// if the row already exists (idempotent replay), skip the whole
 		// seeding + event storm and return the existing row so the handler
@@ -205,15 +210,6 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			// Idempotent replay: the tenant already exists. Per LLD I-1
 			// "no re-seed", so short-circuit the tx here.
 			return nil
-		}
-
-		// CR-4: record the email hash so the eligibility check can gate
-		// re-signup attempts. ON CONFLICT DO NOTHING in the repo makes this
-		// idempotent. Skip when the BFF did not send a hash (RP backstop).
-		if req.EmailHash != "" && s.ledger != nil {
-			if err := s.ledger.InsertEmailHash(txCtx, req.EmailHash); err != nil {
-				return err
-			}
 		}
 
 		// 2) Activate the pre-fetched system departments (§8.1) — the
@@ -294,7 +290,22 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 	if err != nil {
 		return nil, false, err
 	}
+	s.replayParked(ctx, req.TenantID)
 	return created, wasCreated, nil
+}
+
+// replayParked applies the events parked for this tenant before it existed
+// (EVT-18, CD-50). It runs on every successful I-1 — a replayed I-1 is
+// cheap and also retries a replay that failed earlier. A failure never fails
+// I-1: the tenant is created, and the parked-events-replay CronJob retries.
+func (s *ProvisioningService) replayParked(ctx context.Context, tenantID uuid.UUID) {
+	if s.replayer == nil {
+		return
+	}
+	if _, err := s.replayer.ReplayParked(ctx, tenantID); err != nil {
+		s.log.WarnContext(ctx, "I-1: replay of parked tenant events failed — the parked-events-replay CronJob will retry",
+			"tenant_id", tenantID, "error", err)
+	}
 }
 
 // SetRealmFields is I-2: RP updates realm_id/realm_type/keycloak_shard
@@ -505,26 +516,6 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		)
 	}
 	return err
-}
-
-// CheckTrialEligibility is CR-4: the Signup BFF calls this before I-1 to
-// verify the email_hash has not been used for a prior trial. Returns nil when
-// the email is eligible (no ledger row found). Returns ErrTrialAlreadyUsed
-// (→ 409) when the hash is present. When the ledger is not wired (nil),
-// always returns nil (fail-open for callers that don't need the gate).
-func (s *ProvisioningService) CheckTrialEligibility(ctx context.Context, emailHash string) error {
-	if s.ledger == nil {
-		return nil
-	}
-	exists, err := s.ledger.ExistsEmailHash(ctx, emailHash)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return domain.NewError(domain.ErrTrialAlreadyUsed,
-			"this email address has already been used for a trial")
-	}
-	return nil
 }
 
 // ── validation helpers (GAP-I1-3/I1-4/I1-5) ──────────────────────────────

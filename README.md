@@ -149,7 +149,7 @@ Domain-rule failures are raised as a `*domain.DomainError` wrapping one of the s
 | A tenant-role reconcile (P-28) can never assign `member` | `chk_tr_no_member` CHECK, backstopped by service-layer validation (`400 invalid_role`) — `member` is derived at read time, never stored (TR-7) |
 | A `tenant_owner`-affecting mutation can never leave zero active owners | `422 last_owner_removal` (TM-8), serialized via `SELECT ... FOR UPDATE` on the `tenants` row (TM-13) so two concurrent removals can't both pass |
 | Seat cap is enforced transactionally, not just pre-flight | `SELECT ... FOR UPDATE` on `tenants` under the same tx that counts `active + pending` against `licensed_seats` (SEAT-1) |
-| Optimistic locking | 7 of 8 tables carry `record_version` (`touch_row` DB trigger); a version mismatch returns `409 optimistic_lock_conflict` with the current version in the body |
+| Optimistic locking | 7 of 9 tables carry `record_version` (`touch_row` DB trigger); a version mismatch returns `409 optimistic_lock_conflict` with the current version in the body |
 | Invitation rate limiting | Per-email cooldown (`INVITE_REINVITE_COOLDOWN_MINUTES`, `429 reinvite_too_soon`) and per-tenant / per-actor hourly ceilings (`INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR`, `429 invite_rate_limited`) — all checked pre-flight, before any Realm Provisioner call |
 
 ---
@@ -161,7 +161,7 @@ Clean Architecture — dependencies point inward; outer layers never import inne
 ```
 iam-org-membership/
 ├── cmd/
-│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrate-at-startup unless RUN_MIGRATIONS=false, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 5 metric-exporter goroutines (exporters.go — 4 gauges + iam_rls_violations_total counter); wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
+│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrate-at-startup unless RUN_MIGRATIONS=false, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 6 metric-exporter goroutines (exporters.go — 4 gauges + iam_rls_violations_total counter); wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
 │   ├── reconciler/                    # Single binary, --job=<name>; jobs/ holds the 7 CronJob entry points
 │   └── migrate/                       # One-shot schema migration (postgres.MigrateSchema: platform-events outbox schema, then domain migrations) — the Helm pre-install/pre-upgrade hook Job
 ├── internal/
@@ -172,7 +172,7 @@ iam-org-membership/
 │   └── adapter/
 │       ├── inbound/
 │       │   ├── http/                  # Gin handlers (P-*/I-*/O-*), DTOs, middleware, router.go, Swagger UI
-│       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged — Gap 12, inert until iam-catalog-admin's publisher side ships); dedup.go (processOnce/ackUnknown over port.Inbox)
+│       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged / PlanCatalogChanged — cache invalidation, CACHE-11); dedup.go (processOnce/ackUnknown over port.Inbox)
 │       │   └── sqspipeline/           # Inbound pipeline every queue runs: NewConsumer/EnvForQueue (consumer.go), RequireDLQ + routeRejectsToDLQ (dlq.go), consumed-schema Validator + Handler (inbound_schema.go)
 │       └── outbound/
 │           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cr4_trial_signup_ledger)
@@ -221,10 +221,10 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 
 | Concern | Technology | Notes |
 |---|---|---|
-| **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 8 tables, `FORCE ROW LEVEL SECURITY` on all 7 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
+| **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 9 tables, `FORCE ROW LEVEL SECURITY` on all 8 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
 | **Cache** | Valkey (Redis-compatible) via `go-redis/v9` | Advisory-only (CACHE-2/9) — a miss or outage falls through to Postgres, never a hard failure |
 | **Events (outbound)** | AWS SNS + transactional outbox (`platform-events`) | Two topics via `RoutingPublisher`: `iam.membership.events` (12 event types) and `iam.tenant.events` (2 — `TenantCreated`/`TrialStarted`) |
-| **Events (inbound)** | AWS SQS, 3 queues | `tenant-orgm-q`, `billing-orgm-q` (+ inert `catalog-orgm-q`), each with its own `-dlq`; Glue header stripped by `events.GlueDecodeCodec`, payload validated against the embedded consumed schema, permanent rejects sent straight to the DLQ; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
+| **Events (inbound)** | AWS SQS, 3 queues | `tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q` (cache invalidation only), each with its own `-dlq`; Glue header stripped by `events.GlueDecodeCodec`, payload validated against the embedded consumed schema, permanent rejects sent straight to the DLQ; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
 | **Schema registry** | AWS Glue, one registry per topic (SCHEMA-7) | `iam-membership-events`, `iam-tenant-events`; governed by `platform-schemagov`. Version UUIDs resolved once at startup by definition (`GetSchemaByDefinition`) — no per-event Glue call, no refresher |
 
 ### Shared library dependencies
@@ -301,7 +301,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 
 ### 10. Background reconcilers you may observe
 
-7 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
+8 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
 
 | CronJob (`--job=`) | Schedule | Purpose |
 |---|---|---|
@@ -312,6 +312,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 | `trial-cleanup` | `0 2 * * *` | Hard-deletes trial tenants past grace beyond `trial_expired` |
 | `outbox-prune` | `0 3 * * *` | Prunes published `outbox_events` past `OUTBOX_RETENTION_DAYS` |
 | `processed-events-prune` | `0 4 * * *` | Prunes `processed_events` rows past `PROCESSED_EVENTS_TTL_DAYS` |
+| `parked-events-replay` | `*/5 * * * *` | EVT-18 backstop: replays events parked for a tenant before its row existed, once the row exists (I-1 normally replays them immediately) |
 
 The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`), plus a 5th exporter for the `iam_rls_violations_total` counter (`pgadapter.GaugeRepository.RLSViolationCounts`, mirrors `iam-user-profile`'s `runRLSViolationExporter`), run as **ticker goroutines inside `cmd/server`** (`runBusinessExporters`, `exporters.go`), not CronJobs.
 
@@ -343,10 +344,11 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 | `make setup` | Copy `.env-example` → `.env` (if absent) and install the `.githooks/pre-commit` hook |
 | `make install-hooks` | (Re)install the pre-commit hook only |
 | `make tidy` / `make fmt` / `make fmt-check` / `make vet` | Go basics; `fmt-check` mirrors CI, does not modify files |
-| `make lint` | `golangci-lint` via `go tool` — default build plus every test build tag (`integration`, `e2e`) |
+| `make lint` | `golangci-lint` via `go tool` — default build plus every test build tag (`integration`, `e2e`, `helm`) |
 | `make arch-lint` | `go-arch-lint` against `.go-arch-lint.yml` (the same script CI runs) |
 | `make metrics-inventory` | Regenerate `docs/observability/metric-registry.md` from the pinned registry and a real scrape |
 | `make metrics-lint` | platform-gincommon's `metricslint` on a real `/metrics` scrape plus the alert/dashboard references (the same script CI runs) |
+| `make helm-access-check` | CD-19 access matrix: renders the chart with the staging and prod values and asserts, by parsing the YAML, which routes each cross-namespace caller (Billing, Entitlements, Signup BFF, `workflow-app`) can reach in the Istio AuthorizationPolicy and that `billing`/`commercial`/`bff` are admitted only per pod in the NetworkPolicy (`test/helm/`, needs `helm`; CI runs it after `helm-check.sh`) |
 | `make mod-verify` | `go mod verify` |
 | `make vuln-check` | `govulncheck ./internal/...` |
 | `make test` | Unit + postgres + integration in parallel (Docker required; e2e is separate) |
@@ -586,7 +588,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `VALKEY_URL` | `localhost:6380` (dev) | Advisory cache; `rediss://` required outside dev |
 | `SNS_TOPIC_MEMBERSHIP_ARN` / `SNS_TOPIC_TENANT_ARN` | — | **Required outside dev.** The two `RoutingPublisher` topic ARNs |
 | `SQS_TENANT_ORGM_QUEUE_URL` / `SQS_BILLING_ORGM_QUEUE_URL` | — | Inbound lifecycle-event queues |
-| `SQS_CATALOG_ORGM_QUEUE_URL` | — (unset in every environment today) | Inbound `catalog-orgm-q` ← `DepartmentCatalogChanged` (Gap 12). The consumer (`catalog_consumer.go`) is done and tested, but this queue is inert until both this var is set **and** `iam-catalog-admin` ships its publisher side |
+| `SQS_CATALOG_ORGM_QUEUE_URL` | required in staging/prod; set in `.env-example` | Inbound `catalog-orgm-q` ← `DepartmentCatalogChanged` / `PlanCatalogChanged` (LLD rev 2.39). The queue and its SNS subscription are SRE/platform Terraform |
 | `SQS_TENANT_ORGM_CONCURRENCY` / `SQS_BILLING_ORGM_CONCURRENCY` / `SQS_CATALOG_ORGM_CONCURRENCY` | `4` / `2` / `2` | Per-queue consumer concurrency overlay onto the shared `platform-events` `eventcfg.LoadSQS()` env contract |
 | `GLUE_REGISTRY_MEMBERSHIP_NAME` / `GLUE_REGISTRY_TENANT_NAME` | — | Unset → `NoopCodec` (plain JSON) |
 | `AWS_REGION` / `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `ap-south-1` / — | floci override in dev; IRSA in production |
@@ -659,7 +661,7 @@ Alert rules live in `deploy/monitoring/app-alerts.yml` (26), `slo-rules.yml` (5)
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers + 6 metric-exporter goroutines (5 gauges + `iam_rls_violations_total` counter) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | One-shot schema migration (`cmd/migrate` → `postgres.MigrateSchema`: platform-events' `outbox.ApplySchema`, then the domain migrations); exits 0 on success or "already up to date", 1 on failure, with operator hints for a dirty migration or a version missing from the build |
 
@@ -681,7 +683,7 @@ Nine workflow files:
 
 - **`ci.yml`** — orchestrator. Runs `validate-test.yml` and `validate-quality.yml` in parallel with `build-image` (Hadolint → Buildx cached build → Trivy CVE scan → smoke tests). On push to `main`: builds+pushes to GHCR with provenance+SBOM.
 - **`validate-test.yml`** (reusable) — `make test-ci` (unit + postgres/RLS + integration, `-race`, merged coverage) → coverage threshold gate (**95%**) → `make test-e2e` (real HTTP router via `httptest`, no coverage/`-race`) → `go-arch-lint` → Swagger staleness check → event-schema sync check (`schema-gov extract --check`, with schema-gov v0.4.0 installed from source; the known `mfareset.json` drift is the one tolerated exception).
-- **`validate-quality.yml`** (reusable) — `go mod verify` → HTML-escaped-operator check on workflow files → RLS-6 non-`LOCAL` `SET app.tenant_id` grep → metric naming/registry-ratification checks → observability-standard lint (`metricslint.sh`, same as `make metrics-lint`) → events-bypass check (`check-forbidden-events-bypass.sh`, no raw SNS/SQS SDK calls or hand-built `events.Envelope{}` outside `platform-events`) → outbox-access check (`check-outbox-access.sh`, no hand-rolled SQL against `outbox_events` outside `platform-events`) → `gofmt` check → `go mod tidy` drift check → `go vet` → `golangci-lint` (incl. a `forbidigo` rule banning raw `pgxpool`/`pgx.Connect`/`sql.Open` outside `pgcommon.NewPool`) → `govulncheck` → Dockerfile base-image digest check (against `.docker-digests`).
+- **`validate-quality.yml`** (reusable) — `go mod verify` → HTML-escaped-operator check on workflow files → RLS-6 non-`LOCAL` `SET app.tenant_id` grep → metric naming/registry-ratification checks → observability-standard lint (`metricslint.sh`, same as `make metrics-lint`) → events-bypass check (`check-forbidden-events-bypass.sh`, no raw SNS/SQS SDK calls or hand-built `events.Envelope{}` outside `platform-events`) → outbox-access check (`check-outbox-access.sh`, no hand-rolled SQL against `outbox_events` outside `platform-events`) → `gofmt` check → `go mod tidy` drift check → `go vet` → `golangci-lint` (incl. a `forbidigo` rule banning raw `pgxpool`/`pgx.Connect`/`sql.Open` outside `pgcommon.NewPool`) → `govulncheck` → Dockerfile base-image digest check (against `.docker-digests`) → `helm-check.sh` → `make helm-access-check` (CD-19 access matrix).
 - **`changelog-check.yml`** — fails a PR touching `internal/`, `api/`, `deploy/`, or `cmd/` without a `CHANGELOG.md` update.
 - **`release.yml`** — tag-triggered release pipeline: re-validate → build+cross-compile → Docker build/push/sign → optional deploy-gate → GitHub Release publish.
 - **`schema-registry.yml`** — registers this service's event schemas to the shared Glue registries: PR read-only validate+diff, push-to-`main` full validate→diff→register→changelog.
@@ -790,7 +792,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 |---|---|---|
 | `tenant-orgm-q` | Realm Provisioner | `TenantIdentityProvisioned` (signup provisioning backstop: creates the tenant via I-1 if missing), `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated` |
 | `billing-orgm-q` | Billing | `TenantSeatsChanged`, `TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated` |
-| `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (Gap 12) — **inert today**: consumer is done/tested, but `iam-catalog-admin` has no publisher side yet and `SQS_CATALOG_ORGM_QUEUE_URL` is unset everywhere |
+| `catalog-orgm-q` | Catalog / Admin Config Service | `DepartmentCatalogChanged` (clears `om:departments`), `PlanCatalogChanged` (clears `om:plans`, retires the plan's cached I-8 entries via `om:plans:gen:{plan}`; never writes `feature_flags`) |
 
 **Events this service produces** (via `iam.membership.events` / `iam.tenant.events`) and their downstream consumers:
 
@@ -817,10 +819,10 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | System | Role |
 |---|---|
-| **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 8 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
+| **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 9 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
 | **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
 | **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
-| **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` is implemented but inert until `iam-catalog-admin`'s publisher side ships and `SQS_CATALOG_ORGM_QUEUE_URL` is set |
+| **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` subscribes to Catalog's `iam-catalog-events` with filter `[DepartmentCatalogChanged, PlanCatalogChanged]` (SRE/platform Terraform) |
 | **AWS Glue Schema Registry** | `iam-membership-events` and `iam-tenant-events` — version UUIDs resolved once at startup by definition (publish); consumers only strip the header, and validate against embedded consumed schemas |
 
 ---
@@ -851,7 +853,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 |---|---|
 | [`.claude/CLAUDE.md`](.claude/CLAUDE.md) | Top-level guidance for Claude Code working in this repo |
 | [`.claude/architecture.md`](.claude/architecture.md) | Clean Architecture directory tree, shared library integration, dep rules |
-| [`.claude/database-schema.md`](.claude/database-schema.md) | 8 tables, enums, RLS/tenant/seat/migration/trigger invariants |
+| [`.claude/database-schema.md`](.claude/database-schema.md) | 9 tables, enums, RLS/tenant/seat/migration/trigger invariants |
 | [`.claude/api-caching-events.md`](.claude/api-caching-events.md) | Full endpoint catalogue, cache TTLs, event catalogue, status-code table |
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |

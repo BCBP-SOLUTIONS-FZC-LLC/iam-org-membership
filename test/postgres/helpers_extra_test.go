@@ -39,6 +39,7 @@ import (
 type testFixtures struct {
 	appPool *pgcommon.Pool
 	rawPool *dbseed.Pool
+	sysPool *pgcommon.Pool // BYPASSRLS — cross-tenant reconciler queries
 
 	// Repos (all directly usable in assertions).
 	Tenants     port.TenantRepository
@@ -167,6 +168,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	fx := &testFixtures{
 		appPool:      appPool,
 		rawPool:      rawPool,
+		sysPool:      sysPool,
 		Tenants:      tenants,
 		Memberships:  memberships,
 		Roles:        roles,

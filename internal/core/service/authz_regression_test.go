@@ -113,7 +113,7 @@ func TestAuthZService_SetCached_NilCache_NoOp(t *testing.T) {
 	}
 	// If setCached panics, the test fails. No assertion needed — just confirm no panic.
 	assert.NotPanics(t, func() {
-		svc.setCached(context.Background(), proj)
+		svc.setCached(context.Background(), proj, map[domain.TenantPlan]string{})
 	})
 }
 
@@ -123,7 +123,7 @@ func TestAuthZService_SetCached_NilProj_NoOp(t *testing.T) {
 	cache := newInMemCache()
 	svc := &AuthZService{cache: cache}
 	assert.NotPanics(t, func() {
-		svc.setCached(context.Background(), nil)
+		svc.setCached(context.Background(), nil, map[domain.TenantPlan]string{})
 	})
 	assert.Empty(t, cache.data, "no cache writes expected for nil proj")
 }
@@ -144,7 +144,7 @@ func TestAuthZService_SetCached_ValidProj_WritesToCache(t *testing.T) {
 		Roles:    []domain.TenantRoleCode{domain.RoleMember},
 	}
 
-	svc.setCached(context.Background(), proj)
+	svc.setCached(context.Background(), proj, map[domain.TenantPlan]string{})
 
 	expectedKey := cacheKeyMemberships(tenantID, userID)
 	stored, ok := cache.data[expectedKey]

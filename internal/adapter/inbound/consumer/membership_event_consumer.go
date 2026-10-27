@@ -74,7 +74,9 @@ var ErrPoisonPill = errors.New("event rejected as poison pill (EVT-15 future-tim
 var ErrProvisioningRejected = errors.New("TenantIdentityProvisioned rejected: I-1 cannot accept the payload")
 
 // errTenantNotYetProvisioned is returned, so the message is redelivered,
-// when a lifecycle/billing event names a tenant with no tenants row at all.
+// when a lifecycle/billing event names a tenant with no tenants row at all
+// and no parked-event store is wired (EVT-17; production parks instead,
+// EVT-18). Replay also uses it to roll back and leave an event parked.
 // Delivery on iam.tenant.events is unordered, so RP's events for a new tenant
 // can arrive before the tenant is created (by the BFF's I-1 call or by the
 // TenantIdentityProvisioned backstop). Before the backstop these were
@@ -97,6 +99,8 @@ type MembershipEventConsumer struct {
 	catalog     port.PlanCatalogReader
 	cache       port.Cache
 	provisioner TenantProvisioner
+	parked      port.ParkedTenantEventStore
+	txRunner    port.TxRunner
 	skew        time.Duration
 	logger      port.SlogStyleLogger
 }
@@ -128,6 +132,17 @@ func (c *MembershipEventConsumer) WithTenantProvisioner(p TenantProvisioner) *Me
 	return c
 }
 
+// WithParkedEvents switches the no-tenant-row path from retry-until-DLQ
+// (EVT-17) to park-and-replay (EVT-18, CD-50): an event for a tenant with no
+// row is parked in pending_tenant_events and acknowledged, and ReplayParked
+// applies it once the tenant exists. txRunner runs each replay. Production
+// wiring always sets both; without them the EVT-17 retry stays in force.
+func (c *MembershipEventConsumer) WithParkedEvents(store port.ParkedTenantEventStore, txRunner port.TxRunner) *MembershipEventConsumer {
+	c.parked = store
+	c.txRunner = txRunner
+	return c
+}
+
 // Handle is the entry point for platform-events SQS consumer.
 func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelope[json.RawMessage]) error {
 	// ── EVT-15 future-time clamp ─────────────────────────────────────────
@@ -148,44 +163,15 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		return fmt.Errorf("parse tenant_id from envelope: %w", err)
 	}
 
-	// Set the RLS GUC to the target tenant so RLS lets us see + update the
-	// tenants row. Consumers run as the app pool (no BYPASSRLS) per RLS-4.
-	g, _ := pgcommon.GUCSetFromContext(ctx)
-	g.UserID = "iam-system"
-	g.TenantID = tenantID.String()
-	gucCtx := pgcommon.WithGUCSet(ctx, g)
+	gucCtx := tenantGUC(ctx, tenantID)
 
 	if env.Type == eventTenantIdentityProvisioned {
 		return c.handleTenantIdentityProvisioned(ctx, gucCtx, tenantID, env)
 	}
 
-	// TrialReactivated (§8.10.3/TR2) needs the tenant's current plan's
-	// trial_duration_days from the Catalog Service to compute the new
-	// trial_ends_at. Catalog is an HTTP call, so — like ProvisioningService.
-	// TrialSignup — it must complete before the write transaction below
-	// opens; an HTTP call has no business running while a Postgres tx is
-	// held open. This short read-only peek at the current plan runs in its
-	// own transaction, committed and closed before the HTTP call.
-	var trialDurationDays int
-	if env.Type == "TrialReactivated" {
-		tenant, peekErr := c.tenants.FindByID(gucCtx, tenantID)
-		switch {
-		case peekErr != nil && errors.Is(peekErr, domain.ErrTenantNotFound):
-			// Tenant absent — the write tx below will hit the same
-			// missing-row path and take the standard "record dedup, drop" path.
-		case peekErr != nil:
-			return fmt.Errorf("peek current plan for TrialReactivated: %w", peekErr)
-		case tenant == nil:
-			// Same as not-found: write tx records dedup and drops.
-		case c.catalog == nil:
-			return errors.New("TrialReactivated: no PlanCatalogReader configured")
-		default:
-			plan, err := c.catalog.PlanByCode(ctx, tenant.Plan)
-			if err != nil {
-				return fmt.Errorf("resolve plan %q for TrialReactivated: %w", tenant.Plan, err)
-			}
-			trialDurationDays = plan.TrialDurationDays
-		}
+	trialDurationDays, err := c.trialDurationDays(ctx, gucCtx, tenantID, env)
+	if err != nil {
+		return err
 	}
 
 	var gdprWipeRan bool
@@ -198,132 +184,199 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			return err
 		}
 		if locked == nil {
-			return c.tenantAbsent(txCtx, tenantID, env)
-		}
-
-		// ── EVT-14 recency guard ─────────────────────────────────────────
-		if locked.LastEventAt != nil && !env.Timestamp.After(*locked.LastEventAt) {
-			if metrics.LifecycleEventSkipped != nil {
-				metrics.LifecycleEventSkipped.WithLabelValues(env.Type).Inc()
-			}
-			// SLO-3: record lag even for skipped events — a late-arriving
-			// event that is skipped is exactly the delivery-delay signal
-			// iam_lifecycle_event_lag_seconds is designed to surface.
-			if !env.Timestamp.IsZero() {
-				metrics.ObserveLifecycleEventLag(env.Type, time.Since(env.Timestamp).Seconds())
-			}
-			c.logger.Info("EVT-14 stale — projection unchanged", "event_id", env.ID, "event_type", env.Type)
-			return nil
-		}
-
-		prevStatus := locked.Status
-		prevPlan := locked.Plan
-
-		newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trialDurationDays)
-		if err != nil {
-			return err
-		}
-
-		// Bump last_event_at only when projection actually ran.
-		if err := c.tenants.SetLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
-			return err
-		}
-
-		// SLO-3: record the lag between event.time and apply time so
-		// iam_lifecycle_event_lag_seconds tracks consumer processing drift.
-		if !env.Timestamp.IsZero() {
-			metrics.ObserveLifecycleEventLag(env.Type, time.Since(env.Timestamp).Seconds())
-		}
-
-		pub, _ := port.EventPublisherFromContext(txCtx)
-
-		// ── EVT-16 tenant-state relay ────────────────────────────────────
-		if pub != nil && (newStatus != prevStatus || newPlan != prevPlan) {
-			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
-				Type:      domain.EventTenantStateChanged,
-				TenantID:  tenantID,
-				Subject:   tenantID.String(),
-				Actor:     "iam-system",
-				IPAddress: "system",
-				UserAgent: "iam-org-membership/event-consumer",
-				Data: domain.TenantStateChangedPayload{
-					TenantID:       tenantID,
-					Status:         newStatus,
-					PreviousStatus: prevStatus,
-					Plan:           newPlan,
-					PreviousPlan:   prevPlan,
-					ChangedAt:      env.Timestamp,
-					Cause:          env.Type,
-				},
-			}); err != nil {
+			locked, err = c.tenantAbsent(txCtx, tenantID, env)
+			if err != nil || locked == nil {
 				return err
 			}
-		}
-
-		// ── ADR-0008 §6.4 (LLD §15.5): Core → Delegation/Tender-ACL/
-		// Group-Mapping tenant-purge cascade signal. Whenever this
-		// consumed event actually transitions the tenant into 'offboarded'
-		// (guarded, like EVT-16 above, by the EVT-14 recency check already
-		// having run and by the prevStatus != newStatus diff — never a
-		// bare relay of the inbound event), relay TenantMembershipsPurged
-		// on iam.membership.events so those services' consumers can
-		// soft-delete their own tenant-scoped rows. Distinct from the
-		// generic EVT-16 TenantStateChanged relay above (which also fires
-		// on this transition) so a downstream consumer can filter on it
-		// without matching every other status/plan change, and distinct
-		// from the Realm-Provisioner-produced TenantOffboarded event this
-		// same consumer reacts to on tenant-orgm-q (§16 OQ-1 — Core never
-		// re-emits that event under its own name).
-		if prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
-			// GDPR tenant wipe (§15.5) — delete Core's own remaining
-			// tenant-scoped child rows in the same tx as the tenants
-			// projection UPDATE above. The tenants row itself is only
-			// soft-deleted (deleted_at set, PAID-1/chk_offboarded_soft_deleted
-			// — id retained for audit), so ON DELETE CASCADE never fires
-			// from it; these are explicit deletes, not a cascade side
-			// effect. Order doesn't matter for FK ordering here — none of
-			// these six tables reference each other, only tenants (which
-			// is never itself deleted).
-			if err := c.tenants.WipeTenantChildren(txCtx, tenantID); err != nil {
-				return err
-			}
-			gdprWipeRan = true
-		}
-
-		if pub != nil && prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
-			if err := pub.Enqueue(txCtx, &domain.DomainEvent{
-				Type:      domain.EventTenantMembershipsPurged,
-				TenantID:  tenantID,
-				Subject:   tenantID.String(),
-				Actor:     "iam-system",
-				IPAddress: "system",
-				UserAgent: "iam-org-membership/event-consumer",
-				Data: domain.TenantMembershipsPurgedPayload{
-					TenantID: tenantID,
-					ActorID:  domain.SystemActorID,
-				},
-			}); err != nil {
-				return err
+			// I-1 created the tenant while this event waited for the
+			// provisioning lock. TrialReactivated's trial duration was peeked
+			// while the row was missing, so redeliver it to recompute.
+			if env.Type == "TrialReactivated" {
+				return errTenantNotYetProvisioned
 			}
 		}
-
-		return nil
+		gdprWipeRan, err = c.project(txCtx, tenantID, env, locked, trialDurationDays)
+		return err
 	})
 	if txErr != nil {
 		return txErr
 	}
 
-	// Cache invalidation (§15.5 step 3, CACHE-8) runs after the tx commits —
-	// Valkey isn't part of the Postgres transaction, and cache is advisory
-	// only (CACHE-2/9): a failure here never rolls back or fails the wipe
-	// that already committed. Best-effort, skipped entirely if cache is nil.
-	if gdprWipeRan && c.cache != nil {
-		if err := c.cache.Delete(ctx, gdprWipeCacheKeys(tenantID)...); err != nil {
-			c.logger.Warn("GDPR wipe: cache invalidation failed (advisory-only, not fatal)",
-				"tenant_id", tenantID, "error", err)
-		}
+	if gdprWipeRan {
+		c.evictAfterWipe(ctx, tenantID)
 	}
 	return nil
+}
+
+// tenantGUC binds the RLS GUC to the target tenant so RLS lets the consumer
+// see and update the tenants row. Consumers run as the app pool (no
+// BYPASSRLS) per RLS-4.
+func tenantGUC(ctx context.Context, tenantID uuid.UUID) context.Context {
+	g, _ := pgcommon.GUCSetFromContext(ctx)
+	g.UserID = "iam-system"
+	g.TenantID = tenantID.String()
+	return pgcommon.WithGUCSet(ctx, g)
+}
+
+// trialDurationDays resolves, for a TrialReactivated event, the trial length
+// of the tenant's current plan; every other event type needs none.
+func (c *MembershipEventConsumer) trialDurationDays(ctx, gucCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) (int, error) {
+	if env.Type != "TrialReactivated" {
+		return 0, nil
+	}
+	// TrialReactivated (§8.10.3/TR2) needs the tenant's current plan's
+	// trial_duration_days from the Catalog Service to compute the new
+	// trial_ends_at. Catalog is an HTTP call, so — like ProvisioningService.
+	// TrialSignup — it must complete before the write transaction opens; an
+	// HTTP call has no business running while a Postgres tx is held open.
+	// This short read-only peek at the current plan runs in its own
+	// transaction, committed and closed before the HTTP call.
+	tenant, err := c.tenants.FindByID(gucCtx, tenantID)
+	switch {
+	case err != nil && errors.Is(err, domain.ErrTenantNotFound), err == nil && tenant == nil:
+		// Tenant absent — the write tx hits the missing-row path (park, or
+		// drop for a soft-deleted tenant) and needs no duration.
+		return 0, nil
+	case err != nil:
+		return 0, fmt.Errorf("peek current plan for TrialReactivated: %w", err)
+	case c.catalog == nil:
+		return 0, errors.New("TrialReactivated: no PlanCatalogReader configured")
+	}
+	plan, err := c.catalog.PlanByCode(ctx, tenant.Plan)
+	if err != nil {
+		return 0, fmt.Errorf("resolve plan %q for TrialReactivated: %w", tenant.Plan, err)
+	}
+	return plan.TrialDurationDays, nil
+}
+
+// evictAfterWipe runs the GDPR wipe's cache invalidation (§15.5 step 3,
+// CACHE-8) after the transaction commits — Valkey isn't part of the
+// Postgres transaction, and cache is advisory only (CACHE-2/9): a failure
+// here never rolls back or fails the wipe that already committed.
+// Best-effort, skipped entirely if cache is nil.
+func (c *MembershipEventConsumer) evictAfterWipe(ctx context.Context, tenantID uuid.UUID) {
+	if c.cache == nil {
+		return
+	}
+	if err := c.cache.Delete(ctx, gdprWipeCacheKeys(tenantID)...); err != nil {
+		c.logger.Warn("GDPR wipe: cache invalidation failed (advisory-only, not fatal)",
+			"tenant_id", tenantID, "error", err)
+	}
+}
+
+// project runs the EVT-14 recency guard, the projection and the EVT-16 /
+// TenantMembershipsPurged relays for one event against an already-locked
+// tenant row. The live path and parked-event replay (EVT-18) share it. It
+// reports whether the GDPR wipe ran, so the caller evicts the cache after
+// the transaction commits.
+func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], locked *port.TenantProjectionLock, trialDurationDays int) (gdprWipeRan bool, err error) {
+	// ── EVT-14 recency guard ─────────────────────────────────────────
+	if locked.LastEventAt != nil && !env.Timestamp.After(*locked.LastEventAt) {
+		if metrics.LifecycleEventSkipped != nil {
+			metrics.LifecycleEventSkipped.WithLabelValues(env.Type).Inc()
+		}
+		// SLO-3: record lag even for skipped events — a late-arriving
+		// event that is skipped is exactly the delivery-delay signal
+		// iam_lifecycle_event_lag_seconds is designed to surface.
+		if !env.Timestamp.IsZero() {
+			metrics.ObserveLifecycleEventLag(env.Type, time.Since(env.Timestamp).Seconds())
+		}
+		c.logger.Info("EVT-14 stale — projection unchanged", "event_id", env.ID, "event_type", env.Type)
+		return false, nil
+	}
+
+	prevStatus := locked.Status
+	prevPlan := locked.Plan
+
+	newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trialDurationDays)
+	if err != nil {
+		return false, err
+	}
+
+	// Bump last_event_at only when projection actually ran.
+	if err := c.tenants.SetLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
+		return false, err
+	}
+
+	// SLO-3: record the lag between event.time and apply time so
+	// iam_lifecycle_event_lag_seconds tracks consumer processing drift.
+	if !env.Timestamp.IsZero() {
+		metrics.ObserveLifecycleEventLag(env.Type, time.Since(env.Timestamp).Seconds())
+	}
+
+	pub, _ := port.EventPublisherFromContext(txCtx)
+
+	// ── EVT-16 tenant-state relay ────────────────────────────────────
+	if pub != nil && (newStatus != prevStatus || newPlan != prevPlan) {
+		if err := pub.Enqueue(txCtx, &domain.DomainEvent{
+			Type:      domain.EventTenantStateChanged,
+			TenantID:  tenantID,
+			Subject:   tenantID.String(),
+			Actor:     "iam-system",
+			IPAddress: "system",
+			UserAgent: "iam-org-membership/event-consumer",
+			Data: domain.TenantStateChangedPayload{
+				TenantID:       tenantID,
+				Status:         newStatus,
+				PreviousStatus: prevStatus,
+				Plan:           newPlan,
+				PreviousPlan:   prevPlan,
+				ChangedAt:      env.Timestamp,
+				Cause:          env.Type,
+			},
+		}); err != nil {
+			return gdprWipeRan, err
+		}
+	}
+
+	// ── ADR-0008 §6.4 (LLD §15.5): Core → Delegation/Tender-ACL/
+	// Group-Mapping tenant-purge cascade signal. Whenever this
+	// consumed event actually transitions the tenant into 'offboarded'
+	// (guarded, like EVT-16 above, by the EVT-14 recency check already
+	// having run and by the prevStatus != newStatus diff — never a
+	// bare relay of the inbound event), relay TenantMembershipsPurged
+	// on iam.membership.events so those services' consumers can
+	// soft-delete their own tenant-scoped rows. Distinct from the
+	// generic EVT-16 TenantStateChanged relay above (which also fires
+	// on this transition) so a downstream consumer can filter on it
+	// without matching every other status/plan change, and distinct
+	// from the Realm-Provisioner-produced TenantOffboarded event this
+	// same consumer reacts to on tenant-orgm-q (§16 OQ-1 — Core never
+	// re-emits that event under its own name).
+	if prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
+		// GDPR tenant wipe (§15.5) — delete Core's own remaining
+		// tenant-scoped child rows in the same tx as the tenants
+		// projection UPDATE above. The tenants row itself is only
+		// soft-deleted (deleted_at set, PAID-1/chk_offboarded_soft_deleted
+		// — id retained for audit), so ON DELETE CASCADE never fires
+		// from it; these are explicit deletes, not a cascade side
+		// effect. Order doesn't matter for FK ordering here — none of
+		// these six tables reference each other, only tenants (which
+		// is never itself deleted).
+		if err := c.tenants.WipeTenantChildren(txCtx, tenantID); err != nil {
+			return false, err
+		}
+		gdprWipeRan = true
+	}
+
+	if pub != nil && prevStatus != domain.StatusOffboarded && newStatus == domain.StatusOffboarded {
+		if err := pub.Enqueue(txCtx, &domain.DomainEvent{
+			Type:      domain.EventTenantMembershipsPurged,
+			TenantID:  tenantID,
+			Subject:   tenantID.String(),
+			Actor:     "iam-system",
+			IPAddress: "system",
+			UserAgent: "iam-org-membership/event-consumer",
+			Data: domain.TenantMembershipsPurgedPayload{
+				TenantID: tenantID,
+				ActorID:  domain.SystemActorID,
+			},
+		}); err != nil {
+			return gdprWipeRan, err
+		}
+	}
+
+	return gdprWipeRan, nil
 }
 
 // gdprWipeCacheKeys returns the exactly-known, bounded tenant-scoped cache
@@ -673,24 +726,151 @@ func (c *MembershipEventConsumer) rejectProvisioning(env events.Envelope[json.Ra
 }
 
 // tenantAbsent decides what happens to a lifecycle/billing event whose
-// tenant has no live row. A soft-deleted (offboarded) row: record and drop,
-// as before. No row at all: the tenant may simply not be created yet
-// (unordered delivery), so retry — the tx rolls back, processed_events is
-// not recorded, and SQS redelivers until the tenant exists or the message
-// reaches the DLQ. TenantOffboarded (nothing to offboard) is still dropped.
-func (c *MembershipEventConsumer) tenantAbsent(txCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) error {
+// tenant has no live row. A soft-deleted (offboarded) row: record and drop.
+// TenantOffboarded (nothing to offboard): drop. No row at all: the tenant is
+// simply not created yet — iam.tenant.events and billing.events are
+// unordered (CD-50) — so the event is parked in pending_tenant_events and
+// acknowledged (EVT-18); I-1 replays it as soon as it creates the row.
+//
+// Parking holds the tenant's provisioning lock, which I-1 also holds while
+// creating the row, then re-checks the row: if I-1 committed in the
+// meantime, the returned lock lets the caller apply the event at once. So an
+// event is never parked after I-1's replay has run.
+//
+// Without a parked-event store (tests, legacy wiring) it falls back to the
+// EVT-17 retry: the tx rolls back and SQS redelivers until the tenant
+// exists or the message reaches the DLQ.
+func (c *MembershipEventConsumer) tenantAbsent(txCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) (*port.TenantProjectionLock, error) {
 	if env.Type == "TenantOffboarded" {
-		return nil
+		return nil, nil
 	}
 	_, err := c.tenants.FindByIDIncludingDeleted(txCtx, tenantID)
 	switch {
 	case err == nil:
-		return nil // soft-deleted: drop
-	case errors.Is(err, domain.ErrTenantNotFound):
+		return nil, nil // soft-deleted: drop
+	case !errors.Is(err, domain.ErrTenantNotFound):
+		return nil, err
+	}
+	if c.parked == nil {
 		c.logger.Info("event for a tenant not provisioned yet — retrying",
 			"event_id", env.ID, "event_type", env.Type, "tenant_id", tenantID)
-		return errTenantNotYetProvisioned
-	default:
-		return err
+		return nil, errTenantNotYetProvisioned
 	}
+
+	if err := c.parked.LockTenantProvisioning(txCtx, tenantID); err != nil {
+		return nil, err
+	}
+	locked, err := c.tenants.LockForProjection(txCtx, tenantID)
+	if err != nil || locked != nil {
+		return locked, err
+	}
+
+	eventID, err := uuid.Parse(env.ID)
+	if err != nil {
+		return nil, fmt.Errorf("park event: envelope id %q is not a uuid: %w", env.ID, err)
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("park event %s: encode envelope: %w", env.ID, err)
+	}
+	if err := c.parked.Park(txCtx, port.ParkedTenantEvent{
+		EventID:    eventID,
+		TenantID:   tenantID,
+		EventType:  env.Type,
+		OccurredAt: env.Timestamp,
+		Envelope:   raw,
+	}); err != nil {
+		return nil, err
+	}
+	metrics.IncTenantEventParked(env.Type)
+	c.logger.Info("event for a tenant not provisioned yet — parked until I-1 creates it",
+		"event_id", env.ID, "event_type", env.Type, "tenant_id", tenantID)
+	return nil, nil
+}
+
+// ReplayParked applies the tenant's parked events (EVT-18) now that its row
+// exists. I-1 calls it right after creating a tenant.
+func (c *MembershipEventConsumer) ReplayParked(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return c.replayParked(ctx, tenantID, metrics.ReplayTriggerProvisioning)
+}
+
+// ReplayParkedSweep is ReplayParked for the parked-events-replay CronJob,
+// which backstops a replay I-1 never ran (a crash after its commit) or one
+// that failed.
+func (c *MembershipEventConsumer) ReplayParkedSweep(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return c.replayParked(ctx, tenantID, metrics.ReplayTriggerSweep)
+}
+
+var _ port.ParkedTenantEventReplayer = (*MembershipEventConsumer)(nil)
+
+// replayParked applies each parked event in occurred_at order, one
+// transaction per event: claim (DELETE) the parked row, lock the tenant row,
+// then run the same projection the original delivery would have. A
+// concurrent replay that already claimed an event makes the claim a no-op.
+// The EVT-14 recency guard still applies, so a parked event older than one
+// already applied is skipped, exactly as a late delivery would be. It stops
+// at the first failure so later events never apply ahead of an earlier one;
+// the next replay resumes from there.
+func (c *MembershipEventConsumer) replayParked(ctx context.Context, tenantID uuid.UUID, trigger string) (int, error) {
+	if c.parked == nil || c.txRunner == nil {
+		return 0, nil
+	}
+	gucCtx := tenantGUC(ctx, tenantID)
+	pending, err := c.parked.ListForTenant(gucCtx, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("list parked events: %w", err)
+	}
+	replayed := 0
+	for _, p := range pending {
+		var env events.Envelope[json.RawMessage]
+		if err := json.Unmarshal(p.Envelope, &env); err != nil {
+			return replayed, fmt.Errorf("decode parked event %s: %w", p.EventID, err)
+		}
+		trialDurationDays, err := c.trialDurationDays(ctx, gucCtx, tenantID, env)
+		if err != nil {
+			return replayed, err
+		}
+		var applied, gdprWipeRan bool
+		err = c.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+			claimed, err := c.parked.Claim(txCtx, p.EventID)
+			if err != nil || !claimed {
+				return err
+			}
+			locked, err := c.tenants.LockForProjection(txCtx, tenantID)
+			if err != nil {
+				return err
+			}
+			if locked == nil {
+				_, ferr := c.tenants.FindByIDIncludingDeleted(txCtx, tenantID)
+				switch {
+				case ferr == nil:
+					return nil // offboarded since it was parked: drop, as live delivery would
+				case errors.Is(ferr, domain.ErrTenantNotFound):
+					return errTenantNotYetProvisioned // roll back: stays parked
+				default:
+					return ferr
+				}
+			}
+			applied = true
+			gdprWipeRan, err = c.project(txCtx, tenantID, env, locked, trialDurationDays)
+			return err
+		})
+		if errors.Is(err, errTenantNotYetProvisioned) {
+			return replayed, nil
+		}
+		if err != nil {
+			return replayed, fmt.Errorf("replay parked %s %s: %w", env.Type, p.EventID, err)
+		}
+		if gdprWipeRan {
+			c.evictAfterWipe(ctx, tenantID)
+		}
+		if applied {
+			metrics.IncTenantEventReplayed(env.Type, trigger)
+			replayed++
+		}
+	}
+	if replayed > 0 {
+		c.logger.Info("replayed parked tenant events", "tenant_id", tenantID, "replayed", replayed, "trigger", trigger)
+	}
+	return replayed, nil
 }

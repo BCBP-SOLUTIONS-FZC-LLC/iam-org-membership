@@ -1013,6 +1013,72 @@
                 ]
             }
         },
+        "/internal/trial-eligibility": {
+            "post": {
+                "description": "Checks whether the HMAC-SHA256 hex of the owner's lower-cased email has already been used for a trial. 200 = eligible; 409 TRIAL_ALREADY_USED = not eligible.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "CR-4 — Trial signup eligibility check (Signup BFF)",
+                "parameters": [
+                    {
+                        "description": "Email hash payload",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.trialEligibilityRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "eligible: true",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "email_hash required",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "iam-system role required",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "TRIAL_ALREADY_USED",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
+            }
+        },
         "/internal/users/{id}/memberships": {
             "get": {
                 "description": "SLO 15 ms cache-hit / 30 ms miss (§21). Derived `member` role injected (TR-7). feature_flags is the sorted list of enabled flag names from planDefaults(plan) ⊕ tenants.feature_flags. Cache TTL 300s ± 30s jitter.",
@@ -3244,6 +3310,10 @@
                         "dedicated"
                     ]
                 },
+                "record_version": {
+                    "type": "integer",
+                    "example": 2
+                },
                 "tenant_id": {
                     "type": "string",
                     "format": "uuid"
@@ -3823,6 +3893,14 @@
                     "type": "string"
                 },
                 "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.trialEligibilityRequest": {
+            "type": "object",
+            "properties": {
+                "email_hash": {
                     "type": "string"
                 }
             }

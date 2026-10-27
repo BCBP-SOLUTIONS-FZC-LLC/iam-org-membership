@@ -248,11 +248,6 @@ var (
 	// reason (domain.EligibilityReason).
 	AssigneeEligibilityCheck *prometheus.CounterVec
 
-	// TrialEligibilityCheck counts CR-4 POST /internal/trial-eligibility
-	// calls by result: eligible (no ledger row, signup may proceed) or
-	// already_used (hash present, 409 returned to the BFF).
-	TrialEligibilityCheck *prometheus.CounterVec
-
 	// TenantHeaderPathMismatch counts /internal/tenants/:id/* requests whose
 	// x-tenant-id differed from the path tenant, by route, method and action
 	// (overridden — path tenant bound, request served; rejected — strict
@@ -268,12 +263,21 @@ var (
 	// signups are leaning on the backstop (BFF-side I-1 failures).
 	ProvisioningBackstop *prometheus.CounterVec
 
+	// TenantEventsParked counts lifecycle/billing events parked because their
+	// tenant had no row yet (CD-50, EVT-18), by event_type. They are replayed
+	// once the tenant exists; TenantEventsReplayed counts those replays, by
+	// event_type and trigger (provisioning: I-1 right after creating the row;
+	// sweep: the parked-events-replay CronJob).
+	TenantEventsParked   *prometheus.CounterVec
+	TenantEventsReplayed *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
 	RealmSyncPending        prometheus.Gauge // T-15
 	SeatOverageActive       prometheus.Gauge // SEAT-5
 	PendingInvitationsStale prometheus.Gauge // invitation-expiry cron health
+	ParkedTenantEventsStale prometheus.Gauge // EVT-18: parked > 10 min
 )
 
 // IncDuplicate records one redelivery filtered by processed_events on the
@@ -510,19 +514,32 @@ const (
 	ProvisioningBackstopAlreadyExists = "already_exists"
 )
 
+// Trigger label values for TenantEventsReplayed.
+const (
+	ReplayTriggerProvisioning = "provisioning"
+	ReplayTriggerSweep        = "sweep"
+)
+
+// IncTenantEventParked counts one event parked for a tenant with no row yet.
+// Nil-safe.
+func IncTenantEventParked(eventType string) {
+	if TenantEventsParked != nil {
+		TenantEventsParked.WithLabelValues(eventType).Inc()
+	}
+}
+
+// IncTenantEventReplayed counts one parked event replayed. Nil-safe.
+func IncTenantEventReplayed(eventType, trigger string) {
+	if TenantEventsReplayed != nil {
+		TenantEventsReplayed.WithLabelValues(eventType, trigger).Inc()
+	}
+}
+
 // IncProvisioningBackstop records one TenantIdentityProvisioned outcome.
 // Nil-safe.
 func IncProvisioningBackstop(result string) {
 	if ProvisioningBackstop != nil {
 		ProvisioningBackstop.WithLabelValues(result).Inc()
-	}
-}
-
-// IncTrialEligibilityCheck records one CR-4 eligibility check outcome.
-// result is "eligible" or "already_used". Nil-safe.
-func IncTrialEligibilityCheck(result string) {
-	if TrialEligibilityCheck != nil {
-		TrialEligibilityCheck.WithLabelValues(result).Inc()
 	}
 }
 
@@ -676,6 +693,18 @@ var handledEventTypes = []string{
 	"DepartmentCatalogChanged",
 }
 
+// parkableEventTypes is every event type the consumer parks when its tenant
+// has no row yet (EVT-18): the handled lifecycle/billing types except the
+// backstop itself, TenantOffboarded (nothing to offboard) and the catalog
+// events, which are not tenant-scoped.
+var parkableEventTypes = []string{
+	"TenantRealmReady", "TenantConverted",
+	"DirectPaidSignup", "TrialExpired", "TrialReactivated",
+	"TenantSuspended",
+	"TenantPlanChanged", "TenantPaymentPastDue",
+	"TenantSubscriptionCancelled", "TenantReactivated", "TenantSeatsChanged",
+}
+
 // registerServiceMetrics builds the Tier 3 iam_org_membership_* collectors.
 func registerServiceMetrics() {
 	// Tier 3 predecessors of the Proposed Tier 1 candidates: authoritative
@@ -761,10 +790,14 @@ func registerServiceMetrics() {
 		"iam_org_membership_tenant_provisioning_backstop_total",
 		"TenantIdentityProvisioned events handled by the signup provisioning backstop, by result: created (tenant was missing and was created) or already_exists.",
 		"result"))
-	TrialEligibilityCheck = must(gincommon.NewCounterVec(nil,
-		"iam_org_membership_trial_eligibility_check_total",
-		"CR-4 POST /internal/trial-eligibility calls by result: eligible (no ledger row) or already_used (409 returned to the BFF).",
-		"result"))
+	TenantEventsParked = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_tenant_events_parked_total",
+		"Lifecycle/billing events parked because their tenant had no row yet (CD-50, EVT-18), by event_type. Replayed once the tenant exists.",
+		"event_type"))
+	TenantEventsReplayed = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_tenant_events_replayed_total",
+		"Parked lifecycle/billing events replayed once their tenant existed (CD-50, EVT-18), by event_type and trigger (provisioning: I-1 right after creating the row; sweep: the parked-events-replay CronJob).",
+		"event_type", "trigger"))
 	TenantHeaderPathMismatch = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_tenant_header_path_mismatch_total",
 		"Internal /tenants/:id/* requests whose x-tenant-id differed from the path tenant, by route, method and action (overridden: path tenant bound and served; rejected: strict-mode 400).",
@@ -782,6 +815,9 @@ func registerServiceMetrics() {
 	PendingInvitationsStale = must(gincommon.NewGauge(nil,
 		"iam_org_membership_pending_invitations_stale",
 		"Pending invitations past expires_at that invitation-expiry hasn't flipped yet."))
+	ParkedTenantEventsStale = must(gincommon.NewGauge(nil,
+		"iam_org_membership_parked_tenant_events_stale",
+		"Events parked for over 10 minutes waiting for their tenant row (CD-50, EVT-18): a signup that never completed, or a replay that keeps failing. Sustained >0 alerts."))
 }
 
 // prewarm initialises bounded label combinations so counters appear at 0
@@ -806,8 +842,11 @@ func prewarm() {
 	ConsumedEventRejected.WithLabelValues("TenantIdentityProvisioned", "provisioning_rejected")
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopCreated)
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopAlreadyExists)
-	TrialEligibilityCheck.WithLabelValues("eligible")
-	TrialEligibilityCheck.WithLabelValues("already_used")
+	for _, et := range parkableEventTypes {
+		TenantEventsParked.WithLabelValues(et)
+		TenantEventsReplayed.WithLabelValues(et, ReplayTriggerProvisioning)
+		TenantEventsReplayed.WithLabelValues(et, ReplayTriggerSweep)
+	}
 	RealmSyncFailed.WithLabelValues("patch_realm_config")
 	RealmSyncFailed.WithLabelValues("clear_marker")
 	for _, scope := range []string{DelegateBlockScopeTenantRemoval, DelegateBlockScopeDeptRemoval, DelegateBlockScopeDeptDemotion} {

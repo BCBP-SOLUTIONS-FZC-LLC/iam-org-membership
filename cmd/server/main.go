@@ -390,8 +390,14 @@ func main() {
 		pgadapter.NewDeptRoleLabelRepository(pool), pgadapter.NewTenantDepartmentRepository(pool),
 		catalogReader, catalogReader, txRunner, cache, nil,
 	).WithLogger(log)
+	// EVT-18 (CD-50): an event for a tenant with no row yet is parked and
+	// replayed by I-1 once the tenant exists — on both I-1 paths, the
+	// backstop above and the HTTP handler's provisioningSvc below.
+	parkedEvents := pgadapter.NewParkedTenantEventRepository(pool)
 	membershipConsumer := consumeradapter.NewMembershipEventConsumer(inbox, pgadapter.NewTenantRepository(pool), catalogReader, cache, skew, log).
-		WithTenantProvisioner(backstopProvisioning)
+		WithTenantProvisioner(backstopProvisioning).
+		WithParkedEvents(parkedEvents, txRunner)
+	backstopProvisioning.WithParkedEvents(parkedEvents, membershipConsumer)
 
 	// LoadSQS supplies region / endpoint / long-poll / visibility / max-receive
 	// from the library env contract. Per-queue URL + concurrency overlay
@@ -446,11 +452,13 @@ func main() {
 		log.Warn("SQS_BILLING_ORGM_QUEUE_URL unset — billing consumer disabled", nil)
 	}
 
-	// Gap-12 fix: catalog-orgm-q consumer — clears om:departments /
-	// om:departments:stale cache on every DepartmentCatalogChanged event
-	// published by iam-catalog-admin, eliminating the 11-min TTL delay.
-	// Requires Catalog Service to publish DepartmentCatalogChanged events and
-	// infra to provision the catalog-orgm-q SQS queue + SNS subscription.
+	// catalog-orgm-q consumer (Gap 12; LLD rev 2.39) — the one queue for
+	// iam-catalog-admin's iam-catalog-events topic. DepartmentCatalogChanged
+	// clears om:departments; PlanCatalogChanged clears om:plans and bumps
+	// om:plans:gen:{plan}, retiring the cached I-8 projections of every tenant
+	// on that plan. Never writes tenants.feature_flags (T-9). The queue and its
+	// SNS subscription are SRE/Terraform-provisioned; required in staging and
+	// production (validateRequiredEnv).
 	catalogConsumer := consumeradapter.NewCatalogConsumer(cache, inbox, log)
 	if url := os.Getenv("SQS_CATALOG_ORGM_QUEUE_URL"); url != "" {
 		if err := sqspipeline.RequireDLQ(ctx, dlqPublisher, url, log); err != nil {
@@ -469,34 +477,7 @@ func main() {
 		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("catalog-orgm-q")})
 		log.Info("catalog-orgm-q consumer wired", map[string]interface{}{"queue_url": url})
 	} else {
-		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (departments and plans caches TTL-only)", nil)
-	}
-
-	// catalog-orgm-plans-q — dedicated handler for PlanCatalogChanged events.
-	// Merges the plan's new feature_set into tenants.feature_flags for all active
-	// tenants on the affected plan (sysPool BYPASSRLS) and evicts om:tenant caches.
-	// Separate from catalog-orgm-q because it requires a cross-tenant DB write
-	// and benefits from independent scaling + DLQ policy.
-	// sysPool-backed repo so the bulk UPDATE crosses RLS (BYPASSRLS role).
-	planCatalogConsumer := consumeradapter.NewPlanCatalogPlansConsumer(pgadapter.NewTenantRepository(sysPool), cache, inbox, log)
-	if url := os.Getenv("SQS_CATALOG_ORGM_PLANS_QUEUE_URL"); url != "" {
-		if err := sqspipeline.RequireDLQ(ctx, dlqPublisher, url, log); err != nil {
-			panic(fmt.Sprintf("DLQ preflight: %v", err))
-		}
-		cons, err := sqspipeline.NewConsumer(
-			sqspipeline.EnvForQueue(sqsEnv, url, envInt("SQS_CATALOG_ORGM_PLANS_CONCURRENCY", 1)),
-			sqsClient,
-			sqspipeline.Handler("catalog-orgm-plans-q", planCatalogConsumer.Handle, consumedValidator, dlqPublisher, log),
-			dlqPublisher,
-			log,
-		)
-		if err != nil {
-			panic(fmt.Sprintf("build catalog-orgm-plans-q consumer: %v", err))
-		}
-		sqsConsumers = append(sqsConsumers, wiredConsumer{cons: cons, heartbeat: newConsumerHeartbeat("catalog-orgm-plans-q")})
-		log.Info("catalog-orgm-plans-q consumer wired", map[string]interface{}{"queue_url": url})
-	} else {
-		log.Warn("SQS_CATALOG_ORGM_PLANS_QUEUE_URL unset — plan feature_set propagation to tenants disabled (feature flags TTL-only)", nil)
+		log.Warn("SQS_CATALOG_ORGM_QUEUE_URL unset — catalog cache invalidation disabled (om:departments/om:plans TTL-only; cached I-8 feature flags lag a plan change by up to the om:plans + I-8 TTLs)", nil)
 	}
 
 	for _, wc := range sqsConsumers {
@@ -583,9 +564,8 @@ func main() {
 	inviteMaxPerActorPerHour := envInt("INVITE_MAX_PER_ACTOR_PER_HOUR", 10) // SECURITY-5
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
-	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).
-		WithLogger(log).
-		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool))
+	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log).
+		WithParkedEvents(parkedEvents, membershipConsumer)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
 		WithAuditLog(auditLogClient).
 		WithPlanCatalog(catalogReader).
@@ -913,6 +893,11 @@ func validateRequiredEnv(appEnv string) {
 		// MembershipService.Invite, DeptMembershipService.Assign, etc.).
 		// devOK: false — there is no safe local fallback; developers must run
 		// iam-catalog-admin or set CATALOG_ADMIN_BASE_URL to a stub.
+		// catalog-orgm-q carries PlanCatalogChanged: without it a plan
+		// catalog change reaches I-8 only after the om:plans (600 s) and
+		// om:memberships (330 s) TTLs, not the committed seconds-to-a-minute
+		// (LLD §6.3, rev 2.39). devOK: local dev may run without floci.
+		{"SQS_CATALOG_ORGM_QUEUE_URL", true, false, "catalog-orgm-q URL; unset leaves plan and department catalog changes TTL-only (up to ~15 min for I-8 feature flags) instead of seconds (LLD §6.3)"},
 		{"CATALOG_ADMIN_BASE_URL", false, false, "CatalogAdminClient is NOT fail-open — absent value causes catalog_unavailable 503 on every write path that touches department/plan resolution (§20.7)"},
 		// Unset falls back to the RLS-scoped app DSN (see sysDSN below) —
 		// every cross-tenant query (I-16, gauge exporters, reconciler

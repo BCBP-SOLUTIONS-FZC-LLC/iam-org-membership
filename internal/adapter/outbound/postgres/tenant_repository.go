@@ -329,43 +329,6 @@ func (r *TenantRepository) LicensedSeatsForUpdate(ctx context.Context, id uuid.U
 	return n, err
 }
 
-// MergeFeatureFlagsForPlan bulk-merges planFeatureSet into tenants.feature_flags
-// for all active tenants on plan, using:
-//
-//	SET feature_flags = $planFeatureSet::jsonb || feature_flags
-//
-// The right side (existing tenant overrides) wins on key conflicts (T-9 preserved).
-// Returns the IDs of rows that were updated so the caller can evict their caches.
-// Must be called on a BYPASSRLS (sysPool) repository — cross-tenant write.
-func (r *TenantRepository) MergeFeatureFlagsForPlan(ctx context.Context, plan domain.TenantPlan, planFeatureSet []byte) ([]uuid.UUID, error) {
-	var ids []uuid.UUID
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		rows, qErr := tx.Query(ctx,
-			`UPDATE tenants
-			    SET feature_flags = $1::jsonb || feature_flags
-			  WHERE plan = $2
-			    AND deleted_at IS NULL
-			  RETURNING id`,
-			string(planFeatureSet), string(plan))
-		if qErr != nil {
-			return qErr
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id uuid.UUID
-			if sErr := rows.Scan(&id); sErr != nil {
-				return sErr
-			}
-			ids = append(ids, id)
-		}
-		return rows.Err()
-	})
-	if err != nil {
-		return nil, err
-	}
-	return ids, nil
-}
-
 func (r *TenantRepository) SetFeatureFlags(ctx context.Context, id uuid.UUID, flags []byte, expectedVersion int64) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,

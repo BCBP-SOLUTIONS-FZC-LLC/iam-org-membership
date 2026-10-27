@@ -196,3 +196,10 @@ jobs:
 
       - name: Helm lint + template + kubeconform
         run: bash .github/scripts/helm-check.sh
+
+      # CD-19 access matrix (LLD §10.2): parses the rendered staging and prod
+      # charts and pins which routes each cross-namespace caller can reach
+      # (Istio AuthorizationPolicy) and that billing/commercial/bff are admitted
+      # only per pod (NetworkPolicy). helm is on PATH from the step above.
+      - name: Helm access matrix (CD-19)
+        run: make helm-access-check

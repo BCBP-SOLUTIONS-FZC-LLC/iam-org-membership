@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 )
 
@@ -136,47 +140,125 @@ func TestCatalogConsumer_Handle_CacheDeleteError_ReturnsNil(t *testing.T) {
 	assert.Empty(t, dedup.markCalls, "cache error must not trigger a processed_events write")
 }
 
-// CAT-GAP-004: PlanCatalogChanged handler tests.
+// PlanCatalogChanged handler tests (LLD §6.3 / §7.1, rev 2.39): clear om:plans,
+// bump om:plans:gen:{plan}, dedup through processed_events, never touch
+// tenants.feature_flags (T-9).
 
-func TestCatalogConsumer_Handle_PlanChanged_ClearsPlansCache(t *testing.T) {
-	// PlanCatalogChanged must clear om:plans + om:plans:stale — no processed_events write.
+// planCache records Delete and Set calls in order.
+type planCache struct {
+	stubCatalogCache
+	ops    []string // "del:<keys>" / "set:<key>=<value>"
+	sets   map[string]string
+	setErr error
+}
+
+func (c *planCache) Delete(_ context.Context, keys ...string) error {
+	c.ops = append(c.ops, "del:"+strings.Join(keys, ","))
+	return c.err
+}
+
+func (c *planCache) Set(_ context.Context, key string, v []byte, ttl time.Duration) error {
+	if c.setErr != nil {
+		return c.setErr
+	}
+	if c.sets == nil {
+		c.sets = map[string]string{}
+	}
+	c.sets[key] = string(v)
+	c.ops = append(c.ops, "set:"+key+"="+string(v))
+	if ttl != port.PlanGenerationTTL {
+		panic("generation key written with the wrong TTL")
+	}
+	return nil
+}
+
+// planEnv builds a PlanCatalogChanged envelope with Catalog's payload shape.
+func planEnv(code string) events.Envelope[json.RawMessage] {
+	payload, _ := json.Marshal(map[string]any{"code": code, "change_type": "updated", "feature_set": map[string]any{"sso_enabled": true}})
+	return events.Envelope[json.RawMessage]{ID: uuid.New().String(), Type: eventPlanCatalogChanged, Payload: payload}
+}
+
+// The consumer holds no TenantRepository at all any more; this guards against
+// one being re-introduced for a feature_flags write (T-9).
+func TestCatalogConsumer_HasNoTenantRepository(t *testing.T) {
+	typ := reflect.TypeOf(CatalogConsumer{})
+	for i := 0; i < typ.NumField(); i++ {
+		assert.NotEqual(t, reflect.TypeOf((*port.TenantRepository)(nil)).Elem(), typ.Field(i).Type,
+			"T-9: the catalog consumer must not hold a TenantRepository (no feature_flags write)")
+	}
+}
+
+func TestCatalogConsumer_PlanChanged_ClearsPlansThenBumpsThatPlan(t *testing.T) {
 	dedup := &recordingDedup{}
-	cache := &stubCatalogCache{}
+	cache := &planCache{}
 	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
 
-	env := catalogEnv(eventPlanCatalogChanged, "")
+	env := planEnv("enterprise")
 	require.NoError(t, c.Handle(context.Background(), env))
 
-	assert.Empty(t, dedup.isCalls, "no IsProcessed call for PlanCatalogChanged")
-	assert.Empty(t, dedup.markCalls, "no MarkProcessed call for PlanCatalogChanged")
-	require.Len(t, cache.deleted, 1)
-	assert.Equal(t, []string{omPlansKey, omPlansStaleKey}, cache.deleted[0])
+	assert.Equal(t, []string{
+		"del:" + omPlansKey + "," + omPlansStaleKey,
+		"set:" + port.PlanGenerationKey(domain.PlanEnterprise) + "=" + env.ID,
+	}, cache.ops, "om:plans is cleared before the generation bump, and only the changed plan is bumped")
+	require.Len(t, dedup.markCalls, 1, "PlanCatalogChanged is inbox-deduped")
+	assert.Equal(t, [2]string{catalogConsumerName, env.ID}, dedup.markCalls[0])
 }
 
-func TestCatalogConsumer_Handle_PlanChanged_Redelivery_ClearsCacheAgain(t *testing.T) {
-	// Redelivery of PlanCatalogChanged must still clear the cache — no dedup gate.
-	cache := &stubCatalogCache{}
-	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, &recordingDedup{}), nil)
+func TestCatalogConsumer_PlanChanged_Redelivery_IsDeduped(t *testing.T) {
+	dedup := &recordingDedup{}
+	cache := &planCache{}
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
 
-	env := catalogEnv(eventPlanCatalogChanged, uuid.New().String())
+	env := planEnv("pro")
 	require.NoError(t, c.Handle(context.Background(), env))
 	require.NoError(t, c.Handle(context.Background(), env))
 
-	assert.Len(t, cache.deleted, 2, "both deliveries must clear the plans cache")
+	assert.Len(t, cache.ops, 2, "the redelivery is skipped by processed_events")
 }
 
-func TestCatalogConsumer_Handle_PlanChanged_InvalidEventID_Errors(t *testing.T) {
-	c := NewCatalogConsumer(&stubCatalogCache{}, newFakeInbox(stubTx{}, &recordingDedup{}), nil)
-
-	err := c.Handle(context.Background(), catalogEnv(eventPlanCatalogChanged, "not-a-uuid"))
-	require.Error(t, err)
+func TestCatalogConsumer_PlanChanged_UnknownOrMissingCode_BumpsEveryPlan(t *testing.T) {
+	for _, env := range []events.Envelope[json.RawMessage]{
+		planEnv("platinum"),
+		catalogEnv(eventPlanCatalogChanged, ""), // no payload at all
+		{ID: uuid.New().String(), Type: eventPlanCatalogChanged, Payload: json.RawMessage(`not json`)},
+	} {
+		cache := &planCache{}
+		c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, &recordingDedup{}), nil)
+		require.NoError(t, c.Handle(context.Background(), env))
+		for _, p := range domain.KnownPlans() {
+			assert.Equal(t, env.ID, cache.sets[port.PlanGenerationKey(p)], "plan %s must be bumped", p)
+		}
+	}
 }
 
-func TestCatalogConsumer_Handle_PlanChanged_CacheDeleteError_ReturnsNil(t *testing.T) {
-	// Cache DELETE failure is best-effort for plan invalidation too — ack the message.
-	cache := &stubCatalogCache{err: errors.New("valkey down")}
-	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, &recordingDedup{}), nil)
+func TestCatalogConsumer_PlanChanged_InvalidEventID_Errors(t *testing.T) {
+	dedup := &recordingDedup{}
+	cache := &planCache{}
+	c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
 
-	env := catalogEnv(eventPlanCatalogChanged, "")
-	require.NoError(t, c.Handle(context.Background(), env))
+	env := planEnv("starter")
+	env.ID = "not-a-uuid"
+	require.Error(t, c.Handle(context.Background(), env))
+	assert.Empty(t, cache.ops)
+	assert.Empty(t, dedup.markCalls)
+}
+
+func TestCatalogConsumer_PlanChanged_CacheErrors_RetryWithoutMark(t *testing.T) {
+	// A Valkey failure must not be acked: I-8 would keep the old flags until
+	// the TTL. The error rolls back the processed_events claim, SQS redelivers.
+	for name, cache := range map[string]*planCache{
+		"delete": {stubCatalogCache: stubCatalogCache{err: errors.New("valkey down")}},
+		"set":    {setErr: errors.New("valkey down")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dedup := &recordingDedup{}
+			c := NewCatalogConsumer(cache, newFakeInbox(stubTx{}, dedup), nil)
+			require.Error(t, c.Handle(context.Background(), planEnv("pro")))
+			assert.Empty(t, dedup.markCalls)
+		})
+	}
+}
+
+func TestProcessedEventsConsumers_OneCatalogBucket(t *testing.T) {
+	assert.Equal(t, []string{consumerName, catalogConsumerName}, ProcessedEventsConsumers())
 }

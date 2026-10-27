@@ -104,3 +104,33 @@ func (s *ReconcilerStore) ListExpiredTrialTenants(ctx context.Context, graceDays
 	})
 	return ids, err
 }
+
+// ListTenantsWithParkedEvents returns tenants whose parked events (CD-50,
+// EVT-18) can now be replayed: the tenant row exists, live or soft-deleted.
+// Parked events for a tenant that still has no row are left alone; the
+// parked_tenant_events_stale gauge reports them.
+func (s *ReconcilerStore) ListTenantsWithParkedEvents(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := withPool(ctx, s.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT p.tenant_id
+			FROM pending_tenant_events p
+			JOIN tenants t ON t.id = p.tenant_id
+			GROUP BY p.tenant_id
+			ORDER BY min(p.parked_at)
+			LIMIT $1`, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			ids = append(ids, id)
+		}
+		return rows.Err()
+	})
+	return ids, err
+}

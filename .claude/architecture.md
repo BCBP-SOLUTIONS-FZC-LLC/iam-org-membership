@@ -10,7 +10,7 @@ iam-org-membership/
 │   ├── server/
 │   │   ├── main.go                     # HTTP composition root, pool + middleware wiring, 3 SQS consumers, outbox runner, graceful shutdown; runMigrationsAtStartup() (RUN_MIGRATIONS)
 │   │   ├── wiring.go                   # buildTopicPublisher / buildTopicCodec (one SNS publisher + Glue codec per topic)
-│   │   ├── exporters.go                # runBusinessExporters — the 5 metric-exporter goroutines over pgadapter.GaugeRepository
+│   │   ├── exporters.go                # runBusinessExporters — the 6 metric-exporter goroutines over pgadapter.GaugeRepository
 │   │   ├── consumer_heartbeat.go       # per-queue ConsumerHeartbeat health check
 │   │   ├── identity.go                 # APP_ENV/ENVIRONMENT resolution
 │   │   └── swagger_info.go
@@ -19,7 +19,7 @@ iam-org-membership/
 │   └── reconciler/
 │       ├── main.go                     # CronJob dispatcher, --job=<name> (or RECONCILER_JOB); RECONCILER_TIMEOUT (5m), RECONCILER_STATEMENT_TIMEOUT (2m) on both pools; Pushgateway push
 │       ├── identity.go
-│       └── jobs/                       # invitation-expiry, invitation-kc-cleanup, realm-config-sync, seat-overage-reconcile, trial-cleanup, outbox-prune, processed-events-prune (7 jobs) + context.go (jobs.Context)
+│       └── jobs/                       # invitation-expiry, invitation-kc-cleanup, realm-config-sync, seat-overage-reconcile, trial-cleanup, outbox-prune, processed-events-prune, parked-events-replay (8 jobs) + context.go (jobs.Context)
 ├── internal/
 │   ├── core/
 │   │   ├── domain/                     # entities, value objects, DomainError; NO external deps
@@ -87,7 +87,7 @@ iam-org-membership/
 │       │   ├── consumer/
 │       │   │   ├── membership_event_consumer.go # SQS handler: iam.tenant.events, billing.events (EVT-14 recency, EVT-15 clamp, EVT-16 relay)
 │       │   │   ├── dedup.go            # processOnce/ackUnknown over port.Inbox (platform-events inbox.Store) — shared IDEMP-1..4 helpers, used by both consumers
-│       │   │   └── catalog_consumer.go # SQS handler: catalog-orgm-q ← DepartmentCatalogChanged (Gap 12 org-membership half) — clears om:departments/om:departments:stale; unit-tested, unknown types through dedup.go's ackUnknown; still inert until iam-catalog-admin's publisher side + SQS_CATALOG_ORGM_QUEUE_URL exist
+│       │   │   └── catalog_consumer.go # SQS handler: catalog-orgm-q ← DepartmentCatalogChanged (clears om:departments) / PlanCatalogChanged (clears om:plans, bumps om:plans:gen:{plan} — CACHE-11, LLD rev 2.39; never writes feature_flags); unknown types through dedup.go's ackUnknown
 │       │   └── sqspipeline/            # the inbound pipeline every queue runs (moved out of cmd/server; the old cmd/server/dlq.go, dlq_adapter.go, inbound_schema.go are gone) — importable so test/integration runs it against floci
 │       │       ├── consumer.go         # EnvForQueue (defaults: SQS_MAX_RECEIVE_COUNT 4, SQS_DRAIN_TIMEOUT 15s, SQS_HANDLER_TIMEOUT 20s, SQS_QUEUE_DEPTH_INTERVAL 60s), NewConsumer (events.GlueDecodeCodec + events.WithDLQForwarding), consumer span
 │       │       ├── dlq.go              # RequireDLQ (startup preflight), routeRejectsToDLQ (permanent-reject shortcut)
@@ -162,7 +162,7 @@ require (
 
 Unlike `iam-user-profile` (single-topic producer), O&M wires its own local **`eventbus.RoutingPublisher`** (HLD §9.2) — not a `platform-events` type; that library only exposes `NewSNSPublisher` for a single topic. It holds two pre-built `events.Publisher` fields (`membership`, `tenant`), not a topic-ARN map, and routes each envelope via **`domain.TopicForEvent(env.Type)`** — keyed on event **type**, not `Envelope.Source`: `TenantCreated`/`TrialStarted` → `tenant`, everything else → `membership`. This is the one meaningful wiring difference from User Profile.
 
-**Substantive consumer of two topics** at MVP (a third queue, `catalog-orgm-q` ← `DepartmentCatalogChanged`, is wired but inert until `SQS_CATALOG_ORGM_QUEUE_URL` is set and `iam-catalog-admin` publishes):
+**Substantive consumer of two topics**, plus a cache-invalidation-only third queue, `catalog-orgm-q` ← Catalog's `DepartmentCatalogChanged`/`PlanCatalogChanged` (`SQS_CATALOG_ORGM_QUEUE_URL`, required in staging/prod since LLD rev 2.39):
 - **`iam.tenant.events`** via `tenant-orgm-q` — Realm Provisioner tenant-lifecycle events (`TenantIdentityProvisioned` — signup provisioning backstop, `TenantRealmReady`, `TenantConverted`, `DirectPaidSignup`, `TrialExpired`, `TrialReactivated`, `TenantSuspended`, `TenantOffboarded`, `TenantReactivated{source=operator}` — new, resolves F1 of the RP↔O&M alignment review, RP-10 reversing RP-14). O&M **never self-consumes** its own `TenantCreated`/`TrialStarted` (HLD §9.1.1 "No self-consumption" — produce/consume sets are disjoint).
 - **`billing.events`** via `billing-orgm-q` — Billing Service events (`TenantPlanChanged`, `TenantPaymentPastDue`, `TenantSubscriptionCancelled`, `TenantReactivated`, `TenantSeatsChanged`).
 

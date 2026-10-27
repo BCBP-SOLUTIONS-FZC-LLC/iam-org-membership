@@ -17,6 +17,8 @@ Returns `201 {tenant_id}`. Outbox runner publishes both events to `iam.tenant.ev
 
 ## 8.1b Direct-Paid Signup (F11, RP↔O&M alignment review)
 
+**Event ordering (CD-50, EVT-18, LLD rev 2.41).** The Signup BFF calls RP-2 *before* I-1, and RP-2 emits `TenantRealmReady`, `DirectPaidSignup` and `TenantConverted(direct_signup=true)` on the unordered `iam.tenant.events` during that call, so they normally reach `tenant-orgm-q` before the row exists. The consumer parks them in `pending_tenant_events` (under the tenant's provisioning advisory lock, re-checking the row first) and acknowledges them. I-1 takes the same lock inside its transaction and, after commit, replays them in `occurred_at` order through the normal projection — so the tenant leaves I-1 already `active`, on its paid plan, in its dedicated realm. The `parked-events-replay` CronJob (`*/5`) backstops a replay I-1 didn't run. Before rev 2.41 these were retried (EVT-17) and went to the DLQ after ~2 minutes if I-1 hadn't run yet.
+
 Identical to §8.1 — I-1 has no plan-conditional branch; every tenant is created trial-shaped (`status='trial'`, shared realm, computed `trial_ends_at`) regardless of the requested `plan`. There is no distinct direct-paid creation path. A tenant later determined to be direct-paid is settled by a consumed `DirectPaidSignup{plan}` event on `tenant-orgm-q`:
 ```
 RunInTx: UPDATE tenants SET status='active', subscription_started_at=now(), plan=$plan, suspension_source=NULL
@@ -392,7 +394,8 @@ Idempotent via `processed_events`. The whole wipe (steps 1–3) commits as one t
 | Table | Retention | Mechanism |
 |---|---|---|
 | `processed_events` | 8 d | `processed-events-prune` CronJob — platform-events `inbox.Store.Prune` via `InboxRepository.Prune`, once per consumer name (IDEMP-4 window; > 7-d SQS lifetime) |
-| `rls_violation_log` | 30 d (intended) | **No pruning job exists today** — none of the 7 CronJobs touches it; rows accumulate until one is added |
+| `pending_tenant_events` | until replayed | Claimed (deleted) by the replay that applies it — I-1 right after creating the tenant, or the `parked-events-replay` CronJob. Events whose tenant never gets a row are not pruned automatically; `IAMParkedTenantEventsStale` surfaces them for a decision (EVT-18) |
+| `rls_violation_log` | 30 d (intended) | **No pruning job exists today** — none of the 8 CronJobs touches it; rows accumulate until one is added |
 | `outbox_events` (published) | 8 days | `outbox-prune` CronJob — `outbox.Runner.PrunePublished(ctx, retention, batchLimit)` (`platform-events`), called until a batch comes back short; the hand-rolled `ReconcilerStore.PruneOutbox` it replaced is deleted |
 | `pending_invitations` (terminal) | not hard-deleted by any job | No `invitation-cleanup` CronJob exists in this repo — terminal rows (`accepted`/`expired`/`revoked`) persist until tenant offboarding cascade (`ON DELETE CASCADE`) or an explicit GDPR erasure-by-email (§15.8) |
 

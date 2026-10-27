@@ -334,6 +334,24 @@ spec:
               {{ "{{ $value | humanize }}" }} pending invitations are past expires_at.
               Check the invitation-expiry CronJob's last successful run and pod logs.
 
+        - alert: IAMParkedTenantEventsStale
+          # EVT-18 (CD-50): an event parked because its tenant had no row yet
+          # is replayed by I-1 as soon as the row exists, so one still parked
+          # after 10 minutes means a signup that never completed or a replay
+          # that keeps failing (parked-events-replay CronJob).
+          expr: |
+            max(iam_org_membership_parked_tenant_events_stale) > 0
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: tenant events parked for a tenant that does not exist yet
+            description: >-
+              {{ "{{ $value | humanize }}" }} events have waited over 10 minutes for their tenant row.
+              Check whether the tenant's signup completed (I-1 / TenantIdentityProvisioned backstop)
+              and the parked-events-replay CronJob's last run. Runbook: iam-org-membership/parked-tenant-events.
+
         - alert: IAMStaleLifecycleEventSkipped
           # EVT-14 recency guard — normal at low rates (producer reordering),
           # but a sustained non-zero rate suggests consumer lag.
