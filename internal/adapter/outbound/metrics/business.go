@@ -271,6 +271,10 @@ var (
 	TenantEventsParked   *prometheus.CounterVec
 	TenantEventsReplayed *prometheus.CounterVec
 
+	// TrialEligibilityCheck counts CR-4 POST /internal/trial-eligibility
+	// outcomes by result: eligible (new email) or already_used (409).
+	TrialEligibilityCheck *prometheus.CounterVec
+
 	// Business-observability gauges populated by 5-min exporter goroutines
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
@@ -535,6 +539,13 @@ func IncTenantEventReplayed(eventType, trigger string) {
 	}
 }
 
+// IncTrialEligibilityCheck records one CR-4 trial-eligibility check. Nil-safe.
+func IncTrialEligibilityCheck(result string) {
+	if TrialEligibilityCheck != nil {
+		TrialEligibilityCheck.WithLabelValues(result).Inc()
+	}
+}
+
 // IncProvisioningBackstop records one TenantIdentityProvisioned outcome.
 // Nil-safe.
 func IncProvisioningBackstop(result string) {
@@ -790,6 +801,10 @@ func registerServiceMetrics() {
 		"iam_org_membership_tenant_provisioning_backstop_total",
 		"TenantIdentityProvisioned events handled by the signup provisioning backstop, by result: created (tenant was missing and was created) or already_exists.",
 		"result"))
+	TrialEligibilityCheck = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_trial_eligibility_check_total",
+		"CR-4 POST /internal/trial-eligibility outcomes by result: eligible (email hash is new) or already_used (409).",
+		"result"))
 	TenantEventsParked = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_tenant_events_parked_total",
 		"Lifecycle/billing events parked because their tenant had no row yet (CD-50, EVT-18), by event_type. Replayed once the tenant exists.",
@@ -842,6 +857,8 @@ func prewarm() {
 	ConsumedEventRejected.WithLabelValues("TenantIdentityProvisioned", "provisioning_rejected")
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopCreated)
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopAlreadyExists)
+	TrialEligibilityCheck.WithLabelValues("eligible")
+	TrialEligibilityCheck.WithLabelValues("already_used")
 	for _, et := range parkableEventTypes {
 		TenantEventsParked.WithLabelValues(et)
 		TenantEventsReplayed.WithLabelValues(et, ReplayTriggerProvisioning)
