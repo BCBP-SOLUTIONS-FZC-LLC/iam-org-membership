@@ -175,7 +175,7 @@ iam-org-membership/
 │       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged / PlanCatalogChanged — cache invalidation, CACHE-11); dedup.go (processOnce/ackUnknown over port.Inbox)
 │       │   └── sqspipeline/           # Inbound pipeline every queue runs: NewConsumer/EnvForQueue (consumer.go), RequireDLQ + routeRejectsToDLQ (dlq.go), consumed-schema Validator + Handler (inbound_schema.go)
 │       └── outbound/
-│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cr4_trial_signup_ledger)
+│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cd50_pending_tenant_events, 000005_cr4_trial_signup_ledger)
 │           ├── valkey/                # Cache adapter (go-redis/v9) — advisory only
 │           ├── eventbus/              # RoutingPublisher (two topics) + outbox runner + embedded event schemas
 │           ├── workflow/               # Workflow Service HTTP client (§8.8 delegate-impact)
@@ -673,7 +673,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Migration safety
 
-Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), and `000004_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema` before them.
+Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), `000004_cd50_pending_tenant_events` (CD-50 parked-events table), and `000005_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema` before them.
 
 ---
 
