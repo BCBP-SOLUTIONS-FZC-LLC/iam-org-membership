@@ -77,6 +77,17 @@ This service has never been deployed to any environment — there is no released
   - `govulncheck ./internal/... ./pkg/...` → **0 vulnerabilities** (1 vulnerability in a required module does not reach any call site in this service).
   - Swagger and AsyncAPI verified aligned against current code: all 39 endpoints, 14 produced events, and 15 consumed event types confirmed. No spec changes required.
 
+### Fixed (2026-10-30 — CR-4 trial ledger hardening, LLD rev 2.44)
+
+- **`trial_signup_ledger` grants.** Migration `000005` granted the app role nothing, so with a distinct `org_membership_app` role (staging/prod) every CR-4 check and every BFF I-1 carrying `email_hash` failed with `permission denied`. New migration `000006_cr4_trial_ledger_hardening` grants `SELECT, INSERT, UPDATE, DELETE` to the app role, revokes `PUBLIC`, and grants `SELECT` to `admin_readonly`.
+- **One trial per email is enforced at I-1.** The ledger now stores the claiming `tenant_id`. I-1 claims the hash for its tenant and fails with `409 TRIAL_ALREADY_USED` (rolling the tenant back) when another tenant holds it. Before, `ON CONFLICT DO NOTHING` let two signups that both passed CR-4 each get a trial.
+- **The hash is recorded on an I-1 replay.** The claim now runs before the replay short-circuit, so a tenant the backstop created without the hash still gets it when the BFF's I-1 retry arrives.
+- **`email_hash` validated** on CR-4 and I-1: lower-cased, then 64 hex characters, else `400`. An oversized hash was a `500` inside I-1, and an upper-case spelling bypassed the ledger.
+- **Retention.** New CronJob `trial-ledger-prune` (`30 4 * * *`) deletes ledger rows older than `TRIAL_LEDGER_RETENTION_DAYS` (default 730), so the email HMAC is not kept forever. The 730 days need the DPO's confirmation.
+- **I-1 `licensed_seats`** was bound and silently dropped (hardcoded 10). Now `0` means the trial allowance of 10, a positive value is used (the BFF's direct-paid path), and a negative one is a `400`.
+- **Istio:** the Signup BFF's rule now admits `POST /api/v1/internal/trial-eligibility`, which was denied (`403 RBAC`) to its only caller. The CD-19 access-matrix test pins it.
+- CR-4 metric labels are now constants. Tests: handler (format, case), service (claim, replay, conflict, seats), job, and Postgres (migration grants, claim semantics, concurrent I-1 race, replay after backstop, prune).
+
 ### Added
 
 - **Gap 3 fix — I-2 response shape aligned with Swagger (2026-10-26):** `InternalTenantRealmResponse` now includes `RecordVersion int64 json:"record_version"` (was missing from the DTO despite the handler always sending it). The `PatchTenantRealm` handler now returns the typed struct instead of `gin.H{}`, so the Swagger `@Success 200 {object} InternalTenantRealmResponse` annotation matches the actual wire response. Callers (Realm Provisioner) that already read `record_version` are unaffected; callers relying on the Swagger spec now see the correct shape.

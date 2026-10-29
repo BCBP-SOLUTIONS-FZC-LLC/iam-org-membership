@@ -48,15 +48,16 @@ type ParkedReplayer interface {
 // Pools stay in main.go — jobs talk to repositories, TxRunner, and
 // RealmProvisioner. Seat-overage events go through TxRunner's ctx publisher.
 type Context struct {
-	TxRunner         port.TxRunner               // for atomic state + event emit
-	Tenants          port.TenantRepository       // SEAT-5 occupancy lock + overage_since (app pool)
-	Invitations      port.InvitationRepository   // invitation-expiry / kc-cleanup (sysPool)
-	Reconciler       port.ReconcilerStore        // cross-tenant sweeps (sysPool)
-	OutboxRunner     OutboxPruner                // platform-events outbox.Runner (OutboxPrune)
-	Inbox            port.InboxPruner            // platform-events inbox prune (ProcessedEventsPrune)
-	InboxConsumers   []string                    // consumer names recorded in processed_events
-	RealmProvisioner port.RealmProvisionerClient // PI-9 DeleteUser, T-15 PatchRealmConfig
-	ParkedReplayer   ParkedReplayer              // EVT-18 parked-events-replay (app pool)
+	TxRunner         port.TxRunner                    // for atomic state + event emit
+	Tenants          port.TenantRepository            // SEAT-5 occupancy lock + overage_since (app pool)
+	Invitations      port.InvitationRepository        // invitation-expiry / kc-cleanup (sysPool)
+	Reconciler       port.ReconcilerStore             // cross-tenant sweeps (sysPool)
+	OutboxRunner     OutboxPruner                     // platform-events outbox.Runner (OutboxPrune)
+	Inbox            port.InboxPruner                 // platform-events inbox prune (ProcessedEventsPrune)
+	InboxConsumers   []string                         // consumer names recorded in processed_events
+	RealmProvisioner port.RealmProvisionerClient      // PI-9 DeleteUser, T-15 PatchRealmConfig
+	ParkedReplayer   ParkedReplayer                   // EVT-18 parked-events-replay (app pool)
+	TrialLedger      port.TrialSignupLedgerRepository // CR-4 trial-ledger-prune (app pool)
 	// Logger is the shared gincommon-backed Logger, wrapped for slog-style
 	// call sites (Warn/Info(msg, "key", val, ...)) — every job file calls it
 	// exactly as it called *slog.Logger before this switch.
@@ -67,11 +68,12 @@ type Context struct {
 	// Nil is safe — missing client silently skips the write.
 	AuditLog port.AuditLogClient
 
-	BatchLimit             int
-	SeatOverageGraceDays   int // SEAT-5 grace_ends_at = overage_since + N days
-	TrialGraceDays         int // trial-cleanup hard-delete threshold
-	OutboxRetentionDays    int // outbox-prune window
-	ProcessedEventsTTLDays int // PE-1 8-day retention (default)
+	BatchLimit               int
+	SeatOverageGraceDays     int // SEAT-5 grace_ends_at = overage_since + N days
+	TrialGraceDays           int // trial-cleanup hard-delete threshold
+	OutboxRetentionDays      int // outbox-prune window
+	ProcessedEventsTTLDays   int // PE-1 8-day retention (default)
+	TrialLedgerRetentionDays int // CR-4 trial_signup_ledger retention (default 730)
 }
 
 // Result summarises a reconciler run.
