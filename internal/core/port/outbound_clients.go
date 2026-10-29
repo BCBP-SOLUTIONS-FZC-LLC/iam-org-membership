@@ -83,6 +83,13 @@ type CreateInvitedUserRequest struct {
 	// from the invite's initial_tenant_roles/initial_dept_mappings — see
 	// the RequiredAction* constants below.
 	RequiredActions []string
+	// TenantSlug is the tenant's immutable slug (T-1). RP-5 uses it to
+	// build the invitation email's https://app.bcbpsolutions.com/t/<slug>/
+	// link — required in practice for shared-realm (trial) tenants, whose
+	// realm name ("trial") does not identify the tenant. Required by RP-5
+	// (400 when missing; capped at 63 characters, the same bound as I-1's
+	// slug rule); always sent, since tenants.slug is NOT NULL.
+	TenantSlug string
 }
 
 // RequiredAction* are the Keycloak required-action IDs this service can

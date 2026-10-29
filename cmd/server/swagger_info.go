@@ -69,6 +69,9 @@
 // @tag.name         resolution
 // @tag.description  Removal-resolution (P-26)
 //
+// @tag.name         me
+// @tag.description  The signed-in caller's own context (P-35)
+//
 // @tag.name         infra
 // @tag.description  Health & metrics (unauthenticated)
 package main
