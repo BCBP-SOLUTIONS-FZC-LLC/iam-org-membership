@@ -187,3 +187,26 @@ func TestSessionContext_NilCollectionsFromProjection(t *testing.T) {
 	assert.NotNil(t, sc.Departments)
 	assert.NotNil(t, sc.FeatureFlags)
 }
+
+// Changing the returned lists never changes the cached projection: roles,
+// departments and flags are all copies.
+func TestSessionContext_DoesNotAliasProjection(t *testing.T) {
+	deptID := uuid.New()
+	proj := &service.MembershipProjection{
+		Status:       domain.MembershipActive,
+		Roles:        []domain.TenantRoleCode{domain.RoleMember, domain.RoleTenantAdmin},
+		Departments:  []domain.DeptMembershipView{{DepartmentID: deptID, RoleLevel: domain.DeptReviewer}},
+		FeatureFlags: []string{"ai_drafting"},
+	}
+	svc := service.NewSessionContextService(scProjector{proj}, scTenant())
+
+	sc, err := svc.Get(context.Background(), uuid.New(), uuid.New())
+	require.NoError(t, err)
+	sc.Roles[0] = domain.RoleTenantOwner
+	sc.Departments[0].RoleLevel = domain.DeptApprover
+	sc.FeatureFlags[0] = "changed"
+
+	assert.Equal(t, domain.RoleMember, proj.Roles[0])
+	assert.Equal(t, domain.DeptReviewer, proj.Departments[0].RoleLevel)
+	assert.Equal(t, "ai_drafting", proj.FeatureFlags[0])
+}

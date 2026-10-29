@@ -180,3 +180,15 @@ func TestSessionContext_HandlerWithoutRequestContext_401(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
 	assert.Zero(t, reader.calls)
 }
+
+// A router built without MeHandler registers no /me route: 404, not a nil
+// dereference recovered as 500.
+func TestSessionContext_NoMeHandler_RouteAbsent(t *testing.T) {
+	r := NewRouter(RouterConfig{
+		GinConfig:  gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
+		TenantRepo: &stubTenantRepo{tenant: &domain.Tenant{Status: domain.StatusActive}},
+	})
+	w := httptest.NewRecorder()
+	r.Handler().ServeHTTP(w, meRequest(sessionContextPath, uuid.New(), uuid.New()))
+	assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+}

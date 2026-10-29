@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"slices"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/google/uuid"
@@ -90,8 +91,8 @@ func (s *SessionContextService) Get(ctx context.Context, tenantID, userID uuid.U
 	}
 	return &SessionContext{
 		TenantID:            tenantID,
-		Roles:               nonNilRoles(proj.Roles),
-		Departments:         nonNilDepts(proj.Departments),
+		Roles:               slices.Clone(nonNilRoles(proj.Roles)),
+		Departments:         slices.Clone(nonNilDepts(proj.Departments)),
 		Plan:                proj.Plan,
 		FeatureFlags:        sessionFeatureFlags(proj.FeatureFlags, proj.ReadOnly),
 		ReadOnly:            proj.ReadOnly,
@@ -118,6 +119,9 @@ func sessionFeatureFlags(flags []string, readOnly bool) []string {
 	return append(out, readOnlyFeatureFlag)
 }
 
+// nonNilRoles and nonNilDepts turn a nil list into [] (never null on the
+// wire). Get clones the result, like sessionFeatureFlags, so the caller
+// never shares a backing array with the cached I-8 projection.
 func nonNilRoles(r []domain.TenantRoleCode) []domain.TenantRoleCode {
 	if r == nil {
 		return []domain.TenantRoleCode{}

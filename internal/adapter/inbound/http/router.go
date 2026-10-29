@@ -71,7 +71,7 @@ type RouterConfig struct {
 	OperatorHandler       *OperatorHandler
 	InternalHandler       *InternalHandler
 	// MeHandler serves /api/v1/me/* (P-35, the caller's own session
-	// context).
+	// context). Optional: left nil, no /me route is registered.
 	MeHandler *MeHandler
 	// PublicHandler serves /api/v1/public/* (PUB-1). Optional: left nil,
 	// no public route is registered.
@@ -435,8 +435,10 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// cached I-8 projection it already loads — answering "no membership" the
 	// way I-8 does (404 member_not_found) and a suspended member with 403 —
 	// instead of the gate's extra uncached lookup.
-	me := v1.Group("/me", activeTenantGate)
-	me.GET("/session-context", cfg.MeHandler.SessionContext) // P-35
+	if cfg.MeHandler != nil {
+		me := v1.Group("/me", activeTenantGate)
+		me.GET("/session-context", cfg.MeHandler.SessionContext) // P-35
+	}
 
 	// Operator routes — AUTH-6 defense-in-depth (RequireOperatorRole
 	// middleware + handler re-check inside each operator handler). O-1/O-2/
