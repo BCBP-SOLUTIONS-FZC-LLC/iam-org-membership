@@ -131,7 +131,7 @@ help:
 	@echo "  make cover           - coverage HTML report"
 	@echo "  make cover-func      - coverage summary by function"
 	@echo "  make ci              - tidy + fmt-check + vet + lint + arch-lint + test-ci + build"
-	@echo "  make helm-check      - helm lint + template (4 value combos) + kubeconform (mirrors validate-helm.yml)"
+	@echo "  make helm-check      - helm lint + template (5 value combos) + kubeconform (mirrors validate-helm.yml)"
 	@echo "  make helm-access-check - CD-19 access matrix: assert rendered Istio + NetworkPolicy rules (staging, prod)"
 	@echo "  make docker-up       - start local infra incl. floci (SNS/SQS/Glue, always free) + floci-ui web console"
 	@echo "  make docker-down     - stop local containers"
@@ -344,7 +344,7 @@ docker-down:
 .PHONY: ci
 ci: tidy fmt-check vet lint arch-lint test-ci build
 
-# helm-check: lint, render all four values combos, and kubeconform-validate
+# helm-check: lint, render all five values combos, and kubeconform-validate
 # the Helm chart. Mirrors what validate-helm.yml runs in CI. Requires Go
 # (to install helm + kubeconform on first run via go install) but does NOT
 # require Docker. Run after any change to deploy/helm/.

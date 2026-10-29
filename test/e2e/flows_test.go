@@ -14,6 +14,9 @@
 //   - 3 role labels + owner + role grants — full trial-signup flow.
 //   - P13-FLOW-007: PUT roles reconcile (P-28) applies exactly the target
 //     set (add + remove semantics).
+//   - P13-FLOW-008: P-35 session context returns the same roles / plan /
+//     feature_flags / departments as I-8 for the same caller, identified
+//     only by the gateway headers.
 //
 // These are the "does the whole thing actually work when you call it over
 // HTTP" tests. Handler-layer validation tests live in Phase 3/9.
@@ -271,4 +274,61 @@ func TestPublicTenantResolve_RoundTrip(t *testing.T) {
 	code, _, body = e.do(t, reqOpts{method: http.MethodGet, path: "/api/v1/public/tenants/resolve?identifier=no-such-workspace"})
 	require.Equal(t, http.StatusOK, code)
 	assert.JSONEq(t, `{"found":false}`, string(body))
+}
+
+// ── P13-FLOW-008 ────────────────────────────────────────────────────────────
+
+// TestSessionContextMatchesI8 — P-35 over the real router and Postgres: the
+// caller's roles/plan/feature_flags/departments equal I-8's projection for
+// the same (tenant, user), which is what AuthZ Enrichment injects as
+// headers; a user with no membership gets I-8's 404.
+func TestSessionContextMatchesI8(t *testing.T) {
+	e := newE2EEnv(t)
+	tenantID := e.seedTenant(t, "flow-008")
+	userID := e.seedOwner(t, tenantID)
+
+	code, _, body := e.do(t, reqOpts{
+		method:  http.MethodGet,
+		path:    "/api/v1/internal/users/" + userID.String() + "/memberships?tenant_id=" + tenantID.String(),
+		headers: systemHeaders(tenantID),
+	})
+	require.Equal(t, http.StatusOK, code, "I-8 (got %d body=%s)", code, string(body))
+	var i8 map[string]any
+	unmarshalBody(t, body, &i8)
+
+	code, _, body = e.do(t, reqOpts{
+		method:  http.MethodGet,
+		path:    "/api/v1/me/session-context",
+		headers: ownerHeaders(userID, tenantID),
+	})
+	require.Equal(t, http.StatusOK, code,
+		"P13-FLOW-008: session-context must return 200 (got %d body=%s)", code, string(body))
+	var sc map[string]any
+	unmarshalBody(t, body, &sc)
+
+	assert.Equal(t, tenantID.String(), sc["tenant_id"])
+	assert.Equal(t, i8["roles"], sc["roles"], "x-tenant-roles source")
+	assert.Equal(t, i8["plan"], sc["plan"], "x-plan source")
+	assert.Equal(t, i8["feature_flags"], sc["feature_flags"], "x-feature-flags source (tenant not read-only)")
+	assert.Equal(t, i8["read_only"], sc["read_only"])
+	assert.Contains(t, sc["roles"], "member", "derived member role (TR-7)")
+	i8Depts, _ := i8["departments"].([]any)
+	scDepts, _ := sc["departments"].([]any)
+	require.Len(t, scDepts, len(i8Depts))
+	for i := range i8Depts {
+		d, _ := i8Depts[i].(map[string]any)
+		got, _ := scDepts[i].(map[string]any)
+		assert.Equal(t, d["department_id"], got["id"])
+		assert.Equal(t, d["role_level"], got["level"])
+	}
+	assert.NotNil(t, sc["mfa_freshness_seconds"])
+	assert.NotEmpty(t, sc["locale"])
+
+	// A user with no membership in the tenant: I-8's answer, 404.
+	code, _, body = e.do(t, reqOpts{
+		method:  http.MethodGet,
+		path:    "/api/v1/me/session-context",
+		headers: ownerHeaders(uuid.New(), tenantID),
+	})
+	require.Equal(t, http.StatusNotFound, code, "P13-FLOW-008: no membership → 404 (body=%s)", string(body))
 }

@@ -692,6 +692,54 @@ definitions:
         example: 3
         type: integer
     type: object
+  http.SessionContextDepartment:
+    properties:
+      id:
+        format: uuid
+        type: string
+      level:
+        enum:
+        - preparator
+        - reviewer
+        - approver
+        example: reviewer
+        type: string
+    type: object
+  http.SessionContextResponse:
+    properties:
+      departments:
+        items:
+          $ref: '#/definitions/http.SessionContextDepartment'
+        type: array
+      feature_flags:
+        example:
+        - ai_drafting
+        items:
+          type: string
+        type: array
+      locale:
+        example: en
+        type: string
+      mfa_freshness_seconds:
+        example: 300
+        type: integer
+      plan:
+        example: starter
+        type: string
+      read_only:
+        example: false
+        type: boolean
+      roles:
+        example:
+        - member
+        - tenant_admin
+        items:
+          type: string
+        type: array
+      tenant_id:
+        format: uuid
+        type: string
+    type: object
   http.SubscriptionLapseItem:
     properties:
       cancelled_at:
@@ -1582,6 +1630,46 @@ paths:
       summary: 'I-8 — HOT PATH: full membership projection (AuthZ Enrichment)'
       tags:
       - internal
+  /me/session-context:
+    get:
+      description: 'The caller''s own tenant context, for the UI: the roles, departments,
+        plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments
+        / x-plan / x-feature-flags (feature_flags includes read_only when the tenant
+        is read-only), plus mfa_freshness_seconds (the step-up window, I-14''s source)
+        and the tenant locale. No parameters: the caller is identified from the gateway-injected
+        identity headers only. 404 member_not_found when the caller has no membership
+        in x-tenant-id (I-8''s answer); 403 for a suspended member and for a trial_expired/suspended
+        tenant (RequireActiveTenant).'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.SessionContextResponse'
+        "401":
+          description: Missing/malformed identity headers
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+        "403":
+          description: Suspended member, or tenant trial_expired/suspended
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+        "404":
+          description: member_not_found / tenant_not_found
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+        "503":
+          description: db_unavailable
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: P-35 — Read my session context
+      tags:
+      - me
   /operator/tenants/{id}/feature-flags:
     patch:
       consumes:
@@ -2655,6 +2743,8 @@ tags:
   name: invitations
 - description: Removal-resolution (P-26)
   name: resolution
+- description: "The signed-in caller's own context (P-35)"
+  name: me
 - description: "Health & metrics (unauthenticated)"
   name: infra
 securityDefinitions:

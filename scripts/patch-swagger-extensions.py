@@ -36,6 +36,7 @@ TAGS = [
     {"name": "roles",       "description": "Dept-role labels (P-12, P-13)"},
     {"name": "invitations", "description": "Two-step invite→accept (P-6, P-30, P-31)"},
     {"name": "resolution",  "description": "Removal-resolution (P-26)"},
+    {"name": "me",          "description": "The signed-in caller's own context (P-35)"},
     {"name": "infra",       "description": "Health & metrics (unauthenticated)"},
 ]
 

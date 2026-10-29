@@ -292,18 +292,31 @@ func checkNetworkPolicy(t *testing.T, overlay string, np map[string]any) {
 
 func render(t *testing.T, overlay string) []map[string]any {
 	t.Helper()
+	return renderArgs(t, overlay, "-f", filepath.Join(chartDir(), overlay))
+}
+
+func chartDir() string {
+	_, file, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(file), "..", "..", "deploy", "helm")
+}
+
+// renderArgs renders the chart with the base values plus extra helm args
+// (overlays, --set) and returns the parsed documents. label names the
+// combination in failure messages.
+func renderArgs(t *testing.T, label string, extra ...string) []map[string]any {
+	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Fatalf("helm not on PATH (run .github/scripts/helm-check.sh once to install it): %v", err)
 	}
-	_, file, _, _ := runtime.Caller(0)
-	chart := filepath.Join(filepath.Dir(file), "..", "..", "deploy", "helm")
+	chart := chartDir()
 	args := append([]string{"template", releaseName, chart, "--namespace", namespace}, sharedSets...)
-	args = append(args, "-f", filepath.Join(chart, "values.yaml"), "-f", filepath.Join(chart, overlay))
+	args = append(args, "-f", filepath.Join(chart, "values.yaml"))
+	args = append(args, extra...)
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(t.Context(), "helm", args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("helm template [%s] failed: %v\n%s", overlay, err, stderr.String())
+		t.Fatalf("helm template [%s] failed: %v\n%s", label, err, stderr.String())
 	}
 	var docs []map[string]any
 	dec := yaml.NewDecoder(&stdout)
@@ -314,7 +327,7 @@ func render(t *testing.T, overlay string) []map[string]any {
 			break
 		}
 		if err != nil {
-			t.Fatalf("parse rendered YAML [%s]: %v", overlay, err)
+			t.Fatalf("parse rendered YAML [%s]: %v", label, err)
 		}
 		if d != nil {
 			docs = append(docs, d)
