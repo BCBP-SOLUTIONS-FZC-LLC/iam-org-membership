@@ -10,6 +10,11 @@ This service has never been deployed to any environment — there is no released
 
 - **`.trivyignore` suppresses DLA-4867-1** (`tzdata` 2026b → 2026f, Trivy UNKNOWN), with `exp:2026-11-30`. The newest `gcr.io/distroless/static-debian12:nonroot` (`sha256:afa5c872…`) still ships 2026b, and the service never loads a time zone (all timestamps UTC). Same handling as DLA-4854-1. Remove both entries and re-pin once distroless ships tzdata ≥ 2026f.
 
+### Added
+
+- **Claude Code hooks and `invariant-reviewer` agent (2026-10-30):** `.claude/settings.json` wires a PreToolUse guard (`.claude/hooks/guard-invariants.sh`) that blocks edits CI would reject (`.env`, edits to a migration already on main, non-`LOCAL` `SET app.tenant_id`, `database/sql`/raw pgx pools, SNS/SQS SDK or `outbox.Enqueue` bypasses, core→adapter imports) and a PostToolUse `gofmt` hook. New Read-only `invariant-reviewer` agent checks a diff against the service's RLS, grant, outbox, idempotency, concurrency, cache, access-matrix and layering invariants. Mirrors `iam-realm-provisioner`'s setup, adapted to this repo's additive migrations. No code change.
+- **`make trivy` + pre-push gate (2026-10-30):** `make trivy` builds the amd64 image (with the `go_private_token` build secret from `GO_PRIVATE_TOKEN` or `gh auth token`) and Trivy-scans it with CI's settings (CRITICAL/HIGH/UNKNOWN, fixed only, `.trivyignore`). New `.githooks/pre-push` runs it before every push (needs Docker; skip once with `SKIP_TRIVY=1 git push` or `--no-verify`); `make setup`/`make install-hooks` now install it too. Same as `iam-realm-provisioner`.
+
 ### Changed
 
 - **CD-44: one AI-facing queue, `membership-rag-q` (LLD rev 2.42, 2026-10-28; TL decision):** LLM Retrieval & Generation's proposed queues on `iam.membership.events`, `iam-rag-purge-q` (`TenantMembershipsPurged`) and `iam-rag-membership-q` (`TenantStateChanged`), become **`membership-rag-q`**, with one filter carrying both event types. Docs only: LLD §7.3.2, the `api/asyncapi.yaml` topology comment, `.claude/api-caching-events.md`, README. Core only publishes to the topic; the LLM team owns and creates the queue and its subscription.
