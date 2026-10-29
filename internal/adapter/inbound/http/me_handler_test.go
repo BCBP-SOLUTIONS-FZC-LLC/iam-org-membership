@@ -62,6 +62,7 @@ func TestSessionContext_ReturnsCallerContext(t *testing.T) {
 		ReadOnly:            true,
 		MFAFreshnessSeconds: 300,
 		Locale:              "en",
+		Slug:                "acme",
 	}}
 	w := httptest.NewRecorder()
 	meRouter(reader, domain.StatusCancelled).Handler().ServeHTTP(w, meRequest(sessionContextPath, tenantID, userID))
@@ -77,7 +78,8 @@ func TestSessionContext_ReturnsCallerContext(t *testing.T) {
 		"feature_flags": ["ai_drafting", "read_only"],
 		"read_only": true,
 		"mfa_freshness_seconds": 300,
-		"locale": "en"
+		"locale": "en",
+		"slug": "acme"
 	}`, w.Body.String())
 }
 

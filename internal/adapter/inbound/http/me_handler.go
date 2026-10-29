@@ -34,7 +34,7 @@ func NewMeHandler(svc SessionContextReader) *MeHandler {
 // SessionContext is P-35 (LLD §5.4): the signed-in user's own tenant context.
 //
 // @Summary      P-35 — Read my session context
-// @Description  The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source) and the tenant locale. No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 for a suspended member and for a trial_expired/suspended tenant (RequireActiveTenant).
+// @Description  The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source), the tenant locale and the tenant's workspace slug (for /t/<slug>/ routing). No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 for a suspended member and for a trial_expired/suspended tenant (RequireActiveTenant).
 // @Tags         me
 // @Produce      json
 // @Success      200  {object}  SessionContextResponse
@@ -83,5 +83,6 @@ func SessionContextToResponse(sc *service.SessionContext) SessionContextResponse
 		ReadOnly:            sc.ReadOnly,
 		MFAFreshnessSeconds: sc.MFAFreshnessSeconds,
 		Locale:              sc.Locale,
+		Slug:                sc.Slug,
 	}
 }

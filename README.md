@@ -74,7 +74,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | P-30 | `GET /tenants/:id/invitations` | List outstanding pending invitations |
 | P-31 | `DELETE /tenants/:id/invitations/:invitation_id` | Revoke a still-pending invitation |
 | P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA via Realm Provisioner — **fail-closed** |
-| P-35 | `GET /me/session-context` | The signed-in user's own tenant context for the frontend: `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags`, `read_only` (the values AuthZ Enrichment injects as headers), plus `mfa_freshness_seconds`, `locale`. No parameters — the caller is `x-tenant-id`/`x-user-id`. Reads the I-8 projection + `om:tenant` caches; `404` with no membership, `403` for a suspended member |
+| P-35 | `GET /me/session-context` | The signed-in user's own tenant context for the frontend: `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags`, `read_only` (the values AuthZ Enrichment injects as headers), plus `mfa_freshness_seconds`, `locale`, `slug` (rev 2.45). No parameters — the caller is `x-tenant-id`/`x-user-id`. Reads the I-8 projection + `om:tenant` caches; `404` with no membership, `403` for a suspended member |
 
 *Retired, never reused:* P-14/15/16/17/29 (group-mapping admin CRUD → Group Mapping Service), P-18/19/20/32/33 (delegation → Delegation Service), P-21/22/23 (tender ACL → Tender ACL Service).
 

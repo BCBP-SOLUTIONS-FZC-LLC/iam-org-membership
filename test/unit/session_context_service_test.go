@@ -55,7 +55,7 @@ func scService(row *port.MembershipProjectionRow, tenants *scTenantGetter) *serv
 }
 
 func scTenant() *scTenantGetter {
-	return &scTenantGetter{tenant: &domain.Tenant{MFAFreshnessSeconds: 300, DefaultLocale: "en"}}
+	return &scTenantGetter{tenant: &domain.Tenant{MFAFreshnessSeconds: 300, DefaultLocale: "en", Slug: "acme"}}
 }
 
 // The values AuthZ Enrichment injects for the same caller: x-tenant-roles is
@@ -86,6 +86,7 @@ func TestSessionContext_MatchesI8Projection(t *testing.T) {
 	assert.False(t, sc.ReadOnly)
 	assert.Equal(t, 300, sc.MFAFreshnessSeconds, "from the tenant row (I-14), not I-8's snapshot")
 	assert.Equal(t, "en", sc.Locale, "from the tenant row (I-9), not I-8's snapshot")
+	assert.Equal(t, "acme", sc.Slug, "the caller's own workspace slug, from the tenant row")
 }
 
 // A cancelled tenant is read-only (§16 A53); AuthZ Enrichment appends

@@ -323,6 +323,7 @@ func TestSessionContextMatchesI8(t *testing.T) {
 	}
 	assert.NotNil(t, sc["mfa_freshness_seconds"])
 	assert.NotEmpty(t, sc["locale"])
+	assert.Equal(t, "flow-008", sc["slug"], "the caller's own workspace slug")
 
 	// A user with no membership in the tenant: I-8's answer, 404.
 	code, _, body = e.do(t, reqOpts{
