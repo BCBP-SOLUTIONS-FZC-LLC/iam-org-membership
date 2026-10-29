@@ -13,8 +13,9 @@
 //     workflow-app namespace rule (POST */assignee-override, GET */exists,
 //     */eligibility) and three principal rules — Billing (GET */seat-usage,
 //     */plan-change-check, notPaths /api/v1/tenants/*), Entitlements (GET
-//     */plan-context) and the Signup BFF (POST /api/v1/internal/tenants, GET
-//     /api/v1/public/tenants/resolve). Nothing else.
+//     */plan-context) and the Signup BFF (POST /api/v1/internal/tenants and
+//     /api/v1/internal/trial-eligibility, GET /api/v1/public/tenants/resolve).
+//     Nothing else.
 //   - NetworkPolicy (L4): the billing, commercial and bff namespaces are
 //     admitted only together with their caller's pod labels, on the API port
 //     only; no rule admits them (or every namespace) by namespace alone.
@@ -75,7 +76,7 @@ var wantPrincipals = map[string][]op{
 	},
 	trustDomain + "/ns/bff/sa/bff-signup": {
 		{Methods: []string{"GET"}, Paths: []string{"/api/v1/public/tenants/resolve"}},
-		{Methods: []string{"POST"}, Paths: []string{"/api/v1/internal/tenants"}},
+		{Methods: []string{"POST"}, Paths: []string{"/api/v1/internal/tenants", "/api/v1/internal/trial-eligibility"}},
 	},
 }
 

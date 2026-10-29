@@ -107,6 +107,10 @@ env:
   # processed_events retention (PE-1 strictly > 7-day SQS lifetime, IDEMP-4).
   PROCESSED_EVENTS_TTL_DAYS: "8"
 
+  # trial_signup_ledger retention (CR-4): how long the HMAC of a trial
+  # owner's email blocks a second trial. Pruned daily by trial-ledger-prune.
+  TRIAL_LEDGER_RETENTION_DAYS: "730"
+
   # Business timers (LLD §12).
   INVITATION_EXPIRY_DAYS: "7"
   SEAT_OVERAGE_GRACE_DAYS: "30"
@@ -342,6 +346,9 @@ cronjobs:
   parked-events-replay:
     schedule: "*/5 * * * *"
     job: parked-events-replay
+  trial-ledger-prune:
+    schedule: "30 4 * * *"
+    job: trial-ledger-prune
 
 # NetworkPolicy — enabled by default. Restricts traffic to the ingress
 # controller / gateway namespace and the monitoring namespace (/metrics).
