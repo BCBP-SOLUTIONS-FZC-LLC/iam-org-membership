@@ -607,6 +607,7 @@ func main() {
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
 	publicH := httpadapter.NewPublicHandler(tenantResolutionSvc)
+	meH := httpadapter.NewMeHandler(service.NewSessionContextService(authzSvc, tenantSvc))
 	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc)
 
 	// ── Router — all routing/middleware wiring lives in the inbound HTTP
@@ -640,6 +641,7 @@ func main() {
 		InvitationHandler:     invitationH,
 		OperatorHandler:       operatorH,
 		InternalHandler:       internalH,
+		MeHandler:             meH,
 		PublicHandler:         publicH,
 
 		// Helm iam.strictTenantPathValidation. Default false: a mismatched

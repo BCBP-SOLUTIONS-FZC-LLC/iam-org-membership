@@ -330,6 +330,44 @@ func TestInvite_RequiredActions_NoTOTPForPlainInvite(t *testing.T) {
 	assert.NotContains(t, rp.lastReq.RequiredActions, port.RequiredActionConfigureTOTP)
 }
 
+// ── RP-5 tenant_slug (invitation email /t/<slug>/ link) ───────────────────
+
+// The slug comes from the tenant row preflightSeatCheck already read — one
+// FindByID before the RP call, not a second lookup for the slug.
+func TestInvite_RP5_SendsTenantSlugFromTenantRow(t *testing.T) {
+	findCalls := 0
+	tenants := &invTenantRepo{findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+		findCalls++
+		return &domain.Tenant{ID: id, Slug: "acme-trial", LicensedSeats: 100}, nil
+	}}
+	var callsAtRP int
+	rp := &invRPClient{createFn: func(context.Context, port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {
+		callsAtRP = findCalls
+		return &port.CreateInvitedUserResponse{KeycloakUserID: uuid.New()}, nil
+	}}
+	svc := buildInviteSvc(&invInviteRepo{}, tenants, &arMembershipRepo{}, rp, nil, &arTxRunner{})
+	_, err := svc.Invite(context.Background(), uuid.New(), validInviteInput(), uuid.New())
+	require.NoError(t, err)
+	assert.Equal(t, "acme-trial", rp.lastReq.TenantSlug)
+	assert.Equal(t, 1, callsAtRP, "the slug must reuse the preflight tenant read")
+}
+
+// A tenant at capacity never reaches RP-5 — the preflight refusal returns
+// before the slug is read.
+func TestInvite_RP5_NotCalledWhenPreflightRefuses(t *testing.T) {
+	tenants := &invTenantRepo{findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+		return &domain.Tenant{ID: id, Slug: "acme", LicensedSeats: 1}, nil
+	}}
+	mem := &arMembershipRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 1, nil }}
+	rp := &invRPClient{createFn: func(context.Context, port.CreateInvitedUserRequest) (*port.CreateInvitedUserResponse, error) {
+		t.Fatal("RP-5 must not be called when the preflight seat check refuses")
+		return nil, nil
+	}}
+	svc := buildInviteSvc(&invInviteRepo{}, tenants, mem, rp, nil, &arTxRunner{})
+	_, err := svc.Invite(context.Background(), uuid.New(), validInviteInput(), uuid.New())
+	assert.ErrorIs(t, err, domain.ErrSeatLimitReached)
+}
+
 // ── transactional SEAT-1 recheck: read-error branches ─────────────────────
 
 func TestInvite_Tx_LicensedSeatsForUpdateErrorPropagates(t *testing.T) {

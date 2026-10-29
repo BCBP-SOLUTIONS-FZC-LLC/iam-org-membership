@@ -5,10 +5,11 @@
 # TLS termination is configured on the Gateway listener, not here.
 # For CORS and gateway-level rate limiting, enable ingress.securityPolicy.
 #
-# TODO PUB-1 (LLD §16 OQ-10): GET /api/v1/public/tenants/resolve must reach
-# this service with NO auth — it needs an explicit ext_authz-bypass route (the
-# same carve-out as Keycloak's /auth, /token), plus gateway rate-limit/CAPTCHA
-# (PUBRES-3). Platform/infra config, tracked separately; not in this chart yet.
+# This route (PathPrefix /api/v1) runs under the Gateway-level JWT + ext_authz
+# policy. PUB-1 (GET /api/v1/public/tenants/resolve), the one anonymous route,
+# is served by its own Exact-match HTTPRoute with a non-merging, rate-limited
+# SecurityPolicy when ingress.publicResolve.enabled — see publicresolve.yaml
+# for why Gateway API precedence sends that exact GET there and never here.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

@@ -1,0 +1,162 @@
+{{- $httpRouteEnabled := and .Values.ingress.enabled (eq (.Values.ingress.type | default "Ingress") "HTTPRoute") }}
+{{- $pub := .Values.ingress.publicResolve }}
+{{- if and .Values.ingress.enabled $pub.enabled (not $httpRouteEnabled) }}
+{{- fail "ingress.publicResolve needs ingress.type HTTPRoute (Envoy Gateway): the PUB-1 auth carve-out and per-IP limit are Envoy Gateway policies" }}
+{{- end }}
+{{- if and $httpRouteEnabled $pub.enabled }}
+{{- if not .Values.ingress.hosts }}
+{{- fail "ingress.publicResolve requires ingress.hosts: the public route must carry the same hostnames as the main HTTPRoute, or Gateway API precedence would not prefer its Exact match" }}
+{{- end }}
+{{- if not (gt (int $pub.rateLimit.requests) 0) }}
+{{- fail "ingress.publicResolve.rateLimit.requests must be > 0: PUB-1 is anonymous and PUBRES-3 makes the per-IP gateway limit mandatory" }}
+{{- end }}
+{{- if not $pub.rateLimit.sourceCIDRs }}
+{{- fail "ingress.publicResolve.rateLimit.sourceCIDRs must list at least one CIDR (0.0.0.0/0 and ::/0 cover every client)" }}
+{{- end }}
+# PUB-1 at the edge (LLD §5.4 / §10.2, PUBRES-3; IAM HLD §8.2.7, §11.4).
+#
+# GET /api/v1/public/tenants/resolve is the one route an anonymous,
+# pre-login browser calls: no JWT, so the Gateway-level SecurityPolicy's
+# jwt_authn + ext_authz (AuthZ Enrichment) must not run on it. Three
+# resources, rendered together or not at all:
+#
+#   1. HTTPRoute <fullname>-public-resolve — one rule: path Exact
+#      /api/v1/public/tenants/resolve, method GET.
+#   2. SecurityPolicy <fullname>-public-resolve targeting ONLY that route,
+#      with NO mergeType and no jwt/extAuth (CORS only, when configured). A
+#      route-level policy without mergeType replaces the Gateway-level
+#      policy for its route (Envoy Gateway applies the most specific policy
+#      only), so this route runs with no jwt_authn and no ext_authz — the
+#      same carve-out Keycloak's /auth and /token get (HLD §4.2). It renders
+#      even with nothing in it: its existence is what lifts the gateway auth.
+#      Do not add mergeType here: merging would re-apply the gateway's JWT
+#      requirement and make PUB-1 unreachable to its caller.
+#   3. BackendTrafficPolicy <fullname>-public-resolve — the per-client-IP
+#      global rate limit. Envoy Gateway carries rate limiting on
+#      BackendTrafficPolicy, not SecurityPolicy. It merges
+#      (ingress.publicResolve.rateLimit.mergeType) with any Gateway-level
+#      BackendTrafficPolicy so gateway-wide timeouts/retries still apply.
+#
+# Why the main route does not also serve this path: the main HTTPRoute
+# matches PathPrefix /api/v1 on the same hostnames. Gateway API resolves
+# overlapping matches across ALL HTTPRoutes on a listener by precedence —
+# hostname, then an Exact path match over any PathPrefix match, then the
+# longest prefix, then method — so a GET to exactly this path always selects
+# rule (1) here, with its rate limit and no auth. Anything else falls through
+# to the main route and its gateway JWT + ext_authz: a POST/HEAD/OPTIONS to
+# this path (the rule is GET-only), a trailing slash, or any other
+# /api/v1/public/* path. So there is no unauthenticated path that skips the
+# limit, and no way for the main route to re-apply auth to the real call.
+# The query string (?identifier=) plays no part in path matching. PUB-1 is a
+# CORS "simple request" (GET, no custom headers), so the browser sends no
+# preflight that would need an OPTIONS rule here.
+#
+# Rate limit (PUBRES-3 / HLD §11.4 starting point: 20 per IP per hour):
+# Envoy Gateway global rate limiting — every rule below selects sourceCIDR
+# type Distinct, i.e. one bucket per client IP. Prerequisites, platform-side
+# (not in this chart):
+#   - the Envoy Gateway global rate-limit service must be enabled
+#     (EnvoyGateway config rateLimit.backend, Redis); without it the
+#     controller rejects or ignores a Global rateLimit;
+#   - the client IP must be the real browser IP: behind an AWS NLB/ALB, a
+#     ClientTrafficPolicy on the Gateway must trust X-Forwarded-For
+#     (clientIPDetection) or enable proxy protocol — otherwise every request
+#     shares the load balancer's IP and the 20/hour bucket is global.
+# One rule per CIDR family, because an Envoy Gateway rule's clientSelectors
+# are ANDed (one IPv4 and one IPv6 selector in the same rule match nothing).
+#
+# CAPTCHA (PUBRES-3's "escalate to a CAPTCHA after repeated no-match
+# responses") cannot be done in Envoy: it has no challenge/response
+# mechanism, and the no-match signal is in the response body. It belongs in
+# the WAF in front of the load balancer (AWS WAF rate-based rule on this
+# path with a CHALLENGE/CAPTCHA action) — an infra item, LLD §16 OQ-10.
+#
+# The in-service PUB-1 handler applies no IP throttle of its own (LLD §5.4).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}-public-resolve
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+    app.kubernetes.io/component: public-resolve
+spec:
+  parentRefs:
+    - name: {{ required "ingress.gateway.name is required when ingress.type is HTTPRoute" .Values.ingress.gateway.name }}
+      {{- with .Values.ingress.gateway.namespace }}
+      namespace: {{ . }}
+      {{- end }}
+      {{- with .Values.ingress.gateway.sectionName }}
+      sectionName: {{ . }}
+      {{- end }}
+  hostnames:
+    {{- range .Values.ingress.hosts }}
+    - {{ .host | quote }}
+    {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /api/v1/public/tenants/resolve
+          method: GET
+      backendRefs:
+        - name: {{ include "iam-org-membership.fullname" . }}
+          port: {{ .Values.service.port }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}-public-resolve
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+    app.kubernetes.io/component: public-resolve
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "iam-org-membership.fullname" . }}-public-resolve
+  # No mergeType, no jwt, no extAuth — deliberately; see the header comment.
+  {{- if .Values.ingress.securityPolicy.cors.enabled }}
+  # Same allowed origins as the main route's policy (ingress.securityPolicy.cors),
+  # GET only. This policy replaces the gateway-level one on this route, so
+  # without it the browser's cross-origin read would get no
+  # Access-Control-Allow-Origin.
+  cors:
+    allowOrigins:
+      {{- range .Values.ingress.securityPolicy.cors.allowOrigins }}
+      - type: Exact
+        value: {{ . | quote }}
+      {{- end }}
+    allowMethods:
+      - GET
+    maxAge: {{ .Values.ingress.securityPolicy.cors.maxAge | quote }}
+  {{- end }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}-public-resolve
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+    app.kubernetes.io/component: public-resolve
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "iam-org-membership.fullname" . }}-public-resolve
+  {{- with $pub.rateLimit.mergeType }}
+  mergeType: {{ . }}
+  {{- end }}
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        {{- range $pub.rateLimit.sourceCIDRs }}
+        - clientSelectors:
+            - sourceCIDR:
+                type: Distinct
+                value: {{ . | quote }}
+          limit:
+            requests: {{ int $pub.rateLimit.requests }}
+            unit: {{ $pub.rateLimit.unit }}
+        {{- end }}
+{{- end }}
