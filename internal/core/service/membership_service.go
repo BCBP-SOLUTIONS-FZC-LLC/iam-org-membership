@@ -667,12 +667,15 @@ func (s *MembershipService) RemovalResolution(ctx context.Context, tenantID, use
 }
 
 // ValidateAndEmitAssigneeOverride is the I-13 (§5.4/A55) service method:
-// authorize the actor (tender_admin or higher), validate the new assignee
-// against the Workflow-supplied (department_id, required_level), then emit
+// authorize the actor, validate the new assignee against the
+// Workflow-supplied (department_id, required_level), then emit
 // TenderAssigneeOverridden via the outbox (§7.3, OVR-1). Persists nothing
 // else — the override record is Workflow-owned (§2.2/A32(d)).
 //
-// Returns 403 insufficient_role if actor lacks tender_admin (or higher).
+// Accepted actor roles: tender_admin, tenant_admin, or tenant_owner.
+// All three are treated equivalently for this gate. A plain member —
+// or any caller with no elevated role row — receives 403 insufficient_role.
+//
 // Returns 422 assignee_ineligible if the new assignee is not an active
 // member holding required_level in department_id.
 func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context, tenantID, tenderID, newUserID, departmentID uuid.UUID, requiredLevel domain.DeptRole, actorID uuid.UUID) error {

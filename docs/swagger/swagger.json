@@ -936,7 +936,7 @@
         },
         "/internal/tenants/{id}/tenders/{tender_id}/assignee-override": {
             "post": {
-                "description": "422 assignee_ineligible per §16 A62 (NOT 409). Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).",
+                "description": "422 assignee_ineligible per §16 A62 (NOT 409). Actor must hold tender_admin, tenant_admin, or tenant_owner; plain member receives 403. Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).",
                 "consumes": [
                     "application/json"
                 ],
