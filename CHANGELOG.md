@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Added
+
+- **Claude Code hooks and `invariant-reviewer` agent (2026-10-30):** `.claude/settings.json` wires a PreToolUse guard (`.claude/hooks/guard-invariants.sh`) that blocks edits CI would reject (`.env`, edits to a migration already on main, non-`LOCAL` `SET app.tenant_id`, `database/sql`/raw pgx pools, SNS/SQS SDK or `outbox.Enqueue` bypasses, core→adapter imports) and a PostToolUse `gofmt` hook. New Read-only `invariant-reviewer` agent checks a diff against the service's RLS, grant, outbox, idempotency, concurrency, cache, access-matrix and layering invariants. Mirrors `iam-realm-provisioner`'s setup, adapted to this repo's additive migrations. No code change.
+
 ### Changed
 
 - **CD-44: one AI-facing queue, `membership-rag-q` (LLD rev 2.42, 2026-10-28; TL decision):** LLM Retrieval & Generation's proposed queues on `iam.membership.events`, `iam-rag-purge-q` (`TenantMembershipsPurged`) and `iam-rag-membership-q` (`TenantStateChanged`), become **`membership-rag-q`**, with one filter carrying both event types. Docs only: LLD §7.3.2, the `api/asyncapi.yaml` topology comment, `.claude/api-caching-events.md`, README. Core only publishes to the topic; the LLM team owns and creates the queue and its subscription.

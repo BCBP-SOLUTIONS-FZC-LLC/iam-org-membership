@@ -98,6 +98,14 @@ Trial signup (§8.1: I-1, 5 default depts + owner + role grant + 2 events in one
 
 Security (three-layer isolation, AUTH-8 session revoke + TTL backstop); observability (three-tier metric hierarchy — Tier 1 `platform_*` via `gincommon.NewShared*Vec`, Tier 2 `iam_*` IAM-domain-shared, Tier 3 `iam_org_membership_*` service-unique; `make metrics-lint` enforces compliance; two Tier-1 metrics are `StatusProposed` and emitted alongside authoritative Tier-3 counterparts); **8 CronJobs** via `cmd/reconciler --job=<name>` (`invitation-expiry`, `invitation-kc-cleanup`, `realm-config-sync`, `seat-overage-reconcile`, `trial-cleanup`, `outbox-prune`, `processed-events-prune`, `parked-events-replay`); 6 metric-exporter goroutines inside `cmd/server` (not CronJobs); HPA 2–8; schema migrations run as Helm pre-install/pre-upgrade hook (`cmd/migrate`), not by replicas (`RUN_MIGRATIONS=false`); shutdown fits `terminationGracePeriodSeconds` 75 (HTTP + SQS drain ≤30s, outbox 30s, pools 10s); statement coverage **97.4%** (CI gate 95%, `TEST_INTERNAL_PKGS` in Makefile must list all packages carrying `_test.go` files). Fail-open/closed matrix: Catalog Service is the **one NOT fail-open** (`catalog_unavailable` 503 on cold-cache-plus-failure); Group Mapping, Delegation, and Token Service clients all fail open. Full detail in **[`.claude/operations.md`](operations.md)**.
 
+## Claude Code Hooks & Agents
+
+`.claude/settings.json` wires two hooks for Edit/Write/MultiEdit (they need `jq`; the guard fails closed without it):
+- **PreToolUse `.claude/hooks/guard-invariants.sh`** blocks what CI would reject later: editing `.env`; editing a migration already on `origin/main` (MIG-1, add a new `NNNNNN_*.sql` instead); a non-`LOCAL` `SET app.tenant_id` (RLS-6); `database/sql`, `pgxpool.New*`/`pgx.Connect` in production Go; the SNS/SQS SDK outside `cmd/server/main.go`; `outbox.Enqueue*` outside `eventbus/publisher.go`; `internal/core/*` importing an adapter (service may import only `outbound/metrics`). Only the written text is checked, and Bash edits are not seen — CI stays the gate.
+- **PostToolUse `.claude/hooks/gofmt.sh`** runs `gofmt -w` on each edited Go file.
+
+**`invariant-reviewer` agent** (`.claude/agents/invariant-reviewer.md`, Read-only): reviews a diff against RLS, migration grants, outbox, idempotency/check-then-act, concurrency, cache, authorization, consumer, CD-19 access-matrix, layering and personal-data invariants. Use it before opening a PR: write `git diff main...HEAD > <scratch>/review.diff; git diff HEAD >> <scratch>/review.diff` and pass the absolute path.
+
 ## See Also
 
 Detailed reference docs in `.claude/`:
