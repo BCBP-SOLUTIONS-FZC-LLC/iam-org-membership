@@ -333,7 +333,7 @@ The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_me
 ```bash
 git clone https://github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership
 cd iam-org-membership
-make setup       # copies .env-example → .env (run once before anything else)
+make setup       # copies .env-example → .env; installs .githooks/pre-commit + pre-push (run once before anything else)
 make tidy        # go mod tidy
 make docker-up   # start PostgreSQL + PgBouncer + Valkey + floci
 make run         # start the server on :8080 (metrics on :9090; kills the port first)
@@ -343,8 +343,8 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 
 | Command | Description |
 |---|---|
-| `make setup` | Copy `.env-example` → `.env` (if absent) and install the `.githooks/pre-commit` hook |
-| `make install-hooks` | (Re)install the pre-commit hook only |
+| `make setup` | Copy `.env-example` → `.env` (if absent) and install the `.githooks/pre-commit` + `pre-push` hooks |
+| `make install-hooks` | (Re)install `.githooks/pre-commit` (tidy + fmt-check + lint + Swagger staleness) and `.githooks/pre-push` (`make trivy`) |
 | `make tidy` / `make fmt` / `make fmt-check` / `make vet` | Go basics; `fmt-check` mirrors CI, does not modify files |
 | `make lint` | `golangci-lint` via `go tool` — default build plus every test build tag (`integration`, `e2e`, `helm`) |
 | `make arch-lint` | `go-arch-lint` against `.go-arch-lint.yml` (the same script CI runs) |
@@ -353,6 +353,7 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 | `make helm-access-check` | CD-19 access matrix: renders the chart with the staging and prod values and asserts, by parsing the YAML, which routes each cross-namespace caller (Billing, Entitlements, Signup BFF, `workflow-app`) can reach in the Istio AuthorizationPolicy and that `billing`/`commercial`/`bff` are admitted only per pod in the NetworkPolicy; also pins PUB-1's edge resources (`ingress.publicResolve`: Exact GET route, non-merging SecurityPolicy, per-IP rate limit) (`test/helm/`, needs `helm`; CI runs it after `helm-check.sh`) |
 | `make mod-verify` | `go mod verify` |
 | `make vuln-check` | `govulncheck ./internal/...` |
+| `make trivy` | Build the image and Trivy-scan it like CI (CRITICAL/HIGH/UNKNOWN, fixed only; `.trivyignore` applies); `GO_PRIVATE_TOKEN` or `gh auth token` supplies the build secret. The pre-push hook runs it; skip once with `SKIP_TRIVY=1 git push` or `--no-verify` |
 | `make test` | Unit + postgres + integration in parallel (Docker required; e2e is separate) |
 | `make test-ci` | Same, with `-race` + merged coverage (used in CI) |
 | `make test-unit` | Unit tests only, no Docker |
