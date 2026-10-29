@@ -114,6 +114,9 @@ func (c *HTTPClient) CreateInvitedUser(ctx context.Context, req port.CreateInvit
 		// not RP.
 		body["required_actions"] = req.RequiredActions
 	}
+	// RP-5's required tenant_slug: the /t/<slug>/ link in the invitation
+	// email. tenants.slug is NOT NULL, so it is always set.
+	body["tenant_slug"] = req.TenantSlug
 	buf, _ := json.Marshal(body)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.url("/tenants/"+req.TenantID.String()+"/users"), bytes.NewReader(buf))

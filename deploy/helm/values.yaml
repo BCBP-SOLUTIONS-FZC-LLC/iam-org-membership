@@ -523,7 +523,8 @@ ingress:
     namespace: ""         # optional — defaults to the release namespace
     sectionName: ""       # optional — target a specific listener (e.g. "https")
 
-  # Envoy Gateway SecurityPolicy — CORS and gateway-level rate limiting.
+  # Envoy Gateway SecurityPolicy — CORS. (The gateway rate limit is
+  # ingress.rateLimit below: Envoy Gateway has no rateLimit on SecurityPolicy.)
   # Requires gateway.envoyproxy.io/v1alpha1 CRD (Envoy Gateway v1.8+ for mergeType).
   # The in-process per-user token-bucket limiter remains active in all cases.
   securityPolicy:
@@ -553,10 +554,60 @@ ingress:
         - X-User-ID
         - X-Idempotency-Key
       maxAge: "86400"
+
+  # Gateway-level rate limit for the main HTTPRoute (templates/
+  # backendtrafficpolicy.yaml) — one shared bucket, a coarse burst shield in
+  # front of the in-process per-user token bucket, which stays active
+  # regardless. Rendered as a route-level Envoy Gateway BackendTrafficPolicy:
+  # Envoy Gateway carries rate limits there, not on SecurityPolicy (which
+  # rejects a rateLimit field). Needs the Envoy Gateway global rate-limit
+  # service (Redis). HTTPRoute mode only.
+  rateLimit:
+    enabled: false
+    requestsPerUnit: 1000
+    unit: Second          # Second | Minute | Hour
+    # StrategicMerge keeps a Gateway-level BackendTrafficPolicy's
+    # timeouts/retries in force on this route; "" replaces it (only for a
+    # gateway older than v1.8, where mergeType is unknown).
+    mergeType: StrategicMerge
+
+  # PUB-1 at the edge (LLD §5.4/§10.2, PUBRES-3; templates/publicresolve.yaml).
+  # GET /api/v1/public/tenants/resolve is called by an anonymous, pre-login
+  # browser, so it cannot pass the Gateway-level JWT + ext_authz. When
+  # enabled (and ingress.type is HTTPRoute), the chart renders a dedicated
+  # HTTPRoute for exactly that path (Exact, GET only, same hosts as above),
+  # a route-level SecurityPolicy WITHOUT mergeType — it replaces the gateway
+  # policy on that route only, so no jwt_authn/ext_authz runs there — and a
+  # route-level BackendTrafficPolicy carrying a per-client-IP global rate
+  # limit. Every other path, and every
+  # other method on this path, stays on the main route and its auth.
+  # Off by default: until enabled, PUB-1 is unreachable from the browser (the
+  # gateway demands a JWT on it), which is the fail-closed state.
+  # Platform prerequisites (not in this chart): Envoy Gateway's global
+  # rate-limit service (Redis), and a ClientTrafficPolicy so the client IP is
+  # the browser's, not the load balancer's. CAPTCHA escalation (PUBRES-3)
+  # is NOT done here — Envoy cannot do it; it belongs in the WAF (AWS WAF
+  # rate-based rule with a CHALLENGE/CAPTCHA action on this path), an infra
+  # item (LLD §16 OQ-10).
+  publicResolve:
+    enabled: false
     rateLimit:
-      enabled: false
-      requestsPerUnit: 1000
-      unit: Second          # Second | Minute | Hour
+      # Starting point from IAM HLD §8.2.7/§11.4 and PUBRES-3: 20 requests
+      # per client IP per hour. Mandatory — the chart fails on requests <= 0.
+      requests: 20
+      unit: Hour            # Second | Minute | Hour | Day
+      # One Distinct (per-IP) bucket rule per CIDR; the defaults cover every
+      # IPv4 and IPv6 client.
+      sourceCIDRs:
+        - 0.0.0.0/0
+        - ::/0
+      # The limit lives on a route-level BackendTrafficPolicy (Envoy Gateway
+      # carries rate limits there, not on SecurityPolicy). StrategicMerge
+      # keeps a Gateway-level BackendTrafficPolicy's timeouts/retries in force
+      # on this route too; "" replaces it (only for a gateway older than
+      # v1.8, where mergeType is unknown). Unrelated to auth: the route's
+      # SecurityPolicy never merges.
+      mergeType: StrategicMerge
 
   # Classic Ingress (type: Ingress)
   className: ""

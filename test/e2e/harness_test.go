@@ -147,6 +147,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, nil, deptMemSvc) // I-16 untested here
 	// PUB-1: bound to sysPool, exactly as cmd/server/main.go does.
 	publicH := httpadapter.NewPublicHandler(service.NewTenantResolutionService(pgadapter.NewTenantRepository(sysPool)))
+	meH := httpadapter.NewMeHandler(service.NewSessionContextService(authzSvc, tenantSvc))
 
 	// Router — the exact same constructor cmd/server/main.go calls, so this
 	// harness can never drift from production routing again (it used to be
@@ -168,6 +169,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 		InvitationHandler:     invitationH,
 		OperatorHandler:       operatorH,
 		InternalHandler:       internalH,
+		MeHandler:             meH,
 		PublicHandler:         publicH,
 
 		Postgres: noopPinger{},

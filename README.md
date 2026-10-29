@@ -45,11 +45,11 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 ## API overview
 
-**41 active endpoints** across four route prefixes (`/api/v1/*`, `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
+**41 active endpoints** across four route prefixes (`/api/v1/*` — including the caller-self `/api/v1/me/*` — `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
 
 **Middleware chain:** a 1 MB body cap, then `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → Timeout`) and `NormalizeAuthErrors` (adds this service's `code` — `missing_identity_headers`/`ambiguous_identity_headers`/`invalid_request_context` — to gincommon's own 401/400 bodies) on every route; the protected `/api/v1` group adds `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → `GUCBridgeMiddleware` (binds `app.tenant_id` transaction-locally, RLS-6) → `RequireJSONContentType`. The service trusts gateway-injected headers (`x-user-id`, `x-tenant-id`, `x-tenant-roles`) under mesh mTLS — no JWT parsing.
 
-### Public routes (21) — `/api/v1/*`
+### Public routes (22) — `/api/v1/*`
 
 | # | Method & Path | Purpose |
 |---|---|---|
@@ -74,6 +74,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | P-30 | `GET /tenants/:id/invitations` | List outstanding pending invitations |
 | P-31 | `DELETE /tenants/:id/invitations/:invitation_id` | Revoke a still-pending invitation |
 | P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA via Realm Provisioner — **fail-closed** |
+| P-35 | `GET /me/session-context` | The signed-in user's own tenant context for the frontend: `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags`, `read_only` (the values AuthZ Enrichment injects as headers), plus `mfa_freshness_seconds`, `locale`. No parameters — the caller is `x-tenant-id`/`x-user-id`. Reads the I-8 projection + `om:tenant` caches; `404` with no membership, `403` for a suspended member |
 
 *Retired, never reused:* P-14/15/16/17/29 (group-mapping admin CRUD → Group Mapping Service), P-18/19/20/32/33 (delegation → Delegation Service), P-21/22/23 (tender ACL → Tender ACL Service).
 
@@ -116,7 +117,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 |---|---|---|
 | PUB-1 | `GET /public/tenants/resolve?identifier=` | Pre-login tenant/realm resolution for the identifier-first login flow (IAM HLD §8.2.7). There's no auth and no gateway headers, and it bypasses `ext_authz`. Resolves a company slug or a pending invitation's email (an active member's email isn't resolvable, LLD §16 OQ-11). It's always `200` (`{found:false}` on no match, never `404`, PUBRES-2), runs on the BYPASSRLS `sysPool`, and is uncached. |
 
-The only route in this service with no authentication. It's registered directly on the gin engine by `registerPublicRoutes`, outside the protected `/api/v1` group, so it never runs `RequireAuth`, `GUCBridgeMiddleware` or any role gate. Gateway rate-limit/CAPTCHA (PUBRES-3) and the Envoy `ext_authz` bypass route are platform config still to land (LLD §16 OQ-10).
+The only route in this service with no authentication. It's registered directly on the gin engine by `registerPublicRoutes`, outside the protected `/api/v1` group, so it never runs `RequireAuth`, `GUCBridgeMiddleware` or any role gate. At the edge, `ingress.publicResolve.enabled` (HTTPRoute mode, off by default) renders an Exact, GET-only HTTPRoute for this path with a non-merging SecurityPolicy (no gateway JWT/`ext_authz` on it) and a per-client-IP rate limit (20/hour) — `deploy/helm/templates/publicresolve.yaml`, LLD §10.2. CAPTCHA escalation (PUBRES-3) belongs in the WAF, not Envoy; it and the `tenant_id`-hint disclosure review are still open (LLD §16 OQ-10).
 
 ---
 
@@ -348,7 +349,7 @@ make run         # start the server on :8080 (metrics on :9090; kills the port f
 | `make arch-lint` | `go-arch-lint` against `.go-arch-lint.yml` (the same script CI runs) |
 | `make metrics-inventory` | Regenerate `docs/observability/metric-registry.md` from the pinned registry and a real scrape |
 | `make metrics-lint` | platform-gincommon's `metricslint` on a real `/metrics` scrape plus the alert/dashboard references (the same script CI runs) |
-| `make helm-access-check` | CD-19 access matrix: renders the chart with the staging and prod values and asserts, by parsing the YAML, which routes each cross-namespace caller (Billing, Entitlements, Signup BFF, `workflow-app`) can reach in the Istio AuthorizationPolicy and that `billing`/`commercial`/`bff` are admitted only per pod in the NetworkPolicy (`test/helm/`, needs `helm`; CI runs it after `helm-check.sh`) |
+| `make helm-access-check` | CD-19 access matrix: renders the chart with the staging and prod values and asserts, by parsing the YAML, which routes each cross-namespace caller (Billing, Entitlements, Signup BFF, `workflow-app`) can reach in the Istio AuthorizationPolicy and that `billing`/`commercial`/`bff` are admitted only per pod in the NetworkPolicy; also pins PUB-1's edge resources (`ingress.publicResolve`: Exact GET route, non-merging SecurityPolicy, per-IP rate limit) (`test/helm/`, needs `helm`; CI runs it after `helm-check.sh`) |
 | `make mod-verify` | `go mod verify` |
 | `make vuln-check` | `govulncheck ./internal/...` |
 | `make test` | Unit + postgres + integration in parallel (Docker required; e2e is separate) |
