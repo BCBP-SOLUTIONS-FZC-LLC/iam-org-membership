@@ -28,7 +28,7 @@ type tenantGetter interface {
 
 // SessionContext is P-35's view of the caller's own tenant context — the
 // values AuthZ Enrichment injects as x-tenant-roles, x-departments, x-plan
-// and x-feature-flags, plus the tenant's step-up window and locale.
+// and x-feature-flags, plus the tenant's slug, step-up window and locale.
 type SessionContext struct {
 	TenantID            uuid.UUID
 	Roles               []domain.TenantRoleCode
@@ -38,6 +38,11 @@ type SessionContext struct {
 	ReadOnly            bool
 	MFAFreshnessSeconds int
 	Locale              string
+	// Slug is the tenant's immutable workspace slug (T-1), so the SDK can
+	// route the caller to /t/<slug>/ — trial tokens carry no slug, and PUB-1
+	// returns none for an email. It is the caller's own tenant, so it
+	// discloses nothing.
+	Slug string
 }
 
 // SessionContextService owns P-35 (GET /api/v1/me/session-context, LLD
@@ -98,6 +103,7 @@ func (s *SessionContextService) Get(ctx context.Context, tenantID, userID uuid.U
 		ReadOnly:            proj.ReadOnly,
 		MFAFreshnessSeconds: t.MFAFreshnessSeconds,
 		Locale:              t.DefaultLocale,
+		Slug:                t.Slug,
 	}, nil
 }
 

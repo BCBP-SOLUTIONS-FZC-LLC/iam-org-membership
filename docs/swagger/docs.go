@@ -1197,7 +1197,7 @@ const docTemplate = `{
         },
         "/me/session-context": {
             "get": {
-                "description": "The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source) and the tenant locale. No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 for a suspended member and for a trial_expired/suspended tenant (RequireActiveTenant).",
+                "description": "The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source), the tenant locale and the tenant's workspace slug (for /t/\u003cslug\u003e/ routing). No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 for a suspended member and for a trial_expired/suspended tenant (RequireActiveTenant).",
                 "produces": [
                     "application/json"
                 ],
@@ -3905,6 +3905,11 @@ const docTemplate = `{
                         "member",
                         "tenant_admin"
                     ]
+                },
+                "slug": {
+                    "description": "Slug is the caller's tenant workspace slug, for /t/\u003cslug\u003e/ routing.",
+                    "type": "string",
+                    "example": "acme"
                 },
                 "tenant_id": {
                     "type": "string",

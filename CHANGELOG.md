@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Added (2026-10-30 — P-35 `slug`, LLD rev 2.45)
+
+- **P-35 `GET /api/v1/me/session-context` returns `slug`** — the caller's own tenant workspace slug, from the `om:tenant` row it already reads. Frontend round-2 ask A: trial tokens carry no slug and PUB-1 returns none for an email, so without it the SDK could not cache a trial user's workspace or move the URL to `/t/<slug>/`. Additive field; Swagger regenerated; service, handler and e2e tests.
+
 ### Security (2026-10-30 — Trivy: tzdata DLA-4867-1 suppressed)
 
 - **`.trivyignore` suppresses DLA-4867-1** (`tzdata` 2026b → 2026f, Trivy UNKNOWN), with `exp:2026-11-30`. The newest `gcr.io/distroless/static-debian12:nonroot` (`sha256:afa5c872…`) still ships 2026b, and the service never loads a time zone (all timestamps UTC). Same handling as DLA-4854-1. Remove both entries and re-pin once distroless ships tzdata ≥ 2026f.

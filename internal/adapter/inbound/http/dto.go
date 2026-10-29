@@ -440,6 +440,8 @@ type SessionContextResponse struct {
 	ReadOnly            bool                       `json:"read_only" example:"false"`
 	MFAFreshnessSeconds int                        `json:"mfa_freshness_seconds" example:"300"`
 	Locale              string                     `json:"locale" example:"en"`
+	// Slug is the caller's tenant workspace slug, for /t/<slug>/ routing.
+	Slug string `json:"slug" example:"acme"`
 }
 
 // SessionContextDepartment is one x-departments entry ("<id>:<level>") as
