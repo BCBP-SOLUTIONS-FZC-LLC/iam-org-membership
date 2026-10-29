@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Security (2026-10-30 — Trivy: tzdata DLA-4867-1 suppressed)
+
+- **`.trivyignore` suppresses DLA-4867-1** (`tzdata` 2026b → 2026f, Trivy UNKNOWN), with `exp:2026-11-30`. The newest `gcr.io/distroless/static-debian12:nonroot` (`sha256:afa5c872…`) still ships 2026b, and the service never loads a time zone (all timestamps UTC). Same handling as DLA-4854-1. Remove both entries and re-pin once distroless ships tzdata ≥ 2026f.
+
 ### Changed
 
 - **CD-44: one AI-facing queue, `membership-rag-q` (LLD rev 2.42, 2026-10-28; TL decision):** LLM Retrieval & Generation's proposed queues on `iam.membership.events`, `iam-rag-purge-q` (`TenantMembershipsPurged`) and `iam-rag-membership-q` (`TenantStateChanged`), become **`membership-rag-q`**, with one filter carrying both event types. Docs only: LLD §7.3.2, the `api/asyncapi.yaml` topology comment, `.claude/api-caching-events.md`, README. Core only publishes to the topic; the LLM team owns and creates the queue and its subscription.
