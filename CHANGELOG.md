@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Security (2026-10-30 — Trivy: tzdata DLA-4867-1 suppressed)
+
+- **`.trivyignore` suppresses DLA-4867-1** (`tzdata` 2026b → 2026f, Trivy UNKNOWN), with `exp:2026-11-30`. The newest `gcr.io/distroless/static-debian12:nonroot` (`sha256:afa5c872…`) still ships 2026b, and the service never loads a time zone (all timestamps UTC). Same handling as DLA-4854-1. Remove both entries and re-pin once distroless ships tzdata ≥ 2026f.
+
 ### Added
 
 - **Claude Code hooks and `invariant-reviewer` agent (2026-10-30):** `.claude/settings.json` wires a PreToolUse guard (`.claude/hooks/guard-invariants.sh`) that blocks edits CI would reject (`.env`, edits to a migration already on main, non-`LOCAL` `SET app.tenant_id`, `database/sql`/raw pgx pools, SNS/SQS SDK or `outbox.Enqueue` bypasses, core→adapter imports) and a PostToolUse `gofmt` hook. New Read-only `invariant-reviewer` agent checks a diff against the service's RLS, grant, outbox, idempotency, concurrency, cache, access-matrix and layering invariants. Mirrors `iam-realm-provisioner`'s setup, adapted to this repo's additive migrations. No code change.
