@@ -9,6 +9,7 @@ This service has never been deployed to any environment — there is no released
 ### Added
 
 - **Claude Code hooks and `invariant-reviewer` agent (2026-10-30):** `.claude/settings.json` wires a PreToolUse guard (`.claude/hooks/guard-invariants.sh`) that blocks edits CI would reject (`.env`, edits to a migration already on main, non-`LOCAL` `SET app.tenant_id`, `database/sql`/raw pgx pools, SNS/SQS SDK or `outbox.Enqueue` bypasses, core→adapter imports) and a PostToolUse `gofmt` hook. New Read-only `invariant-reviewer` agent checks a diff against the service's RLS, grant, outbox, idempotency, concurrency, cache, access-matrix and layering invariants. Mirrors `iam-realm-provisioner`'s setup, adapted to this repo's additive migrations. No code change.
+- **`make trivy` + pre-push gate (2026-10-30):** `make trivy` builds the amd64 image (with the `go_private_token` build secret from `GO_PRIVATE_TOKEN` or `gh auth token`) and Trivy-scans it with CI's settings (CRITICAL/HIGH/UNKNOWN, fixed only, `.trivyignore`). New `.githooks/pre-push` runs it before every push (needs Docker; skip once with `SKIP_TRIVY=1 git push` or `--no-verify`); `make setup`/`make install-hooks` now install it too. Same as `iam-realm-provisioner`.
 
 ### Changed
 
