@@ -33,6 +33,9 @@ type ProvisioningService struct {
 	// WithParkedEvents. Optional: nil skips both.
 	parked   port.ParkedTenantEventStore
 	replayer port.ParkedTenantEventReplayer
+	// trialLedger is the CR-4 append-only cross-tenant ledger (trial_signup_ledger).
+	// Optional: nil disables both the eligibility check and the atomic write in I-1.
+	trialLedger port.TrialSignupLedgerRepository
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -73,6 +76,13 @@ func (s *ProvisioningService) WithParkedEvents(store port.ParkedTenantEventStore
 	return s
 }
 
+// WithTrialLedger wires the CR-4 trial_signup_ledger repository. Optional:
+// if not called, CheckTrialEligibility is a no-op and I-1 skips the ledger write.
+func (s *ProvisioningService) WithTrialLedger(ledger port.TrialSignupLedgerRepository) *ProvisioningService {
+	s.trialLedger = ledger
+	return s
+}
+
 type TrialSignupInput struct {
 	TenantID      uuid.UUID
 	Slug          string
@@ -80,6 +90,10 @@ type TrialSignupInput struct {
 	Plan          domain.TenantPlan
 	OwnerUserID   uuid.UUID
 	DefaultLocale string
+	// EmailHash is the HMAC-SHA256 hex of the owner's lower-cased email (CR-4).
+	// Optional: Realm Provisioner and the TenantIdentityProvisioned backstop do
+	// not send it; only the Signup BFF does.
+	EmailHash string
 }
 
 // TrialSignup is I-1: creates the tenant row + 5 system dept activations
@@ -210,6 +224,15 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			// Idempotent replay: the tenant already exists. Per LLD I-1
 			// "no re-seed", so short-circuit the tx here.
 			return nil
+		}
+
+		// CR-4: write email_hash atomically with the tenant row so that any
+		// subsequent CheckTrialEligibility call returns already_used. ON CONFLICT
+		// DO NOTHING in InsertEmailHash makes this safe on any replay.
+		if req.EmailHash != "" && s.trialLedger != nil {
+			if err := s.trialLedger.InsertEmailHash(txCtx, req.EmailHash); err != nil {
+				return err
+			}
 		}
 
 		// 2) Activate the pre-fetched system departments (§8.1) — the
@@ -516,6 +539,23 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		)
 	}
 	return err
+}
+
+// CheckTrialEligibility is CR-4: the Signup BFF's pre-signup gate (step E).
+// Returns ErrTrialAlreadyUsed when email_hash is already in trial_signup_ledger.
+// Returns nil (eligible) when the hash is absent or trialLedger is not wired.
+func (s *ProvisioningService) CheckTrialEligibility(ctx context.Context, emailHash string) error {
+	if s.trialLedger == nil {
+		return nil
+	}
+	exists, err := s.trialLedger.ExistsEmailHash(ctx, emailHash)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return domain.NewError(domain.ErrTrialAlreadyUsed, "this email address has already been used for a trial")
+	}
+	return nil
 }
 
 // ── validation helpers (GAP-I1-3/I1-4/I1-5) ──────────────────────────────

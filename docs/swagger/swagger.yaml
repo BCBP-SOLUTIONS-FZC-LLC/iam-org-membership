@@ -381,6 +381,9 @@ definitions:
         - shared
         - dedicated
         type: string
+      record_version:
+        example: 2
+        type: integer
       tenant_id:
         format: uuid
         type: string
@@ -790,6 +793,11 @@ definitions:
       trial_ends_at:
         type: string
       updated_at:
+        type: string
+    type: object
+  http.trialEligibilityRequest:
+    properties:
+      email_hash:
         type: string
     type: object
   service.PlanChangeBlocker:
@@ -1484,6 +1492,48 @@ paths:
       - TenantID: []
       - TenantRoles: []
       summary: I-13 — Validate-and-emit TenderAssigneeOverridden (OVR-1 no persistence)
+      tags:
+      - internal
+  /internal/trial-eligibility:
+    post:
+      consumes:
+      - application/json
+      description: Checks whether the HMAC-SHA256 hex of the owner's lower-cased email
+        has already been used for a trial. 200 = eligible; 409 TRIAL_ALREADY_USED
+        = not eligible.
+      parameters:
+      - description: Email hash payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.trialEligibilityRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 'eligible: true'
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: email_hash required
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+        "403":
+          description: iam-system role required
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+        "409":
+          description: TRIAL_ALREADY_USED
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: CR-4 — Trial signup eligibility check (Signup BFF)
       tags:
       - internal
   /internal/users/{id}/memberships:

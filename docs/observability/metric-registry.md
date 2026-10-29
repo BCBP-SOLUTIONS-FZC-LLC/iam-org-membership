@@ -100,5 +100,6 @@ Registered for the `iam` domain but not emitted by this service: `iam_auth_event
 | `iam_org_membership_tenant_ownerless` | gauge | - | Tenants with ownerless_since IS NOT NULL (T-13). Sustained >0 pages. |
 | `iam_org_membership_tenant_ownerless_escalated_total` | counter | `reason` | Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page. |
 | `iam_org_membership_tenant_provisioning_backstop_total` | counter | `result` | TenantIdentityProvisioned events handled by the signup provisioning backstop, by result: created (tenant was missing and was created) or already_exists. |
+| `iam_org_membership_trial_eligibility_check_total` | counter | `result` | CR-4 POST /internal/trial-eligibility outcomes by result: eligible (email hash is new) or already_used (409). |
 | `iam_org_membership_unknown_event_acknowledged_total` | counter | `event_type` | Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type. |
 

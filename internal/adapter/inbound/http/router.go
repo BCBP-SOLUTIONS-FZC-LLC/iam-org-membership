@@ -444,6 +444,11 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// regardless, so RP's client sends a sentinel uuid.Nil value for it
 	// (never read by this handler, which queries sysPool unconditionally).
 	internal.GET("/subscription-lapses", internalH.ListSubscriptionLapses) // I-16 (§16 RP-C3)
+	// CR-4: pre-signup trial-eligibility gate. No path tenant — the tenant
+	// does not exist yet at call time. Sits directly on the /internal group
+	// (not tenantScoped) and is never subject to BindPathTenant or the
+	// TestInternalTenantRoutes_AllBindPathTenant coverage gate.
+	internal.POST("/trial-eligibility", internalH.CheckTrialEligibility) // CR-4
 
 	// Every tenant-scoped internal route lives under this group so the path
 	// tenant — not x-tenant-id — is the RLS tenant (BindPathTenant).

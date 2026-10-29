@@ -455,17 +455,11 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		})
 		return domain.StatusActive, newPlan, err
 	case "DirectPaidSignup":
-		// RP's actual DirectPaidSignupPayload (iam-realm-provisioner
-		// internal/core/domain/event.go) is {tenant_id, realm,
-		// direct_signup} — it has no "plan" field, so this read always
-		// misses and always falls through to prevPlan below. A prior
-		// commit on this branch claimed RP had added "plan" to the
-		// payload and that the fallback was now just a safety net for
-		// "older RP versions" — that was never true; verified against
-		// RP's real source, not the claim. Left as-is (harmless: the
-		// fallback already does the right thing, activating the tenant
-		// at its current plan) rather than removing the dead read, since
-		// changing it isn't this fix's job.
+		// RP's DirectPaidSignupPayload includes a "plan" field
+		// (iam-realm-provisioner internal/core/domain/event.go).
+		// The fallback to prevPlan when plan is empty is intentional —
+		// it handles the case where RP emits the event without a plan
+		// value (e.g. older RP versions or a plan-unset payload).
 		var payload struct {
 			Plan string `json:"plan"`
 		}
