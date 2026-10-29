@@ -48,6 +48,7 @@ var registry = map[string]jobs.Func{
 	"outbox-prune":           jobs.OutboxPrune,
 	"processed-events-prune": jobs.ProcessedEventsPrune,
 	"parked-events-replay":   jobs.ParkedEventsReplay,
+	"trial-ledger-prune":     jobs.TrialLedgerPrune,
 }
 
 func main() {
@@ -287,23 +288,25 @@ func run() int {
 	parkedReplayer := consumeradapter.NewMembershipEventConsumer(nil, pgadapter.NewTenantRepository(pool), nil, nil, 0, rawLog).
 		WithParkedEvents(pgadapter.NewParkedTenantEventRepository(pool), pgadapter.NewTxRunner(pool, outboxPublisher))
 	jctx := &jobs.Context{
-		TxRunner:               pgadapter.NewTxRunner(pool, outboxPublisher),
-		Tenants:                pgadapter.NewTenantRepository(pool),
-		Invitations:            pgadapter.NewInvitationRepository(sysPool),
-		Reconciler:             pgadapter.NewReconcilerStore(sysPool),
-		OutboxRunner:           outboxRunner,
-		Inbox:                  pgadapter.NewInboxRepository(sysPool, nil),
-		InboxConsumers:         consumeradapter.ProcessedEventsConsumers(),
-		RealmProvisioner:       realmprovisionerclient.New(rawLog),
-		ParkedReplayer:         parkedReplayer,
-		Logger:                 log,
-		Metrics:                metrics.Recorder{},
-		AuditLog:               auditlogclient.New(rawLog),
-		BatchLimit:             envInt("RECONCILER_BATCH_LIMIT", 500),
-		SeatOverageGraceDays:   envInt("SEAT_OVERAGE_GRACE_DAYS", 30),
-		TrialGraceDays:         envInt("TRIAL_GRACE_DAYS", 15),
-		OutboxRetentionDays:    envInt("OUTBOX_RETENTION_DAYS", 8),
-		ProcessedEventsTTLDays: envInt("PROCESSED_EVENTS_TTL_DAYS", 8),
+		TxRunner:                 pgadapter.NewTxRunner(pool, outboxPublisher),
+		Tenants:                  pgadapter.NewTenantRepository(pool),
+		Invitations:              pgadapter.NewInvitationRepository(sysPool),
+		Reconciler:               pgadapter.NewReconcilerStore(sysPool),
+		OutboxRunner:             outboxRunner,
+		Inbox:                    pgadapter.NewInboxRepository(sysPool, nil),
+		InboxConsumers:           consumeradapter.ProcessedEventsConsumers(),
+		RealmProvisioner:         realmprovisionerclient.New(rawLog),
+		ParkedReplayer:           parkedReplayer,
+		TrialLedger:              pgadapter.NewTrialSignupLedgerRepository(pool),
+		Logger:                   log,
+		Metrics:                  metrics.Recorder{},
+		AuditLog:                 auditlogclient.New(rawLog),
+		BatchLimit:               envInt("RECONCILER_BATCH_LIMIT", 500),
+		SeatOverageGraceDays:     envInt("SEAT_OVERAGE_GRACE_DAYS", 30),
+		TrialGraceDays:           envInt("TRIAL_GRACE_DAYS", 15),
+		OutboxRetentionDays:      envInt("OUTBOX_RETENTION_DAYS", 8),
+		ProcessedEventsTTLDays:   envInt("PROCESSED_EVENTS_TTL_DAYS", 8),
+		TrialLedgerRetentionDays: envInt("TRIAL_LEDGER_RETENTION_DAYS", 730),
 	}
 
 	res, err := fn(ctx, jctx)

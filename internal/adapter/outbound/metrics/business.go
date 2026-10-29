@@ -539,6 +539,12 @@ func IncTenantEventReplayed(eventType, trigger string) {
 	}
 }
 
+// Result label values for TrialEligibilityCheck.
+const (
+	TrialEligibilityEligible    = "eligible"
+	TrialEligibilityAlreadyUsed = "already_used"
+)
+
 // IncTrialEligibilityCheck records one CR-4 trial-eligibility check. Nil-safe.
 func IncTrialEligibilityCheck(result string) {
 	if TrialEligibilityCheck != nil {
@@ -857,8 +863,8 @@ func prewarm() {
 	ConsumedEventRejected.WithLabelValues("TenantIdentityProvisioned", "provisioning_rejected")
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopCreated)
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopAlreadyExists)
-	TrialEligibilityCheck.WithLabelValues("eligible")
-	TrialEligibilityCheck.WithLabelValues("already_used")
+	TrialEligibilityCheck.WithLabelValues(TrialEligibilityEligible)
+	TrialEligibilityCheck.WithLabelValues(TrialEligibilityAlreadyUsed)
 	for _, et := range parkableEventTypes {
 		TenantEventsParked.WithLabelValues(et)
 		TenantEventsReplayed.WithLabelValues(et, ReplayTriggerProvisioning)

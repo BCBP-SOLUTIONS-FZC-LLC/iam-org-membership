@@ -167,7 +167,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "slug_already_taken (LLD I1-2)",
+                        "description": "slug_already_taken (LLD I1-2); TRIAL_ALREADY_USED (email_hash claimed by another tenant, CR-4)",
                         "schema": {
                             "$ref": "#/definitions/http.ProblemResponse"
                         }
@@ -1096,7 +1096,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "email_hash required",
+                        "description": "email_hash missing or not 64 hex characters",
                         "schema": {
                             "$ref": "#/definitions/http.ProblemResponse"
                         }

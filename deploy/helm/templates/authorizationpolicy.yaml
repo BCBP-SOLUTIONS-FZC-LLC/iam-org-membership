@@ -114,8 +114,8 @@ spec:
             paths: ["*/exists", "*/eligibility"]
     {{- end }}
     {{- if .Values.signupBffCaller.enabled }}
-    # Signup BFF (bff-signup SA in bff) — I-1, plus PUB-1 for the slug
-    # pre-check before RP-1 (BFF open gap A-3). Admitted by principal, not
+    # Signup BFF (bff-signup SA in bff) — I-1, CR-4's trial-eligibility
+    # gate before RP-1, plus PUB-1 for the slug pre-check (BFF open gap A-3). Admitted by principal, not
     # namespace, so no other workload in bff is granted anything (BFF-1).
     - from:
         - source:
@@ -124,7 +124,7 @@ spec:
       to:
         - operation:
             methods: ["POST"]
-            paths: ["/api/v1/internal/tenants"]
+            paths: ["/api/v1/internal/tenants", "/api/v1/internal/trial-eligibility"]
         - operation:
             methods: ["GET"]
             paths: ["/api/v1/public/tenants/resolve"]

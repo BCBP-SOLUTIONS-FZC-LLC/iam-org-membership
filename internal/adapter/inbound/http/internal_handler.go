@@ -62,10 +62,14 @@ type internalProvisionRequest struct {
 	Plan          string    `json:"plan"`
 	OwnerUserID   uuid.UUID `json:"owner_user_id"`
 	DefaultLocale string    `json:"default_locale,omitempty"`
-	LicensedSeats int       `json:"licensed_seats"`
+	// LicensedSeats: 0/absent = the trial allowance (10); the BFF's
+	// direct-paid path sends the purchased count. Negative → 400.
+	LicensedSeats int `json:"licensed_seats"`
 	// EmailHash is the HMAC-SHA256 hex of the owner's lower-cased email (CR-4).
 	// Optional: Realm Provisioner and the TenantIdentityProvisioned backstop
-	// do not send it; only the Signup BFF does.
+	// do not send it; only the Signup BFF does. 64 hex characters; claimed
+	// for this tenant in I-1's transaction (409 TRIAL_ALREADY_USED when
+	// another tenant holds it).
 	EmailHash string `json:"email_hash,omitempty"`
 }
 
@@ -81,7 +85,7 @@ type internalProvisionRequest struct {
 // @Success      200      {object}  TenantResponse  "Idempotent replay (LLD I1-1: same id already provisioned)"
 // @Failure      400      {object}  ProblemResponse   "validation_error (missing/malformed required fields)"
 // @Failure      403      {object}  ProblemResponse   "insufficient_role (non iam-system caller)"
-// @Failure      409      {object}  ProblemResponse   "slug_already_taken (LLD I1-2)"
+// @Failure      409      {object}  ProblemResponse   "slug_already_taken (LLD I1-2); TRIAL_ALREADY_USED (email_hash claimed by another tenant, CR-4)"
 // @Failure      422      {object}  ProblemResponse   "invalid_plan (plan not in {starter,pro,enterprise})"
 // @Failure      500      {object}  ProblemResponse   "internal_error"
 // @Security     UserID
@@ -113,10 +117,6 @@ func (h *InternalHandler) ProvisionTenant(c *gin.Context) {
 			WithDetails(map[string]any{"received": req.Plan}))
 		return
 	}
-	// Phase 1.5 (Gap 1): req.LicensedSeats is bound from the request body but
-	// intentionally not passed here — trial signups use the hardcoded default (10).
-	// When Phase 1.5 (paid signup) activates: add LicensedSeats to TrialSignupInput,
-	// pass req.LicensedSeats, and remove the hardcoded 10 in the tenant INSERT.
 	t, wasCreated, err := h.provisioning.TrialSignup(c.Request.Context(), service.TrialSignupInput{
 		TenantID:      req.TenantID,
 		Slug:          req.Slug,
@@ -125,6 +125,7 @@ func (h *InternalHandler) ProvisionTenant(c *gin.Context) {
 		OwnerUserID:   req.OwnerUserID,
 		DefaultLocale: req.DefaultLocale,
 		EmailHash:     req.EmailHash,
+		LicensedSeats: req.LicensedSeats,
 	})
 	if err != nil {
 		HandleError(c, err)
@@ -932,7 +933,7 @@ type trialEligibilityRequest struct {
 // @Produce      json
 // @Param        request  body      trialEligibilityRequest  true  "Email hash payload"
 // @Success      200      {object}  map[string]bool          "eligible: true"
-// @Failure      400      {object}  ProblemResponse          "email_hash required"
+// @Failure      400      {object}  ProblemResponse          "email_hash missing or not 64 hex characters"
 // @Failure      403      {object}  ProblemResponse          "iam-system role required"
 // @Failure      409      {object}  ProblemResponse          "TRIAL_ALREADY_USED"
 // @Security     UserID
@@ -945,18 +946,16 @@ func (h *InternalHandler) CheckTrialEligibility(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	if req.EmailHash == "" {
-		HandleError(c, domain.NewError(domain.ErrValidation, "email_hash is required"))
-		return
-	}
+	// CheckTrialEligibility validates and lower-cases the hash (400 when it
+	// is not 64 hex characters).
 	err := h.provisioning.CheckTrialEligibility(c.Request.Context(), req.EmailHash)
 	if err != nil {
 		if errors.Is(err, domain.ErrTrialAlreadyUsed) {
-			metrics.IncTrialEligibilityCheck("already_used")
+			metrics.IncTrialEligibilityCheck(metrics.TrialEligibilityAlreadyUsed)
 		}
 		HandleError(c, err)
 		return
 	}
-	metrics.IncTrialEligibilityCheck("eligible")
+	metrics.IncTrialEligibilityCheck(metrics.TrialEligibilityEligible)
 	c.JSON(http.StatusOK, gin.H{"eligible": true})
 }
