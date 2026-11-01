@@ -339,6 +339,8 @@ make docker-up   # start PostgreSQL + PgBouncer + Valkey + floci
 make run         # start the server on :8080 (metrics on :9090; kills the port first)
 ```
 
+A Postgres volume created before LLD rev 2.46 still has `org_membership_app` as its superuser and table owner. Migrations now run as `org_membership_migrator`, so they fail against it. Re-create it once with `docker compose down -v && make docker-up`.
+
 ### Common commands
 
 | Command | Description |
@@ -734,7 +736,7 @@ PG_HOST=localhost
 PG_USER=org_membership_app
 PG_PASSWORD=<password>
 PG_DBNAME=org_membership
-MIGRATION_DATABASE_URL=postgres://org_membership_app:...@localhost:5534/org_membership?sslmode=disable
+MIGRATION_DATABASE_URL=postgres://org_membership_migrator:...@localhost:5534/org_membership?sslmode=disable
 SYSTEM_DATABASE_URL=postgres://org_membership_migrator:...@localhost:5534/org_membership?sslmode=disable
 
 # Events (outside dev)

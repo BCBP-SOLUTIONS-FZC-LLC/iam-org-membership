@@ -6,6 +6,11 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-01 — sysPool grants, LLD rev 2.46)
+
+- **PUB-1 answered 500 when the migrator did not own the tables** (frontend integrated-deployment Issue 17). PUB-1, I-16, the reconcilers and the metric exporters run on the BYPASSRLS sysPool as `org_membership_migrator`. The migrations never granted that role anything, and BYPASSRLS skips policies, not privileges, so whenever another role ran the migrations every sysPool query hit `permission denied`. New migration `000007_migrator_grants` grants it `SELECT, INSERT, UPDATE, DELETE` on each table it does not own (`rls_violation_log`: `SELECT` only; nothing on `schema_migrations`), with default privileges for later tables. A grant it cannot make fails the migration rather than being skipped. New invariant MIG-10; postgres test against the real migrator role.
+- **Local compose:** `org_membership_app` was the Postgres superuser, so RLS never applied locally. The superuser is now `postgres`, and `init-db.sql` creates the app role (`NOSUPERUSER NOBYPASSRLS`) and the migrator. Migrations and `SYSTEM_DATABASE_URL` run as the migrator, and `CATALOG_ADMIN_BASE_URL` is set; without it the server would not start. `.env-example` and the README match. Re-create the dev volume: `docker compose down -v`.
+
 ### Added (2026-10-30 — P-35 `slug`, LLD rev 2.45)
 
 - **P-35 `GET /api/v1/me/session-context` returns `slug`** — the caller's own tenant workspace slug, from the `om:tenant` row it already reads. Frontend round-2 ask A: trial tokens carry no slug and PUB-1 returns none for an email, so without it the SDK could not cache a trial user's workspace or move the URL to `/t/<slug>/`. Additive field; Swagger regenerated; service, handler and e2e tests.
