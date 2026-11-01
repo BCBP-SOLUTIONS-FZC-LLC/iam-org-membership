@@ -22,7 +22,16 @@ services:
       PG_MAX_CONNS: "20"
       PG_MIN_CONNS: "0"
       PG_BOUNCER_MODE: "true"
-      MIGRATION_DATABASE_URL: postgres://org_membership_app:devpassword@postgres:5432/org_membership?sslmode=disable
+      # Migrations and the BYPASSRLS sysPool (PUB-1, I-16, metric exporters)
+      # both use the migrator role, directly against Postgres: PgBouncer's
+      # userlist knows only the app role.
+      MIGRATION_DATABASE_URL: postgres://org_membership_migrator:devpassword@postgres:5432/org_membership?sslmode=disable
+      SYSTEM_DATABASE_URL: postgres://org_membership_migrator:devpassword@postgres:5432/org_membership?sslmode=disable
+      # Catalog / Admin Config Service (iam-catalog-admin) on the host, as in
+      # .env-example. Required: the server will not start without it. Catalog
+      # is the one fail-closed dependency, so department/plan writes answer
+      # 503 catalog_unavailable while it is not running.
+      CATALOG_ADMIN_BASE_URL: http://host.docker.internal:8084
       VALKEY_URL: redis:6379
       SNS_TOPIC_MEMBERSHIP_ARN: arn:aws:sns:ap-south-1:000000000000:iam-membership-events
       SNS_TOPIC_TENANT_ARN: arn:aws:sns:ap-south-1:000000000000:iam-tenant-events
@@ -49,6 +58,8 @@ services:
       OUTBOX_PUBLISH_CONCURRENCY: "4"
       OUTBOX_PUBLISH_TIMEOUT: 10s
       OUTBOX_STARTUP_JITTER: 2s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -66,7 +77,10 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: org_membership_app
+      # The superuser is a separate role: scripts/init-db.sql creates the
+      # RLS-bound app role and the BYPASSRLS migrator. A superuser bypasses
+      # RLS, so the app must never be it.
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: devpassword
       POSTGRES_DB: org_membership
     ports:
@@ -77,7 +91,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U org_membership_app -d org_membership"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d org_membership"]
       interval: 5s
       timeout: 5s
       retries: 5
