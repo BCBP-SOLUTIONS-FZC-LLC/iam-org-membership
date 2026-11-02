@@ -73,13 +73,15 @@ setup:
 	@test -f .env || cp .env-example .env
 	@mkdir -p .git/hooks
 	@test -f .githooks/pre-commit && cp .githooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit || true
+	@test -f .githooks/pre-push && cp .githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push || true
 	@echo "Environment ready (.env)"
 
 .PHONY: install-hooks
 install-hooks:
 	@mkdir -p .git/hooks
 	@cp .githooks/pre-commit .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
+	@cp .githooks/pre-push .git/hooks/pre-push
+	@chmod +x .git/hooks/pre-commit .git/hooks/pre-push
 	@echo "Installed git hooks"
 
 # godoc: serve package documentation locally using pkgsite.
@@ -111,7 +113,7 @@ pin-base-images:
 .PHONY: help
 help:
 	@echo "Available commands:"
-	@echo "  make setup           - copy .env-example to .env if missing"
+	@echo "  make setup           - copy .env-example to .env if missing; install .githooks/pre-commit + pre-push"
 	@echo "  make tidy            - go mod tidy"
 	@echo "  make fmt             - go fmt ./..."
 	@echo "  make fmt-check       - verify gofmt formatting (mirrors CI)"
@@ -131,16 +133,17 @@ help:
 	@echo "  make cover           - coverage HTML report"
 	@echo "  make cover-func      - coverage summary by function"
 	@echo "  make ci              - tidy + fmt-check + vet + lint + arch-lint + test-ci + build"
-	@echo "  make helm-check      - helm lint + template (4 value combos) + kubeconform (mirrors validate-helm.yml)"
+	@echo "  make helm-check      - helm lint + template (5 value combos) + kubeconform (mirrors validate-helm.yml)"
 	@echo "  make helm-access-check - CD-19 access matrix: assert rendered Istio + NetworkPolicy rules (staging, prod)"
 	@echo "  make docker-up       - start local infra incl. floci (SNS/SQS/Glue, always free) + floci-ui web console"
 	@echo "  make docker-down     - stop local containers"
 	@echo "  make mod-verify      - go mod verify"
 	@echo "  make vuln-check      - govulncheck on internal + pkg"
+	@echo "  make trivy           - build the image and Trivy-scan it like CI (CRITICAL/HIGH/UNKNOWN, fixed only); run by .githooks/pre-push"
 	@echo "  make extract-schemas - derive internal/adapter/outbound/eventbus/schemas/*.json"
 	@echo "  make swag            - regenerate docs/swagger/ from handler annotations (mirrors sibling iam-user-profile2)"
 	@echo "  make swag-check      - fail if Swagger regeneration would change docs/swagger/ (CI drift gate)"
-	@echo "  make install-hooks   - install .githooks/pre-commit into .git/hooks"
+	@echo "  make install-hooks   - install .githooks/pre-commit + pre-push into .git/hooks"
 	@echo "  make godoc           - serve local godoc/pkgsite at http://localhost:8080"
 	@echo "  make pin-base-images - fetch + pin SHA digests for Dockerfile base images"
 	@echo "  make clean           - remove build artefacts"
@@ -187,6 +190,23 @@ mod-verify:
 .PHONY: vuln-check
 vuln-check:
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./internal/... ./pkg/...
+
+# trivy: local mirror of ci.yml's "Trivy CVE scan" gate — build the amd64
+# image, then fail on CRITICAL/HIGH/UNKNOWN CVEs that have a fix (.trivyignore
+# applies automatically). The Dockerfile needs the go_private_token build
+# secret: GO_PRIVATE_TOKEN from the environment, else `gh auth token`.
+TRIVY_IMAGE ?= iam-org-membership-trivy
+GO_PRIVATE_TOKEN ?= $(shell gh auth token 2>/dev/null)
+export GO_PRIVATE_TOKEN
+
+.PHONY: trivy
+trivy:
+	@command -v trivy >/dev/null || { echo "trivy not found (brew install trivy)"; exit 1; }
+	@test -n "$$GO_PRIVATE_TOKEN" || { echo "GO_PRIVATE_TOKEN is empty: export it or run 'gh auth login'"; exit 1; }
+	docker build --platform linux/amd64 \
+	  --secret id=go_private_token,env=GO_PRIVATE_TOKEN \
+	  -t $(TRIVY_IMAGE) .
+	trivy image --severity CRITICAL,HIGH,UNKNOWN --ignore-unfixed --exit-code 1 $(TRIVY_IMAGE)
 
 # -----------------------------
 # LINT
@@ -344,7 +364,7 @@ docker-down:
 .PHONY: ci
 ci: tidy fmt-check vet lint arch-lint test-ci build
 
-# helm-check: lint, render all four values combos, and kubeconform-validate
+# helm-check: lint, render all five values combos, and kubeconform-validate
 # the Helm chart. Mirrors what validate-helm.yml runs in CI. Requires Go
 # (to install helm + kubeconform on first run via go install) but does NOT
 # require Docker. Run after any change to deploy/helm/.

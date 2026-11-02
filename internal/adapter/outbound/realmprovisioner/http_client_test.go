@@ -95,6 +95,28 @@ func TestP10RP001c_CreateInvitedUserOmitsRequiredActionsWhenUnset(t *testing.T) 
 	assert.False(t, present, "empty/unset RequiredActions must not send a null key")
 }
 
+// Test Case ID:      P10-RP-001d
+// Feature:           RP · CreateInvitedUser — RP-5 tenant_slug sent for the /t/<slug>/ invite link
+// Priority: P1 · Severity: Major · Automation Status: Automated
+func TestP10RP001d_CreateInvitedUserSendsTenantSlug(t *testing.T) {
+	tenantID := uuid.New()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"keycloak_user_id": uuid.New()})
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	_, err := c.CreateInvitedUser(context.Background(), port.CreateInvitedUserRequest{
+		TenantID: tenantID, Email: "u@e.com", FullName: "U", TenantSlug: "acme-trial",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "acme-trial", gotBody["tenant_slug"])
+	assert.Equal(t, "u@e.com", gotBody["email"], "existing fields unchanged")
+	assert.Equal(t, "U", gotBody["full_name"], "existing fields unchanged")
+}
+
 // Test Case ID:      P10-RP-002
 // Feature:           RP · CreateInvitedUser dev fallback (baseURL="")
 // Scenario:          Positive — returns a random kc user id, no error

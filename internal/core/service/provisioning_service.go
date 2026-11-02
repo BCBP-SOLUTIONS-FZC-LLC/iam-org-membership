@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -92,8 +93,31 @@ type TrialSignupInput struct {
 	DefaultLocale string
 	// EmailHash is the HMAC-SHA256 hex of the owner's lower-cased email (CR-4).
 	// Optional: Realm Provisioner and the TenantIdentityProvisioned backstop do
-	// not send it; only the Signup BFF does.
+	// not send it; only the Signup BFF does. Validated and lower-cased by
+	// TrialSignup (NormalizeEmailHash).
 	EmailHash string
+	// LicensedSeats is the seat cap for the new tenant (SEAT-1). 0 means the
+	// trial allowance (DefaultTrialSeats); the BFF's direct-paid path sends
+	// the purchased count. Negative is rejected.
+	LicensedSeats int
+}
+
+// DefaultTrialSeats is the trial seat allowance (T-8, HLD §6.6).
+const DefaultTrialSeats = 10
+
+var emailHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// NormalizeEmailHash lower-cases a CR-4 email hash and checks it is an
+// HMAC-SHA256 hex digest (64 hex characters), so an upper-case spelling of
+// a used hash cannot slip past the ledger and an oversized one is a 400,
+// not a CHECK violation inside I-1's transaction.
+func NormalizeEmailHash(h string) (string, error) {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if !emailHashRe.MatchString(h) {
+		return "", domain.NewError(domain.ErrValidation,
+			"email_hash must be the 64-character hex HMAC-SHA256 of the lower-cased email")
+	}
+	return h, nil
 }
 
 // TrialSignup is I-1: creates the tenant row + 5 system dept activations
@@ -125,6 +149,20 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 		return nil, false, domain.NewError(domain.ErrValidation,
 			"slug must be 3–63 lowercase alphanumeric characters or hyphens, "+
 				"and must not start or end with a hyphen")
+	}
+	if req.EmailHash != "" {
+		h, err := NormalizeEmailHash(req.EmailHash)
+		if err != nil {
+			return nil, false, err
+		}
+		req.EmailHash = h
+	}
+	seats := req.LicensedSeats
+	switch {
+	case seats < 0:
+		return nil, false, domain.NewError(domain.ErrValidation, "licensed_seats must not be negative")
+	case seats == 0:
+		seats = DefaultTrialSeats
 	}
 	// GAP-I1-4: name max length 255 chars.
 	if len(req.Name) > 255 {
@@ -213,26 +251,30 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			MFAFreshnessSeconds:  300,
 			LocalAccountsEnabled: true,
 			DefaultLocale:        locale,
-			LicensedSeats:        10,
+			LicensedSeats:        seats,
 		})
 		if err != nil {
 			return err
 		}
 		created = t
 		wasCreated = freshInsert
+
+		// CR-4: claim email_hash for this tenant atomically with the tenant
+		// row, before the replay short-circuit — a tenant first created by a
+		// caller without the hash (RP, the TenantIdentityProvisioned
+		// backstop) still gets it recorded when the BFF's I-1 arrives. A hash
+		// held by another tenant fails with TRIAL_ALREADY_USED and rolls the
+		// whole I-1 back, so a CR-4 check that raced another signup cannot
+		// yield a second trial. Same tenant = no-op (replay).
+		if req.EmailHash != "" && s.trialLedger != nil {
+			if err := s.trialLedger.ClaimEmailHash(txCtx, req.EmailHash, req.TenantID); err != nil {
+				return err
+			}
+		}
 		if !freshInsert {
 			// Idempotent replay: the tenant already exists. Per LLD I-1
 			// "no re-seed", so short-circuit the tx here.
 			return nil
-		}
-
-		// CR-4: write email_hash atomically with the tenant row so that any
-		// subsequent CheckTrialEligibility call returns already_used. ON CONFLICT
-		// DO NOTHING in InsertEmailHash makes this safe on any replay.
-		if req.EmailHash != "" && s.trialLedger != nil {
-			if err := s.trialLedger.InsertEmailHash(txCtx, req.EmailHash); err != nil {
-				return err
-			}
 		}
 
 		// 2) Activate the pre-fetched system departments (§8.1) — the
@@ -545,6 +587,10 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 // Returns ErrTrialAlreadyUsed when email_hash is already in trial_signup_ledger.
 // Returns nil (eligible) when the hash is absent or trialLedger is not wired.
 func (s *ProvisioningService) CheckTrialEligibility(ctx context.Context, emailHash string) error {
+	emailHash, err := NormalizeEmailHash(emailHash)
+	if err != nil {
+		return err
+	}
 	if s.trialLedger == nil {
 		return nil
 	}

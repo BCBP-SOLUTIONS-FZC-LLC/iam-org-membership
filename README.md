@@ -45,11 +45,11 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 ## API overview
 
-**41 active endpoints** across four route prefixes (`/api/v1/*`, `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
+**41 active endpoints** across four route prefixes (`/api/v1/*` — including the caller-self `/api/v1/me/*` — `/api/v1/internal/*`, `/api/v1/operator/*`, `/api/v1/public/*`). Source of truth: `internal/adapter/inbound/http/router.go`; the generated REST contract is `docs/swagger/swagger.yaml` (`make swag`), not hand-authored. Retired route IDs (below) are fully unregistered — not `410 Gone` — and never reused.
 
 **Middleware chain:** a 1 MB body cap, then `gincommon.ObservabilityMiddlewares` (`PanicRecovery → RequestID → Tracing → CorrelationHeaders → Metrics → Logging → Timeout`) and `NormalizeAuthErrors` (adds this service's `code` — `missing_identity_headers`/`ambiguous_identity_headers`/`invalid_request_context` — to gincommon's own 401/400 bodies) on every route; the protected `/api/v1` group adds `gincommon.ProtectedMiddlewares` (`RequireAuth → ContextMiddleware`) → `GUCBridgeMiddleware` (binds `app.tenant_id` transaction-locally, RLS-6) → `RequireJSONContentType`. The service trusts gateway-injected headers (`x-user-id`, `x-tenant-id`, `x-tenant-roles`) under mesh mTLS — no JWT parsing.
 
-### Public routes (21) — `/api/v1/*`
+### Public routes (22) — `/api/v1/*`
 
 | # | Method & Path | Purpose |
 |---|---|---|
@@ -74,6 +74,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | P-30 | `GET /tenants/:id/invitations` | List outstanding pending invitations |
 | P-31 | `DELETE /tenants/:id/invitations/:invitation_id` | Revoke a still-pending invitation |
 | P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA via Realm Provisioner — **fail-closed** |
+| P-35 | `GET /me/session-context` | The signed-in user's own tenant context for the frontend: `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags`, `read_only` (the values AuthZ Enrichment injects as headers), plus `mfa_freshness_seconds`, `locale`, `slug` (rev 2.45). No parameters — the caller is `x-tenant-id`/`x-user-id`. Reads the I-8 projection + `om:tenant` caches; `404` with no membership, `403` for a suspended member |
 
 *Retired, never reused:* P-14/15/16/17/29 (group-mapping admin CRUD → Group Mapping Service), P-18/19/20/32/33 (delegation → Delegation Service), P-21/22/23 (tender ACL → Tender ACL Service).
 
@@ -116,7 +117,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 |---|---|---|
 | PUB-1 | `GET /public/tenants/resolve?identifier=` | Pre-login tenant/realm resolution for the identifier-first login flow (IAM HLD §8.2.7). There's no auth and no gateway headers, and it bypasses `ext_authz`. Resolves a company slug or a pending invitation's email (an active member's email isn't resolvable, LLD §16 OQ-11). It's always `200` (`{found:false}` on no match, never `404`, PUBRES-2), runs on the BYPASSRLS `sysPool`, and is uncached. |
 
-The only route in this service with no authentication. It's registered directly on the gin engine by `registerPublicRoutes`, outside the protected `/api/v1` group, so it never runs `RequireAuth`, `GUCBridgeMiddleware` or any role gate. Gateway rate-limit/CAPTCHA (PUBRES-3) and the Envoy `ext_authz` bypass route are platform config still to land (LLD §16 OQ-10).
+The only route in this service with no authentication. It's registered directly on the gin engine by `registerPublicRoutes`, outside the protected `/api/v1` group, so it never runs `RequireAuth`, `GUCBridgeMiddleware` or any role gate. At the edge, `ingress.publicResolve.enabled` (HTTPRoute mode, off by default) renders an Exact, GET-only HTTPRoute for this path with a non-merging SecurityPolicy (no gateway JWT/`ext_authz` on it) and a per-client-IP rate limit (20/hour) — `deploy/helm/templates/publicresolve.yaml`, LLD §10.2. CAPTCHA escalation (PUBRES-3) belongs in the WAF, not Envoy; it and the `tenant_id`-hint disclosure review are still open (LLD §16 OQ-10).
 
 ---
 
@@ -149,7 +150,7 @@ Domain-rule failures are raised as a `*domain.DomainError` wrapping one of the s
 | A tenant-role reconcile (P-28) can never assign `member` | `chk_tr_no_member` CHECK, backstopped by service-layer validation (`400 invalid_role`) — `member` is derived at read time, never stored (TR-7) |
 | A `tenant_owner`-affecting mutation can never leave zero active owners | `422 last_owner_removal` (TM-8), serialized via `SELECT ... FOR UPDATE` on the `tenants` row (TM-13) so two concurrent removals can't both pass |
 | Seat cap is enforced transactionally, not just pre-flight | `SELECT ... FOR UPDATE` on `tenants` under the same tx that counts `active + pending` against `licensed_seats` (SEAT-1) |
-| Optimistic locking | 7 of 9 tables carry `record_version` (`touch_row` DB trigger); a version mismatch returns `409 optimistic_lock_conflict` with the current version in the body |
+| Optimistic locking | 7 of 10 tables carry `record_version` (`touch_row` DB trigger); a version mismatch returns `409 optimistic_lock_conflict` with the current version in the body |
 | Invitation rate limiting | Per-email cooldown (`INVITE_REINVITE_COOLDOWN_MINUTES`, `429 reinvite_too_soon`) and per-tenant / per-actor hourly ceilings (`INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR`, `429 invite_rate_limited`) — all checked pre-flight, before any Realm Provisioner call |
 
 ---
@@ -221,7 +222,7 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 
 | Concern | Technology | Notes |
 |---|---|---|
-| **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 9 tables, `FORCE ROW LEVEL SECURITY` on all 8 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
+| **Primary store** | PostgreSQL 17, database `org_membership` on shared RDS (Multi-AZ, PgBouncer transaction pooling) | 10 tables, `FORCE ROW LEVEL SECURITY` on all 8 tenant-scoped tables; GUC `app.tenant_id` bound transaction-locally |
 | **Cache** | Valkey (Redis-compatible) via `go-redis/v9` | Advisory-only (CACHE-2/9) — a miss or outage falls through to Postgres, never a hard failure |
 | **Events (outbound)** | AWS SNS + transactional outbox (`platform-events`) | Two topics via `RoutingPublisher`: `iam.membership.events` (12 event types) and `iam.tenant.events` (2 — `TenantCreated`/`TrialStarted`) |
 | **Events (inbound)** | AWS SQS, 3 queues | `tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q` (cache invalidation only), each with its own `-dlq`; Glue header stripped by `events.GlueDecodeCodec`, payload validated against the embedded consumed schema, permanent rejects sent straight to the DLQ; EVT-14 recency guard + EVT-15 future-time clamp + EVT-16 tenant-state relay |
@@ -301,7 +302,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 
 ### 10. Background reconcilers you may observe
 
-8 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
+9 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
 
 | CronJob (`--job=`) | Schedule | Purpose |
 |---|---|---|
@@ -313,6 +314,7 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 | `outbox-prune` | `0 3 * * *` | Prunes published `outbox_events` past `OUTBOX_RETENTION_DAYS` |
 | `processed-events-prune` | `0 4 * * *` | Prunes `processed_events` rows past `PROCESSED_EVENTS_TTL_DAYS` |
 | `parked-events-replay` | `*/5 * * * *` | EVT-18 backstop: replays events parked for a tenant before its row existed, once the row exists (I-1 normally replays them immediately) |
+| `trial-ledger-prune` | `30 4 * * *` | CR-4 retention: deletes `trial_signup_ledger` rows older than `TRIAL_LEDGER_RETENTION_DAYS` (default 730), in batches, so the email HMAC is not kept forever (GDPR storage limitation); a pruned email can start a new trial |
 
 The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`), plus a 5th exporter for the `iam_rls_violations_total` counter (`pgadapter.GaugeRepository.RLSViolationCounts`, mirrors `iam-user-profile`'s `runRLSViolationExporter`), run as **ticker goroutines inside `cmd/server`** (`runBusinessExporters`, `exporters.go`), not CronJobs.
 
@@ -331,26 +333,29 @@ The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_me
 ```bash
 git clone https://github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership
 cd iam-org-membership
-make setup       # copies .env-example → .env (run once before anything else)
+make setup       # copies .env-example → .env; installs .githooks/pre-commit + pre-push (run once before anything else)
 make tidy        # go mod tidy
 make docker-up   # start PostgreSQL + PgBouncer + Valkey + floci
 make run         # start the server on :8080 (metrics on :9090; kills the port first)
 ```
 
+A Postgres volume created before LLD rev 2.46 still has `org_membership_app` as its superuser and table owner. Migrations now run as `org_membership_migrator`, so they fail against it. Re-create it once with `docker compose down -v && make docker-up`.
+
 ### Common commands
 
 | Command | Description |
 |---|---|
-| `make setup` | Copy `.env-example` → `.env` (if absent) and install the `.githooks/pre-commit` hook |
-| `make install-hooks` | (Re)install the pre-commit hook only |
+| `make setup` | Copy `.env-example` → `.env` (if absent) and install the `.githooks/pre-commit` + `pre-push` hooks |
+| `make install-hooks` | (Re)install `.githooks/pre-commit` (tidy + fmt-check + lint + Swagger staleness) and `.githooks/pre-push` (`make trivy`) |
 | `make tidy` / `make fmt` / `make fmt-check` / `make vet` | Go basics; `fmt-check` mirrors CI, does not modify files |
 | `make lint` | `golangci-lint` via `go tool` — default build plus every test build tag (`integration`, `e2e`, `helm`) |
 | `make arch-lint` | `go-arch-lint` against `.go-arch-lint.yml` (the same script CI runs) |
 | `make metrics-inventory` | Regenerate `docs/observability/metric-registry.md` from the pinned registry and a real scrape |
 | `make metrics-lint` | platform-gincommon's `metricslint` on a real `/metrics` scrape plus the alert/dashboard references (the same script CI runs) |
-| `make helm-access-check` | CD-19 access matrix: renders the chart with the staging and prod values and asserts, by parsing the YAML, which routes each cross-namespace caller (Billing, Entitlements, Signup BFF, `workflow-app`) can reach in the Istio AuthorizationPolicy and that `billing`/`commercial`/`bff` are admitted only per pod in the NetworkPolicy (`test/helm/`, needs `helm`; CI runs it after `helm-check.sh`) |
+| `make helm-access-check` | CD-19 access matrix: renders the chart with the staging and prod values and asserts, by parsing the YAML, which routes each cross-namespace caller (Billing, Entitlements, Signup BFF, `workflow-app`) can reach in the Istio AuthorizationPolicy and that `billing`/`commercial`/`bff` are admitted only per pod in the NetworkPolicy; also pins PUB-1's edge resources (`ingress.publicResolve`: Exact GET route, non-merging SecurityPolicy, per-IP rate limit) (`test/helm/`, needs `helm`; CI runs it after `helm-check.sh`) |
 | `make mod-verify` | `go mod verify` |
 | `make vuln-check` | `govulncheck ./internal/...` |
+| `make trivy` | Build the image and Trivy-scan it like CI (CRITICAL/HIGH/UNKNOWN, fixed only; `.trivyignore` applies); `GO_PRIVATE_TOKEN` or `gh auth token` supplies the build secret. The pre-push hook runs it; skip once with `SKIP_TRIVY=1 git push` or `--no-verify` |
 | `make test` | Unit + postgres + integration in parallel (Docker required; e2e is separate) |
 | `make test-ci` | Same, with `-race` + merged coverage (used in CI) |
 | `make test-unit` | Unit tests only, no Docker |
@@ -731,7 +736,7 @@ PG_HOST=localhost
 PG_USER=org_membership_app
 PG_PASSWORD=<password>
 PG_DBNAME=org_membership
-MIGRATION_DATABASE_URL=postgres://org_membership_app:...@localhost:5534/org_membership?sslmode=disable
+MIGRATION_DATABASE_URL=postgres://org_membership_migrator:...@localhost:5534/org_membership?sslmode=disable
 SYSTEM_DATABASE_URL=postgres://org_membership_migrator:...@localhost:5534/org_membership?sslmode=disable
 
 # Events (outside dev)
@@ -818,7 +823,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | System | Role |
 |---|---|
-| **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 9 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
+| **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 10 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
 | **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
 | **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
 | **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` subscribes to Catalog's `iam-catalog-events` with filter `[DepartmentCatalogChanged, PlanCatalogChanged]` (SRE/platform Terraform) |
@@ -852,7 +857,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 |---|---|
 | [`.claude/CLAUDE.md`](.claude/CLAUDE.md) | Top-level guidance for Claude Code working in this repo |
 | [`.claude/architecture.md`](.claude/architecture.md) | Clean Architecture directory tree, shared library integration, dep rules |
-| [`.claude/database-schema.md`](.claude/database-schema.md) | 9 tables, enums, RLS/tenant/seat/migration/trigger invariants |
+| [`.claude/database-schema.md`](.claude/database-schema.md) | 10 tables, enums, RLS/tenant/seat/migration/trigger invariants |
 | [`.claude/api-caching-events.md`](.claude/api-caching-events.md) | Full endpoint catalogue, cache TTLs, event catalogue, status-code table |
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |

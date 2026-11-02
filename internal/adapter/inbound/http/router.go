@@ -70,6 +70,9 @@ type RouterConfig struct {
 	InvitationHandler     *InvitationHandler
 	OperatorHandler       *OperatorHandler
 	InternalHandler       *InternalHandler
+	// MeHandler serves /api/v1/me/* (P-35, the caller's own session
+	// context). Optional: left nil, no /me route is registered.
+	MeHandler *MeHandler
 	// PublicHandler serves /api/v1/public/* (PUB-1). Optional: left nil,
 	// no public route is registered.
 	PublicHandler *PublicHandler
@@ -421,6 +424,21 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// Delegations (P-18, P-19, P-20, P-32, P-33) — retired, moved to the
 	// standalone Delegation Service's DLG-1..5 (ADR-0008 v2). IDs never
 	// reused.
+
+	// Caller-self reads — P-35. /me, not /tenants/:id: the route takes no
+	// tenant or user parameter at all, so the caller is identified only by
+	// the gateway-injected x-tenant-id/x-user-id and there is nothing for
+	// RequirePathTenantMatch to compare (a browser that knew its tenant id
+	// would not need this call). RequireActiveTenant applies as on every
+	// tenant-facing route (TRIAL-4 / §16 A53). RequireActiveMembership does
+	// not: SessionContextService reads the membership status from the
+	// cached I-8 projection it already loads — answering "no membership" the
+	// way I-8 does (404 member_not_found) and a suspended member with 403 —
+	// instead of the gate's extra uncached lookup.
+	if cfg.MeHandler != nil {
+		me := v1.Group("/me", activeTenantGate)
+		me.GET("/session-context", cfg.MeHandler.SessionContext) // P-35
+	}
 
 	// Operator routes — AUTH-6 defense-in-depth (RequireOperatorRole
 	// middleware + handler re-check inside each operator handler). O-1/O-2/

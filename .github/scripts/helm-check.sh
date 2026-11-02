@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CD-19 Helm check: lint, template rendering, and kubeconform manifest
-# validation for all four values combinations:
-#   base | base+dev | base+staging | base+prod
+# validation for five values combinations:
+#   base | base+dev | base+staging | base+prod | base+httproute+publicResolve (--set)
 #
 # Invoked by the Helm lint + template + kubeconform step in
 # .github/workflows/validate-quality.yml (inline, same job as the Go quality
@@ -20,9 +20,10 @@
 #     PrometheusRule      monitoring.coreos.com/v1     (prometheus-operator)
 #     HTTPRoute           gateway.networking.k8s.io/v1 (Gateway API)
 #     SecurityPolicy      gateway.envoyproxy.io/v1alpha1 (Envoy Gateway)
+#     BackendTrafficPolicy gateway.envoyproxy.io/v1alpha1 (Envoy Gateway — rate limits: main route, PUB-1)
 #     AuthorizationPolicy security.istio.io/v1beta1   (Istio — CD-19)
 #
-# None of these five CRD types has an adopted org-wide schema catalog for
+# None of these six CRD types has an adopted org-wide schema catalog for
 # this pipeline. To enable CRD validation, add a -schema-location flag
 # pointing to a catalog (e.g. the datreeio/CRDs-catalog) and remove
 # -ignore-missing-schemas once a catalog decision is made.
@@ -124,6 +125,18 @@ run_combo "base"
 run_combo "base+dev"     -f "${CHART_DIR}/values-dev.yaml"
 run_combo "base+staging" -f "${CHART_DIR}/values-staging.yaml"
 run_combo "base+prod"    -f "${CHART_DIR}/values-prod.yaml"
+# Ingress is off in every overlay, so the Gateway API resources (main
+# HTTPRoute + SecurityPolicy + rate-limit BackendTrafficPolicy, and PUB-1's public route with its non-merging
+# SecurityPolicy and rate-limit BackendTrafficPolicy) only render here.
+run_combo "base+httproute+publicResolve" \
+  --set ingress.enabled=true \
+  --set ingress.type=HTTPRoute \
+  --set ingress.gateway.name=ci-gateway \
+  --set ingress.publicResolve.enabled=true \
+  --set ingress.rateLimit.enabled=true \
+  --set ingress.securityPolicy.enabled=true \
+  --set ingress.securityPolicy.cors.enabled=true \
+  --set "ingress.securityPolicy.cors.allowOrigins={https://app.example.com}"
 
 # ── Final result ──────────────────────────────────────────────────────────
 if [ "${FAILED}" -ne 0 ]; then
@@ -133,7 +146,7 @@ if [ "${FAILED}" -ne 0 ]; then
 fi
 
 echo ""
-echo "  ✔  helm check passed: base | base+dev | base+staging | base+prod"
+echo "  ✔  helm check passed: base | base+dev | base+staging | base+prod | base+httproute+publicResolve"
 echo "  ⚠  CRD schema coverage: ServiceMonitor, PrometheusRule, HTTPRoute,"
-echo "     SecurityPolicy, AuthorizationPolicy were SKIPPED (no org-wide"
+echo "     SecurityPolicy, BackendTrafficPolicy, AuthorizationPolicy were SKIPPED (no org-wide"
 echo "     CRD schema catalog configured; -ignore-missing-schemas active)."

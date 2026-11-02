@@ -423,6 +423,34 @@ type PublicTenantResolveResponse struct {
 	TenantID *uuid.UUID `json:"tenant_id,omitempty" format:"uuid"`
 }
 
+// SessionContextResponse is P-35's 200 body (GET /api/v1/me/session-context,
+// LLD §5.4) — the signed-in user's own tenant context, so the UI can render
+// roles, plan and flags without decoding gateway headers it never sees.
+// roles, departments, plan and feature_flags carry exactly what AuthZ
+// Enrichment injects as x-tenant-roles, x-departments, x-plan and
+// x-feature-flags for the same caller (feature_flags includes "read_only"
+// when read_only is true, as the header does). Lists are [] when empty,
+// never null.
+type SessionContextResponse struct {
+	TenantID            uuid.UUID                  `json:"tenant_id" format:"uuid"`
+	Roles               []string                   `json:"roles" example:"member,tenant_admin"`
+	Departments         []SessionContextDepartment `json:"departments"`
+	Plan                string                     `json:"plan" example:"starter"`
+	FeatureFlags        []string                   `json:"feature_flags" example:"ai_drafting"`
+	ReadOnly            bool                       `json:"read_only" example:"false"`
+	MFAFreshnessSeconds int                        `json:"mfa_freshness_seconds" example:"300"`
+	Locale              string                     `json:"locale" example:"en"`
+	// Slug is the caller's tenant workspace slug, for /t/<slug>/ routing.
+	Slug string `json:"slug" example:"acme"`
+}
+
+// SessionContextDepartment is one x-departments entry ("<id>:<level>") as
+// an object: the department UUID and the caller's level in it.
+type SessionContextDepartment struct {
+	ID    uuid.UUID `json:"id" format:"uuid"`
+	Level string    `json:"level" enums:"preparator,reviewer,approver" example:"reviewer"`
+}
+
 // SubscriptionLapseItem is one row of the I-16 (§16 RP-C3) response —
 // enough for RP to know which realm to suspend without a second lookup.
 type SubscriptionLapseItem struct {

@@ -6,6 +6,24 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-01 — sysPool grants, LLD rev 2.46)
+
+- **PUB-1 answered 500 when the migrator did not own the tables** (frontend integrated-deployment Issue 17). PUB-1, I-16, the reconcilers and the metric exporters run on the BYPASSRLS sysPool as `org_membership_migrator`. The migrations never granted that role anything, and BYPASSRLS skips policies, not privileges, so whenever another role ran the migrations every sysPool query hit `permission denied`. New migration `000007_migrator_grants` grants it `SELECT, INSERT, UPDATE, DELETE` on each table it does not own (`rls_violation_log`: `SELECT` only; nothing on `schema_migrations`), with default privileges for later tables. A grant it cannot make fails the migration rather than being skipped. New invariant MIG-10; postgres test against the real migrator role.
+- **Local compose:** `org_membership_app` was the Postgres superuser, so RLS never applied locally. The superuser is now `postgres`, and `init-db.sql` creates the app role (`NOSUPERUSER NOBYPASSRLS`) and the migrator. Migrations and `SYSTEM_DATABASE_URL` run as the migrator, and `CATALOG_ADMIN_BASE_URL` is set; without it the server would not start. `.env-example` and the README match. Re-create the dev volume: `docker compose down -v`.
+
+### Added (2026-10-30 — P-35 `slug`, LLD rev 2.45)
+
+- **P-35 `GET /api/v1/me/session-context` returns `slug`** — the caller's own tenant workspace slug, from the `om:tenant` row it already reads. Frontend round-2 ask A: trial tokens carry no slug and PUB-1 returns none for an email, so without it the SDK could not cache a trial user's workspace or move the URL to `/t/<slug>/`. Additive field; Swagger regenerated; service, handler and e2e tests.
+
+### Security (2026-10-30 — Trivy: tzdata DLA-4867-1 suppressed)
+
+- **`.trivyignore` suppresses DLA-4867-1** (`tzdata` 2026b → 2026f, Trivy UNKNOWN), with `exp:2026-11-30`. The newest `gcr.io/distroless/static-debian12:nonroot` (`sha256:afa5c872…`) still ships 2026b, and the service never loads a time zone (all timestamps UTC). Same handling as DLA-4854-1. Remove both entries and re-pin once distroless ships tzdata ≥ 2026f.
+
+### Added
+
+- **Claude Code hooks and `invariant-reviewer` agent (2026-10-30):** `.claude/settings.json` wires a PreToolUse guard (`.claude/hooks/guard-invariants.sh`) that blocks edits CI would reject (`.env`, edits to a migration already on main, non-`LOCAL` `SET app.tenant_id`, `database/sql`/raw pgx pools, SNS/SQS SDK or `outbox.Enqueue` bypasses, core→adapter imports) and a PostToolUse `gofmt` hook. New Read-only `invariant-reviewer` agent checks a diff against the service's RLS, grant, outbox, idempotency, concurrency, cache, access-matrix and layering invariants. Mirrors `iam-realm-provisioner`'s setup, adapted to this repo's additive migrations. No code change.
+- **`make trivy` + pre-push gate (2026-10-30):** `make trivy` builds the amd64 image (with the `go_private_token` build secret from `GO_PRIVATE_TOKEN` or `gh auth token`) and Trivy-scans it with CI's settings (CRITICAL/HIGH/UNKNOWN, fixed only, `.trivyignore`). New `.githooks/pre-push` runs it before every push (needs Docker; skip once with `SKIP_TRIVY=1 git push` or `--no-verify`); `make setup`/`make install-hooks` now install it too. Same as `iam-realm-provisioner`.
+
 ### Changed
 
 - **CD-44: one AI-facing queue, `membership-rag-q` (LLD rev 2.42, 2026-10-28; TL decision):** LLM Retrieval & Generation's proposed queues on `iam.membership.events`, `iam-rag-purge-q` (`TenantMembershipsPurged`) and `iam-rag-membership-q` (`TenantStateChanged`), become **`membership-rag-q`**, with one filter carrying both event types. Docs only: LLD §7.3.2, the `api/asyncapi.yaml` topology comment, `.claude/api-caching-events.md`, README. Core only publishes to the topic; the LLM team owns and creates the queue and its subscription.
@@ -77,7 +95,23 @@ This service has never been deployed to any environment — there is no released
   - `govulncheck ./internal/... ./pkg/...` → **0 vulnerabilities** (1 vulnerability in a required module does not reach any call site in this service).
   - Swagger and AsyncAPI verified aligned against current code: all 39 endpoints, 14 produced events, and 15 consumed event types confirmed. No spec changes required.
 
+### Fixed (2026-10-30 — CR-4 trial ledger hardening, LLD rev 2.44)
+
+- **`trial_signup_ledger` grants.** Migration `000005` granted the app role nothing, so with a distinct `org_membership_app` role (staging/prod) every CR-4 check and every BFF I-1 carrying `email_hash` failed with `permission denied`. New migration `000006_cr4_trial_ledger_hardening` grants `SELECT, INSERT, UPDATE, DELETE` to the app role, revokes `PUBLIC`, and grants `SELECT` to `admin_readonly`.
+- **One trial per email is enforced at I-1.** The ledger now stores the claiming `tenant_id`. I-1 claims the hash for its tenant and fails with `409 TRIAL_ALREADY_USED` (rolling the tenant back) when another tenant holds it. Before, `ON CONFLICT DO NOTHING` let two signups that both passed CR-4 each get a trial.
+- **The hash is recorded on an I-1 replay.** The claim now runs before the replay short-circuit, so a tenant the backstop created without the hash still gets it when the BFF's I-1 retry arrives.
+- **`email_hash` validated** on CR-4 and I-1: lower-cased, then 64 hex characters, else `400`. An oversized hash was a `500` inside I-1, and an upper-case spelling bypassed the ledger.
+- **Retention.** New CronJob `trial-ledger-prune` (`30 4 * * *`) deletes ledger rows older than `TRIAL_LEDGER_RETENTION_DAYS` (default 730), so the email HMAC is not kept forever. The 730 days need the DPO's confirmation.
+- **I-1 `licensed_seats`** was bound and silently dropped (hardcoded 10). Now `0` means the trial allowance of 10, a positive value is used (the BFF's direct-paid path), and a negative one is a `400`.
+- **Istio:** the Signup BFF's rule now admits `POST /api/v1/internal/trial-eligibility`, which was denied (`403 RBAC`) to its only caller. The CD-19 access-matrix test pins it.
+- CR-4 metric labels are now constants. Tests: handler (format, case), service (claim, replay, conflict, seats), job, and Postgres (migration grants, claim semantics, concurrent I-1 race, replay after backstop, prune).
+
 ### Added
+
+- **P-35 `GET /api/v1/me/session-context` (LLD rev 2.43, 2026-10-29; frontend FE-Q4):** the signed-in user's own `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags`, `read_only`, `mfa_freshness_seconds`, `locale`, so the frontend SDK can render by role/plan/flag. No parameters — the caller is the gateway-injected `x-tenant-id`/`x-user-id`. New `SessionContextService` composes the I-8 projection (`om:memberships`; the exact source of AuthZ Enrichment's `x-tenant-roles`/`x-departments`/`x-plan`/`x-feature-flags`, with `read_only` appended to the flags as the header does) and the `om:tenant` row (I-14/I-9's source) — no new query. `RequireActiveTenant` applies; no membership row → `404 MEMBER_NOT_FOUND` (I-8's answer), suspended → `403`. No gateway or AuthZ Enrichment change needed. Swagger regenerated (new `me` tag). Tests: service (over a real `AuthZService`), handler/router.
+- **PUB-1 at the edge (LLD rev 2.43, §10.2, §16 OQ-10 item 1):** `ingress.publicResolve` (HTTPRoute mode, off by default) renders `templates/publicresolve.yaml` — an Exact, GET-only HTTPRoute for `/api/v1/public/tenants/resolve`, a route-level SecurityPolicy without `mergeType` (replaces the gateway JWT + `ext_authz` on that route only) and a BackendTrafficPolicy with a per-client-IP global rate limit (`sourceCIDR` `Distinct`, 20/hour, PUBRES-3). Replaces the `httproute.yaml` TODO. CAPTCHA is a WAF item; the `tenant_id`-hint disclosure review stays open. `helm-check.sh` gains a fifth combo (HTTPRoute + publicResolve); `test/helm/public_resolve_test.go` pins the resources.
+- **Main-route gateway rate limit on BackendTrafficPolicy (LLD rev 2.43, §10.2):** Envoy Gateway has no `rateLimit` on SecurityPolicy, so the old `ingress.securityPolicy.rateLimit` would have been rejected by the CRD. Moved to `ingress.rateLimit` (off by default) and rendered by the new `templates/backendtrafficpolicy.yaml` (route-level, `mergeType: StrategicMerge`); the main SecurityPolicy now renders only with CORS. `helm-check.sh`'s HTTPRoute combo enables it; `TestMainRoute_RateLimit_OnBackendTrafficPolicy` pins it.
+- **P-6 sends `tenant_slug` to RP-5 (LLD rev 2.43):** `CreateInvitedUserRequest.TenantSlug` → RP-5's required `tenant_slug`, which RP uses for the invitation email's `https://app.bcbpsolutions.com/t/<slug>/` link. Sourced from the tenant row the P-6 seat pre-check already reads; always sent.
 
 - **Gap 3 fix — I-2 response shape aligned with Swagger (2026-10-26):** `InternalTenantRealmResponse` now includes `RecordVersion int64 json:"record_version"` (was missing from the DTO despite the handler always sending it). The `PatchTenantRealm` handler now returns the typed struct instead of `gin.H{}`, so the Swagger `@Success 200 {object} InternalTenantRealmResponse` annotation matches the actual wire response. Callers (Realm Provisioner) that already read `record_version` are unaffected; callers relying on the Swagger spec now see the correct shape.
 

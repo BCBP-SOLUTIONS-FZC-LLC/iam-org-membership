@@ -40,6 +40,10 @@ const docTemplate = `{
             "description": "Removal-resolution (P-26)"
         },
         {
+            "name": "me",
+            "description": "The signed-in caller's own context (P-35)"
+        },
+        {
             "name": "infra",
             "description": "Health & metrics (unauthenticated)"
         }
@@ -163,7 +167,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "slug_already_taken (LLD I1-2)",
+                        "description": "slug_already_taken (LLD I1-2); TRIAL_ALREADY_USED (email_hash claimed by another tenant, CR-4)",
                         "schema": {
                             "$ref": "#/definitions/http.ProblemResponse"
                         }
@@ -1092,7 +1096,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "email_hash required",
+                        "description": "email_hash missing or not 64 hex characters",
                         "schema": {
                             "$ref": "#/definitions/http.ProblemResponse"
                         }
@@ -1173,6 +1177,61 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "no active membership",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
+            }
+        },
+        "/me/session-context": {
+            "get": {
+                "description": "The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source), the tenant locale and the tenant's workspace slug (for /t/\u003cslug\u003e/ routing). No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 for a suspended member and for a trial_expired/suspended tenant (RequireActiveTenant).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "P-35 — Read my session context",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.SessionContextResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing/malformed identity headers",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Suspended member, or tenant trial_expired/suspended",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "member_not_found / tenant_not_found",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "db_unavailable",
                         "schema": {
                             "$ref": "#/definitions/http.ProblemResponse"
                         }
@@ -3782,6 +3841,79 @@ const docTemplate = `{
                 "pending_invitations": {
                     "type": "integer",
                     "example": 3
+                }
+            }
+        },
+        "http.SessionContextDepartment": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "level": {
+                    "type": "string",
+                    "enum": [
+                        "preparator",
+                        "reviewer",
+                        "approver"
+                    ],
+                    "example": "reviewer"
+                }
+            }
+        },
+        "http.SessionContextResponse": {
+            "type": "object",
+            "properties": {
+                "departments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/http.SessionContextDepartment"
+                    }
+                },
+                "feature_flags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "ai_drafting"
+                    ]
+                },
+                "locale": {
+                    "type": "string",
+                    "example": "en"
+                },
+                "mfa_freshness_seconds": {
+                    "type": "integer",
+                    "example": 300
+                },
+                "plan": {
+                    "type": "string",
+                    "example": "starter"
+                },
+                "read_only": {
+                    "type": "boolean",
+                    "example": false
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "member",
+                        "tenant_admin"
+                    ]
+                },
+                "slug": {
+                    "description": "Slug is the caller's tenant workspace slug, for /t/\u003cslug\u003e/ routing.",
+                    "type": "string",
+                    "example": "acme"
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "format": "uuid"
                 }
             }
         },

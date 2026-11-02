@@ -1,0 +1,36 @@
+{{- $httpRouteEnabled := and .Values.ingress.enabled (eq (.Values.ingress.type | default "Ingress") "HTTPRoute") }}
+{{- if and $httpRouteEnabled .Values.ingress.rateLimit.enabled }}
+{{- if not (gt (int .Values.ingress.rateLimit.requestsPerUnit) 0) }}
+{{- fail "ingress.rateLimit.requestsPerUnit must be > 0" }}
+{{- end }}
+# Envoy Gateway BackendTrafficPolicy — the gateway-level rate limit on the
+# main HTTPRoute (ingress.rateLimit). One Global rule with no client
+# selector: a single bucket shared by every caller, a coarse burst shield.
+# The in-process per-user token bucket stays active regardless. Envoy
+# Gateway carries rate limits on BackendTrafficPolicy only; SecurityPolicy
+# has no rateLimit field. Needs the Envoy Gateway global rate-limit service
+# (EnvoyGateway rateLimit.backend, Redis) — platform config.
+# PUB-1's per-client-IP limit is separate (publicresolve.yaml): its own route,
+# its own policy.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "iam-org-membership.fullname" . }}
+  labels:
+    {{- include "iam-org-membership.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "iam-org-membership.fullname" . }}
+  {{- with .Values.ingress.rateLimit.mergeType }}
+  mergeType: {{ . }}
+  {{- end }}
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        - limit:
+            requests: {{ int .Values.ingress.rateLimit.requestsPerUnit }}
+            unit: {{ .Values.ingress.rateLimit.unit }}
+{{- end }}

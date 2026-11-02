@@ -250,7 +250,10 @@ func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req 
 	// Cheap pre-flight SEAT-1 check outside the tx — saves an RP round-trip
 	// when the cap is already reached (SEAT-1 is re-enforced under FOR UPDATE
 	// below; this pre-check is advisory only).
-	if err := s.preflightSeatCheck(ctx, tenantID); err != nil {
+	// The tenant row it reads is reused below for RP-5's tenant_slug — no
+	// second lookup.
+	tenant, err := s.preflightSeatCheck(ctx, tenantID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -284,6 +287,10 @@ func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req 
 		Email:           req.Email,
 		FullName:        req.FullName,
 		RequiredActions: requiredActions,
+		// RP-5 builds the invitation email's https://app.bcbpsolutions.com/t/<slug>/
+		// link from it; required in practice for shared-realm (trial)
+		// tenants, whose realm name alone does not identify the tenant.
+		TenantSlug: tenant.Slug,
 	})
 	if err != nil {
 		return nil, domain.NewError(domain.ErrRealmProvisionerUnavailable, "realm provisioner unavailable")
@@ -401,27 +408,30 @@ func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req 
 	return created, nil
 }
 
-func (s *InvitationService) preflightSeatCheck(ctx context.Context, tenantID uuid.UUID) error {
+// preflightSeatCheck is the advisory pre-tx SEAT-1 check. It returns the
+// tenant row it read so Invite can reuse it (RP-5's tenant_slug) without a
+// second FindByID.
+func (s *InvitationService) preflightSeatCheck(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
 	t, err := s.tenants.FindByID(ctx, tenantID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	active, err := s.memberships.CountActive(ctx, tenantID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	pending, err := s.invites.CountPending(ctx, tenantID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if active+pending >= t.LicensedSeats {
-		return domain.NewError(domain.ErrSeatLimitReached, "seat limit reached").WithDetails(map[string]any{
+		return nil, domain.NewError(domain.ErrSeatLimitReached, "seat limit reached").WithDetails(map[string]any{
 			"licensed_seats":      t.LicensedSeats,
 			"active_users":        active,
 			"pending_invitations": pending,
 		})
 	}
-	return nil
+	return t, nil
 }
 
 // AddFromRegister is I-3 (§8.10 acceptance + JIT plain add). Called by the

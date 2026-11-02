@@ -4,16 +4,14 @@
 --   org_membership_app       — the runtime app role. RLS enforced (NO BYPASSRLS).
 --   org_membership_migrator  — the migration + reconciler role. HAS BYPASSRLS.
 --
--- The default POSTGRES_USER in docker-compose is org_membership_app so the
--- runtime pool connects as the RLS-scoped role. This script upgrades it to
--- create the elevated migrator role for local reconciler runs.
+-- It runs as the compose superuser (POSTGRES_USER=postgres). Neither role is
+-- a superuser: a superuser bypasses RLS, so an app connecting as one would
+-- never exercise the tenant policies.
 
--- Ensure the runtime role exists (Postgres already created it via POSTGRES_USER,
--- but idempotency helps when running this against an external Postgres too).
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'org_membership_app') THEN
-    CREATE ROLE org_membership_app LOGIN PASSWORD 'devpassword';
+    CREATE ROLE org_membership_app LOGIN PASSWORD 'devpassword' NOSUPERUSER NOBYPASSRLS;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'org_membership_migrator') THEN
     -- BYPASSRLS is only meaningful when the connection actually authenticates
@@ -30,7 +28,10 @@ CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Baseline privileges. The app role owns nothing at first — migrations run
--- as org_membership_migrator (via MIGRATION_DATABASE_URL) and GRANT specific
--- privileges to org_membership_app inside each migration.
+-- as org_membership_migrator (via MIGRATION_DATABASE_URL), which owns what
+-- they create and GRANTs specific privileges to org_membership_app inside
+-- each migration. Postgres 15+ no longer lets PUBLIC create in schema
+-- public, so the migrator needs CREATE there explicitly.
 GRANT CONNECT ON DATABASE org_membership TO org_membership_app;
 GRANT USAGE ON SCHEMA public TO org_membership_app;
+GRANT USAGE, CREATE ON SCHEMA public TO org_membership_migrator;
