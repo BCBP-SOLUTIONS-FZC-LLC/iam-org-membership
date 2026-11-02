@@ -1616,12 +1616,13 @@ operations:
       $ref: '#/channels/membershipWorkflowQueue'
     tags:
       - $ref: '#/components/tags/published'
-    summary: Workflow reacts to assignee overrides and tenant-state relay
+    summary: Workflow reacts to assignee overrides, tenant-state relay, and membership lifecycle
     description: |
       Consumer: Workflow Service
       Queue   : membership-workflow-q  |  DLQ: membership-workflow-q-dlq
       Filter  : EventType IN [TenderAssigneeOverridden,
-                              DepartmentMembership*, TenantStateChanged]
+                              DepartmentMembership*, TenantStateChanged,
+                              MembershipRevoked, TenantMembershipsPurged]
 
       Delegation routing is no longer driven from this queue — Workflow's
         §8.8 delegate-impact gate (GetDelegateImpact / ReassignDelegate /
@@ -1640,6 +1641,11 @@ operations:
         terminate workflow instances or route them onto per-tier queues.
         The relay lets Workflow subscribe to a single topic instead of also
         subscribing directly to iam-tenant-events and billing.events.
+      On MembershipRevoked: vacate per-assignment task ownership so a removed
+        user does not hold active tasks (removed-user cleanup, §8.8).
+      On TenantMembershipsPurged: terminate all workflow instances for the
+        tenant. This is the only signal emitted by the trial hard-delete path
+        (trial-cleanup CronJob), which emits no TenantStateChanged.
 
       Idempotency key: (id, consumer="workflow-service") in processed_events.
     messages:
@@ -1648,6 +1654,8 @@ operations:
       - $ref: '#/channels/membershipWorkflowQueue/messages/DepartmentMembershipRevoked'
       - $ref: '#/channels/membershipWorkflowQueue/messages/DepartmentMembershipLevelChanged'
       - $ref: '#/channels/membershipWorkflowQueue/messages/TenantStateChanged'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/MembershipRevoked'
+      - $ref: '#/channels/membershipWorkflowQueue/messages/TenantMembershipsPurged'
 
   receiveMembershipBilling:
     action: receive

@@ -13,7 +13,7 @@ import (
 // early-return branch (lines 149-152): when the workflow service URL is
 // unconfigured, CancelByDelegate logs and returns nil — never errors.
 func TestCancelByDelegate_EmptyBaseURL_IsNoop(t *testing.T) {
-	c := NewHTTPClient("", 0, nil)
+	c := NewHTTPClient("", "", 0, nil)
 
 	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
 
@@ -23,7 +23,7 @@ func TestCancelByDelegate_EmptyBaseURL_IsNoop(t *testing.T) {
 // TestCancelByDelegate_EmptyBaseURL_WithDelegationID_IsNoop verifies the same
 // branch when delegationID is non-nil (both code paths still hit baseURL=="").
 func TestCancelByDelegate_EmptyBaseURL_WithDelegationID_IsNoop(t *testing.T) {
-	c := NewHTTPClient("", 0, nil)
+	c := NewHTTPClient("", "", 0, nil)
 	delID := uuid.New()
 
 	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), &delID)
@@ -36,7 +36,7 @@ func TestCancelByDelegate_EmptyBaseURL_WithDelegationID_IsNoop(t *testing.T) {
 // a malformed URL (contains control character) causes the request build to fail.
 func TestPostInternal_BadURL_RequestBuildError_Propagates(t *testing.T) {
 	// "\x7f" is a control character that makes http.NewRequest return an error.
-	c := NewHTTPClient("http://host\x7f", 0, nil)
+	c := NewHTTPClient("http://host\x7f", "", 0, nil)
 
 	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
 
