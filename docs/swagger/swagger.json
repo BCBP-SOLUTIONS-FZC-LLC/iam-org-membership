@@ -233,6 +233,59 @@
                 ]
             }
         },
+        "/internal/tenants/{id}/departments": {
+            "get": {
+                "description": "Returns tenant_departments joined with the global catalog. iam-system only. Used by Tender Service for department-name lookup (Tender HLD §14.1).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "I-20 — List active departments (service-to-service)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tenant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.DepartmentListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "x-tenant-roles must be iam-system",
+                        "schema": {
+                            "$ref": "#/definitions/http.ProblemResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "UserID": []
+                    },
+                    {
+                        "TenantID": []
+                    },
+                    {
+                        "TenantRoles": []
+                    }
+                ]
+            }
+        },
         "/internal/tenants/{id}/dept-memberships": {
             "post": {
                 "description": "§8.5 JIT dept + tenant-role assignment. Called by the Event Consumer on Keycloak login for federated (SAML) users. Additive only — never revokes a role a group set no longer implies. Emits DepartmentMembershipGranted / DepartmentMembershipLevelChanged per resolved (dept, role_level) touch per TRG-3.",
@@ -936,7 +989,7 @@
         },
         "/internal/tenants/{id}/tenders/{tender_id}/assignee-override": {
             "post": {
-                "description": "422 assignee_ineligible per §16 A62 (NOT 409). Actor must hold tender_admin, tenant_admin, or tenant_owner; plain member receives 403. Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).",
+                "description": "422 assignee_ineligible per §16 A62 (NOT 409). Actor must hold tender_admin or tenant_owner (Tender HLD §10.3); tenant_admin and plain member receive 403. Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).",
                 "consumes": [
                     "application/json"
                 ],
