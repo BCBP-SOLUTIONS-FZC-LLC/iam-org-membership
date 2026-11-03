@@ -608,7 +608,7 @@ func main() {
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
 	publicH := httpadapter.NewPublicHandler(tenantResolutionSvc)
 	meH := httpadapter.NewMeHandler(service.NewSessionContextService(authzSvc, tenantSvc))
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc)
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc, deptSvc)
 
 	// ── Router — all routing/middleware wiring lives in the inbound HTTP
 	// adapter (internal/adapter/inbound/http/router.go), not here. main.go's

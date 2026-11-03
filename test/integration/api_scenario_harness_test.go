@@ -372,7 +372,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(pgadapter.NewTenantRepository(sysPool), 30)
 	internalH := httpadapter.NewInternalHandler(
-		provisioningSvc, authzSvc, membershipSvc, invitationSvc, gmSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc,
+		provisioningSvc, authzSvc, membershipSvc, invitationSvc, gmSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc, deptSvc,
 	)
 
 	// PUB-1: bound to sysPool (BYPASSRLS), exactly as cmd/server/main.go does.

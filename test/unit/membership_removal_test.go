@@ -247,7 +247,7 @@ func TestMembership_ValidateAndEmitAssigneeOverride_ActorRoleReadError(t *testin
 }
 
 func TestMembership_ValidateAndEmitAssigneeOverride_ActorWithoutElevatedRoleRejected(t *testing.T) {
-	// LLD I-13 step 1: actor must hold tender_admin, tenant_admin, or owner.
+	// LLD I-13 step 1: actor must hold tender_admin or tenant_owner (Tender HLD §10.3).
 	r := &fakeRoleRepo{
 		listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
 			// Actor has only 'member' (derived) — no elevated grant.
@@ -304,7 +304,7 @@ func TestMembership_ValidateAndEmitAssigneeOverride_AssigneeWrongDepartmentIneli
 	deptID := uuid.New()
 	r := &fakeRoleRepo{
 		listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
-			return []domain.TenantRole{{RoleCode: domain.RoleTenantAdmin}}, nil
+			return []domain.TenantRole{{RoleCode: domain.RoleTenderAdmin}}, nil
 		},
 	}
 	m := &fakeMemRepoFull{

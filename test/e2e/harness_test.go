@@ -144,7 +144,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	// to iam-tender-acl's TAC-1/2/3/4; IDs never reused).
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, nil, deptMemSvc) // I-16 untested here
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, nil, deptMemSvc, nil) // I-16 untested here
 	// PUB-1: bound to sysPool, exactly as cmd/server/main.go does.
 	publicH := httpadapter.NewPublicHandler(service.NewTenantResolutionService(pgadapter.NewTenantRepository(sysPool)))
 	meH := httpadapter.NewMeHandler(service.NewSessionContextService(authzSvc, tenantSvc))

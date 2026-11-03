@@ -672,15 +672,15 @@ func (s *MembershipService) RemovalResolution(ctx context.Context, tenantID, use
 // TenderAssigneeOverridden via the outbox (§7.3, OVR-1). Persists nothing
 // else — the override record is Workflow-owned (§2.2/A32(d)).
 //
-// Accepted actor roles: tender_admin, tenant_admin, or tenant_owner.
-// All three are treated equivalently for this gate. A plain member —
-// or any caller with no elevated role row — receives 403 insufficient_role.
+// Accepted actor roles: tender_admin or tenant_owner (Tender HLD §10.3).
+// A plain member or tenant_admin — or any caller with no elevated role
+// row — receives 403 insufficient_role.
 //
 // Returns 422 assignee_ineligible if the new assignee is not an active
 // member holding required_level in department_id.
 func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context, tenantID, tenderID, newUserID, departmentID uuid.UUID, requiredLevel domain.DeptRole, actorID uuid.UUID) error {
-	// AUTH-3 defense-in-depth: actor must hold tender_admin, tenant_admin,
-	// or tenant_owner in this tenant. LLD §5.4 I-13 step 1.
+	// AUTH-3 defense-in-depth: actor must hold tender_admin or tenant_owner
+	// in this tenant (Tender HLD §10.3). LLD §5.4 I-13 step 1.
 	actorRoles, err := s.roles.ListByUser(ctx, tenantID, actorID)
 	if err != nil {
 		return domain.NewError(domain.ErrInsufficientRole, "actor role check failed")
@@ -688,14 +688,13 @@ func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context,
 	hasElevated := false
 	for _, tr := range actorRoles {
 		if tr.RoleCode == domain.RoleTenderAdmin ||
-			tr.RoleCode == domain.RoleTenantAdmin ||
 			tr.RoleCode == domain.RoleTenantOwner {
 			hasElevated = true
 			break
 		}
 	}
 	if !hasElevated {
-		return domain.NewError(domain.ErrInsufficientRole, "actor must hold tender_admin, tenant_admin, or tenant_owner")
+		return domain.NewError(domain.ErrInsufficientRole, "actor must hold tender_admin or tenant_owner")
 	}
 
 	item, err := s.Get(ctx, tenantID, newUserID)

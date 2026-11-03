@@ -492,6 +492,9 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	tenantScoped.GET("/plan-change-check", internalH.PlanChangeCheck)                      // I-18 (CD-20)
 	// I-19 — Workflow Services' assignee eligibility read (uncached).
 	tenantScoped.GET("/members/:user_id/eligibility", internalH.CheckAssigneeEligibility) // I-19
+	// I-20 — Tender Service department-name lookup (TND-OM-P3). Mirrors P-3
+	// but accepts iam-system so no forwarded user session is required.
+	tenantScoped.GET("/departments", internalH.ListDepartments) // I-20
 }
 
 // prewarmTenantPathMismatch zero-initialises the mismatch counter for every

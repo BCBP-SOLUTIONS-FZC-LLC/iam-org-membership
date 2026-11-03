@@ -426,7 +426,7 @@ func TestAssigneeOverride_AssigneeBelowLevel_422(t *testing.T) {
 // ── I13-EDGE-01 ──────────────────────────────────────────────────────────────
 
 // TestAssigneeOverride_NoElevatedRole_403 (I13-EDGE-01): actor has no elevated
-// role in tenant_roles (not tender_admin, not tenant_admin, not tenant_owner).
+// role in tenant_roles (not tender_admin, not tenant_owner).
 // The service's roles.ListByUser returns empty → hasElevated=false →
 // ErrInsufficientRole → 403.
 func TestAssigneeOverride_NoElevatedRole_403(t *testing.T) {
@@ -556,7 +556,7 @@ func TestAssigneeOverride_HP3_MinimalFields_200(t *testing.T) {
 	newUserID := uuid.New()
 	deptID := uuid.New()
 
-	roles := roleListRepo(domain.RoleTenantAdmin)
+	roles := roleListRepo(domain.RoleTenderAdmin)
 	mem := activeMemberRepo()
 	deptRepo := &drhDeptMemRepo{listByUserFn: func(_ context.Context, _, uid uuid.UUID) ([]domain.DeptMembership, error) {
 		if uid == newUserID {

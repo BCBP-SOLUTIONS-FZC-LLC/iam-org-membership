@@ -29,7 +29,7 @@ func TestRouter_I16_ReachableWithRPsSentinelTenantHeader(t *testing.T) {
 		return nil, nil
 	}}
 	svc := service.NewSubscriptionLapseService(repo, 30)
-	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, svc, nil)
+	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, svc, nil, nil)
 
 	router := NewRouter(RouterConfig{
 		GinConfig:       gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
@@ -55,7 +55,7 @@ func TestRouter_I16_ReachableWithRPsSentinelTenantHeader(t *testing.T) {
 // future caller of I-16 MUST send some value for this header, even though
 // the handler itself never reads it.
 func TestRouter_I16_MissingTenantHeaderStill401s(t *testing.T) {
-	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, nil, nil)
+	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	router := NewRouter(RouterConfig{
 		GinConfig:       gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},

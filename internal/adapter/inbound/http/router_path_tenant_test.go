@@ -25,7 +25,7 @@ const internalTenantPrefix = internalTenantRoutePrefix
 func strictRouter(strict bool) *Router {
 	return NewRouter(RouterConfig{
 		GinConfig:                  gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
-		InternalHandler:            NewInternalHandler(nil, nil, nil, nil, nil, nil, nil, nil),
+		InternalHandler:            NewInternalHandler(nil, nil, nil, nil, nil, nil, nil, nil, nil),
 		StrictTenantPathValidation: strict,
 	})
 }
@@ -67,8 +67,8 @@ func tenantScopedRoutes(t *testing.T, r *Router) []string {
 func TestInternalTenantRoutes_AllBindPathTenant(t *testing.T) {
 	r := strictRouter(true)
 	routes := tenantScopedRoutes(t, r)
-	// I-2, I-3, I-4, I-5, I-9, I-10, I-11, I-13, I-14, I-15, I-17, I-18, I-19.
-	require.GreaterOrEqual(t, len(routes), 13, "expected every tenant-scoped internal route, got %v", routes)
+	// I-2, I-3, I-4, I-5, I-9, I-10, I-11, I-13, I-14, I-15, I-17, I-18, I-19, I-20.
+	require.GreaterOrEqual(t, len(routes), 14, "expected every tenant-scoped internal route, got %v", routes)
 
 	for _, route := range routes {
 		method, tmpl, _ := strings.Cut(route, " ")

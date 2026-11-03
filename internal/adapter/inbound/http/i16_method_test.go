@@ -28,7 +28,7 @@ func newTestRouterForI16() *Router {
 		return nil, nil
 	}}
 	svc := service.NewSubscriptionLapseService(repo, 30)
-	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, svc, nil)
+	internalH := NewInternalHandler(nil, nil, nil, nil, nil, nil, svc, nil, nil)
 	return NewRouter(RouterConfig{
 		GinConfig:       gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		InternalHandler: internalH,
