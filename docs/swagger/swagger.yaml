@@ -734,6 +734,11 @@ definitions:
         - member
         - tenant_admin
         items:
+          enum:
+          - member
+          - tenant_owner
+          - tenant_admin
+          - tender_admin
           type: string
         type: array
       slug:

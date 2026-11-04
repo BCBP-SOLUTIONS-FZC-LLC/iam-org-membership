@@ -3952,7 +3952,13 @@ const docTemplate = `{
                 "roles": {
                     "type": "array",
                     "items": {
-                        "type": "string"
+                        "type": "string",
+                        "enum": [
+                            "member",
+                            "tenant_owner",
+                            "tenant_admin",
+                            "tender_admin"
+                        ]
                     },
                     "example": [
                         "member",
