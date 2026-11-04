@@ -99,6 +99,23 @@ spec:
             paths:
               - "*/plan-context"
     {{- end }}
+    {{- if .Values.tenderCaller.enabled }}
+    # Tender Service (tender-management) — I-20 GET */departments only (CD-19).
+    # notPaths excludes the public P-3 route (/api/v1/tenants/:id/departments)
+    # whose suffix also matches */departments — only the internal I-20 path
+    # (/api/v1/internal/tenants/:id/departments) is intended.
+    - from:
+        - source:
+            namespaces:
+              - {{ .Values.tenderCaller.namespace | quote }}
+      to:
+        - operation:
+            methods: ["GET"]
+            paths:
+              - "*/departments"
+            notPaths:
+              - "/api/v1/tenants/*"
+    {{- end }}
     {{- if .Values.workflowCallers.enabled }}
     # Workflow services (workflow-app) — I-13, I-15 and I-19 only.
     - from:

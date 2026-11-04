@@ -34,21 +34,23 @@ import (
 const xsvcService = "workflow"
 
 type HTTPClient struct {
-	baseURL string
-	client  *http.Client
-	logger  port.Logger
+	baseURL       string
+	internalToken string
+	client        *http.Client
+	logger        port.Logger
 }
 
 var _ port.WorkflowClient = (*HTTPClient)(nil)
 
-func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *HTTPClient {
+func NewHTTPClient(baseURL, internalToken string, timeout time.Duration, logger port.Logger) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
 	return &HTTPClient{
-		baseURL: baseURL,
-		client:  httpx.NewClient(timeout),
-		logger:  logger,
+		baseURL:       baseURL,
+		internalToken: internalToken,
+		client:        httpx.NewClient(timeout),
+		logger:        logger,
 	}
 }
 
@@ -57,8 +59,9 @@ func NewHTTPClient(baseURL string, timeout time.Duration, logger port.Logger) *H
 // the shared gincommon Zap logger (may be nil — warn() is then a no-op).
 func New(log port.Logger) *HTTPClient {
 	baseURL := envOr("WORKFLOW_SERVICE_BASE_URL", "")
+	token := envOr("WORKFLOW_INTERNAL_TOKEN", "")
 	timeout := envDurationMs("WORKFLOW_TIMEOUT_MS", 3*time.Second)
-	return NewHTTPClient(baseURL, timeout, log)
+	return NewHTTPClient(baseURL, token, timeout, log)
 }
 
 func (c *HTTPClient) warn(msg string, kv ...any) {
@@ -190,6 +193,9 @@ func (c *HTTPClient) setInternalHeaders(req *http.Request, tenantID uuid.UUID) {
 	req.Header.Set("x-tenant-id", tenantID.String())
 	req.Header.Set("x-user-id", "iam-system")
 	req.Header.Set("x-tenant-roles", "iam-system")
+	if c.internalToken != "" {
+		req.Header.Set("x-internal-token", c.internalToken)
+	}
 }
 
 func envOr(key, def string) string {

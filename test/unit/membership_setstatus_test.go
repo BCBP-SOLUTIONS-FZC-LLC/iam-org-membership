@@ -117,7 +117,7 @@ func (f *fakeMembershipRepo) ListActiveUserIDs(context.Context, uuid.UUID) ([]uu
 var _ port.MembershipRepository = (*fakeMembershipRepo)(nil)
 
 func buildMembershipSvcForSetStatus(m port.MembershipRepository, cache port.Cache, rp port.RealmProvisionerClient, wf port.WorkflowClient) *service.MembershipService {
-	return service.NewMembershipService(m, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, cache, rp, wf, nil, nil, 30)
+	return service.NewMembershipService(m, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, cache, rp, wf, &passthroughTxRunner{}, nil, 30)
 }
 
 // ── SetStatus — reactivate path (no side-effects) ──────────────────────

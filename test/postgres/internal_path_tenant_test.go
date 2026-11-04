@@ -34,7 +34,7 @@ func pathTenantRouter(fx *testFixtures, strict bool) http.Handler {
 	return httpadapter.NewRouter(httpadapter.RouterConfig{
 		GinConfig: gincommon.Config{Domain: "iam", Environment: "test", ServiceName: "iam-org-membership"},
 		InternalHandler: httpadapter.NewInternalHandler(fx.Provisioning, fx.AuthZ, fx.Membership, fx.Invitation,
-			fx.GroupMapping, fx.Tenant, fx.SubscriptionLapse, fx.DeptMembership),
+			fx.GroupMapping, fx.Tenant, fx.SubscriptionLapse, fx.DeptMembership, fx.Department),
 		StrictTenantPathValidation: strict,
 	}).Handler()
 }

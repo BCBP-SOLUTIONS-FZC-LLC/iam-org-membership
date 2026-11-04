@@ -55,7 +55,7 @@ func callI19(t *testing.T, fx *testFixtures, pathTenant, callerTenant, userID, d
 		{Key: "id", Value: pathTenant.String()},
 		{Key: "user_id", Value: userID.String()},
 	}
-	h := httpadapter.NewInternalHandler(nil, nil, nil, nil, nil, nil, nil, fx.DeptMembership)
+	h := httpadapter.NewInternalHandler(nil, nil, nil, nil, nil, nil, nil, fx.DeptMembership, nil)
 	h.CheckAssigneeEligibility(c)
 	require.Equal(t, http.StatusOK, w.Code, "I-19 must answer 200: %s", w.Body.String())
 	var out map[string]any

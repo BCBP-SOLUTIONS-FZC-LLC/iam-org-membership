@@ -598,7 +598,7 @@ func TestAssigneeOverride_Success_200(t *testing.T) {
 	}}
 	roles := &mhRoleRepo{listByUserFn: func(_ context.Context, tid, uid uuid.UUID) ([]domain.TenantRole, error) {
 		if uid == actorID {
-			return []domain.TenantRole{{TenantID: tid, UserID: uid, RoleCode: domain.RoleTenantAdmin}}, nil
+			return []domain.TenantRole{{TenantID: tid, UserID: uid, RoleCode: domain.RoleTenderAdmin}}, nil
 		}
 		return nil, nil
 	}}

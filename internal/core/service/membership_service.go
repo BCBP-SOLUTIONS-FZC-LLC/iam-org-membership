@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -252,17 +253,25 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 				return nil, err
 			}
 		} else {
-			var err error
-			m, err = s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
-			if err != nil {
-				return nil, err
+			// Non-owner suspend: direct SetStatus call. When MembershipSuspended
+			// is added (§16 open item B2-TODO, requires platform registry
+			// ratification), this will be wrapped in RunInTx with pub.Enqueue
+			// to satisfy CONS-1. Until then, wrapping in RunInTx adds an
+			// unnecessary BEGIN+COMMIT round-trip with no functional benefit.
+			var sErr error
+			m, sErr = s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
+			if sErr != nil {
+				return nil, sErr
 			}
 		}
 	} else {
-		var err error
-		m, err = s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
-		if err != nil {
-			return nil, err
+		// Reactivate: direct SetStatus call for the same reason as non-owner
+		// suspend above. MembershipReactivated event (§16 open item B2-TODO)
+		// will wrap this in RunInTx + pub.Enqueue once the schema is registered.
+		var sErr error
+		m, sErr = s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
+		if sErr != nil {
+			return nil, sErr
 		}
 	}
 
@@ -667,20 +676,22 @@ func (s *MembershipService) RemovalResolution(ctx context.Context, tenantID, use
 }
 
 // ValidateAndEmitAssigneeOverride is the I-13 (§5.4/A55) service method:
-// authorize the actor (tender_admin or higher), validate the new assignee
-// against the Workflow-supplied (department_id, required_level), then emit
+// authorize the actor, validate the new assignee against the
+// Workflow-supplied (department_id, required_level), then emit
 // TenderAssigneeOverridden via the outbox (§7.3, OVR-1). Persists nothing
 // else — the override record is Workflow-owned (§2.2/A32(d)).
 //
-// Returns 403 insufficient_role if actor lacks tender_admin (or higher).
+// Accepted actor roles: tender_admin, tenant_admin, or tenant_owner (Tender HLD §10.3, TND-Q4).
+// A plain member — or any caller with no elevated role row — receives 403 insufficient_role.
+//
 // Returns 422 assignee_ineligible if the new assignee is not an active
 // member holding required_level in department_id.
 func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context, tenantID, tenderID, newUserID, departmentID uuid.UUID, requiredLevel domain.DeptRole, actorID uuid.UUID) error {
-	// AUTH-3 defense-in-depth: actor must hold tender_admin, tenant_admin,
-	// or tenant_owner in this tenant. LLD §5.4 I-13 step 1.
+	// AUTH-3 defense-in-depth: actor must hold tender_admin, tenant_admin, or
+	// tenant_owner in this tenant (Tender HLD §10.3, TND-Q4). LLD §5.4 I-13 step 1.
 	actorRoles, err := s.roles.ListByUser(ctx, tenantID, actorID)
 	if err != nil {
-		return domain.NewError(domain.ErrInsufficientRole, "actor role check failed")
+		return fmt.Errorf("actor role check: %w", err)
 	}
 	hasElevated := false
 	for _, tr := range actorRoles {
@@ -695,15 +706,32 @@ func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context,
 		return domain.NewError(domain.ErrInsufficientRole, "actor must hold tender_admin, tenant_admin, or tenant_owner")
 	}
 
-	item, err := s.Get(ctx, tenantID, newUserID)
+	// Lighter than s.Get: we only need membership status + one dept row.
+	// s.Get issues three DB queries (membership + all tenant roles + all dept
+	// memberships); the two calls below skip the unnecessary roles fetch and
+	// avoid pulling every dept membership when only departmentID matters.
+	//
+	// TOCTOU note (OVR-1): these reads run outside the outbox transaction.
+	// A concurrent P-8 (RemoveUser) or P-11 (dept remove) committed between
+	// here and the RunInTx below could invalidate the eligibility check before
+	// TenderAssigneeOverridden is emitted. This is an acknowledged design
+	// tradeoff (OVR-1: validate+emit only, Workflow persists the override) —
+	// the event is an authorization signal, not authoritative state; Workflow
+	// must handle the case where the assignee is no longer eligible at the
+	// time it processes the event (e.g. via a re-check at assignment time).
+	assigneeMem, err := s.memberships.FindByUserID(ctx, tenantID, newUserID)
 	if err != nil {
 		return domain.NewError(domain.ErrAssigneeIneligible, "assignee is not a member of this tenant")
 	}
-	if item.Membership.Status != domain.MembershipActive {
+	if assigneeMem.Status != domain.MembershipActive {
 		return domain.NewError(domain.ErrAssigneeIneligible, "assignee is not an active member")
 	}
+	assigneeDepts, err := s.deptMemberships.ListByUser(ctx, tenantID, newUserID)
+	if err != nil {
+		return fmt.Errorf("assignee department membership lookup: %w", err)
+	}
 	eligible := false
-	for _, d := range item.Departments {
+	for _, d := range assigneeDepts {
 		if d.DepartmentID == departmentID && d.RoleLevel.Satisfies(requiredLevel) {
 			eligible = true
 			break
@@ -769,6 +797,14 @@ func (s *MembershipService) ResetUserMFA(ctx context.Context, tenantID, userID, 
 	if err := s.rp.ResetMFA(ctx, tenantID, userID); err != nil {
 		return domain.NewError(domain.ErrRealmProvisionerUnavailable, "realm provisioner unavailable")
 	}
+	// RP succeeded — MFA credentials wiped in Keycloak. The outbox Enqueue
+	// below commits the audit event. If it fails (transient DB error), the
+	// caller receives 500 and must retry; RP.ResetMFA is idempotent so the
+	// retry re-clears MFA and the event commits. The failed attempt has no
+	// event record, but the successful retry's event timestamp is accurate.
+	// Log at INFO now so ops can correlate a 500 spike with a successful reset.
+	s.logger.Info("ResetUserMFA: RP succeeded, committing audit event",
+		"tenant_id", tenantID, "user_id", userID)
 
 	return s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
 		pub, _ := port.EventPublisherFromContext(txCtx)
@@ -837,11 +873,15 @@ func (s *MembershipService) SeatUsage(ctx context.Context, tenantID uuid.UUID) (
 
 // invalidateMember evicts the tenant list projections plus the user's I-8
 // projection (CACHE-7) after a status change, role reconcile or removal.
+// Uses context.WithoutCancel so a client disconnect or HTTP timeout that
+// cancels the request ctx cannot silently skip the cache eviction — a
+// stale om:memberships entry would let suspended/removed users pass I-8
+// for up to the full 300 s TTL (CACHE-7).
 func (s *MembershipService) invalidateMember(ctx context.Context, tenantID, userID uuid.UUID) {
 	if s.cache == nil {
 		return
 	}
-	_ = s.cache.Delete(ctx,
+	_ = s.cache.Delete(context.WithoutCancel(ctx),
 		cacheKeyMembers(tenantID, 50),
 		cacheKeySeatUsage(tenantID),
 		cacheKeyMemberships(tenantID, userID),

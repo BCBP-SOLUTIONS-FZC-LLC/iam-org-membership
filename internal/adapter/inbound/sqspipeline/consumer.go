@@ -11,13 +11,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
-	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 )
 
 // dlqForwardReceiveCount is the consumer-side delivery threshold applied
@@ -111,45 +107,21 @@ func buildSQSConsumer(env eventcfg.SQSConfigEnv, client events.SQSClientLike, ha
 // gets no link. The sampled flag is left unset: the link points at the
 // producer's span whatever its sampling decision was.
 //
+// The concrete span creation is delegated to port.WrapConsumerSpan, which
+// calls the closure installed by cmd/server (port.SetConsumerSpanFunc) after
+// gincommon.InitTracingWithConfig — keeping the OTel trace API out of this
+// package. When no function is installed (tests, reconciler) the handler
+// runs without a span.
+//
 // queue is the span's messaging.destination attribute.
 func instrumentedHandler(queue string, h events.Handler) events.Handler {
-	tracer := gincommon.NewTracer("iam-org-membership")
 	return func(ctx context.Context, env events.Envelope[json.RawMessage]) error {
-		spanOpts := []trace.SpanStartOption{
-			trace.WithSpanKind(trace.SpanKindInternal),
-			trace.WithAttributes(attribute.String("messaging.destination.name", queue)),
-		}
-		if link, ok := originLink(env); ok {
-			spanOpts = append(spanOpts, trace.WithLinks(link))
-		}
-
-		ctx, span := tracer.Start(ctx, "consumer."+env.Type, spanOpts...)
-		defer span.End()
-
-		if err := h(ctx, env); err != nil {
-			span.RecordError(err)
-			return err
-		}
-		return nil
+		link := port.SpanContext{TraceID: env.TraceID, SpanID: env.CorrelationID}
+		ctx, endSpan := port.WrapConsumerSpan(ctx, "consumer."+env.Type, queue, link)
+		err := h(ctx, env)
+		endSpan(err)
+		return err
 	}
-}
-
-// originLink builds a link to the span that enqueued env, from the trace and
-// span IDs publisher.go stamps on the envelope.
-func originLink(env events.Envelope[json.RawMessage]) (trace.Link, bool) {
-	tid, err := trace.TraceIDFromHex(env.TraceID)
-	if err != nil {
-		return trace.Link{}, false
-	}
-	sid, err := trace.SpanIDFromHex(env.CorrelationID)
-	if err != nil {
-		return trace.Link{}, false
-	}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, Remote: true})
-	if !sc.IsValid() {
-		return trace.Link{}, false
-	}
-	return trace.Link{SpanContext: sc}, true
 }
 
 // EnvForQueue is sqsEnvForQueue: one queue's consumer env with this

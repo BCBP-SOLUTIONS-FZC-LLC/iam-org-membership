@@ -42,6 +42,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
@@ -133,18 +134,62 @@ func main() {
 	if err != nil {
 		panic("init tracing: " + err.Error())
 	}
-	// Install the trace-ID extractor used by port.SlogStyleLogger's *Context
-	// variants. This is the only place in the binary that touches the OTel
-	// trace API directly; every other trace interaction goes through gincommon
-	// (InitTracingWithConfig above, NewTracer in sqspipeline, SpanTracer in
-	// pgcommon). The extractor is set here, after the provider is installed,
-	// so span context is always valid when log4 calls it.
+	// All three port.Set* calls below are the ONLY places in this binary that
+	// touch the OTel trace API directly. Every other trace interaction goes
+	// through gincommon (InitTracingWithConfig above, SpanTracer in pgcommon)
+	// or through the port.Wrap*/port.*FromContext helpers wired here.
+	// All three must run after InitTracingWithConfig so the provider is live.
+
+	// SetTraceExtractor: enriches port.SlogStyleLogger *Context variants with
+	// the active trace ID.
 	port.SetTraceExtractor(func(ctx context.Context) string {
 		sc := trace.SpanFromContext(ctx).SpanContext()
 		if !sc.IsValid() {
 			return ""
 		}
 		return sc.TraceID().String()
+	})
+	// SetSpanContextExtractor: provides both trace and span IDs to the outbox
+	// publisher (publisher.go) so it can stamp correlation IDs on envelopes
+	// without importing the OTel trace API itself.
+	port.SetSpanContextExtractor(func(ctx context.Context) port.SpanContext {
+		sc := trace.SpanFromContext(ctx).SpanContext()
+		if !sc.IsValid() {
+			return port.SpanContext{}
+		}
+		return port.SpanContext{
+			TraceID: sc.TraceID().String(),
+			SpanID:  sc.SpanID().String(),
+		}
+	})
+	// SetConsumerSpanFunc: wires the OTel consumer-span wrapper (OBS-7/OBS-9).
+	// Each SQS handler invocation gets an internal "consumer.<event_type>" span
+	// linked to the originating publish span via the envelope's trace/span IDs.
+	// sqspipeline/consumer.go delegates to port.WrapConsumerSpan so it never
+	// imports the OTel trace API directly.
+	consumerTracer := gincommon.NewTracer(cfg.ServiceName)
+	port.SetConsumerSpanFunc(func(ctx context.Context, name, queue string, link port.SpanContext) (context.Context, func(error)) {
+		spanOpts := []trace.SpanStartOption{
+			trace.WithSpanKind(trace.SpanKindInternal),
+			trace.WithAttributes(attribute.String("messaging.destination.name", queue)),
+		}
+		if link.TraceID != "" && link.SpanID != "" {
+			tid, err1 := trace.TraceIDFromHex(link.TraceID)
+			sid, err2 := trace.SpanIDFromHex(link.SpanID)
+			if err1 == nil && err2 == nil {
+				sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, Remote: true})
+				if sc.IsValid() {
+					spanOpts = append(spanOpts, trace.WithLinks(trace.Link{SpanContext: sc}))
+				}
+			}
+		}
+		ctx, span := consumerTracer.Start(ctx, name, spanOpts...)
+		return ctx, func(err error) {
+			if err != nil {
+				span.RecordError(err)
+			}
+			span.End()
+		}
 	})
 	// ObservabilityMiddlewares is gincommon's public metrics-init API. Call
 	// it here (before any collector registration or exporter goroutine) so
@@ -608,7 +653,7 @@ func main() {
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
 	publicH := httpadapter.NewPublicHandler(tenantResolutionSvc)
 	meH := httpadapter.NewMeHandler(service.NewSessionContextService(authzSvc, tenantSvc))
-	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc)
+	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc, deptSvc)
 
 	// ── Router — all routing/middleware wiring lives in the inbound HTTP
 	// adapter (internal/adapter/inbound/http/router.go), not here. main.go's

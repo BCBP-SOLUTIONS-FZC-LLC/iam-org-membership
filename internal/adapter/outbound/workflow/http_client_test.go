@@ -56,7 +56,7 @@ func TestP10WF001_GetDelegateImpactHappy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	impact, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, impact)
@@ -83,7 +83,7 @@ func TestP10WF001_GetDelegateImpactHappy(t *testing.T) {
 //
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
 func TestP10WF002_WFI13FailOpenWhenUnconfigured(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, nil)
+	c := NewHTTPClient("", "", 5*time.Second, nil)
 	impact, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err, "WFI-13 fail-open: no error when unconfigured")
 	require.NotNil(t, impact)
@@ -111,7 +111,7 @@ func TestP10WF003_GetDelegateImpactWithDelegationID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	delID := uuid.New()
 	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), &delID)
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestP10WF004_GetDelegateImpactNon2xx(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.Error(t, err, "5xx must propagate as an error")
 }
@@ -161,7 +161,7 @@ func TestP10WF005_TimeoutEnforced(t *testing.T) {
 		_, _ = w.Write([]byte(`{"active_workflows":0}`))
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 50*time.Millisecond, nil)
+	c := NewHTTPClient(srv.URL, "", 50*time.Millisecond, nil)
 	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.Error(t, err, "server latency > timeout must produce transport error")
 }
@@ -194,7 +194,7 @@ func TestP10WF006_ReassignDelegateHappy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	tenant, old, new := uuid.New(), uuid.New(), uuid.New()
 	delID := uuid.New()
 	err := c.ReassignDelegate(context.Background(), tenant, old, new, &delID)
@@ -219,7 +219,7 @@ func TestP10WF006_ReassignDelegateHappy(t *testing.T) {
 //
 // Priority: P1 · Severity: Blocker · Automation Status: Automated
 func TestP10WF007_ReassignDelegateWFI13Fail(t *testing.T) {
-	c := NewHTTPClient("", 5*time.Second, nil)
+	c := NewHTTPClient("", "", 5*time.Second, nil)
 	err := c.ReassignDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err, "WFI-13: unconfigured Workflow client returns nil for POSTs")
 }
@@ -235,7 +235,7 @@ func TestP10WF008_CancelByDelegateHappy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 }
@@ -250,7 +250,7 @@ func TestP10WF009_CancelByDelegateNon2xx(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
 	require.Error(t, err)
 }
@@ -282,7 +282,7 @@ func TestP10WF010_HeadersPropagated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	tenant := uuid.New()
 	_, err := c.GetDelegateImpact(context.Background(), tenant, uuid.New(), nil)
 	require.NoError(t, err)
@@ -307,7 +307,7 @@ func TestP10WF011_ParsesWorkflowIDsArray(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	impact, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 3, impact.ActiveWorkflows)
@@ -327,9 +327,104 @@ func TestP10WF012_PostSetsContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
 	err := c.ReassignDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New(), nil)
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(gotCT, "application/json"),
 		"POST payload must set Content-Type: application/json (got %q)", gotCT)
+}
+
+// Test Case ID:      P10-WF-013
+// Module:            iam-org-membership · WorkflowClient
+// Feature:           x-internal-token forwarded when WORKFLOW_INTERNAL_TOKEN is set
+// API:               GET /api/v1/internal/workflows/delegate-impact
+// Scenario:          Positive — configured token appears in every outbound request
+// Expected Result:
+//   - Server receives x-internal-token matching the configured value
+//
+// Priority: P1 · Severity: Blocker · Automation Status: Automated
+func TestP10WF013_InternalTokenForwarded(t *testing.T) {
+	const token = "test-internal-secret"
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("x-internal-token")
+		_, _ = w.Write([]byte(`{"active_workflows":0,"workflow_ids":[]}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, token, 5*time.Second, nil)
+	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, token, gotToken, "x-internal-token must be forwarded when configured")
+}
+
+// Test Case ID:      P10-WF-014
+// Module:            iam-org-membership · WorkflowClient
+// Feature:           x-internal-token absent when token is empty (local dev / unconfigured)
+// API:               GET /api/v1/internal/workflows/delegate-impact
+// Scenario:          Positive — header is omitted entirely when internalToken is ""
+// Expected Result:
+//   - Server does not receive x-internal-token header
+//
+// Priority: P1 · Severity: Major · Automation Status: Automated
+func TestP10WF014_InternalTokenAbsentWhenEmpty(t *testing.T) {
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("x-internal-token")
+		_, _ = w.Write([]byte(`{"active_workflows":0,"workflow_ids":[]}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, "", 5*time.Second, nil)
+	_, err := c.GetDelegateImpact(context.Background(), uuid.New(), uuid.New(), nil)
+	require.NoError(t, err)
+	assert.Empty(t, gotToken, "x-internal-token must be absent when no token is configured")
+}
+
+// Test Case ID:      P10-WF-015
+// Module:            iam-org-membership · WorkflowClient
+// Feature:           x-internal-token forwarded on POST ReassignDelegate
+// API:               POST /api/v1/internal/workflows/delegate-reassign
+// Scenario:          Positive — configured token forwarded on POST path
+// Expected Result:
+//   - Server receives x-internal-token matching the configured value
+//
+// Priority: P1 · Severity: Blocker · Automation Status: Automated
+func TestP10WF015_InternalTokenForwardedOnReassignDelegate(t *testing.T) {
+	const token = "test-internal-secret"
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("x-internal-token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, token, 5*time.Second, nil)
+	err := c.ReassignDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, token, gotToken, "x-internal-token must be forwarded on ReassignDelegate POST")
+}
+
+// Test Case ID:      P10-WF-016
+// Module:            iam-org-membership · WorkflowClient
+// Feature:           x-internal-token forwarded on POST CancelByDelegate
+// API:               POST /api/v1/internal/workflows/delegate-cancel
+// Scenario:          Positive — configured token forwarded on POST path
+// Expected Result:
+//   - Server receives x-internal-token matching the configured value
+//
+// Priority: P1 · Severity: Blocker · Automation Status: Automated
+func TestP10WF016_InternalTokenForwardedOnCancelByDelegate(t *testing.T) {
+	const token = "test-internal-secret"
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("x-internal-token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, token, 5*time.Second, nil)
+	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, token, gotToken, "x-internal-token must be forwarded on CancelByDelegate POST")
 }

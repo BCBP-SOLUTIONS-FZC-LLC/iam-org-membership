@@ -86,6 +86,12 @@ var wantWorkflowOps = []op{
 	{Methods: []string{"POST"}, Paths: []string{"*/assignee-override"}},
 }
 
+// The tender-management namespace rule — I-20 GET */departments only, with
+// notPaths excluding the public P-3 route (/api/v1/tenants/*).
+var wantTenderOps = []op{
+	{Methods: []string{"GET"}, Paths: []string{"*/departments"}, NotPaths: []string{"/api/v1/tenants/*"}},
+}
+
 // The existing-callers namespace rule — the only rule with no path limit.
 var wantExistingCallerNamespaces = []string{"gateway", "iam", "observability"}
 
@@ -134,6 +140,7 @@ func checkAuthorizationPolicy(t *testing.T, overlay string, ap map[string]any) {
 
 	gotPrincipals := map[string][]op{}
 	var gotWorkflow []op
+	var gotTender []op
 	existingRules := 0
 
 	for i, r := range asSlice(spec["rules"]) {
@@ -177,13 +184,18 @@ func checkAuthorizationPolicy(t *testing.T, overlay string, ap map[string]any) {
 					t.Errorf("[%s] workflow-app appears in more than one rule", overlay)
 				}
 				gotWorkflow = ops
+			case reflect.DeepEqual(namespaces, []string{"tender-management"}):
+				if gotTender != nil {
+					t.Errorf("[%s] tender-management appears in more than one rule", overlay)
+				}
+				gotTender = ops
 			case reflect.DeepEqual(namespaces, wantExistingCallerNamespaces):
 				existingRules++
 				if len(ops) != 0 {
 					t.Errorf("[%s] existing-callers rule must carry no `to` (it mirrors the base NetworkPolicy), got %v", overlay, ops)
 				}
 			default:
-				t.Errorf("[%s] rule %d admits namespaces %v — only %v (unrestricted) and [workflow-app] (path-limited) are allowed",
+				t.Errorf("[%s] rule %d admits namespaces %v — only %v (unrestricted), [workflow-app] and [tender-management] (path-limited) are allowed",
 					overlay, i, namespaces, wantExistingCallerNamespaces)
 			}
 		default:
@@ -196,6 +208,15 @@ func checkAuthorizationPolicy(t *testing.T, overlay string, ap map[string]any) {
 	}
 	if !reflect.DeepEqual(gotWorkflow, wantWorkflowOps) {
 		t.Errorf("[%s] workflow-app operations:\n got  %+v\n want %+v", overlay, gotWorkflow, wantWorkflowOps)
+	}
+	// tenderCaller.enabled=true in staging/prod overlays renders the tender-management rule.
+	// Assert it is present AND correctly path-restricted (GET */departments, notPaths /api/v1/tenants/*).
+	// If gotTender is nil the overlay does not enable tenderCaller — which is now a test failure
+	// for staging/prod (both overlays set tenderCaller.enabled=true).
+	if gotTender == nil {
+		t.Errorf("[%s] tender-management rule is missing — tenderCaller.enabled must be true in staging/prod overlays", overlay)
+	} else if !reflect.DeepEqual(gotTender, wantTenderOps) {
+		t.Errorf("[%s] tender-management operations:\n got  %+v\n want %+v", overlay, gotTender, wantTenderOps)
 	}
 	for p, want := range wantPrincipals {
 		got, ok := gotPrincipals[p]

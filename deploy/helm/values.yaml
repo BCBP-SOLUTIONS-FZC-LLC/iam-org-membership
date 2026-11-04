@@ -216,6 +216,12 @@ envFromSecret:
   - AWS_ACCESS_KEY_ID
   - AWS_SECRET_ACCESS_KEY
   - DOCS_AUTH_TOKEN
+  # Shared secret the Workflow Execution Service requires in x-internal-token
+  # on every internal route (RequireInternalToken middleware, NEW-OM-WF-1).
+  # Value provisioned per environment via the platform secret store — never
+  # set here. Staging/prod: add to existingSecret. Dev: --set secretValues.WORKFLOW_INTERNAL_TOKEN=<value>.
+  # Leave empty until the Workflow team provisions the credential.
+  - WORKFLOW_INTERNAL_TOKEN
 
 # existingSecret — preferred for production.
 # Set to the name of a pre-existing Kubernetes Secret whose keys match envFromSecret.
@@ -248,6 +254,7 @@ secretValues:
   AWS_ACCESS_KEY_ID: ""
   AWS_SECRET_ACCESS_KEY: ""
   DOCS_AUTH_TOKEN: ""
+  WORKFLOW_INTERNAL_TOKEN: ""
 
 terminationGracePeriodSeconds: 75   # max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain + 10 s pool drain + 5 s buffer
 
@@ -426,6 +433,18 @@ workflowCallers:
   namespaceSelector:
     kubernetes.io/metadata.name: workflow-app
   podSelector: {}   # {} = any Workflow pod in that namespace
+
+# Tender Service — I-20 GET /api/v1/internal/tenants/:id/departments only
+# (department-name lookup for workflow node assignment, Tender HLD §14.1).
+# NetworkPolicy: admits pods in the tender-management namespace to the API port.
+# Istio AuthorizationPolicy (commercialCallers.istio.enabled): a rule for the
+# tender-management namespace limited to GET */departments (suffix match; CD-19).
+tenderCaller:
+  enabled: false   # base default; set true in env-specific values files
+  namespace: tender-management
+  namespaceSelector:
+    kubernetes.io/metadata.name: tender-management
+  podSelector: {}   # {} = any Tender pod in that namespace
 
 # Signup BFF (Signup BFF decision BFF-1 / C-5) — the one public-facing caller
 # of an internal route. It calls only I-1 (POST /api/v1/internal/tenants) —

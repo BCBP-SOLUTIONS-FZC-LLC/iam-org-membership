@@ -31,8 +31,26 @@ func NewDepartmentService(catalog port.DepartmentCatalogReader, tenantDepts port
 // with their catalog department. UI filters by is_active; P-3 LLD §5.4.
 // BUG FIX: was calling ListActive (only is_active=true) — changed to List
 // so deactivated depts still appear; is_active flag is advisory for the UI.
+// S2S callers that need only active departments should use ListActiveForTenant.
 func (s *DepartmentService) ListForTenant(ctx context.Context, tenantID uuid.UUID) ([]TenantDepartmentView, error) {
-	tds, err := s.tenantDepts.List(ctx, tenantID)
+	return s.listForTenant(ctx, tenantID, false)
+}
+
+// ListActiveForTenant returns only is_active=true tenant_departments joined
+// with their catalog department. Used by I-20 (Tender Service department-name
+// lookup) so catalog round-trips are not wasted on inactive rows.
+func (s *DepartmentService) ListActiveForTenant(ctx context.Context, tenantID uuid.UUID) ([]TenantDepartmentView, error) {
+	return s.listForTenant(ctx, tenantID, true)
+}
+
+func (s *DepartmentService) listForTenant(ctx context.Context, tenantID uuid.UUID, activeOnly bool) ([]TenantDepartmentView, error) {
+	var tds []domain.TenantDepartment
+	var err error
+	if activeOnly {
+		tds, err = s.tenantDepts.ListActive(ctx, tenantID)
+	} else {
+		tds, err = s.tenantDepts.List(ctx, tenantID)
+	}
 	if err != nil {
 		return nil, err
 	}

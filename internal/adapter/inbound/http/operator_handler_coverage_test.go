@@ -53,6 +53,11 @@ func (r *ohSetFeatureFlagsErrRepo) SetFeatureFlags(context.Context, uuid.UUID, [
 func TestSetFeatureFlags_RepoError_409(t *testing.T) {
 	tenantID := uuid.New()
 	tenants := &ohSetFeatureFlagsErrRepo{
+		happyTenantRepo: happyTenantRepo{
+			findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+				return &domain.Tenant{ID: id}, nil // old-flags read succeeds; write fails
+			},
+		},
 		err: domain.NewError(domain.ErrOptimisticLockConflict, "record_version mismatch"),
 	}
 	svc := service.NewOperatorService(tenants, &mhRoleRepo{}, &mhMemRepo{}, happyCacheStub{}, happyTxRunner{})

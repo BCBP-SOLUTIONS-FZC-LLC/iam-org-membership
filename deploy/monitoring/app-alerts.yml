@@ -531,7 +531,7 @@ groups:
           runbook: "iam-org-membership/auth8-revoke-fail-open"
 
       - alert: IAMStaleLifecycleEventSkippedElevated
-        expr: rate(iam_lifecycle_event_skipped_total[10m]) > 1
+        expr: rate(iam_org_membership_lifecycle_event_skipped_total[10m]) > 1
         for: 30m
         labels:
           severity: ticket

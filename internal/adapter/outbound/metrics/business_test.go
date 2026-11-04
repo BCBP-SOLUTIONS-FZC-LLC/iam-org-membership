@@ -125,9 +125,10 @@ func TestMetricNamesStable(t *testing.T) {
 		// Tier 2 — iam_* (shared across IAM-domain services).
 		"iam_rls_violations_total",
 		"iam_auth_session_revoke_failed_total",
-		"iam_lifecycle_event_skipped_total",
-		"iam_lifecycle_event_lag_seconds",
 		// Tier 3 — iam_org_membership_* (unique to this service).
+		// Reclassified from Tier 2 (2026-11-04): registry marks as single-service.
+		"iam_org_membership_lifecycle_event_skipped_total",
+		"iam_org_membership_lifecycle_event_lag_seconds",
 		"iam_org_membership_unknown_event_acknowledged_total",
 		"iam_org_membership_delegate_suspend_impact_total",
 		"iam_org_membership_tenant_ownerless_escalated_total",
@@ -142,6 +143,7 @@ func TestMetricNamesStable(t *testing.T) {
 		"iam_org_membership_seat_overage_active",
 		"iam_org_membership_pending_invitations_stale",
 		"iam_org_membership_plan_change_check_total",
+		"iam_org_membership_department_list_total",
 	}
 
 	gathered, err := prometheus.DefaultGatherer.Gather()
@@ -257,7 +259,7 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 	// Small sampling of invariant IDs that MUST appear in the Help text
 	// of the metric that owns them.
 	need := map[string]string{
-		"iam_lifecycle_event_skipped_total":                    "EVT-14",
+		"iam_org_membership_lifecycle_event_skipped_total":     "EVT-14",
 		"platform_dlq_messages_total":                          "dead-letter",
 		"iam_org_membership_seat_overage_started_total":        "SEAT-5",
 		"iam_org_membership_seat_limit_reached_total":          "SEAT-1",

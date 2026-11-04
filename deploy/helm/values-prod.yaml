@@ -19,3 +19,11 @@ commercialCallers:
       - iam                  # IAM namespace: AuthZ Enrichment, Group Mapping, Audit Log, Tender ACL, Delegation, Event Consumer
       - gateway              # Ingress controller / Envoy Gateway data plane
       - observability        # Prometheus scrape (port 9090 only — enforced at L3 by metricsIngress)
+
+# Tender Service — I-20 GET */departments (CD-19, TND-OM-P3).
+tenderCaller:
+  enabled: true
+  namespace: tender-management
+  namespaceSelector:
+    kubernetes.io/metadata.name: tender-management
+  podSelector: {}

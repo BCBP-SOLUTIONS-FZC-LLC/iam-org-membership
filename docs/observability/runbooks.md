@@ -116,7 +116,7 @@ Common starting points:
 
 **Meaning.** EVT-14: events older than the tenant's last applied event (`tenants.last_event_at`) are being skipped, still recorded in `processed_events`. Occasional skips are normal under producer reordering. A sustained rate means consumer lag or replays.
 
-**Triage.** `sum by (event_type) (rate(iam_lifecycle_event_skipped_total[10m]))`. Then check `histogram_quantile(0.99, sum by (le) (rate(iam_lifecycle_event_lag_seconds_bucket[10m])))` (SLO-3), `platform_messages_in_flight` and the SQS age of the oldest message.
+**Triage.** `sum by (event_type) (rate(iam_org_membership_lifecycle_event_skipped_total[10m]))`. Then check `histogram_quantile(0.99, sum by (le) (rate(iam_org_membership_lifecycle_event_lag_seconds_bucket[10m])))` (SLO-3), `platform_messages_in_flight` and the SQS age of the oldest message.
 
 ### IAMUnknownEventType
 

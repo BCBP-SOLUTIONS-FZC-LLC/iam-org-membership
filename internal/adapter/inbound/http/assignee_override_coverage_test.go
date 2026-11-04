@@ -556,7 +556,7 @@ func TestAssigneeOverride_HP3_MinimalFields_200(t *testing.T) {
 	newUserID := uuid.New()
 	deptID := uuid.New()
 
-	roles := roleListRepo(domain.RoleTenantAdmin)
+	roles := roleListRepo(domain.RoleTenderAdmin)
 	mem := activeMemberRepo()
 	deptRepo := &drhDeptMemRepo{listByUserFn: func(_ context.Context, _, uid uuid.UUID) ([]domain.DeptMembership, error) {
 		if uid == newUserID {
@@ -578,4 +578,40 @@ func TestAssigneeOverride_HP3_MinimalFields_200(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"eligible":true`)
 	assert.Contains(t, w.Body.String(), newUserID.String())
+}
+
+// ── I13-HP-04 ────────────────────────────────────────────────────────────────
+
+// TestAssigneeOverride_TenantAdmin_200 (I13-HP-04, TND-Q4): actor holds only
+// tenant_admin — no tender_admin, no tenant_owner. TND-Q4 widened the gate to
+// include tenant_admin; this test ensures that gate is not accidentally
+// re-narrowed in a future refactor without being caught.
+func TestAssigneeOverride_TenantAdmin_200(t *testing.T) {
+	tenantID := uuid.New()
+	tenderID := uuid.New()
+	actorID := uuid.New()
+	newUserID := uuid.New()
+	deptID := uuid.New()
+
+	roles := roleListRepo(domain.RoleTenantAdmin)
+	mem := activeMemberRepo()
+	deptRepo := &drhDeptMemRepo{listByUserFn: func(_ context.Context, _, uid uuid.UUID) ([]domain.DeptMembership, error) {
+		if uid == newUserID {
+			return []domain.DeptMembership{
+				{DepartmentID: deptID, RoleLevel: domain.DeptReviewer},
+			}, nil
+		}
+		return nil, nil
+	}}
+
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	h := buildOverrideHandler(svc)
+
+	body := overrideBody(actorID, newUserID, deptID, "reviewer")
+	c, w := buildCtx(http.MethodPost, "/", body, systemCtx())
+	setParams(c, "id", tenantID.String(), "tender_id", tenderID.String())
+	h.AssigneeOverride(c)
+
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), `"eligible":true`)
 }

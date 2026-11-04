@@ -40,8 +40,8 @@ The reconciler CronJobs share the server's identity, because the standard requir
 | Tier | Namespace | Built by | Count |
 |---|---|---|---|
 | 1 — platform-shared | `platform_*` | The libraries. This service builds the three it also records into or that platform-events adopts (`platform_duplicate_messages_total`, `platform_dlq_messages_total`, `platform_dependency_request_seconds`) with `gincommon.NewSharedCounterVec` / `NewSharedHistogramVec` | see [inventory](metric-registry.md) |
-| 2 — IAM domain-shared | `iam_*` | `gincommon.NewSharedCounterVec` / `NewSharedHistogramVec` from the registry (`registerShared`): `iam_rls_violations_total`, `iam_auth_session_revoke_failed_total`, `iam_lifecycle_event_skipped_total`, `iam_lifecycle_event_lag_seconds` | 4 |
-| 3 — service-specific | `iam_org_membership_*` | `gincommon.NewCounterVec` / `NewGauge` / `NewHistogramVec` (`registerServiceMetrics`), which validate the `iam_org_membership_` prefix, suffixes and prohibited labels and inject the identity | 20 |
+| 2 — IAM domain-shared | `iam_*` | `gincommon.NewSharedCounterVec` / `NewSharedHistogramVec` from the registry (`registerShared`): `iam_rls_violations_total`, `iam_auth_session_revoke_failed_total` | 2 |
+| 3 — service-specific | `iam_org_membership_*` | `gincommon.NewCounterVec` / `NewGauge` / `NewHistogramVec` (`registerServiceMetrics`), which validate the `iam_org_membership_` prefix, suffixes and prohibited labels and inject the identity | 22 |
 
 Label **values** stay inside the registry vocabulary:
 
@@ -91,13 +91,13 @@ All in `Validate / Quality` (`.github/workflows/validate-quality.yml`):
 | `metricslint.sh` (`make metrics-lint`) | platform-gincommon's `metricslint check` on a real scrape (registry compliance, label vocabulary, cardinality), with `-allow-proposed-owner platform-gincommon,platform-events,platform-pgcommon`; `metricslint refs deploy docs` (no removed or unregistered names in alerts, dashboards, runbooks); the inventory in [`metric-registry.md`](metric-registry.md) matches the code |
 | `TestStandard_LibrariesShareRegistryCollectors` | Production registration order; platform-events adopts the shared collectors; `version` appears only on `platform_build_info` |
 
-`metricslint check -strict` would fail today on every `proposed` entry without an allowed owner, which includes the four Tier 2 `iam_*` metrics (no IAM owner yet).
+`metricslint check -strict` would fail today on every `proposed` entry without an allowed owner, which includes the two remaining Tier 2 `iam_*` metrics (no IAM owner yet).
 
 ## Items awaiting ratification
 
 Proposed registry entries this service depends on:
 
-- **IAM's Tier 2 metrics:** `iam_rls_violations_total` (also emitted by iam-audit-log and iam-user-profile), `iam_auth_session_revoke_failed_total`, `iam_lifecycle_event_skipped_total`, `iam_lifecycle_event_lag_seconds` (emitted only by this service; registered as domain-shared because the concepts are IAM-wide). They need an IAM owner (registry OQ-4). The lag histogram overlaps `platform_event_propagation_seconds` (envelope time to first receipt; this one measures to apply time and includes retries): governance decides whether to keep both.
+- **IAM's Tier 2 metrics:** `iam_rls_violations_total` (also emitted by iam-audit-log and iam-user-profile) and `iam_auth_session_revoke_failed_total`. Both need an IAM owner (registry OQ-4). `iam_lifecycle_event_skipped_total` and `iam_lifecycle_event_lag_seconds` were reclassified to Tier 3 (`iam_org_membership_lifecycle_event_skipped_total` / `iam_org_membership_lifecycle_event_lag_seconds`) in 2026-11-04 because the platform registry marks them as emitted only by this service (see `migration.md` step 4).
 - **Tier 1 candidates with a Tier 3 predecessor:** `platform_dependency_request_seconds`, `platform_duplicate_messages_total` (see above).
 - **The libraries' own metrics:** `platform_http_*`, `platform_build_info`, `platform_outbox_*`, `platform_db_*`, `platform_queue_depth`, ... — owned by the libraries; allowed via `-allow-proposed-owner`.
 
@@ -110,7 +110,7 @@ Recording rules and burn-rate alerts in `deploy/monitoring/slo-rules.yml`:
 | SLO-1 I-8 hot-path latency | `iam:i8_latency_sli:ratio_rate_{5m,1h}`: share of `/api/v1/internal/users/:id/memberships` requests at or under `le="0.025"` in `platform_http_request_duration_seconds` (the registry's `request_duration` buckets have no 0.030 boundary, so the 30 ms target is measured conservatively) | 99% | `IAMSLO1_I8LatencyFastBurn` (14.4×, page), `IAMSLO1_I8LatencySlowBurn` (6×, ticket) |
 | SLO-1b I-8 cache-hit share | `iam:i8_latency_hit_sli:ratio_rate_{5m,1h}`: share at or under `le="0.015"` (the 15 ms cache-hit target) | ≥ 90% | `IAMSLO1b_CacheHitRateLow` |
 | SLO-2 write-path availability | `iam:write_error_rate:ratio_rate_5m`: `status_class="5xx"` share of `POST\|PUT\|PATCH\|DELETE` in `platform_http_requests_total` (4xx are intentional) | 99.9% | `IAMSLO2_WriteErrorRateFastBurn` |
-| SLO-3 projection freshness and convergence | `iam_lifecycle_event_lag_seconds`; `iam:reconciler_markers:sum` = ownerless + realm-sync-pending + seat-overage + stale-invitation gauges | lag < 30s; markers ≤ 5 | `IAMSLO3_ReconcilerMarkersElevated` |
+| SLO-3 projection freshness and convergence | `iam_org_membership_lifecycle_event_lag_seconds`; `iam:reconciler_markers:sum` = ownerless + realm-sync-pending + seat-overage + stale-invitation gauges | lag < 30s; markers ≤ 5 | `IAMSLO3_ReconcilerMarkersElevated` |
 
 Every SLI keeps `domain`, `service` and `environment`.
 

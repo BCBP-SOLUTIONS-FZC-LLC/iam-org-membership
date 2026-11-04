@@ -34,6 +34,7 @@ type InternalHandler struct {
 	tenants           *service.TenantService
 	subscriptionLapse *service.SubscriptionLapseService
 	deptMemberships   *service.DeptMembershipService
+	departments       *service.DepartmentService
 }
 
 func NewInternalHandler(
@@ -45,11 +46,12 @@ func NewInternalHandler(
 	tenants *service.TenantService,
 	subscriptionLapse *service.SubscriptionLapseService,
 	deptMemberships *service.DeptMembershipService,
+	depts *service.DepartmentService,
 ) *InternalHandler {
 	return &InternalHandler{
 		provisioning: prov, authz: authz, membership: mem, invitation: inv,
 		groupMappings: gm, tenants: tenants, subscriptionLapse: subscriptionLapse,
-		deptMemberships: deptMemberships,
+		deptMemberships: deptMemberships, departments: depts,
 	}
 }
 
@@ -807,7 +809,7 @@ func (h *InternalHandler) PlanChangeCheck(c *gin.Context) {
 // the tenant naturally drops off the next poll.
 //
 // @Summary      List tenants past their subscription-cancellation grace period (RP-C3 subscription-lapse sweep)
-// @Description  Returns tenants with status='cancelled' whose cancelled_at is older than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes it from the next poll.
+// @Description  Returns tenants with status='cancelled' whose cancelled_at is older than SUBSCRIPTION_GRACE_DAYS, up to 1000 rows per poll (safety cap to prevent sysPool exhaustion on large historical backlogs). Self-idempotent — RP suspending a tenant removes it from the next poll; the RP always makes forward progress even if the working set temporarily exceeds 1000 rows.
 // @Tags         internal
 // @Produce      json
 // @Success      200 {object} SubscriptionLapseListResponse
@@ -853,7 +855,7 @@ type assigneeOverrideRequest struct {
 // AssigneeOverride is I-13 — validate-and-emit TenderAssigneeOverridden (OVR-1 no persistence).
 //
 // @Summary      I-13 — Validate-and-emit TenderAssigneeOverridden (OVR-1 no persistence)
-// @Description  422 assignee_ineligible per §16 A62 (NOT 409). Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).
+// @Description  422 assignee_ineligible per §16 A62 (NOT 409). Actor must hold tender_admin, tenant_admin, or tenant_owner (Tender HLD §10.3, TND-Q4); plain member receives 403. Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).
 // @Tags         internal
 // @Accept       json
 // @Produce      json
@@ -958,4 +960,56 @@ func (h *InternalHandler) CheckTrialEligibility(c *gin.Context) {
 	}
 	metrics.IncTrialEligibilityCheck(metrics.TrialEligibilityEligible)
 	c.JSON(http.StatusOK, gin.H{"eligible": true})
+}
+
+// ── I-20 GET /tenants/:id/departments ─────────────────────────────────────
+
+// ListDepartments is I-20 — service-to-service department list for the Tender
+// Service (TND-OM-P3). Mirrors the P-3 public projection but runs on the
+// iam-system principal, so service callers do not need to forward a live user
+// session. The path tenant is the RLS tenant (BindPathTenant).
+//
+// @Summary      I-20 — List active departments (service-to-service)
+// @Description  Returns tenant_departments joined with the global catalog. iam-system only. Used by Tender Service for department-name lookup (Tender HLD §14.1).
+// @Tags         internal
+// @Produce      json
+// @Param        id  path      string                 true  "Tenant UUID"  format(uuid)
+// @Success      200 {object}  DepartmentListResponse
+// @Failure      400 {object}  ProblemResponse
+// @Failure      403 {object}  ProblemResponse  "x-tenant-roles must be iam-system"
+// @Security     UserID
+// @Security     TenantID
+// @Security     TenantRoles
+// @Router       /internal/tenants/{id}/departments [get]
+func (h *InternalHandler) ListDepartments(c *gin.Context) {
+	if h.departments == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "department service not configured"})
+		return
+	}
+	tenantID, err := parseTenantIDParam(c)
+	if err != nil {
+		HandleError(c, err)
+		return
+	}
+	// ListActiveForTenant fetches only is_active=true rows at the SQL layer,
+	// avoiding wasted N+1 catalog round-trips for inactive departments.
+	views, err := h.departments.ListActiveForTenant(c.Request.Context(), tenantID)
+	if err != nil {
+		metrics.IncDepartmentList("error")
+		HandleError(c, err)
+		return
+	}
+	out := make([]DepartmentResponse, 0, len(views))
+	for _, v := range views {
+		out = append(out, DepartmentResponse{
+			DepartmentID:  v.DepartmentID,
+			Code:          v.Code,
+			Name:          v.Name,
+			IsSystem:      v.IsSystem,
+			IsActive:      v.IsActive,
+			RecordVersion: v.RecordVersion,
+		})
+	}
+	metrics.IncDepartmentList("success")
+	c.JSON(http.StatusOK, DepartmentListResponse{Items: out})
 }

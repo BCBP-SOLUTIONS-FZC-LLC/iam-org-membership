@@ -910,8 +910,10 @@ paths:
   /internal/subscription-lapses:
     get:
       description: Returns tenants with status='cancelled' whose cancelled_at is older
-        than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes
-        it from the next poll.
+        than SUBSCRIPTION_GRACE_DAYS, up to 1000 rows per poll (safety cap to prevent
+        sysPool exhaustion on large historical backlogs). Self-idempotent — RP suspending
+        a tenant removes it from the next poll; the RP always makes forward progress
+        even if the working set temporarily exceeds 1000 rows.
       produces:
       - application/json
       responses:
@@ -1036,6 +1038,39 @@ paths:
       - TenantID: []
       - TenantRoles: []
       summary: I-2 — RP sets realm_id + realm_type + keycloak_shard atomically
+      tags:
+      - internal
+  /internal/tenants/{id}/departments:
+    get:
+      description: Returns tenant_departments joined with the global catalog. iam-system
+        only. Used by Tender Service for department-name lookup (Tender HLD §14.1).
+      parameters:
+      - description: Tenant UUID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.DepartmentListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+        "403":
+          description: x-tenant-roles must be iam-system
+          schema:
+            $ref: '#/definitions/http.ProblemResponse'
+      security:
+      - UserID: []
+      - TenantID: []
+      - TenantRoles: []
+      summary: I-20 — List active departments (service-to-service)
       tags:
       - internal
   /internal/tenants/{id}/dept-memberships:
@@ -1504,9 +1539,10 @@ paths:
     post:
       consumes:
       - application/json
-      description: 422 assignee_ineligible per §16 A62 (NOT 409). Validates the new
-        assignee is an active member at the required level in the department, then
-        emits the event; persists nothing (OVR-1).
+      description: 422 assignee_ineligible per §16 A62 (NOT 409). Actor must hold
+        tender_admin, tenant_admin, or tenant_owner (Tender HLD §10.3, TND-Q4); plain
+        member receives 403. Validates the new assignee is an active member at the
+        required level in the department, then emits the event; persists nothing (OVR-1).
       parameters:
       - description: Tenant UUID
         format: uuid
