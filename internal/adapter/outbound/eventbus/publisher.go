@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -82,9 +81,11 @@ func (p *Publisher) Enqueue(ctx context.Context, event *domain.DomainEvent) erro
 		opts = append(opts, events.WithUserAgent(event.UserAgent))
 	}
 	// Propagate OTel trace / span IDs from the calling request context.
-	if spanCtx := trace.SpanFromContext(ctx).SpanContext(); spanCtx.IsValid() {
-		opts = append(opts, events.WithTraceID(spanCtx.TraceID().String()))
-		opts = append(opts, events.WithCorrelationID(spanCtx.SpanID().String()))
+	// SpanContextFromContext delegates to the extractor installed by cmd/
+	// (port.SetSpanContextExtractor) so the OTel API stays out of this package.
+	if sc := port.SpanContextFromContext(ctx); sc.TraceID != "" {
+		opts = append(opts, events.WithTraceID(sc.TraceID))
+		opts = append(opts, events.WithCorrelationID(sc.SpanID))
 	}
 	// Store plain JSON payload — Glue encoding happens at publish time.
 	env := events.NewEnvelope(event.Type, p.source, json.RawMessage(raw), opts...)

@@ -434,6 +434,18 @@ workflowCallers:
     kubernetes.io/metadata.name: workflow-app
   podSelector: {}   # {} = any Workflow pod in that namespace
 
+# Tender Service — I-20 GET /api/v1/internal/tenants/:id/departments only
+# (department-name lookup for workflow node assignment, Tender HLD §14.1).
+# NetworkPolicy: admits pods in the tender-management namespace to the API port.
+# Istio AuthorizationPolicy (commercialCallers.istio.enabled): a rule for the
+# tender-management namespace limited to GET */departments (suffix match; CD-19).
+tenderCaller:
+  enabled: false   # base default; set true in env-specific values files
+  namespace: tender-management
+  namespaceSelector:
+    kubernetes.io/metadata.name: tender-management
+  podSelector: {}   # {} = any Tender pod in that namespace
+
 # Signup BFF (Signup BFF decision BFF-1 / C-5) — the one public-facing caller
 # of an internal route. It calls only I-1 (POST /api/v1/internal/tenants) —
 # plus PUB-1 (GET /api/v1/public/tenants/resolve) server-side, as the slug

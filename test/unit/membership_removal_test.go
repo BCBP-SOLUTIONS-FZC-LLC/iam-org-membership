@@ -235,15 +235,20 @@ func TestMembership_RemovalResolution_UnknownActionIsValidationError(t *testing.
 // ── ValidateAndEmitAssigneeOverride (I-13) ──────────────────────────────
 
 func TestMembership_ValidateAndEmitAssigneeOverride_ActorRoleReadError(t *testing.T) {
+	roleErr := errors.New("roles unavailable")
 	r := &fakeRoleRepo{
 		listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
-			return nil, errors.New("roles unavailable")
+			return nil, roleErr
 		},
 	}
 	svc := buildMembershipSvcForRemoval(nil, r, nil, nil, nil)
 	err := svc.ValidateAndEmitAssigneeOverride(context.Background(),
 		uuid.New(), uuid.New(), uuid.New(), uuid.New(), domain.DeptApprover, uuid.New())
-	assert.ErrorIs(t, err, domain.ErrInsufficientRole)
+	// C4 fix: a DB error on actor role lookup must propagate as an infra error,
+	// not silently become a 403, so the real outage is visible in alerts.
+	require.Error(t, err)
+	assert.ErrorIs(t, err, roleErr)
+	assert.NotErrorIs(t, err, domain.ErrInsufficientRole)
 }
 
 func TestMembership_ValidateAndEmitAssigneeOverride_ActorWithoutElevatedRoleRejected(t *testing.T) {

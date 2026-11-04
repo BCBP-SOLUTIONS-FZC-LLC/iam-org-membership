@@ -19,6 +19,127 @@ This service has never been deployed to any environment — there is no released
   *(Previously: I-13 admitted only `tender_admin` and `tenant_owner`, matching Tender HLD v0.9 —
   that version is withdrawn by the Tender team's priority note of 2026-11-04.)*
 
+### Added (2026-11-03 — I-20 internal departments endpoint, NEW-OM-WF-1 Workflow compat)
+
+- **I-20 `GET /api/v1/internal/tenants/:id/departments` — service-to-service department list (TND-OM-P3):**
+  Tender Service requires department names for display without a forwarded user session.
+  `InternalHandler.ListDepartments` delegates to `DepartmentService.ListForTenant`, returns
+  `{items: [{department_id, code, name, is_system, is_active, record_version}]}`. Route registered
+  on the `tenantScoped` group, so `BindPathTenant` applies and the path tenant is the RLS tenant
+  (IAPI-6). Gate: `RequireInternalCaller` (`iam-system` only); plain members receive `403`.
+  New metric `iam_org_membership_department_list_total{result=success|error}` added for I-20
+  observability; added to `docs/observability/metric-registry.md`. Endpoint count 41 → 42.
+  `DepartmentService` wired into `NewInternalHandler` and `cmd/server/main.go`. All test harness
+  call sites updated (`handler_ctors_test.go`, integration/e2e harnesses, path-tenant and
+  eligibility postgres tests). Istio: `tenderCaller` namespace rule gains
+  `notPaths: [/api/v1/tenants/*]` exclusion so the existing public tenant routes are unaffected;
+  enabled in staging and prod overlays; CD-19 access-matrix test covers the new route.
+
+- **NEW-OM-WF-1 — `x-internal-token` forwarded on Workflow Execution Service calls:**
+  `workflow.HTTPClient` gains an `internalToken` field; `setInternalHeaders` now emits
+  `x-internal-token` when `WORKFLOW_INTERNAL_TOKEN` is set in the environment (header omitted
+  when blank — no behaviour change for local dev or any existing caller). Fixes the `401` every
+  Workflow Execution API call returned because the Workflow Service's `RequireInternalToken`
+  middleware was receiving no credential. `WORKFLOW_INTERNAL_TOKEN` documented in `.env-example`;
+  token value pending cross-team credential agreement.
+  Tests: `P10-WF-013` (token forwarded when set) and `P10-WF-014` (header absent when empty)
+  added; all existing `NewHTTPClient` call sites updated for the new `internalToken string`
+  parameter.
+
+- **NEW-OM-WF-1 Helm — `WORKFLOW_INTERNAL_TOKEN` wired into `envFromSecret`:**
+  `deploy/helm/values.yaml` adds `WORKFLOW_INTERNAL_TOKEN` to `envFromSecret` and a blank
+  `secretValues` placeholder, following the same pattern as all other credentials. The
+  Deployment template mounts it from the Kubernetes Secret as a `secretKeyRef`. Leave empty
+  until the Workflow team provisions the credential per environment.
+
+### Changed (2026-11-02 — asyncapi.yaml Workflow fan-out filter, NEW-OM-WF-1)
+
+- **`membership-workflow-q` SNS filter extended: `MembershipRevoked` + `TenantMembershipsPurged`
+  added (OM-WF-GAP-1, NEW-OM-WF-1):** `api/asyncapi.yaml` `receiveMembershipWorkflow` operation
+  previously listed only `TenderAssigneeOverridden`, `DepartmentMembership*`, and
+  `TenantStateChanged`. Two event types required by the Workflow Service were missing from both
+  the filter string and the `messages` list:
+  - `MembershipRevoked` — Workflow vacates per-assignment task ownership so a removed user does
+    not hold active tasks (§8.8 removed-user cleanup).
+  - `TenantMembershipsPurged` — Workflow terminates all instances for the tenant. This is the
+    **only** signal emitted by the trial hard-delete path (`trial-cleanup` CronJob), which emits
+    no `TenantStateChanged`.
+  Both event types are now present in the filter string, `messages` list, and operation
+  description. `receiveMembershipWorkflow` summary updated. The Workflow team must redeploy
+  the `membership-workflow-q` SNS subscription from the updated spec to activate the filter
+  change. Local floci `init-floci.sh` and the wire test (`TestWorkflowQueueCarriesBothEvents`)
+  updated.
+
+- **I-13 Swagger `@Description` updated for three-role actor list (Swagger contract fix):**
+  `internal_handler.go` I-13 `@Description` now explicitly states that the actor must hold
+  `tender_admin`, `tenant_admin`, or `tenant_owner` (Tender HLD §10.3, TND-Q4). Previously the
+  annotation was silent on the accepted roles, leaving the Swagger contract out of sync with the
+  implementation. `docs/swagger/docs.go`, `swagger.yaml`, and `swagger.json` regenerated.
+  `membership_service.go` `ValidateAndEmitAssigneeOverride` doc comment updated to remove the
+  ambiguous "tender_admin or higher" phrasing.
+
+- **`.claude/api-caching-events.md` fan-out filter and I-14 contract corrections (docs only):**
+  `membership-workflow-q` filter entry corrected (removed stale `TenderAssigneeOverridden` and
+  `DepartmentMembership*` entries that were already in the description block but not reflected
+  accurately in the filter list — OM-WF-GAP-1). I-13 actor roles table updated to list all three
+  accepted roles explicitly. AuthZ Enrichment I-14 confirmed per-request behaviour and
+  `x-auth-time` header contract (AE-46, AE-47) documented.
+
+### Added (2026-11-04 — observability compliance, port/trace.go)
+
+- **Observability compliance — OTel trace API confined to composition roots (`port/trace.go`):**
+  All logs, metrics, and traces are now routed exclusively through `platform-gincommon`. A new
+  `port/trace.go` exports five symbols that keep the OpenTelemetry trace API out of the port and
+  service layers: `SpanContext` (value type carrying trace/span IDs), `ConsumerSpanFunc`
+  (function type for constructing a consumer child span), `SetSpanContextExtractor` (injects the
+  OTel-backed extractor from `cmd/`), `SetConsumerSpanFunc` (injects the OTel-backed span
+  constructor from `cmd/`), and `WrapConsumerSpan` (called by consumers — delegates to the
+  injected function). The `go.opentelemetry.io/otel/trace` import is now present only in
+  `cmd/server/main.go` and `cmd/reconciler/main.go` (composition roots — permitted by
+  `.go-arch-lint.yml`). No OTel API change is required by callers; the wire is transparent.
+
+### Fixed (2026-11-04 — O-4 TenantSettingChanged, cache eviction, I-16 cap, metrics)
+
+- **`OperatorService.SetFeatureFlags` (O-4) now emits `TenantSettingChanged`:** the event is
+  enqueued atomically with the `feature_flags` write inside the existing transaction, carrying
+  the authenticated operator's `actor_id` (from `requestctx`, not `SystemActorID`).
+  Previously O-4 silently updated `feature_flags` without producing any event, so downstream
+  consumers (AuthZ Enrichment cache invalidation, Audit Log) never learned of operator-driven
+  flag changes. `api/asyncapi.yaml` updated to list O-4 as a source of `TenantSettingChanged`
+  alongside P-2.
+
+- **Cache eviction uses `context.WithoutCancel` to survive client disconnects (`invalidateMember`):**
+  `invalidateMember` (and all callers — P-7, P-8, P-10, P-11, I-3, I-5, I-10, O-7) now derives
+  the eviction context with `context.WithoutCancel(ctx)` before the Valkey `DEL`. Previously a
+  client timeout or gateway disconnect cancelled `ctx` before the `DEL` completed, silently
+  skipping cache eviction and leaving stale I-8 entries in Valkey for up to the 300 s ± 30 s TTL.
+  CACHE-2/CACHE-9 invariants now hold under client disconnect.
+
+- **`ListSubscriptionLapses` (I-16) SQL capped at `LIMIT 1000` rows per poll:** without a cap,
+  a large billing backlog could cause I-16 to return an unbounded result set, exhausting memory
+  in the Billing Service caller. The cap is applied in the repository query; Billing's existing
+  pagination loop absorbs any continuation naturally. Added a unit test asserting the cap.
+
+### Changed (2026-11-04 — metrics reclassification, dependency updates)
+
+- **`iam_lifecycle_event_skipped_total` and `iam_lifecycle_event_lag_seconds` reclassified from
+  Tier 2 to Tier 3:** a registry audit confirmed both metrics are emitted only by this service
+  and not by any other IAM service. They are renamed:
+  - `iam_lifecycle_event_skipped_total` → `iam_org_membership_lifecycle_event_skipped_total`
+  - `iam_lifecycle_event_lag_seconds` → `iam_org_membership_lifecycle_event_lag_seconds`
+  All emit sites, alert rules, dashboard panels, and `docs/observability/metric-registry.md`
+  updated. The `Known gaps` note referencing both names as Tier-2 `proposed` entries is removed.
+  `make metrics-lint` passes without `-strict` allowances for these names.
+
+- **Dependency updates:**
+  - `platform-gincommon/v2` v2.1.0 → v2.3.0 (additive; no API break — adopts new
+    `WithoutCancel`-aware eviction helper used by the cache eviction fix above).
+  - `github.com/jackc/pgx/v5` v5.11.0 → v5.12.0 (patch; connection reset reliability fix
+    under PgBouncer transaction pooling).
+  - AWS SDK patch updates: `aws-sdk-go-v2/service/sqs`, `aws-sdk-go-v2/service/sns`,
+    `aws-sdk-go-v2/service/glue` bumped to their latest patch releases (no API surface change).
+  `govulncheck ./internal/... ./pkg/...` → **0 vulnerabilities** after all bumps.
+
 ### Fixed (2026-11-01 — sysPool grants, LLD rev 2.46)
 
 - **PUB-1 answered 500 when the migrator did not own the tables** (frontend integrated-deployment Issue 17). PUB-1, I-16, the reconcilers and the metric exporters run on the BYPASSRLS sysPool as `org_membership_migrator`. The migrations never granted that role anything, and BYPASSRLS skips policies, not privileges, so whenever another role ran the migrations every sysPool query hit `permission denied`. New migration `000007_migrator_grants` grants it `SELECT, INSERT, UPDATE, DELETE` on each table it does not own (`rls_violation_log`: `SELECT` only; nothing on `schema_migrations`), with default privileges for later tables. A grant it cannot make fails the migration rather than being skipped. New invariant MIG-10; postgres test against the real migrator role.

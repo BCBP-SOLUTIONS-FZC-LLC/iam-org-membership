@@ -54,6 +54,17 @@ The identity became mandatory at the same time: `domain="iam"` via `gincommon.Co
 | `platform_dependency_errors_total` | not emitted | Never part of the registry; failures are on the Tier 3 counter, and `platform_dependency_request_seconds_count{outcome="error"}` is the registry concept |
 | Tier 2 `iam_*` collectors defined by hand | built from the registry (`gincommon.NewShared*Vec`, platform-gincommon v1.5.0) | The registry now defines their help, labels and buckets; `iam_rls_violations_total{violation_type}` is a fixed set (`other` for anything unexpected) |
 
+## 4. Lifecycle-event metric reclassification (2026-11-04)
+
+`iam_lifecycle_event_skipped_total` and `iam_lifecycle_event_lag_seconds` were reclassified from **Tier 2** (`iam_*`) to **Tier 3** (`iam_org_membership_*`). The platform observability registry marks both as "Emitted today only by iam-org-membership", so they did not meet the domain-shared criterion (identical semantics across multiple IAM services within the domain). The service has never been deployed, so there are no live series to migrate.
+
+| Removed name | Replacement |
+|---|---|
+| `iam_lifecycle_event_skipped_total` | `iam_org_membership_lifecycle_event_skipped_total` |
+| `iam_lifecycle_event_lag_seconds` | `iam_org_membership_lifecycle_event_lag_seconds` |
+
+`iam_rls_violations_total` and `iam_auth_session_revoke_failed_total` remain Tier 2 (`iam_*`): `iam_rls_violations_total` is confirmed emitted by three IAM services (iam-org-membership, iam-audit-log, iam-user-profile); `iam_auth_session_revoke_failed_total` is intentionally registered as domain-shared for future IAM services that revoke sessions.
+
 ## Querying after the migration
 
 ```promql

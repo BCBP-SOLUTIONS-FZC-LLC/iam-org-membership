@@ -297,8 +297,12 @@ func TestProvisioning_TrialSignup_TxError_Propagates(t *testing.T) {
 //
 // Coverage:          service.MembershipService.ValidateAndEmitAssigneeOverride →
 //
-//	roles.ListByUser error → ErrInsufficientRole
-func TestMembership_ValidateAndEmitAssigneeOverride_RoleCheckFails_ReturnsInsufficientRole(t *testing.T) {
+//	roles.ListByUser error → wrapped infrastructure error (NOT ErrInsufficientRole)
+//
+// C4 fix: a DB error on the actor role lookup must propagate as an infra
+// error so that on-call engineers see a dependency failure in metrics/logs,
+// not a spurious 403 permission spike that masks the real outage.
+func TestMembership_ValidateAndEmitAssigneeOverride_RoleCheckFails_PropagatesError(t *testing.T) {
 	roleErr := errors.New("connection refused")
 	roles := &fakeRoleRepo{
 		listByUserFn: func(_ context.Context, _, _ uuid.UUID) ([]domain.TenantRole, error) {
@@ -316,6 +320,6 @@ func TestMembership_ValidateAndEmitAssigneeOverride_RoleCheckFails_ReturnsInsuff
 	)
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrInsufficientRole,
-		"I13-DEP-01: DB error on actor role check must map to ErrInsufficientRole (security design)")
+	assert.ErrorIs(t, err, roleErr, "I13-DEP-01: DB error on actor role check must propagate as the underlying error")
+	assert.NotErrorIs(t, err, domain.ErrInsufficientRole, "DB errors must not masquerade as 403 auth failures")
 }

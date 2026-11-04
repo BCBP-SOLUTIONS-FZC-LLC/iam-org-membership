@@ -809,7 +809,7 @@ func (h *InternalHandler) PlanChangeCheck(c *gin.Context) {
 // the tenant naturally drops off the next poll.
 //
 // @Summary      List tenants past their subscription-cancellation grace period (RP-C3 subscription-lapse sweep)
-// @Description  Returns tenants with status='cancelled' whose cancelled_at is older than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes it from the next poll.
+// @Description  Returns tenants with status='cancelled' whose cancelled_at is older than SUBSCRIPTION_GRACE_DAYS, up to 1000 rows per poll (safety cap to prevent sysPool exhaustion on large historical backlogs). Self-idempotent — RP suspending a tenant removes it from the next poll; the RP always makes forward progress even if the working set temporarily exceeds 1000 rows.
 // @Tags         internal
 // @Produce      json
 // @Success      200 {object} SubscriptionLapseListResponse
@@ -982,13 +982,20 @@ func (h *InternalHandler) CheckTrialEligibility(c *gin.Context) {
 // @Security     TenantRoles
 // @Router       /internal/tenants/{id}/departments [get]
 func (h *InternalHandler) ListDepartments(c *gin.Context) {
+	if h.departments == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "department service not configured"})
+		return
+	}
 	tenantID, err := parseTenantIDParam(c)
 	if err != nil {
 		HandleError(c, err)
 		return
 	}
-	views, err := h.departments.ListForTenant(c.Request.Context(), tenantID)
+	// ListActiveForTenant fetches only is_active=true rows at the SQL layer,
+	// avoiding wasted N+1 catalog round-trips for inactive departments.
+	views, err := h.departments.ListActiveForTenant(c.Request.Context(), tenantID)
 	if err != nil {
+		metrics.IncDepartmentList("error")
 		HandleError(c, err)
 		return
 	}
@@ -1003,5 +1010,6 @@ func (h *InternalHandler) ListDepartments(c *gin.Context) {
 			RecordVersion: v.RecordVersion,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	metrics.IncDepartmentList("success")
+	c.JSON(http.StatusOK, DepartmentListResponse{Items: out})
 }

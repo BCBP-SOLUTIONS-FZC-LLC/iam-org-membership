@@ -751,9 +751,15 @@ channels:
       independently meaningful (it carries plan + trial_ends_at), not as a
       strict successor to TenantCreated.
 
-      TenantSettingChanged is emitted exactly once per P-2 PATCH that mutates
-      residency_mode, transactionally with the DB write (outbox-atomic, EVT-10).
-      CD-37, TL decision 2026-10-15.
+      TenantSettingChanged is emitted transactionally with the DB write
+      (outbox-atomic, EVT-10) on two paths:
+        (1) P-2 PATCH: when residency_mode is mutated by a tenant_owner.
+            CD-37, TL decision 2026-10-15.
+        (2) O-4 PATCH /operator/tenants/:id/feature-flags: when feature-flags
+            are overridden by a platform operator (SetFeatureFlags). The event
+            carries the authenticated operator's actor_id (resolved from
+            requestctx, not the system sentinel), enabling attribution in the
+            audit trail. Added 2026-11-04.
 
       Fan-out queue registry (LLD §7.3.2):
         Audit Log         tenant-audit-q          (all types)

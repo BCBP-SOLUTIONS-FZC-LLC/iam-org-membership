@@ -380,3 +380,51 @@ func TestP10WF014_InternalTokenAbsentWhenEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, gotToken, "x-internal-token must be absent when no token is configured")
 }
+
+// Test Case ID:      P10-WF-015
+// Module:            iam-org-membership · WorkflowClient
+// Feature:           x-internal-token forwarded on POST ReassignDelegate
+// API:               POST /api/v1/internal/workflows/delegate-reassign
+// Scenario:          Positive — configured token forwarded on POST path
+// Expected Result:
+//   - Server receives x-internal-token matching the configured value
+//
+// Priority: P1 · Severity: Blocker · Automation Status: Automated
+func TestP10WF015_InternalTokenForwardedOnReassignDelegate(t *testing.T) {
+	const token = "test-internal-secret"
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("x-internal-token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, token, 5*time.Second, nil)
+	err := c.ReassignDelegate(context.Background(), uuid.New(), uuid.New(), uuid.New(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, token, gotToken, "x-internal-token must be forwarded on ReassignDelegate POST")
+}
+
+// Test Case ID:      P10-WF-016
+// Module:            iam-org-membership · WorkflowClient
+// Feature:           x-internal-token forwarded on POST CancelByDelegate
+// API:               POST /api/v1/internal/workflows/delegate-cancel
+// Scenario:          Positive — configured token forwarded on POST path
+// Expected Result:
+//   - Server receives x-internal-token matching the configured value
+//
+// Priority: P1 · Severity: Blocker · Automation Status: Automated
+func TestP10WF016_InternalTokenForwardedOnCancelByDelegate(t *testing.T) {
+	const token = "test-internal-secret"
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("x-internal-token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, token, 5*time.Second, nil)
+	err := c.CancelByDelegate(context.Background(), uuid.New(), uuid.New(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, token, gotToken, "x-internal-token must be forwarded on CancelByDelegate POST")
+}

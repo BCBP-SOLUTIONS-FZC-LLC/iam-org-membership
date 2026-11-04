@@ -905,8 +905,10 @@ paths:
   /internal/subscription-lapses:
     get:
       description: Returns tenants with status='cancelled' whose cancelled_at is older
-        than SUBSCRIPTION_GRACE_DAYS. Self-idempotent — RP suspending a tenant removes
-        it from the next poll.
+        than SUBSCRIPTION_GRACE_DAYS, up to 1000 rows per poll (safety cap to prevent
+        sysPool exhaustion on large historical backlogs). Self-idempotent — RP suspending
+        a tenant removes it from the next poll; the RP always makes forward progress
+        even if the working set temporarily exceeds 1000 rows.
       produces:
       - application/json
       responses:

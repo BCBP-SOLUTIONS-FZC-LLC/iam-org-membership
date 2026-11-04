@@ -7,6 +7,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/pkg/requestctx"
 	"github.com/google/uuid"
 )
 
@@ -75,11 +76,58 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 	}
 	flagsJSON, _ := json.Marshal(flags)
 
+	// Read current flags before the transaction so the old value is available
+	// for the audit event without extending the transaction's lock hold time.
+	// (The optimistic-lock version check in SetFeatureFlags prevents a lost
+	// update: if another writer races between this read and the tx, the tx
+	// fails with ErrOptimisticLockConflict and the caller retries.)
+	current, err := s.tenants.FindByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	oldFlagsJSON, _ := json.Marshal(current.FeatureFlags)
+
+	// Resolve the authenticated operator — O-4 is a human operator action and
+	// the event must carry the real actor ID, not the system sentinel. Falls
+	// back to SystemActorID only when no authenticated user is present (e.g.
+	// internal tooling running as the system principal).
+	actorID := domain.SystemActorID
+	var ipAddr, ua string
+	if rc, ok := requestctx.FromContext(ctx); ok && rc.UserID != uuid.Nil {
+		actorID = rc.UserID
+		ipAddr = rc.ClientIP
+		ua = rc.UserAgent
+	}
+
 	// LLD O-4 optimistic-lock contract (CONC-1) lives in
 	// TenantRepository.SetFeatureFlags so the service never touches SQL.
+	// SetFeatureFlags + TenantSettingChanged enqueue are inside one RunInTx
+	// so the event is atomic with the write (OP-6/EVT-10). The lock is held
+	// for one statement only (the UPDATE) — the old-value read is pre-tx.
 	var updated *domain.Tenant
-	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		return s.tenants.SetFeatureFlags(txCtx, tenantID, flagsJSON, expectedVersion)
+	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.tenants.SetFeatureFlags(txCtx, tenantID, flagsJSON, expectedVersion); err != nil {
+			return err
+		}
+		pub, ok := port.EventPublisherFromContext(txCtx)
+		if !ok {
+			return nil
+		}
+		return pub.Enqueue(txCtx, &domain.DomainEvent{
+			Type:      domain.EventTenantSettingChanged,
+			TenantID:  tenantID,
+			Subject:   tenantID.String(),
+			Actor:     actorID.String(),
+			IPAddress: ipAddr,
+			UserAgent: ua,
+			Data: domain.TenantSettingChangedPayload{
+				TenantID: tenantID,
+				Setting:  "feature_flags",
+				OldValue: string(oldFlagsJSON),
+				NewValue: string(flagsJSON),
+				ActorID:  actorID,
+			},
+		})
 	})
 	if err != nil {
 		return nil, err

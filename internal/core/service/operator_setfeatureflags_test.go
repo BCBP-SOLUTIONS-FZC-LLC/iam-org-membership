@@ -167,6 +167,9 @@ func TestOperator_SetFeatureFlags_NilMapDefaultsToEmpty(t *testing.T) {
 func TestOperator_SetFeatureFlags_ExecErrorPropagates(t *testing.T) {
 	execErr := errors.New("db down")
 	tenants := &ffTenantRepo{
+		findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+			return &domain.Tenant{}, nil // old-flags read succeeds; write fails
+		},
 		setFeatureFlagsFn: func(context.Context, uuid.UUID, []byte, int64) error { return execErr },
 	}
 	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, nil)
@@ -174,7 +177,10 @@ func TestOperator_SetFeatureFlags_ExecErrorPropagates(t *testing.T) {
 	assert.ErrorIs(t, err, execErr)
 }
 
-func TestOperator_SetFeatureFlags_TenantReadErrorAfterUpdateSurfaces(t *testing.T) {
+// TestOperator_SetFeatureFlags_OldFlagsReadErrorPropagates verifies that an
+// error on the pre-transaction FindByID (the old-flags read used to populate
+// the audit event) surfaces to the caller before the transaction is opened.
+func TestOperator_SetFeatureFlags_OldFlagsReadErrorPropagates(t *testing.T) {
 	tenants := &ffTenantRepo{
 		findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
 			return nil, errors.New("tenant gone")
@@ -183,4 +189,25 @@ func TestOperator_SetFeatureFlags_TenantReadErrorAfterUpdateSurfaces(t *testing.
 	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, nil)
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{"sso_enabled": true}, 1)
 	assert.ErrorContains(t, err, "tenant gone")
+}
+
+// TestOperator_SetFeatureFlags_PostCommitReadErrorSurfaces verifies that an
+// error on the post-transaction FindByID (the read that populates the response
+// body after the UPDATE commits) surfaces to the caller, even though the
+// feature-flags write itself succeeded.
+func TestOperator_SetFeatureFlags_PostCommitReadErrorSurfaces(t *testing.T) {
+	callCount := 0
+	tenants := &ffTenantRepo{
+		findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+			callCount++
+			if callCount == 1 {
+				return &domain.Tenant{}, nil // pre-tx old-flags read succeeds
+			}
+			return nil, errors.New("db reset between commit and re-read")
+		},
+		setFeatureFlagsFn: func(context.Context, uuid.UUID, []byte, int64) error { return nil },
+	}
+	svc := buildOperatorWithPool(tenants, callThruTxRunner{}, nil)
+	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{"sso_enabled": true}, 1)
+	assert.ErrorContains(t, err, "db reset between commit and re-read")
 }

@@ -61,6 +61,23 @@ spec:
           protocol: TCP
     {{- end }}
 
+    # Tender Service (tenderCaller) — I-20 GET */departments. L4 only: the
+    # Istio AuthorizationPolicy, where enabled, limits it to that route.
+    {{- if .Values.tenderCaller.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.tenderCaller.namespaceSelector | nindent 14 }}
+          {{- with .Values.tenderCaller.podSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    {{- end }}
+
     # Workflow services (workflowCallers) — I-13 / I-15 / I-19. L4 only: the
     # Istio AuthorizationPolicy, where enabled, limits them to those routes.
     {{- if .Values.workflowCallers.enabled }}

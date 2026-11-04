@@ -125,16 +125,31 @@ func run() int {
 	if err != nil {
 		panic("init tracing: " + err.Error())
 	}
-	// Install trace-ID extractor for port.SlogStyleLogger's *Context variants
-	// (same pattern as cmd/server/main.go — only place in this binary that
-	// touches the OTel trace API directly; all other trace work goes through
-	// gincommon). Must run after InitTracingWithConfig so the provider exists.
+	// Both port.Set* calls below are the only places in this binary that touch
+	// the OTel trace API directly. Must run after InitTracingWithConfig.
+
+	// SetTraceExtractor: enriches port.SlogStyleLogger *Context variants with
+	// the active trace ID.
 	port.SetTraceExtractor(func(ctx context.Context) string {
 		sc := trace.SpanFromContext(ctx).SpanContext()
 		if !sc.IsValid() {
 			return ""
 		}
 		return sc.TraceID().String()
+	})
+	// SetSpanContextExtractor: provides trace + span IDs to the outbox
+	// publisher (publisher.go) so reconciler jobs that emit events (e.g.
+	// trial-cleanup → TenantMembershipsPurged) carry correct correlation IDs
+	// without importing the OTel trace API in internal adapters.
+	port.SetSpanContextExtractor(func(ctx context.Context) port.SpanContext {
+		sc := trace.SpanFromContext(ctx).SpanContext()
+		if !sc.IsValid() {
+			return port.SpanContext{}
+		}
+		return port.SpanContext{
+			TraceID: sc.TraceID().String(),
+			SpanID:  sc.SpanID().String(),
+		}
 	})
 	// Registered in reverse of execution order (defers run LIFO): this
 	// gincommon.Shutdown defer, registered FIRST, fires LAST — so the

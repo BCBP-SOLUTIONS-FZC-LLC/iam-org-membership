@@ -22,3 +22,15 @@ commercialCallers:
       - iam                    # IAM namespace: AuthZ Enrichment, Group Mapping, Audit Log, Tender ACL, Delegation, Event Consumer
       - gateway                # Ingress controller / Envoy Gateway data plane
       - observability          # Prometheus scrape (port 9090 only — enforced at L3 by metricsIngress)
+
+# Tender Service — I-20 GET */departments with notPaths /api/v1/tenants/*
+# (CD-19, TND-OM-P3). Enabled in staging and prod so the access-matrix CI
+# test (make helm-access-check) validates the Istio rule is correctly rendered
+# and path-restricted. The tender-management namespace must exist in the cluster
+# and have Istio sidecar injection before this rule takes effect.
+tenderCaller:
+  enabled: true
+  namespace: tender-management
+  namespaceSelector:
+    kubernetes.io/metadata.name: tender-management
+  podSelector: {}

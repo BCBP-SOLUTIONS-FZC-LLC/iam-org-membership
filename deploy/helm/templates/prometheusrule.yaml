@@ -356,7 +356,7 @@ spec:
           # EVT-14 recency guard — normal at low rates (producer reordering),
           # but a sustained non-zero rate suggests consumer lag.
           expr: |
-            rate(iam_lifecycle_event_skipped_total[10m]) > 0
+            rate(iam_org_membership_lifecycle_event_skipped_total[10m]) > 0
           for: 10m
           labels:
             severity: info

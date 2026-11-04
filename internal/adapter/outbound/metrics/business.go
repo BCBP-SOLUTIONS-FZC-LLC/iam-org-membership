@@ -160,18 +160,20 @@ var (
 	// rather than iam_org_membership_.
 	AuthSessionRevokeFailed *prometheus.CounterVec
 
-	// LifecycleEventSkipped / LifecycleEventLagSeconds cover the EVT-14
-	// recency-guard bookkeeping (§16 A33: event.time <= tenants.
-	// last_event_at → projection unchanged, still recorded in
-	// processed_events) and the lag between event.time and consumer
-	// apply time. Any IAM service consuming Realm-Provisioner-produced
-	// tenant-lifecycle events with the same last-writer-wins recency
-	// guard (Delegation, Tender-ACL, and Group-Mapping services all
-	// subscribe to overlapping lifecycle events per the ADR-0008
-	// cascade pattern) can emit these with identical semantics, so both
-	// stay domain-shared. LifecycleEventLagSeconds's sustained-high-P99
-	// is the SLO-3 primary drift signal.
-	LifecycleEventSkipped    *prometheus.CounterVec
+	// LifecycleEventSkipped (iam_org_membership_lifecycle_event_skipped_total)
+	// counts events silently dropped by the EVT-14 recency guard
+	// (event.time ≤ tenants.last_event_at → stale/reordered; projection
+	// unchanged, still recorded in processed_events). Reclassified from
+	// Tier 2 to Tier 3 (2026-11-04): the registry notes it is emitted
+	// only by this service, so it does not meet the domain-shared
+	// criterion (identical semantics across multiple IAM services).
+	LifecycleEventSkipped *prometheus.CounterVec
+
+	// LifecycleEventLagSeconds (iam_org_membership_lifecycle_event_lag_seconds)
+	// times the seconds from a lifecycle event's envelope time to the
+	// moment the consumer applied it. Sustained high p99 is the SLO-3
+	// primary drift signal (§16 A42). Reclassified from Tier 2 to
+	// Tier 3 (2026-11-04) for the same reason as LifecycleEventSkipped.
 	LifecycleEventLagSeconds *prometheus.HistogramVec
 
 	// ── Tier 3 — iam_org_membership_* (unique to this service) ──────────
@@ -247,6 +249,11 @@ var (
 	// to the Workflow Services, by result: eligible or the not-eligible
 	// reason (domain.EligibilityReason).
 	AssigneeEligibilityCheck *prometheus.CounterVec
+
+	// DepartmentList counts I-20 department-list calls from the Tender
+	// Service, by result: success or error. Provides call-volume and
+	// error-rate visibility for incident triage on the Tender display path.
+	DepartmentList *prometheus.CounterVec
 
 	// TenantHeaderPathMismatch counts /internal/tenants/:id/* requests whose
 	// x-tenant-id differed from the path tenant, by route, method and action
@@ -488,6 +495,13 @@ func IncAssigneeEligibilityCheck(result string) {
 	}
 }
 
+// IncDepartmentList records one I-20 outcome: "success" or "error". Nil-safe.
+func IncDepartmentList(result string) {
+	if DepartmentList != nil {
+		DepartmentList.WithLabelValues(result).Inc()
+	}
+}
+
 // Action label values for TenantHeaderPathMismatch.
 const (
 	TenantMismatchOverridden = "overridden"
@@ -652,8 +666,6 @@ func registerShared() {
 	// service emitting them stays identical.
 	RLSViolations = mustShared(gincommon.NewSharedCounterVec(nil, "iam_rls_violations_total"))
 	AuthSessionRevokeFailed = mustShared(gincommon.NewSharedCounterVec(nil, "iam_auth_session_revoke_failed_total"))
-	LifecycleEventSkipped = mustShared(gincommon.NewSharedCounterVec(nil, "iam_lifecycle_event_skipped_total"))
-	LifecycleEventLagSeconds = mustShared(gincommon.NewSharedHistogramVec(nil, "iam_lifecycle_event_lag_seconds"))
 }
 
 // mustShared returns the collector gincommon built, or — when an identical
@@ -740,6 +752,21 @@ func registerServiceMetrics() {
 		"SQS redeliveries filtered by the processed_events composite PK (IDEMP-4). Authoritative alerting source until platform_duplicate_messages_total (Proposed, registry.go) is ratified.",
 		"consumer"))
 
+	// Reclassified from Tier 2 (iam_lifecycle_event_skipped_total /
+	// iam_lifecycle_event_lag_seconds) to Tier 3 (2026-11-04): the
+	// registry marks both as "Emitted today only by iam-org-membership",
+	// so they did not meet the domain-shared criterion. The Tier-2
+	// names are recorded in migration.md.
+	LifecycleEventSkipped = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_lifecycle_event_skipped_total",
+		"Lifecycle events dropped by the EVT-14 recency guard (event.time ≤ tenants.last_event_at): stale or reordered; projection unchanged, still recorded in processed_events.",
+		"event_type"))
+	LifecycleEventLagSeconds = must(gincommon.NewHistogramVec(nil,
+		"iam_org_membership_lifecycle_event_lag_seconds",
+		"Seconds from a tenant lifecycle event's envelope time to the moment the consumer applied it. Sustained high p99 flags a consumer backlog (SLO-3, §16 A42).",
+		[]float64{0.05, 0.1, 0.5, 1, 5, 15, 60, 300, 1800},
+		"event_type"))
+
 	UnknownEventAcknowledged = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_unknown_event_acknowledged_total",
 		"Events silently acknowledged because no handler is wired for the type — sustained nonzero rate means a producer added a new type.",
@@ -803,6 +830,10 @@ func registerServiceMetrics() {
 		"iam_org_membership_assignee_eligibility_check_total",
 		"I-19 assignee-eligibility reads served to the Workflow Services, by result: eligible, not_member, member_not_active, department_not_active, not_in_department, level_insufficient.",
 		"result"))
+	DepartmentList = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_department_list_total",
+		"I-20 department-list calls from the Tender Service (Tender HLD §14.1), by result: success or error.",
+		"result"))
 	ProvisioningBackstop = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_tenant_provisioning_backstop_total",
 		"TenantIdentityProvisioned events handled by the signup provisioning backstop, by result: created (tenant was missing and was created) or already_exists.",
@@ -865,6 +896,8 @@ func prewarm() {
 	ProvisioningBackstop.WithLabelValues(ProvisioningBackstopAlreadyExists)
 	TrialEligibilityCheck.WithLabelValues(TrialEligibilityEligible)
 	TrialEligibilityCheck.WithLabelValues(TrialEligibilityAlreadyUsed)
+	DepartmentList.WithLabelValues("success")
+	DepartmentList.WithLabelValues("error")
 	for _, et := range parkableEventTypes {
 		TenantEventsParked.WithLabelValues(et)
 		TenantEventsReplayed.WithLabelValues(et, ReplayTriggerProvisioning)

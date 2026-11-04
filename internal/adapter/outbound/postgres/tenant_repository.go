@@ -234,13 +234,19 @@ func (r *TenantRepository) Insert(ctx context.Context, t *domain.Tenant) (*domai
 func (r *TenantRepository) ListSubscriptionLapses(ctx context.Context, graceDays int) ([]domain.Tenant, error) {
 	var out []domain.Tenant
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		// LIMIT 1000: safety cap so a large historical backlog of cancelled
+		// tenants cannot exhaust the sysPool or produce a 100 MB response.
+		// Tenants processed in one poll (suspended by RP) drop out naturally
+		// on the next poll, so the RP always makes progress even if the
+		// working set temporarily exceeds 1 000 rows.
 		rows, err := tx.Query(ctx, `
 			SELECT `+tenantSelectColumns+`
 			FROM tenants
 			WHERE status = 'cancelled'
 			  AND cancelled_at <= now() - ($1::int * interval '1 day')
 			  AND deleted_at IS NULL
-			ORDER BY cancelled_at ASC`, graceDays)
+			ORDER BY cancelled_at ASC
+			LIMIT 1000`, graceDays)
 		if err != nil {
 			return err
 		}
