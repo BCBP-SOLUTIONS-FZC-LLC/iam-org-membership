@@ -431,9 +431,14 @@ type PublicTenantResolveResponse struct {
 // x-feature-flags for the same caller (feature_flags includes "read_only"
 // when read_only is true, as the header does). Lists are [] when empty,
 // never null.
+//
+// roles is the tenant-level vocabulary only — exactly member (always
+// present for an active member, TR-7), tenant_owner, tenant_admin and
+// tender_admin. Department levels (preparator/reviewer/approver) are never
+// in roles; they are in departments[].level (LLD §5.4 P-35, rev 2.47).
 type SessionContextResponse struct {
 	TenantID            uuid.UUID                  `json:"tenant_id" format:"uuid"`
-	Roles               []string                   `json:"roles" example:"member,tenant_admin"`
+	Roles               []string                   `json:"roles" enums:"member,tenant_owner,tenant_admin,tender_admin" example:"member,tenant_admin"`
 	Departments         []SessionContextDepartment `json:"departments"`
 	Plan                string                     `json:"plan" example:"starter"`
 	FeatureFlags        []string                   `json:"feature_flags" example:"ai_drafting"`
