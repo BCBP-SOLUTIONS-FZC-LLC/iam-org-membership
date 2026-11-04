@@ -855,7 +855,7 @@ type assigneeOverrideRequest struct {
 // AssigneeOverride is I-13 — validate-and-emit TenderAssigneeOverridden (OVR-1 no persistence).
 //
 // @Summary      I-13 — Validate-and-emit TenderAssigneeOverridden (OVR-1 no persistence)
-// @Description  422 assignee_ineligible per §16 A62 (NOT 409). Actor must hold tender_admin or tenant_owner (Tender HLD §10.3); tenant_admin and plain member receive 403. Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).
+// @Description  422 assignee_ineligible per §16 A62 (NOT 409). Actor must hold tender_admin, tenant_admin, or tenant_owner (Tender HLD §10.3, TND-Q4); plain member receives 403. Validates the new assignee is an active member at the required level in the department, then emits the event; persists nothing (OVR-1).
 // @Tags         internal
 // @Accept       json
 // @Produce      json

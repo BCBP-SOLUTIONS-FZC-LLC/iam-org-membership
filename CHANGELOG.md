@@ -6,6 +6,19 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed (2026-11-04 — TND-Q4 role gate widened, LLD rev 2.47)
+
+- **I-13 assignee-override role gate widened: `tenant_admin` added (TND-Q4, confirmed 2026-11-04)** —
+  Tender HLD v0.10 §10.3 priority note (2026-11-04) confirms the three-role list: `tender_admin`,
+  `tenant_admin`, `tenant_owner`. `MembershipService.ValidateAndEmitAssigneeOverride` previously
+  returned `403 insufficient_role` for `tenant_admin` actors; the role check in `membership_service.go`
+  now includes `RoleTenantAdmin` alongside `RoleTenderAdmin` and `RoleTenantOwner`. Swagger doc
+  comments in `internal_handler.go`, `docs/swagger/docs.go`, `swagger.yaml`, and `swagger.json`
+  updated. Test comment in `test/unit/membership_removal_test.go` updated. Reference LLD
+  (`Reference_doc/org_membership_lld_v12.md`) I-13 description updated.
+  *(Previously: I-13 admitted only `tender_admin` and `tenant_owner`, matching Tender HLD v0.9 —
+  that version is withdrawn by the Tender team's priority note of 2026-11-04.)*
+
 ### Fixed (2026-11-01 — sysPool grants, LLD rev 2.46)
 
 - **PUB-1 answered 500 when the migrator did not own the tables** (frontend integrated-deployment Issue 17). PUB-1, I-16, the reconcilers and the metric exporters run on the BYPASSRLS sysPool as `org_membership_migrator`. The migrations never granted that role anything, and BYPASSRLS skips policies, not privileges, so whenever another role ran the migrations every sysPool query hit `permission denied`. New migration `000007_migrator_grants` grants it `SELECT, INSERT, UPDATE, DELETE` on each table it does not own (`rls_violation_log`: `SELECT` only; nothing on `schema_migrations`), with default privileges for later tables. A grant it cannot make fails the migration rather than being skipped. New invariant MIG-10; postgres test against the real migrator role.
