@@ -1148,7 +1148,6 @@ func TestAPIScenarios_P27_SeatUsage(t *testing.T) {
 		b := assertStatus(t, resp, http.StatusOK)
 		require.Contains(t, b, "active_users")
 		require.Contains(t, b, "licensed_seats")
-		require.Contains(t, b, "over_cap")
 	})
 
 	t.Run("P27-HP-02 admin reads seat usage → 200", func(t *testing.T) {

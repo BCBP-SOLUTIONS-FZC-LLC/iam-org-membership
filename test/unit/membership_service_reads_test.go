@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -173,7 +172,7 @@ var _ port.DeptMembershipRepository = (*fakeDeptMemListByUser)(nil)
 func buildMembershipSvc(m port.MembershipRepository, r port.TenantRoleRepository, dm port.DeptMembershipRepository, t port.TenantRepository, inv port.InvitationRepository, cache port.Cache) *service.MembershipService {
 	return service.NewMembershipService(
 		m, r, dm, t, inv,
-		cache, nil, nil, nil, nil, 30,
+		cache, nil, nil, nil, nil,
 	)
 }
 
@@ -420,13 +419,10 @@ func TestMembership_SeatUsage_UnderCap(t *testing.T) {
 	assert.Equal(t, 3, got.ActiveUsers)
 	assert.Equal(t, 2, got.PendingInvitations)
 	assert.Equal(t, 10, got.LicensedSeats)
-	assert.False(t, got.OverCap, "3+2 = 5 <= 10")
-	assert.Nil(t, got.OverageSince)
-	assert.Nil(t, got.GraceEndsAt)
 }
 
 func TestMembership_SeatUsage_AtCapExactBoundaryIsOver(t *testing.T) {
-	// SEAT-3: OverCap := active + pending >= licensed_seats. At equality, IS overage.
+	// SEAT-3: active + pending >= licensed_seats — SeatUsage still returns correct counts.
 	tenants := &fakeTenantRepo{
 		findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
 			return &domain.Tenant{LicensedSeats: 5}, nil
@@ -438,28 +434,9 @@ func TestMembership_SeatUsage_AtCapExactBoundaryIsOver(t *testing.T) {
 
 	got, err := svc.SeatUsage(context.Background(), uuid.New())
 	require.NoError(t, err)
-	assert.True(t, got.OverCap, "SEAT-3: at-cap (active+pending==licensed) is overage")
-}
-
-func TestMembership_SeatUsage_OverCapComputesGraceEndsAt(t *testing.T) {
-	overageSince := time.Now().Add(-24 * time.Hour)
-	tenants := &fakeTenantRepo{
-		findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
-			return &domain.Tenant{LicensedSeats: 5, OverageSince: &overageSince}, nil
-		},
-	}
-	m := &fakeMemRepoFull{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 4, nil }}
-	inv := &fakeInviteRepo{countPendingFn: func(context.Context, uuid.UUID) (int, error) { return 3, nil }}
-
-	// seatOverageDays baked into buildMembershipSvc is 30.
-	svc := buildMembershipSvc(m, nil, nil, tenants, inv, nil)
-
-	got, err := svc.SeatUsage(context.Background(), uuid.New())
-	require.NoError(t, err)
-	assert.True(t, got.OverCap)
-	require.NotNil(t, got.GraceEndsAt)
-	expected := overageSince.Add(30 * 24 * time.Hour)
-	assert.WithinDuration(t, expected, *got.GraceEndsAt, time.Second)
+	assert.Equal(t, 3, got.ActiveUsers)
+	assert.Equal(t, 2, got.PendingInvitations)
+	assert.Equal(t, 5, got.LicensedSeats)
 }
 
 func TestMembership_SeatUsage_TenantFindErrorSurfaces(t *testing.T) {

@@ -144,7 +144,7 @@ func TestMembership_SetStatus_Suspend_RolesListError_ShortCircuits(t *testing.T)
 	rp := &fakeRPClient{}
 	svc := service.NewMembershipService(
 		&fakeMembershipRepo{}, roles, nil, nil, nil,
-		nil, rp, nil, nil, nil, 30,
+		nil, rp, nil, nil, nil,
 	)
 	_, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
 	assert.ErrorIs(t, err, rolesErr, "roles.ListByUser error must propagate before any state change")
@@ -169,7 +169,7 @@ func TestMembership_SetStatus_Suspend_OwnerTxUnavailable_ReturnsConflict(t *test
 	// simulates the real postgres LockByID returning ErrConflict in that case.
 	svc := service.NewMembershipService(
 		m, roles, nil, lockConflictTenantRepo{}, nil,
-		nil, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil, 30,
+		nil, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil,
 	)
 	_, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
 	assert.ErrorIs(t, err, domain.ErrConflict, "owner-path suspend with no tx must return ErrConflict")
@@ -347,7 +347,7 @@ func TestReconcileRoles_CacheNotNil_InvalidatesPerUserMembershipsKey(t *testing.
 	cache := &spyCache{}
 	svc := service.NewMembershipService(
 		m, roles, nil, nil, nil,
-		cache, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil, 0,
+		cache, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil,
 	)
 	_, _, err := svc.ReconcileRoles(context.Background(), tenantID, userID,
 		[]domain.TenantRoleCode{domain.RoleTenantAdmin}, uuid.New())

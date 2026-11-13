@@ -23,7 +23,7 @@ import (
 
 func buildMembershipSvcForResetMFA(m *fakeMembershipRepo, rp port.RealmProvisionerClient, pub *ruPublisher) *service.MembershipService {
 	txRunner := &ruTxRunner{pub: pub}
-	return service.NewMembershipService(m, nil, nil, nil, nil, nil, rp, nil, txRunner, nil, 30)
+	return service.NewMembershipService(m, nil, nil, nil, nil, nil, rp, nil, txRunner, nil)
 }
 
 func TestMembership_ResetUserMFA_MemberNotFound(t *testing.T) {
@@ -127,7 +127,7 @@ func TestMembership_ResetUserMFA_NoEventPublisherInContext_SkipsEmissionButStill
 	// *ruPublisher param into the interface field, and a nil *ruPublisher
 	// would box into a non-nil interface (a nil concrete pointer), which
 	// would panic on Enqueue rather than exercise the pub==nil skip branch.
-	svc := service.NewMembershipService(m, nil, nil, nil, nil, nil, rp, nil, &ruTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(m, nil, nil, nil, nil, nil, rp, nil, &ruTxRunner{}, nil)
 
 	err := svc.ResetUserMFA(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	require.NoError(t, err, "a missing EventPublisher must not fail P-34 — RP-9 already succeeded")
