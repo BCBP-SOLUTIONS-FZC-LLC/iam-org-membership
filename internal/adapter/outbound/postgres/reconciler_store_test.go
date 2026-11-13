@@ -12,59 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ── ListSeatOverageCandidates ────────────────────────────────────────────
-
-func TestReconcilerStore_ListSeatOverageCandidates_ReturnsIDs(t *testing.T) {
-	id1, id2 := uuid.New(), uuid.New()
-	tx := &fakeTx{
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			return &fakeRows{scripted: [][]any{{id1}, {id2}}}, nil
-		},
-	}
-	got, err := NewReconcilerStore(nil).
-		ListSeatOverageCandidates(injectTx(context.Background(), tx), 10)
-	require.NoError(t, err)
-	assert.Equal(t, []uuid.UUID{id1, id2}, got)
-}
-
-func TestReconcilerStore_ListSeatOverageCandidates_QueryErrorPassesThrough(t *testing.T) {
-	queryErr := errors.New("query failed")
-	tx := &fakeTx{
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			return nil, queryErr
-		},
-	}
-	_, err := NewReconcilerStore(nil).
-		ListSeatOverageCandidates(injectTx(context.Background(), tx), 10)
-	assert.ErrorIs(t, err, queryErr)
-}
-
-func TestReconcilerStore_ListSeatOverageCandidates_ScanErrorPassesThrough(t *testing.T) {
-	tx := &fakeTx{
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			// two dest columns expected (just id) but scripted gives a value
-			// that fails scanInto's pointer-type check (a plain string won't
-			// convert to uuid.UUID).
-			return &fakeRows{scripted: [][]any{{"not-a-uuid"}}}, nil
-		},
-	}
-	_, err := NewReconcilerStore(nil).
-		ListSeatOverageCandidates(injectTx(context.Background(), tx), 10)
-	assert.Error(t, err)
-}
-
-func TestReconcilerStore_ListSeatOverageCandidates_IterationErrorPassesThrough(t *testing.T) {
-	iterErr := errors.New("iteration failed")
-	tx := &fakeTx{
-		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
-			return &fakeRows{iterErr: iterErr}, nil
-		},
-	}
-	_, err := NewReconcilerStore(nil).
-		ListSeatOverageCandidates(injectTx(context.Background(), tx), 10)
-	assert.ErrorIs(t, err, iterErr)
-}
-
 // ── ListRealmSyncPending ─────────────────────────────────────────────────
 
 func TestReconcilerStore_ListRealmSyncPending_ReturnsCandidates(t *testing.T) {

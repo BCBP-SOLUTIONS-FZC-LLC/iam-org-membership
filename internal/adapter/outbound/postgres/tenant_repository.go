@@ -36,7 +36,7 @@ const tenantSelectColumns = `
 	cancelled_at, suspension_source, last_event_at,
 	realm_id, realm_type, keycloak_shard, mfa_freshness_seconds,
 	local_accounts_enabled, realm_sync_pending, default_locale,
-	licensed_seats, ownerless_since, overage_since, residency_mode,
+	licensed_seats, ownerless_since, residency_mode,
 	record_version, created_at, updated_at, deleted_at`
 
 func (r *TenantRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
@@ -396,34 +396,6 @@ func (r *TenantRepository) SetRealmFields(ctx context.Context, id uuid.UUID, rea
 				WithDetails(map[string]any{"record_version": current})
 		}
 		return nil
-	})
-}
-
-func (r *TenantRepository) LockSeatOccupancy(ctx context.Context, id uuid.UUID) (port.SeatOccupancy, error) {
-	var occ port.SeatOccupancy
-	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `
-			SELECT licensed_seats, overage_since FROM tenants
-			WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).
-			Scan(&occ.LicensedSeats, &occ.OverageSince); err != nil {
-			return err
-		}
-		if err := tx.QueryRow(ctx, `
-			SELECT count(*) FROM tenant_memberships
-			WHERE tenant_id = $1 AND deleted_at IS NULL AND status = 'active'`, id).Scan(&occ.Active); err != nil {
-			return err
-		}
-		return tx.QueryRow(ctx, `
-			SELECT count(*) FROM pending_invitations
-			WHERE tenant_id = $1 AND status = 'pending' AND expires_at > now()`, id).Scan(&occ.Pending)
-	})
-	return occ, err
-}
-
-func (r *TenantRepository) SetOverageSince(ctx context.Context, id uuid.UUID, since *time.Time) error {
-	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE tenants SET overage_since = $2 WHERE id = $1`, id, since)
-		return err
 	})
 }
 

@@ -268,7 +268,7 @@ func (h *MembershipHandler) ReconcileRoles(c *gin.Context) {
 // SeatUsage is P-27.
 //
 // @Summary      P-27 — Seat-usage projection
-// @Description  AUTH-2. Returns `{active_users, pending_invitations, licensed_seats, over_cap, overage_since, grace_ends_at}` (SEAT-1..5).
+// @Description  AUTH-2. Returns `{active_users, pending_invitations, licensed_seats}` (SEAT-1).
 // @Tags         members
 // @Produce      json
 // @Param        id   path      string             true  "Tenant UUID"  format(uuid)
@@ -294,19 +294,11 @@ func (h *MembershipHandler) SeatUsage(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	resp := gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"active_users":        usage.ActiveUsers,
 		"pending_invitations": usage.PendingInvitations,
 		"licensed_seats":      usage.LicensedSeats,
-		"over_cap":            usage.OverCap,
-	}
-	if usage.OverageSince != nil {
-		resp["overage_since"] = usage.OverageSince
-	}
-	if usage.GraceEndsAt != nil {
-		resp["grace_ends_at"] = usage.GraceEndsAt
-	}
-	c.JSON(http.StatusOK, resp)
+	})
 }
 
 // Remove is P-8 (§8.8) — DELETE /tenants/:id/members/:user_id. Gated by

@@ -302,23 +302,6 @@ spec:
               Either the realm-config-sync CronJob isn't running or Realm Provisioner
               is returning non-2xx. Check RP health then the cron's last run.
 
-        - alert: IAMSeatOverageActiveApproachingGrace
-          # SEAT-4: overage_since past (SEAT_OVERAGE_GRACE_DAYS - 5) days.
-          # Fires 5 days before grace window closes, giving ops a warning to
-          # coordinate with Billing before enforcement kicks in.
-          expr: |
-            max(iam_org_membership_seat_overage_active) > 0
-          for: 25d
-          labels:
-            severity: warning
-            team: platform
-          annotations:
-            summary: tenants in seat overage approaching grace-window expiry
-            description: >-
-              {{ "{{ $value | humanize }}" }} tenants have been in seat overage for
-              25+ days. Default SEAT_OVERAGE_GRACE_DAYS is 30 — Billing enforcement
-              triggers when the window closes. Coordinate outreach now.
-
         - alert: IAMPendingInvitationsStale
           # Pending invitations past expires_at that invitation-expiry hasn't
           # flipped to 'expired'. Non-zero for >24h means the CronJob has stopped.

@@ -353,20 +353,6 @@ groups:
             CronJob's last run.
           runbook: "iam-org-membership/parked-tenant-events"
 
-      - alert: IAMSeatOverageActive
-        expr: iam_org_membership_seat_overage_active > 0
-        for: 24h
-        labels:
-          severity: ticket
-          service: iam-org-membership
-        annotations:
-          summary: "Tenants in seat overage for >24h"
-          description: |
-            {{ $value }} tenants have overage_since set for >24h. Not a bug —
-            this is a business signal for Billing to reach out. Grace window
-            (default 30d) triggers Billing enforcement per SEAT-4.
-          runbook: "iam-org-membership/seat-overage-business"
-
   # ── Outbox runner ───────────────────────────────────────────────────────────
   - name: iam_org_membership_outbox
     rules:

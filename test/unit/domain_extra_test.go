@@ -163,7 +163,6 @@ func TestDomain_TopicForEvent_TenantLaneOnlyTwo(t *testing.T) {
 		domain.EventDepartmentMembershipGranted, domain.EventDepartmentMembershipRevoked,
 		domain.EventDepartmentMembershipLevelChanged,
 		domain.EventTenderAssigneeOverridden,
-		domain.EventTenantSeatOverageStarted, domain.EventTenantSeatOverageResolved,
 		domain.EventTenantStateChanged,
 	} {
 		assert.NotEqual(t, domain.TopicTenant, domain.TopicForEvent(et),
@@ -194,14 +193,12 @@ func TestDomain_EventTypeConstants(t *testing.T) {
 		"EventDepartmentMembershipRevoked":      domain.EventDepartmentMembershipRevoked,
 		"EventDepartmentMembershipLevelChanged": domain.EventDepartmentMembershipLevelChanged,
 		"EventTenderAssigneeOverridden":         domain.EventTenderAssigneeOverridden,
-		"EventTenantSeatOverageStarted":         domain.EventTenantSeatOverageStarted,
-		"EventTenantSeatOverageResolved":        domain.EventTenantSeatOverageResolved,
 		"EventTenantStateChanged":               domain.EventTenantStateChanged,
 	}
 	for name, val := range cases {
 		assert.NotEmpty(t, val, "event constant %s must be a non-empty string", name)
 	}
-	assert.Len(t, cases, 11, "11 event types documented in §7.3 catalogue (DelegationStarted/Ended removed per ADR-0008 Option C — iam-delegation owns them now)")
+	assert.Len(t, cases, 9, "9 event types in §7.3 catalogue after seat-overage removal")
 }
 
 // ═════════════════════════════════════════════════════════════════════════

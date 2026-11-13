@@ -540,6 +540,33 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 			}
 		}
 
+		// SEAT-1 (CD-54): plain-add JIT path holds no prior seat reservation
+		// (no pending invitation was issued), so we must enforce the cap here
+		// under the tenant FOR UPDATE lock already held above. The invited path
+		// (pending != nil) held a seat at invite time (P-6) so no re-check is
+		// needed; the expired-invitation sub-case above already re-checks.
+		if pending == nil {
+			licensed, err := s.tenants.LicensedSeatsForUpdate(txCtx, tenantID)
+			if err != nil {
+				return err
+			}
+			active, err := s.memberships.CountActive(txCtx, tenantID)
+			if err != nil {
+				return err
+			}
+			pendCount, err := s.invites.CountPending(txCtx, tenantID)
+			if err != nil {
+				return err
+			}
+			if active+pendCount >= licensed {
+				return domain.NewError(domain.ErrSeatLimitReached, "seat limit reached").WithDetails(map[string]any{
+					"licensed_seats":      licensed,
+					"active_users":        active,
+					"pending_invitations": pendCount,
+				})
+			}
+		}
+
 		// Insert or return existing tenant_membership (PI-10 idempotency
 		// via uq_tm_active_user partial-unique).
 		out, ierr := s.memberships.Insert(txCtx, &domain.TenantMembership{

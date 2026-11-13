@@ -59,12 +59,6 @@ func TestTenantRepositoryNoop_AllMethods(t *testing.T) {
 
 	assert.NoError(t, n.SetRealmFields(ctx, id, "", domain.RealmType(""), "", 0))
 
-	occ, err := n.LockSeatOccupancy(ctx, id)
-	assert.Equal(t, SeatOccupancy{}, occ)
-	assert.NoError(t, err)
-
-	assert.NoError(t, n.SetOverageSince(ctx, id, nil))
-
 	lock, err := n.LockForProjection(ctx, id)
 	assert.Nil(t, lock)
 	assert.NoError(t, err)

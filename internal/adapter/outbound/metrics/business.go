@@ -197,10 +197,6 @@ var (
 	// TenantOwnerless gauge, which is a scan). LLD §11.4 / TM-12 line 3807.
 	TenantOwnerlessEscalated *prometheus.CounterVec
 
-	// SeatOverageStarted counts transitions from under-cap to over-cap
-	// (SEAT-5). Distinct from the SeatOverageActive gauge (a scan).
-	SeatOverageStarted *prometheus.CounterVec
-
 	// SeatLimitReached counts P-6 invites blocked by SEAT-1 hitting cap.
 	SeatLimitReached *prometheus.CounterVec
 
@@ -286,7 +282,6 @@ var (
 	// in main.go (§11.2).
 	TenantOwnerless         prometheus.Gauge // T-13
 	RealmSyncPending        prometheus.Gauge // T-15
-	SeatOverageActive       prometheus.Gauge // SEAT-5
 	PendingInvitationsStale prometheus.Gauge // invitation-expiry cron health
 	ParkedTenantEventsStale prometheus.Gauge // EVT-18: parked > 10 min
 )
@@ -395,8 +390,6 @@ const (
 	InviteThrottleReinviteTooSoon = "reinvite_too_soon"
 	InviteThrottleTenantRate      = "tenant_rate_limited"
 	InviteThrottleActorRate       = "actor_rate_limited"
-
-	SeatOverageCauseReconciler = "occupancy"
 )
 
 // IncDelegateRemovalBlocked counts a removal or demotion refused with 409
@@ -430,13 +423,6 @@ func IncSeatLimitReached(plan string) {
 	}
 }
 
-// IncSeatOverageStarted counts a tenant entering seat overage. Nil-safe.
-func IncSeatOverageStarted(cause string) {
-	if SeatOverageStarted != nil {
-		SeatOverageStarted.WithLabelValues(cause).Inc()
-	}
-}
-
 // IncRealmSyncFailed increments
 // iam_org_membership_realm_sync_failed_total{stage=...}. Nil-safe, see
 // ObserveDependencyLatency — safe to call before Register() runs.
@@ -457,9 +443,6 @@ type Recorder struct{}
 
 // IncRealmSyncFailed satisfies jobs.Metrics.
 func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
-
-// IncSeatOverageStarted satisfies jobs.Metrics.
-func (Recorder) IncSeatOverageStarted() { IncSeatOverageStarted(SeatOverageCauseReconciler) }
 
 // IncCatalogCacheInvalidated records one successful om:departments cache
 // clear by the catalog-orgm-q consumer. Nil-safe.
@@ -779,10 +762,6 @@ func registerServiceMetrics() {
 		"iam_org_membership_tenant_ownerless_escalated_total",
 		"Count of tenants that just entered the ownerless state on this write (TM-12). Every increment should page.",
 		"reason"))
-	SeatOverageStarted = must(gincommon.NewCounterVec(nil,
-		"iam_org_membership_seat_overage_started_total",
-		"Tenants entering seat overage (SEAT-5), by cause: occupancy (active members plus pending invitations above licensed_seats, detected by the seat-overage reconciler).",
-		"cause"))
 	SeatLimitReached = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_seat_limit_reached_total",
 		"P-6 invites refused because active members plus pending invitations reached licensed_seats (SEAT-1), by tenant plan.",
@@ -861,9 +840,6 @@ func registerServiceMetrics() {
 	RealmSyncPending = must(gincommon.NewGauge(nil,
 		"iam_org_membership_realm_sync_pending",
 		"Tenants with realm_sync_pending=true (T-15)."))
-	SeatOverageActive = must(gincommon.NewGauge(nil,
-		"iam_org_membership_seat_overage_active",
-		"Tenants with overage_since IS NOT NULL (SEAT-5)."))
 	PendingInvitationsStale = must(gincommon.NewGauge(nil,
 		"iam_org_membership_pending_invitations_stale",
 		"Pending invitations past expires_at that invitation-expiry hasn't flipped yet."))
@@ -914,7 +890,6 @@ func prewarm() {
 	for _, reason := range []string{InviteThrottleReinviteTooSoon, InviteThrottleTenantRate, InviteThrottleActorRate} {
 		InviteThrottled.WithLabelValues(reason)
 	}
-	SeatOverageStarted.WithLabelValues(SeatOverageCauseReconciler)
 	// I-15: result is "active" or "inactive"; caller is open-ended (any
 	// downstream service), so only the known peers are pre-warmed.
 	for _, caller := range []string{"tender-acl", "delegation"} {

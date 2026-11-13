@@ -198,7 +198,7 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	fx.Membership = service.NewMembershipService(
 		memberships, roles, deptMems, tenants, invitations, nil, // cache
 		&fakeRealmProvisioner{}, &fakeWorkflow{},
-		txRunner, nil, 30, // seatOverageDays
+		txRunner, nil,
 	).WithTokenServiceClient(fx.TokenService)
 	fx.Operator = service.NewOperatorService(
 		tenants, roles, memberships, nil, txRunner,

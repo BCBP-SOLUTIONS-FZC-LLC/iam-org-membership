@@ -940,19 +940,6 @@ func TestErrPaths_TenantRepo(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	// ERRPATH-TENANT-023 — LockSeatOccupancy ctx cancelled (lines 348,351,356)
-	t.Run("LockSeatOccupancy_CtxCancelled", func(t *testing.T) {
-		t.Parallel()
-		ctx := context.Background()
-		tenantID := seedTenant(t, ctx, rawPool, "tenant-lockseat-ctx")
-		tctx := withTenant(ctx, tenantID)
-		cancelCtx, cancel := context.WithCancel(tctx)
-		cancel()
-		repo := pgadapter.NewTenantRepository(appPool)
-		_, err := repo.LockSeatOccupancy(cancelCtx, tenantID)
-		assert.Error(t, err)
-	})
-
 	// ERRPATH-TENANT-024 — LockForProjection ctx cancelled (lines 381,385,386)
 	t.Run("LockForProjection_CtxCancelled", func(t *testing.T) {
 		t.Parallel()
@@ -1093,19 +1080,6 @@ func TestErrPaths_TenantRepo(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	// ERRPATH-TENANT-034 — SetOverageSince ctx cancelled (line 367)
-	t.Run("SetOverageSince_CtxCancelled", func(t *testing.T) {
-		t.Parallel()
-		ctx := context.Background()
-		tenantID := seedTenant(t, ctx, rawPool, "tenant-overage-ctx")
-		tctx := withTenant(ctx, tenantID)
-		cancelCtx, cancel := context.WithCancel(tctx)
-		cancel()
-		now := time.Now()
-		repo := pgadapter.NewTenantRepository(appPool)
-		err := repo.SetOverageSince(cancelCtx, tenantID, &now)
-		assert.Error(t, err)
-	})
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1115,17 +1089,6 @@ func TestErrPaths_TenantRepo(t *testing.T) {
 func TestErrPaths_ReconcilerStore(t *testing.T) {
 	t.Parallel()
 	_, _, sysPool := setupTestDB(t)
-
-	// ERRPATH-RECON-001 — ListSeatOverageCandidates ctx cancelled (lines 29,34,40)
-	t.Run("ListSeatOverageCandidates_CtxCancelled", func(t *testing.T) {
-		t.Parallel()
-		ctx := context.Background()
-		cancelCtx, cancel := context.WithCancel(ctx)
-		cancel()
-		store := pgadapter.NewReconcilerStore(sysPool)
-		_, err := store.ListSeatOverageCandidates(cancelCtx, 10)
-		assert.Error(t, err)
-	})
 
 	// ERRPATH-RECON-002 — ListRealmSyncPending ctx cancelled (lines 52,58,64)
 	t.Run("ListRealmSyncPending_CtxCancelled", func(t *testing.T) {

@@ -7,8 +7,6 @@
 //
 // Jobs covered:
 //   - InvitationExpiry (PI-5) — pending → expired when past expires_at
-//   - SeatOverageReconcile (SEAT-5) — overage_since transitions in both
-//     directions with outbox events
 //   - ProcessedEventsPrune (PE-1) — stale rows deleted, fresh rows kept
 //
 // DelegationExpiry / DelegationReview (§8.7, DEL-6) moved to the standalone
@@ -20,7 +18,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
@@ -182,104 +179,6 @@ func TestReconciler_InvitationExpiry_Idempotent(t *testing.T) {
 	res2, err := jobs.InvitationExpiry(ctx, jctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, res2.Attempted, "second run MUST find no candidates (idempotent)")
-}
-
-// ── SeatOverageReconcile (SEAT-5) ───────────────────────────────────────
-
-// TestReconciler_SeatOverage_StartsWhenOverCap — tenant is over-cap but
-// overage_since is NULL → reconciler sets overage_since=now() and emits
-// TenantSeatOverageStarted.
-func TestReconciler_SeatOverage_StartsWhenOverCap(t *testing.T) {
-	t.Parallel()
-	jctx, pub, rawPool := newJobContext(t, context.Background())
-	ctx := context.Background()
-	tenantA := seedTenant(t, ctx, rawPool, "recon-seat-start")
-	ctx = withTenant(ctx, tenantA)
-
-	// licensed_seats=1 but 2 active members + 0 pending → over cap.
-	_, err := rawPool.Exec(ctx, `UPDATE tenants SET licensed_seats = 1 WHERE id = $1`, tenantA)
-	require.NoError(t, err)
-	for i := 0; i < 2; i++ {
-		_, err := rawPool.Exec(ctx, `
-			INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
-			VALUES (gen_random_uuid(), $1, gen_random_uuid(), 'active')`, tenantA)
-		require.NoError(t, err)
-	}
-
-	res, err := jobs.SeatOverageReconcile(ctx, jctx)
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, res.Succeeded, 1)
-
-	var overageSince *time.Time
-	require.NoError(t, rawPool.QueryRow(ctx,
-		`SELECT overage_since FROM tenants WHERE id = $1`, tenantA).Scan(&overageSince))
-	require.NotNil(t, overageSince, "SEAT-5: over-cap tenant MUST have overage_since set")
-
-	starts := pub.byType(string(domain.EventTenantSeatOverageStarted))
-	require.Len(t, starts, 1)
-	payload := starts[0].Data.(domain.TenantSeatOverageStartedPayload)
-	assert.Equal(t, tenantA, payload.TenantID)
-	assert.Equal(t, 1, payload.LicensedSeats)
-	assert.Equal(t, 2, payload.ActiveUsers)
-}
-
-// TestReconciler_SeatOverage_ResolvesWhenBackUnderCap — tenant that WAS
-// over cap (overage_since set) but now active+pending <= licensed_seats
-// gets overage_since cleared and TenantSeatOverageResolved emitted.
-func TestReconciler_SeatOverage_ResolvesWhenBackUnderCap(t *testing.T) {
-	t.Parallel()
-	jctx, pub, rawPool := newJobContext(t, context.Background())
-	ctx := context.Background()
-	tenantA := seedTenant(t, ctx, rawPool, "recon-seat-resolve")
-	ctx = withTenant(ctx, tenantA)
-
-	// Pre-set overage_since to simulate a tenant that was previously flagged.
-	// Now: 3 licensed seats, 1 active member, 0 pending → under cap.
-	past := time.Now().Add(-48 * time.Hour)
-	_, err := rawPool.Exec(ctx,
-		`UPDATE tenants SET licensed_seats = 3, overage_since = $2 WHERE id = $1`, tenantA, past)
-	require.NoError(t, err)
-	_, err = rawPool.Exec(ctx, `
-		INSERT INTO tenant_memberships (id, tenant_id, user_id, status)
-		VALUES (gen_random_uuid(), $1, gen_random_uuid(), 'active')`, tenantA)
-	require.NoError(t, err)
-
-	res, err := jobs.SeatOverageReconcile(ctx, jctx)
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, res.Succeeded, 1)
-
-	var overageSince *time.Time
-	require.NoError(t, rawPool.QueryRow(ctx,
-		`SELECT overage_since FROM tenants WHERE id = $1`, tenantA).Scan(&overageSince))
-	assert.Nil(t, overageSince, "SEAT-5: under-cap tenant MUST have overage_since cleared")
-
-	resolves := pub.byType(string(domain.EventTenantSeatOverageResolved))
-	require.Len(t, resolves, 1)
-	payload := resolves[0].Data.(domain.TenantSeatOverageResolvedPayload)
-	assert.Equal(t, tenantA, payload.TenantID)
-}
-
-// TestReconciler_SeatOverage_NoOpWhenAlreadyConverged — tenant is under cap
-// and overage_since is already NULL → no transition, no event emitted.
-func TestReconciler_SeatOverage_NoOpWhenAlreadyConverged(t *testing.T) {
-	t.Parallel()
-	jctx, pub, rawPool := newJobContext(t, context.Background())
-	ctx := context.Background()
-	tenantA := seedTenant(t, ctx, rawPool, "recon-seat-noop")
-	ctx = withTenant(ctx, tenantA)
-	// Fresh tenant: licensed_seats=100 (default), 0 members, 0 pending.
-
-	res, err := jobs.SeatOverageReconcile(ctx, jctx)
-	require.NoError(t, err)
-	// Attempted counts candidate tenants (this test's + any others seeded
-	// by prior tests in the same DB, but each fresh test gets a new
-	// container so we're isolated).
-	assert.GreaterOrEqual(t, res.Succeeded, 1, "no-op runs still count as succeeded")
-
-	assert.Empty(t, pub.byType(string(domain.EventTenantSeatOverageStarted)),
-		"no transition MUST NOT emit a Started event")
-	assert.Empty(t, pub.byType(string(domain.EventTenantSeatOverageResolved)),
-		"no transition MUST NOT emit a Resolved event")
 }
 
 // ── ProcessedEventsPrune (PE-1) ─────────────────────────────────────────

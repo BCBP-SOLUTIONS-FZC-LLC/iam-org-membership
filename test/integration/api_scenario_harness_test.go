@@ -334,7 +334,6 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	// ── Core services ──────────────────────────────────────────────────
 	const (
 		invitationExpiryDays = 7
-		seatOverageDays      = 30
 	)
 
 	authzSvc := service.NewAuthZService(pgadapter.NewAuthZRepository(appPool), catalogSvc, catalogSvc, nil)
@@ -347,7 +346,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	deptSvc := service.NewDepartmentService(catalogSvc, tenantDeptRepo, nil)
 	membershipSvc := service.NewMembershipService(
 		membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo,
-		invitationRepo, nil, rpClient, wfClient, txRunner, nil, seatOverageDays,
+		invitationRepo, nil, rpClient, wfClient, txRunner, nil,
 	)
 	deptMemSvc := service.NewDeptMembershipService(
 		deptMemRepo, membershipRepo, tenantDeptRepo, catalogSvc,

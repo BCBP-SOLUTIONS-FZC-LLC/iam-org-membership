@@ -310,7 +310,7 @@ func TestMembership_ValidateAndEmitAssigneeOverride_RoleCheckFails_PropagatesErr
 		},
 	}
 	svc := service.NewMembershipService(
-		nil, roles, nil, nil, nil, nil, nil, nil, nil, nil, 30)
+		nil, roles, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	err := svc.ValidateAndEmitAssigneeOverride(
 		context.Background(),

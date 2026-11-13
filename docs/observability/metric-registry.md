@@ -93,8 +93,6 @@ Registered for the `iam` domain but not emitted by this service: `iam_auth_event
 | `iam_org_membership_realm_sync_failed_total` | counter | `stage` | realm-config-sync reconciler failures (T-15). |
 | `iam_org_membership_realm_sync_pending` | gauge | - | Tenants with realm_sync_pending=true (T-15). |
 | `iam_org_membership_seat_limit_reached_total` | counter | `plan` | P-6 invites refused because active members plus pending invitations reached licensed_seats (SEAT-1), by tenant plan. |
-| `iam_org_membership_seat_overage_active` | gauge | - | Tenants with overage_since IS NOT NULL (SEAT-5). |
-| `iam_org_membership_seat_overage_started_total` | counter | `cause` | Tenants entering seat overage (SEAT-5), by cause: occupancy (active members plus pending invitations above licensed_seats, detected by the seat-overage reconciler). |
 | `iam_org_membership_tenant_events_parked_total` | counter | `event_type` | Lifecycle/billing events parked because their tenant had no row yet (CD-50, EVT-18), by event_type. Replayed once the tenant exists. |
 | `iam_org_membership_tenant_events_replayed_total` | counter | `event_type`, `trigger` | Parked lifecycle/billing events replayed once their tenant existed (CD-50, EVT-18), by event_type and trigger (provisioning: I-1 right after creating the row; sweep: the parked-events-replay CronJob). |
 | `iam_org_membership_tenant_header_path_mismatch_total` | counter | `action`, `method`, `route` | Internal /tenants/:id/* requests whose x-tenant-id differed from the path tenant, by route, method and action (overridden: path tenant bound and served; rejected: strict-mode 400). |

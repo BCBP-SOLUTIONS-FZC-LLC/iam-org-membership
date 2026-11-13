@@ -26,7 +26,6 @@ import (
 // don't wire it keep working.
 type Metrics interface {
 	IncRealmSyncFailed(stage string)
-	IncSeatOverageStarted()
 }
 
 // OutboxPruner is the slice of platform-events' *outbox.Runner OutboxPrune
@@ -46,10 +45,10 @@ type ParkedReplayer interface {
 // Context is the dependency bag every reconciler function accepts.
 // Populated by cmd/reconciler/main.go from env + Postgres/AWS clients.
 // Pools stay in main.go — jobs talk to repositories, TxRunner, and
-// RealmProvisioner. Seat-overage events go through TxRunner's ctx publisher.
+// RealmProvisioner.
 type Context struct {
 	TxRunner         port.TxRunner                    // for atomic state + event emit
-	Tenants          port.TenantRepository            // SEAT-5 occupancy lock + overage_since (app pool)
+	Tenants          port.TenantRepository            // tenant reads (app pool)
 	Invitations      port.InvitationRepository        // invitation-expiry / kc-cleanup (sysPool)
 	Reconciler       port.ReconcilerStore             // cross-tenant sweeps (sysPool)
 	OutboxRunner     OutboxPruner                     // platform-events outbox.Runner (OutboxPrune)
@@ -69,7 +68,6 @@ type Context struct {
 	AuditLog port.AuditLogClient
 
 	BatchLimit               int
-	SeatOverageGraceDays     int // SEAT-5 grace_ends_at = overage_since + N days
 	TrialGraceDays           int // trial-cleanup hard-delete threshold
 	OutboxRetentionDays      int // outbox-prune window
 	ProcessedEventsTTLDays   int // PE-1 8-day retention (default)

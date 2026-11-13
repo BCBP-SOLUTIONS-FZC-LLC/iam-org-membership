@@ -19,7 +19,6 @@ import (
 // inbox.Store.Prune (port.InboxPruner, cmd/reconciler/jobs/
 // processed_events_prune.go).
 type ReconcilerStore interface {
-	ListSeatOverageCandidates(ctx context.Context, limit int) ([]uuid.UUID, error)
 	ListRealmSyncPending(ctx context.Context, limit int) ([]RealmSyncCandidate, error)
 	ClearRealmSyncPending(ctx context.Context, tenantID uuid.UUID) error
 	// ListExpiredTrialTenants returns at most limit tenant IDs whose status is

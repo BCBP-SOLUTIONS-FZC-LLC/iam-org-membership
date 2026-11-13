@@ -165,7 +165,7 @@ func TestResetMFA_Auth_Unauthenticated_401(t *testing.T) {
 	svc := service.NewMembershipService(
 		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{},
-		&happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30,
+		&happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil,
 	)
 	memH := NewMembershipHandler(svc)
 	router := buildAuthTestRouter(nil, memH)

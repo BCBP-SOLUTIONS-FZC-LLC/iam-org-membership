@@ -427,7 +427,7 @@ func TestMembershipService_SetStatus_Suspend_WFI13_ActiveWorkflows_AdvisoryFires
 	svc := service.NewMembershipService(
 		memberships, roles,
 		nil, nil, nil, nil, rp, wf,
-		&passthroughTxRunner{}, nil, 0,
+		&passthroughTxRunner{}, nil,
 	)
 
 	result, err := svc.SetStatus(context.Background(), tenantID, userID, domain.MembershipSuspended, 1)
@@ -462,7 +462,7 @@ func TestMembershipService_SetStatus_Suspend_WFI13_WorkflowCallFails_UncheckedAd
 
 	svc := service.NewMembershipService(
 		memberships, roles, nil, nil, nil, nil, rp, wf,
-		&passthroughTxRunner{}, nil, 0,
+		&passthroughTxRunner{}, nil,
 	)
 
 	result, err := svc.SetStatus(context.Background(), tenantID, userID, domain.MembershipSuspended, 1)

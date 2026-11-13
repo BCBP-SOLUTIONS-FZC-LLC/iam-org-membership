@@ -11,13 +11,13 @@ info:
 
       Topic                        Glue registry            Events
       ─────────────────────────────────────────────────────────────
-      iam-membership-events        iam-membership-events    12 (see below)
+      iam-membership-events        iam-membership-events    10 (see below)
       iam-tenant-events            iam-tenant-events        3  (TenantCreated, TrialStarted, TenantSettingChanged)
 
     The two-topic split follows HLD §9.1: tenant lifecycle (creation,
     trial start) fans out to a different consumer set than membership
     lifecycle (department grants, role grants, membership-revocation
-    cascades, seat overage, tenant-state relay). Selecting the destination
+    cascades, tenant-state relay). Selecting the destination
     topic by
     Envelope.Source is the job of platform-events RoutingPublisher —
     see internal/adapter/outbound/eventbus/publisher.go.
@@ -87,7 +87,7 @@ info:
     transaction is rolled back — the event is never written to the outbox.
     Consumers do not need to handle oversized messages; they cannot arrive.
 
-    Payload budget guidance (per event type): all 14 payloads emitted by this
+    Payload budget guidance (per event type): all 13 payloads emitted by this
     service are small — UUIDs, short enums, timestamps, and (for
     TenantStateChanged) a bounded event-type string. None approach the
     240 KB soft limit under any realistic load.
@@ -145,7 +145,7 @@ info:
       production without a consumer migration. An unhandled enum value
       crashes exhaustive matchers.
     open-schema-contract: >-
-      All 14 produced payload schemas in
+      All 13 produced payload schemas in
       internal/adapter/outbound/eventbus/schemas/, and their corresponding
       components in this file, declare "additionalProperties": true (as of
       2026-09-21 — LLD §16 OQ-6, superseding this document's earlier
@@ -186,22 +186,16 @@ info:
       confirm in the "Event Schema Semantic Evolution" checklist that the
       change is wording-only. If the field's observable meaning changed (units,
       scale, encoding, nullability), create a versioned type (e.g.
-      TenantSeatOverageStarted.v2) and mark the old type deprecated. Do not
+      TenantSeatsChanged.v2) and mark the old type deprecated. Do not
       reuse an existing field name for a semantically different value.
     field-annotation-guidance: >-
       Annotate fields with semantic intent in their description or a companion
-      x-unit extension so drift is detectable during review. Examples:
+      x-unit extension so drift is detectable during review. Example:
         licensed_seats:
           type: integer
           description: "Number of paid user seats sold on the plan.
                         Not workspaces, not tenants, not devices. Excludes
                         pending invitations (those are counted separately)."
-        overage_since:
-          type: string
-          format: date-time
-          description: "UTC timestamp of the first observation that (active_users
-                        + pending_invitations) > licensed_seats. Not the moment
-                        an invitation was staged, not the moment a user was added."
 
   x-consumer-sdk:
     summary: >-
@@ -401,9 +395,8 @@ servers:
       Owned and managed by: Notification Service
       SNS subscription filter: EventType IN [DepartmentMembershipGranted,
         DepartmentMembershipRevoked, DepartmentMembershipLevelChanged,
-        TenantRoleGranted, TenantRoleRevoked, TenantSeatOverageStarted,
-        TenantSeatOverageResolved]
-        (Notification drives user/admin emails + seat-overage banners)
+        TenantRoleGranted, TenantRoleRevoked]
+        (Notification drives user/admin emails)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -426,18 +419,6 @@ servers:
          hard-delete; delegation
          routing itself is now the Delegation Service's concern, sourced
          from its own iam.delegation.events topic, not this one)
-    security:
-      - $ref: '#/components/securitySchemes/iamRole'
-
-  sqsMembershipBilling:
-    host: "sqs.ap-south-1.amazonaws.com"
-    protocol: sqs
-    description: |
-      SQS queue for the Billing consumer.
-      Queue: membership-billing-q  |  DLQ: membership-billing-q-dlq  (maxReceiveCount=5)
-      Owned and managed by: Billing Service
-      SNS subscription filter: EventType IN [TenantSeatOverageStarted, TenantSeatOverageResolved]
-        (Billing drives grace period / enforcement window — §16 A59, SEAT-3/SEAT-5)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -590,7 +571,7 @@ channels:
   iamMembershipEvents:
     address: "iam-membership-events"
     description: |
-      SNS topic for all membership-lifecycle events (12 event types).
+      SNS topic for all membership-lifecycle events (10 event types).
       Consumers subscribe with an SNS filter policy on the EventType MessageAttribute
       to receive only the event types they care about. Full set of attributes emitted
       per message: EventType, TenantID, Source, EventID, and Subject (all PascalCase,
@@ -669,12 +650,11 @@ channels:
       ── Fan-out queue registry (LLD §7.3.2) ─────────────────────────────────
       Consumer          Queue                         DLQ                               Filter (EventType)
       ──────────────────────────────────────────────────────────────────────────────
-      Audit Log         membership-audit-q            membership-audit-q-dlq            (all 12)
+      Audit Log         membership-audit-q            membership-audit-q-dlq            (all 10)
       AuthZ Enrichment  membership-authz-q            membership-authz-q-dlq            DepartmentMembership*, TenantRole*, MembershipRevoked
       Realm Provisioner membership-realm-q            membership-realm-q-dlq            DepartmentMembership{Granted,LevelChanged}, TenantRole*
-      Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*, TenantSeatOverage*
+      Notification      membership-notification-q     membership-notification-q-dlq     DepartmentMembership*, TenantRole*
       Workflow          membership-workflow-q         membership-workflow-q-dlq         TenderAssigneeOverridden, DepartmentMembership*, TenantStateChanged, MembershipRevoked, TenantMembershipsPurged
-      Billing           membership-billing-q          membership-billing-q-dlq          TenantSeatOverage{Started,Resolved}
       Entitlements      membership-entitlements-q     membership-entitlements-q-dlq     TenantMembershipsPurged  (CD-25)
       Usage & Metering  membership-usage-q            membership-usage-q-dlq            TenantMembershipsPurged  (CD-25)
 
@@ -721,10 +701,6 @@ channels:
         $ref: '#/components/messages/MembershipRevoked'
       TenderAssigneeOverridden:
         $ref: '#/components/messages/TenderAssigneeOverridden'
-      TenantSeatOverageStarted:
-        $ref: '#/components/messages/TenantSeatOverageStarted'
-      TenantSeatOverageResolved:
-        $ref: '#/components/messages/TenantSeatOverageResolved'
       TenantStateChanged:
         $ref: '#/components/messages/TenantStateChanged'
       TenantMembershipsPurged:
@@ -791,7 +767,7 @@ channels:
     servers:
       - $ref: '#/servers/sqsMembershipAudit'
     description: |
-      SQS queue subscribed to all 12 membership event types. Audit Log
+      SQS queue subscribed to all 10 membership event types. Audit Log
       archives every membership event for 7-year compliance retention
       (HLD §13.3).
       SNS subscription filter policy: (no filter)
@@ -810,10 +786,6 @@ channels:
         $ref: '#/components/messages/MembershipRevoked'
       TenderAssigneeOverridden:
         $ref: '#/components/messages/TenderAssigneeOverridden'
-      TenantSeatOverageStarted:
-        $ref: '#/components/messages/TenantSeatOverageStarted'
-      TenantSeatOverageResolved:
-        $ref: '#/components/messages/TenantSeatOverageResolved'
       TenantStateChanged:
         $ref: '#/components/messages/TenantStateChanged'
       TenantMembershipsPurged:
@@ -918,15 +890,13 @@ channels:
       - $ref: '#/servers/sqsMembershipNotification'
     description: |
       SQS queue subscribed to the membership events that drive user- and
-      admin-facing emails plus the seat-overage banner surface.
+      admin-facing emails.
       SNS subscription filter policy:
         { "EventType": ["DepartmentMembershipGranted",
                         "DepartmentMembershipRevoked",
                         "DepartmentMembershipLevelChanged",
                         "TenantRoleGranted",
-                        "TenantRoleRevoked",
-                        "TenantSeatOverageStarted",
-                        "TenantSeatOverageResolved"] }
+                        "TenantRoleRevoked"] }
     messages:
       DepartmentMembershipGranted:
         $ref: '#/components/messages/DepartmentMembershipGranted'
@@ -938,10 +908,6 @@ channels:
         $ref: '#/components/messages/TenantRoleGranted'
       TenantRoleRevoked:
         $ref: '#/components/messages/TenantRoleRevoked'
-      TenantSeatOverageStarted:
-        $ref: '#/components/messages/TenantSeatOverageStarted'
-      TenantSeatOverageResolved:
-        $ref: '#/components/messages/TenantSeatOverageResolved'
     bindings:
       sqs:
         queue:
@@ -1004,34 +970,6 @@ channels:
           redrivePolicy:
             deadLetterQueue:
               name: membership-workflow-q-dlq
-            maxReceiveCount: 5
-
-  membershipBillingQueue:
-    address: "membership-billing-q"
-    servers:
-      - $ref: '#/servers/sqsMembershipBilling'
-    description: |
-      SQS queue subscribed only to the seat-overage lifecycle pair.
-      Billing uses these events to drive the grace period (§16 A59) and
-      the enforcement window (SEAT-3 / SEAT-5).
-      SNS subscription filter policy:
-        { "EventType": ["TenantSeatOverageStarted", "TenantSeatOverageResolved"] }
-    messages:
-      TenantSeatOverageStarted:
-        $ref: '#/components/messages/TenantSeatOverageStarted'
-      TenantSeatOverageResolved:
-        $ref: '#/components/messages/TenantSeatOverageResolved'
-    bindings:
-      sqs:
-        queue:
-          name: membership-billing-q
-          fifoQueue: false
-          receiveMessageWaitTime: 20
-          messageRetentionPeriod: 345600
-          visibilityTimeout: 30
-          redrivePolicy:
-            deadLetterQueue:
-              name: membership-billing-q-dlq
             maxReceiveCount: 5
 
   membershipEntitlementsQueue:
@@ -1462,8 +1400,6 @@ operations:
       - $ref: '#/channels/iamMembershipEvents/messages/TenantRoleRevoked'
       - $ref: '#/channels/iamMembershipEvents/messages/MembershipRevoked'
       - $ref: '#/channels/iamMembershipEvents/messages/TenderAssigneeOverridden'
-      - $ref: '#/channels/iamMembershipEvents/messages/TenantSeatOverageStarted'
-      - $ref: '#/channels/iamMembershipEvents/messages/TenantSeatOverageResolved'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantStateChanged'
       - $ref: '#/channels/iamMembershipEvents/messages/TenantMembershipsPurged'
       - $ref: '#/channels/iamMembershipEvents/messages/MFAReset'
@@ -1511,7 +1447,7 @@ operations:
     description: |
       Consumer: Audit Log Service
       Queue   : membership-audit-q  |  DLQ: membership-audit-q-dlq
-      Filter  : none — subscribes to all 12 membership event types
+      Filter  : none — subscribes to all 10 membership event types
       Purpose : Append-only compliance archival. Every membership event is
                 stored with strict tenant-scoped RLS isolation (HLD §5.7, §13.3).
       Idempotency key: (id, consumer="audit-log") in processed_events.
@@ -1523,8 +1459,6 @@ operations:
       - $ref: '#/channels/membershipAuditQueue/messages/TenantRoleRevoked'
       - $ref: '#/channels/membershipAuditQueue/messages/MembershipRevoked'
       - $ref: '#/channels/membershipAuditQueue/messages/TenderAssigneeOverridden'
-      - $ref: '#/channels/membershipAuditQueue/messages/TenantSeatOverageStarted'
-      - $ref: '#/channels/membershipAuditQueue/messages/TenantSeatOverageResolved'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantStateChanged'
       - $ref: '#/channels/membershipAuditQueue/messages/TenantMembershipsPurged'
       - $ref: '#/channels/membershipAuditQueue/messages/MFAReset'
@@ -1596,15 +1530,14 @@ operations:
       $ref: '#/channels/membershipNotificationQueue'
     tags:
       - $ref: '#/components/tags/published'
-    summary: Notification sends user/admin emails and drives seat-overage banners
+    summary: Notification sends user/admin emails on membership and role changes
     description: |
       Consumer: Notification Service
       Queue   : membership-notification-q  |  DLQ: membership-notification-q-dlq
-      Filter  : EventType IN [DepartmentMembership*, TenantRole*, TenantSeatOverage*]
+      Filter  : EventType IN [DepartmentMembership*, TenantRole*]
 
       Membership events → per-user email ("you have been added to Department X
-        as a reviewer"). TenantRole events → admin email. TenantSeatOverage
-        events → admin banner and grace-period countdown email.
+        as a reviewer"). TenantRole events → admin email.
 
       Idempotency key: (id, consumer="notification") in processed_events.
     messages:
@@ -1613,8 +1546,6 @@ operations:
       - $ref: '#/channels/membershipNotificationQueue/messages/DepartmentMembershipLevelChanged'
       - $ref: '#/channels/membershipNotificationQueue/messages/TenantRoleGranted'
       - $ref: '#/channels/membershipNotificationQueue/messages/TenantRoleRevoked'
-      - $ref: '#/channels/membershipNotificationQueue/messages/TenantSeatOverageStarted'
-      - $ref: '#/channels/membershipNotificationQueue/messages/TenantSeatOverageResolved'
 
   receiveMembershipWorkflow:
     action: receive
@@ -1662,30 +1593,6 @@ operations:
       - $ref: '#/channels/membershipWorkflowQueue/messages/TenantStateChanged'
       - $ref: '#/channels/membershipWorkflowQueue/messages/MembershipRevoked'
       - $ref: '#/channels/membershipWorkflowQueue/messages/TenantMembershipsPurged'
-
-  receiveMembershipBilling:
-    action: receive
-    channel:
-      $ref: '#/channels/membershipBillingQueue'
-    tags:
-      - $ref: '#/components/tags/published'
-    summary: Billing drives seat-overage grace period and enforcement
-    description: |
-      Consumer: Billing Service
-      Queue   : membership-billing-q  |  DLQ: membership-billing-q-dlq
-      Filter  : EventType IN [TenantSeatOverageStarted, TenantSeatOverageResolved]
-
-      On TenantSeatOverageStarted: start the grace-period clock
-        (SEAT_OVERAGE_GRACE_DAYS, default 30) and issue a Billing notice.
-      On TenantSeatOverageResolved: cancel the grace-period clock. If the
-        clock had elapsed and enforcement was engaged, Billing lifts the
-        overage-status flag it published on billing.events.
-
-      See §16 A59, SEAT-3, SEAT-5.
-      Idempotency key: (id, consumer="commercial-billing") in processed_events.
-    messages:
-      - $ref: '#/channels/membershipBillingQueue/messages/TenantSeatOverageStarted'
-      - $ref: '#/channels/membershipBillingQueue/messages/TenantSeatOverageResolved'
 
   receiveTenantAudit:
     action: receive
@@ -2336,87 +2243,6 @@ components:
             EventType:
               dataType: String
               value: MFAReset
-              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
-            TenantID:
-              dataType: String
-              description: Dynamic — set from envelope.tenant_id at publish time.
-            Source:
-              dataType: String
-              value: iam-org-membership
-              description: Publishing service identifier.
-            EventID:
-              dataType: String
-              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
-            Subject:
-              dataType: String
-              description: Dynamic — set from envelope.subject at publish time.
-
-    TenantSeatOverageStarted:
-      name: TenantSeatOverageStarted
-      title: Tenant Seat Overage Started
-      summary: |
-        Emitted when the seat-usage reconciler first observes
-        (active_users + pending_invitations) > licensed_seats for a tenant.
-        Payload carries the observation counts; Billing uses them to size the
-        grace-period countdown (SEAT_OVERAGE_GRACE_DAYS, default 30).
-      x-lifecycle:
-        status: active
-      x-owner:
-        team: team-iam
-        slack: "#iam-events"
-      tags:
-        - $ref: '#/components/tags/published'
-      contentType: application/json
-      traits:
-        - $ref: '#/components/messageTraits/glueWireFormat'
-      payload:
-        $ref: '#/components/schemas/TenantSeatOverageStartedEnvelope'
-      bindings:
-        sns:
-          messageAttributes:
-            EventType:
-              dataType: String
-              value: TenantSeatOverageStarted
-              description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
-            TenantID:
-              dataType: String
-              description: Dynamic — set from envelope.tenant_id at publish time.
-            Source:
-              dataType: String
-              value: iam-org-membership
-              description: Publishing service identifier.
-            EventID:
-              dataType: String
-              description: Dynamic — RFC 4122 UUID v7 echoed from envelope.id.
-            Subject:
-              dataType: String
-              description: Dynamic — set from envelope.subject at publish time.
-
-    TenantSeatOverageResolved:
-      name: TenantSeatOverageResolved
-      title: Tenant Seat Overage Resolved
-      summary: |
-        Emitted when the seat-usage reconciler observes that
-        (active_users + pending_invitations) has fallen back to ≤ licensed_seats.
-        Cancels the Billing grace-period clock.
-      x-lifecycle:
-        status: active
-      x-owner:
-        team: team-iam
-        slack: "#iam-events"
-      tags:
-        - $ref: '#/components/tags/published'
-      contentType: application/json
-      traits:
-        - $ref: '#/components/messageTraits/glueWireFormat'
-      payload:
-        $ref: '#/components/schemas/TenantSeatOverageResolvedEnvelope'
-      bindings:
-        sns:
-          messageAttributes:
-            EventType:
-              dataType: String
-              value: TenantSeatOverageResolved
               description: PascalCase event type. Set by platform-events v1.3.0 from envelope.type.
             TenantID:
               dataType: String
@@ -3241,8 +3067,6 @@ components:
             - TenantRoleRevoked
             - MembershipRevoked
             - TenderAssigneeOverridden
-            - TenantSeatOverageStarted
-            - TenantSeatOverageResolved
             - TenantStateChanged
             - TenantMembershipsPurged
             - MFAReset
@@ -3270,11 +3094,6 @@ components:
             TenderAssigneeOverridden: >-
               Assignee override validated and emitted; Workflow Service
               owns the underlying assignee_overrides state.
-            TenantSeatOverageStarted: >-
-              (active_users + pending_invitations) first observed to exceed
-              licensed_seats for this tenant.
-            TenantSeatOverageResolved: >-
-              (active_users + pending_invitations) fell back to ≤ licensed_seats.
             TenantStateChanged: >-
               EVT-16 relay of an upstream tenant-state mutation onto
               iam-membership-events (see cause for the triggering event type).
@@ -3300,7 +3119,7 @@ components:
             Canonical entity identifier this event is about. For membership
             events (Department* / TenantRole* / MembershipRevoked / MFAReset)
             this is the user_id. For TenderAssigneeOverridden it is the tender_id.
-            For TenantSeatOverage* / TenantStateChanged / TenantCreated /
+            For TenantStateChanged / TenantCreated /
             TrialStarted / TenantMembershipsPurged it is the tenant_id.
             Aligns with the CloudEvents subject attribute; simplifies consumer
             routing and log indexing without parsing the payload.
@@ -3501,26 +3320,6 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/MFAResetPayload'
-
-    TenantSeatOverageStartedEnvelope:
-      allOf:
-        - $ref: '#/components/schemas/EventEnvelopeBase'
-        - type: object
-          required:
-            - data
-          properties:
-            data:
-              $ref: '#/components/schemas/TenantSeatOverageStartedPayload'
-
-    TenantSeatOverageResolvedEnvelope:
-      allOf:
-        - $ref: '#/components/schemas/EventEnvelopeBase'
-        - type: object
-          required:
-            - data
-          properties:
-            data:
-              $ref: '#/components/schemas/TenantSeatOverageResolvedPayload'
 
     TenantStateChangedEnvelope:
       allOf:
@@ -3772,57 +3571,6 @@ components:
         actor_id:
           type: string
           format: uuid
-
-    TenantSeatOverageStartedPayload:
-      type: object
-      additionalProperties: true
-      required:
-        - tenant_id
-        - licensed_seats
-        - active_users
-        - pending_invitations
-        - overage_since
-      properties:
-        tenant_id:
-          type: string
-          format: uuid
-        licensed_seats:
-          type: integer
-          minimum: 0
-          description: Number of paid user seats sold on the plan.
-        active_users:
-          type: integer
-          minimum: 0
-          description: Current count of active users (excludes pending invitations and deleted users).
-        pending_invitations:
-          type: integer
-          minimum: 0
-          description: Current count of unaccepted invitations that hold a seat.
-        overage_since:
-          type: string
-          format: date-time
-          description: |
-            UTC timestamp of the first observation that
-            (active_users + pending_invitations) > licensed_seats. This is
-            the anchor Billing uses to size the SEAT_OVERAGE_GRACE_DAYS
-            countdown (default 30).
-
-    TenantSeatOverageResolvedPayload:
-      type: object
-      additionalProperties: true
-      required:
-        - tenant_id
-        - resolved_at
-      properties:
-        tenant_id:
-          type: string
-          format: uuid
-        resolved_at:
-          type: string
-          format: date-time
-          description: |
-            UTC timestamp at which (active_users + pending_invitations)
-            was observed to have fallen back to ≤ licensed_seats.
 
     TenantStateChangedPayload:
       type: object
