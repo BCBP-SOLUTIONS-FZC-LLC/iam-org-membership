@@ -90,7 +90,7 @@ func TestReconcileRoles_RPFailOpen(t *testing.T) {
 		},
 	}
 	svc := service.NewMembershipService(mems, roles, &drhDeptMemRepo{}, &happyTenantRepo{},
-		&iahInviteRepo{}, happyCacheStub{}, rp, nil, happyTxRunner{}, nil, 30)
+		&iahInviteRepo{}, happyCacheStub{}, rp, nil, happyTxRunner{}, nil)
 	h := NewMembershipHandler(svc)
 
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantOwnerCtx(tenant))
@@ -338,7 +338,7 @@ func TestAddMember_PlainAdd_201(t *testing.T) {
 	tenantID := uuid.New()
 	userID := uuid.New()
 	svc := service.NewInvitationService(&iahInviteRepo{}, &i1MemRepo{}, &i1RoleRepo{}, &drhDeptMemRepo{},
-		&happyTenantRepo{}, &happyRPClient{}, happyCacheStub{}, addMemberTxRunner{}, nil, 7)
+		&ihSeatTenantRepo{seats: 100}, &happyRPClient{}, happyCacheStub{}, addMemberTxRunner{}, nil, 7)
 	h := &InternalHandler{invitation: svc}
 	body := `{"user_id":"` + userID.String() + `","keycloak_user_id":"` + uuid.New().String() + `"}`
 	c, w := buildCtx(http.MethodPost, "/", body, iamSystemCtx(tenantID))

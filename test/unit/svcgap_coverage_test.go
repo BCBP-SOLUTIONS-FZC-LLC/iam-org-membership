@@ -874,7 +874,7 @@ func TestMembership_List_DeptListByUserError(t *testing.T) {
 	}
 	deptMems := &svcgapDeptMemForList{listByUserErr: deptErr}
 
-	svc := service.NewMembershipService(memberships, roles, deptMems, &port.TenantRepositoryNoop{}, nil, nil, nil, nil, nil, nil, 30)
+	svc := service.NewMembershipService(memberships, roles, deptMems, &port.TenantRepositoryNoop{}, nil, nil, nil, nil, nil, nil)
 	_, err := svc.List(context.Background(), tenantID, nil, 10)
 	assert.ErrorIs(t, err, deptErr)
 }
@@ -939,7 +939,7 @@ func TestMembership_RemoveUser_CountActiveOwnersError(t *testing.T) {
 		},
 	}
 	tenants := &svcgapRuTenantRepo{lockErr: nil} // LockByID succeeds
-	svc := service.NewMembershipService(mem, roles, &ssDeptMemRepoDM{}, tenants, nil, nil, nil, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, &ssDeptMemRepoDM{}, tenants, nil, nil, nil, nil, &passthroughTxRunner{}, nil)
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, actorID)
 	assert.ErrorIs(t, err, caoErr)
@@ -971,7 +971,7 @@ func TestMembership_RemoveUser_DeptSoftDeleteError(t *testing.T) {
 		},
 	}
 	tenants := &svcgapRuTenantRepo{lockErr: nil}
-	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, &passthroughTxRunner{}, nil)
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, actorID)
 	assert.ErrorIs(t, err, deptErr)
@@ -1005,7 +1005,7 @@ func TestMembership_RemoveUser_MembershipSoftDeleteError(t *testing.T) {
 		},
 	}
 	tenants := &svcgapRuTenantRepo{lockErr: nil}
-	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, &passthroughTxRunner{}, nil)
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, actorID)
 	assert.ErrorIs(t, err, softDelErr)
@@ -1049,7 +1049,7 @@ func TestMembership_ValidateAndEmitAssigneeOverride_PubNil(t *testing.T) {
 	// Override ListByUser to return the dept membership for the assignee lookup.
 	// We use a custom deptMems that returns the needed dept for Get.
 	// Build svc with nil pub TxRunner (passthroughTxRunner injects no publisher).
-	svc := service.NewMembershipService(memRepo, roleRepo, deptMemsForGet, &port.TenantRepositoryNoop{}, nil, nil, nil, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(memRepo, roleRepo, deptMemsForGet, &port.TenantRepositoryNoop{}, nil, nil, nil, nil, &passthroughTxRunner{}, nil)
 
 	// Get will return 404 for the assignee because fakeMemRepoFull.findByUserFn only works
 	// for FindByUserID, but Get also calls ListByUser for roles and deptMems.ListByUser.
@@ -1089,7 +1089,7 @@ func TestMembership_ValidateAndEmitAssigneeOverride_PubNil(t *testing.T) {
 		&svcgapAssigneeEligibleDM{deptID: deptID, level: domain.DeptApprover},
 		&port.TenantRepositoryNoop{}, nil, nil, nil, nil,
 		&passthroughTxRunner{}, // no publisher injected → pub == nil inside tx
-		nil, 30)
+		nil)
 
 	err := svc2.ValidateAndEmitAssigneeOverride(context.Background(), tenantID, tenderID, newUserID, deptID, domain.DeptApprover, actorID)
 	// pub == nil → returns nil without error.
@@ -1145,7 +1145,7 @@ func TestMembership_ResetUserMFA_ResetMFAError(t *testing.T) {
 			return errors.New("rp_unavailable")
 		},
 	}
-	svc := service.NewMembershipService(mem, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil)
 
 	err := svc.ResetUserMFA(context.Background(), tenantID, userID, actorID)
 	require.Error(t, err)
@@ -1164,7 +1164,7 @@ func TestMembership_ResetUserMFA_PubNilInsideTx(t *testing.T) {
 	}
 	rp := &fakeRPClient{} // ResetMFA succeeds (returns nil by default)
 	// passthroughTxRunner does not inject a publisher → pub == nil inside tx.
-	svc := service.NewMembershipService(mem, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil)
 
 	err := svc.ResetUserMFA(context.Background(), tenantID, userID, actorID)
 	require.NoError(t, err)

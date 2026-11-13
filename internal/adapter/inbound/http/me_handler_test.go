@@ -68,6 +68,7 @@ func TestSessionContext_ReturnsCallerContext(t *testing.T) {
 	meRouter(reader, domain.StatusCancelled).Handler().ServeHTTP(w, meRequest(sessionContextPath, tenantID, userID))
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 	assert.Equal(t, tenantID, reader.gotTenant)
 	assert.Equal(t, userID, reader.gotUser)
 	assert.JSONEq(t, `{

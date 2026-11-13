@@ -28,7 +28,6 @@ type TenantResponse struct {
 	DefaultLocale         string                    `json:"default_locale"`
 	LicensedSeats         int                       `json:"licensed_seats"`
 	OwnerlessSince        *time.Time                `json:"ownerless_since,omitempty"`
-	OverageSince          *time.Time                `json:"overage_since,omitempty"`
 	ResidencyMode         domain.ResidencyMode      `json:"residency_mode"` // CD-37
 	FeatureFlags          map[string]any            `json:"feature_flags"`
 	RecordVersion         int64                     `json:"record_version"`
@@ -52,7 +51,6 @@ func TenantToResponse(t *domain.Tenant) TenantResponse {
 		DefaultLocale:         t.DefaultLocale,
 		LicensedSeats:         t.LicensedSeats,
 		OwnerlessSince:        t.OwnerlessSince,
-		OverageSince:          t.OverageSince,
 		ResidencyMode:         t.ResidencyMode,
 		FeatureFlags:          t.FeatureFlags,
 		RecordVersion:         t.RecordVersion,
@@ -306,12 +304,9 @@ type RolesReconcileResponse struct {
 
 // SeatUsageResponse is the P-27 / I-11 payload.
 type SeatUsageResponse struct {
-	ActiveUsers        int        `json:"active_users" example:"12"`
-	PendingInvitations int        `json:"pending_invitations" example:"3"`
-	LicensedSeats      int        `json:"licensed_seats" example:"25"`
-	OverCap            bool       `json:"over_cap" example:"false"`
-	OverageSince       *time.Time `json:"overage_since,omitempty" format:"date-time"`
-	GraceEndsAt        *time.Time `json:"grace_ends_at,omitempty" format:"date-time"`
+	ActiveUsers        int `json:"active_users" example:"12"`
+	PendingInvitations int `json:"pending_invitations" example:"3"`
+	LicensedSeats      int `json:"licensed_seats" example:"25"`
 }
 
 // RoleLabelListResponse wraps the P-12 payload.

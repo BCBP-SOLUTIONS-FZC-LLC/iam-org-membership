@@ -118,7 +118,7 @@ func TestMembershipsCache_ReconcileRoles_EvictsUserProjection(t *testing.T) {
 		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) { return mem, nil },
 	}
 	cache := &spyCache{}
-	svc := service.NewMembershipService(m, roles, nil, &port.TenantRepositoryNoop{}, nil, cache, nil, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(m, roles, nil, &port.TenantRepositoryNoop{}, nil, cache, nil, nil, &passthroughTxRunner{}, nil)
 
 	_, _, err := svc.ReconcileRoles(context.Background(), tenantID, userID, nil, uuid.New())
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestMembershipsCache_RemoveUser_EvictsUserProjection(t *testing.T) {
 	}
 	cache := &spyCache{}
 	svc := service.NewMembershipService(m, r, dm, &port.TenantRepositoryNoop{}, nil, cache,
-		&ruRPClient{}, okImpactWorkflow(), &ruTxRunner{pub: &ruPublisher{}}, nil, 30)
+		&ruRPClient{}, okImpactWorkflow(), &ruTxRunner{pub: &ruPublisher{}}, nil)
 
 	require.NoError(t, svc.RemoveUser(context.Background(), tenantID, userID, uuid.New()))
 	assert.Contains(t, cache.deleteCalls, membershipsKey(tenantID, userID),

@@ -135,7 +135,7 @@ func TestAssigneeOverride_BadRequiredLevel_422(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "wizard")
@@ -165,7 +165,7 @@ func TestAssigneeOverride_NoIdentity_403(t *testing.T) {
 	roles := &mhRoleRepo{listByUserFn: func(_ context.Context, _, _ uuid.UUID) ([]domain.TenantRole, error) {
 		return nil, nil
 	}}
-	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "preparator")
@@ -192,7 +192,7 @@ func TestAssigneeOverride_PlainMember_403(t *testing.T) {
 	roles := &mhRoleRepo{listByUserFn: func(_ context.Context, _, _ uuid.UUID) ([]domain.TenantRole, error) {
 		return []domain.TenantRole{}, nil
 	}}
-	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "preparator")
@@ -230,7 +230,7 @@ func TestAssigneeOverride_CrossTenant_403(t *testing.T) {
 		}
 		return []domain.TenantRole{{RoleCode: domain.RoleTenderAdmin}}, nil
 	}}
-	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	// requestctx carries callerTenantID but path uses pathTenantID.
@@ -274,7 +274,7 @@ func TestAssigneeOverride_HappyPath_200(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "preparator")
@@ -310,7 +310,7 @@ func TestAssigneeOverride_TenantOwnerActor_200(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "reviewer")
@@ -346,7 +346,7 @@ func TestAssigneeOverride_AssigneeNotInDept_422(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "preparator")
@@ -378,7 +378,7 @@ func TestAssigneeOverride_AssigneeSuspended_422(t *testing.T) {
 		}, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "preparator")
@@ -412,7 +412,7 @@ func TestAssigneeOverride_AssigneeBelowLevel_422(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "approver") // need approver, have preparator
@@ -438,7 +438,7 @@ func TestAssigneeOverride_NoElevatedRole_403(t *testing.T) {
 
 	// No elevated roles at all.
 	roles := &mhRoleRepo{}
-	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "preparator")
@@ -476,7 +476,7 @@ func TestAssigneeOverride_MultiDeptSatisfied_200(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	// required_level=preparator; assignee has reviewer in targetDeptID (satisfies).
@@ -518,7 +518,7 @@ func TestAssigneeOverride_EventEmitted_200(t *testing.T) {
 	txRan := false
 	trackingTx := trackingTxRunner{inner: happyTxRunner{}, ran: &txRan}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, trackingTx, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, trackingTx, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "approver")
@@ -567,7 +567,7 @@ func TestAssigneeOverride_HP3_MinimalFields_200(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "preparator")
@@ -604,7 +604,7 @@ func TestAssigneeOverride_TenantAdmin_200(t *testing.T) {
 		return nil, nil
 	}}
 
-	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptRepo, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, nil, happyTxRunner{}, nil)
 	h := buildOverrideHandler(svc)
 
 	body := overrideBody(actorID, newUserID, deptID, "reviewer")

@@ -70,7 +70,7 @@ func TestMembership_SetStatus_SuspendOuterRolesListErrorPropagates(t *testing.T)
 	r := &fakeRoleRepo{listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
 		return nil, rolesErr
 	}}
-	svc := service.NewMembershipService(&fakeMembershipRepo{}, r, nil, &port.TenantRepositoryNoop{}, nil, nil, &fakeRPClient{}, nil, nil, nil, 30)
+	svc := service.NewMembershipService(&fakeMembershipRepo{}, r, nil, &port.TenantRepositoryNoop{}, nil, nil, &fakeRPClient{}, nil, nil, nil)
 	_, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
 	assert.ErrorIs(t, err, rolesErr)
 }
@@ -79,7 +79,7 @@ func TestMembership_SetStatus_OwnerSuspend_TenantLockErrorPropagates(t *testing.
 	lockErr := errors.New("lock timeout")
 	roles := &ownerRoleRepo{countFn: func(context.Context, uuid.UUID) (int, error) { return 5, nil }}
 	tenants := &ruTenantRepo{lockErr: lockErr}
-	svc := service.NewMembershipService(&fakeMembershipRepo{}, roles, nil, tenants, nil, nil, &fakeRPClient{}, nil, &ruTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&fakeMembershipRepo{}, roles, nil, tenants, nil, nil, &fakeRPClient{}, nil, &ruTxRunner{}, nil)
 
 	_, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
 	assert.ErrorIs(t, err, lockErr)
@@ -90,7 +90,7 @@ func TestMembership_SetStatus_OwnerSuspend_InnerCountActiveOwnersErrorPropagates
 	roles := &ownerRoleRepo{countFn: func(context.Context, uuid.UUID) (int, error) {
 		return 0, countErr
 	}}
-	svc := service.NewMembershipService(&fakeMembershipRepo{}, roles, nil, &port.TenantRepositoryNoop{}, nil, nil, &fakeRPClient{}, nil, &ruTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&fakeMembershipRepo{}, roles, nil, &port.TenantRepositoryNoop{}, nil, nil, &fakeRPClient{}, nil, &ruTxRunner{}, nil)
 
 	_, err := svc.SetStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
 	assert.ErrorIs(t, err, countErr)
@@ -164,7 +164,7 @@ func TestReconcileRoles_TenantLockErrorInsideTxPropagates(t *testing.T) {
 		countActiveOwnersFn: func(context.Context, uuid.UUID) (int, error) { return 2, nil }, // passes the outer check
 	}
 	tenants := &ruTenantRepo{lockErr: lockErr}
-	svc := service.NewMembershipService(m, roles, nil, tenants, nil, nil, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil, 0)
+	svc := service.NewMembershipService(m, roles, nil, tenants, nil, nil, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil)
 
 	_, _, err := svc.ReconcileRoles(context.Background(), uuid.New(), uuid.New(), []domain.TenantRoleCode{}, uuid.New())
 	assert.ErrorIs(t, err, lockErr)
@@ -325,7 +325,7 @@ func TestReconcileRoles_EmitsGrantAndRevokeEventsWithRequestContext(t *testing.T
 		return mem, nil
 	}}
 	pub := &rrPub{}
-	svc := service.NewMembershipService(m, roles, nil, &port.TenantRepositoryNoop{}, nil, nil, &fakeRPClient{}, nil, &rrTxRunner{pub: pub}, nil, 0)
+	svc := service.NewMembershipService(m, roles, nil, &port.TenantRepositoryNoop{}, nil, nil, &fakeRPClient{}, nil, &rrTxRunner{pub: pub}, nil)
 
 	ctx := requestctx.WithContext(context.Background(), &requestctx.RequestContext{
 		ClientIP: "192.0.2.55", UserAgent: "reconcile-test-agent",
@@ -361,7 +361,7 @@ func TestReconcileRoles_InvalidatesCacheAndRevokesSessionsOnRevoke(t *testing.T)
 	}}
 	cache := &spyCache{}
 	rp := &fakeRPClient{}
-	svc := service.NewMembershipService(m, roles, nil, &port.TenantRepositoryNoop{}, nil, cache, rp, nil, &passthroughTxRunner{}, nil, 0)
+	svc := service.NewMembershipService(m, roles, nil, &port.TenantRepositoryNoop{}, nil, cache, rp, nil, &passthroughTxRunner{}, nil)
 
 	_, revoked, err := svc.ReconcileRoles(context.Background(), tenantID, userID, []domain.TenantRoleCode{}, uuid.New())
 	require.NoError(t, err)

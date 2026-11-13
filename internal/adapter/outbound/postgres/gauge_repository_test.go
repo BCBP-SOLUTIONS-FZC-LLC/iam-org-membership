@@ -41,18 +41,6 @@ func TestGaugeRepository_CountRealmSyncPending_ReturnsScannedValue(t *testing.T)
 	assert.EqualValues(t, 1, n)
 }
 
-func TestGaugeRepository_CountSeatOverageActive_ReturnsScannedValue(t *testing.T) {
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: []any{int64(0)}}
-		},
-	}
-	repo := NewGaugeRepository(nil)
-	n, err := repo.CountSeatOverageActive(injectTx(context.Background(), tx))
-	require.NoError(t, err)
-	assert.EqualValues(t, 0, n)
-}
-
 func TestGaugeRepository_CountPendingInvitationsStale_ReturnsScannedValue(t *testing.T) {
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {

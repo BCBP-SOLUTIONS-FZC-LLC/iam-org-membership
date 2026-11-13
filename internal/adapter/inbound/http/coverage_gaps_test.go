@@ -161,7 +161,7 @@ func TestCheckMemberExists_MemberNotFound_ReturnsActivefalse(t *testing.T) {
 	svc := service.NewMembershipService(
 		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{},
-		&happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30,
+		&happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil,
 	)
 	h := &InternalHandler{membership: svc}
 	tenantID, userID := uuid.New(), uuid.New()

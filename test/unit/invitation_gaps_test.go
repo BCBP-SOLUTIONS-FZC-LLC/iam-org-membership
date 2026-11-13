@@ -340,3 +340,91 @@ func TestInvitation_AddFromRegister_EmailLookupError_Propagates(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, emailErr)
 }
+
+// ── AddFromRegister — plain-add SEAT-1 cap (IAM-6, CD-54) ────────────────
+
+// igSeat1PlainAddInviteRepo returns nil for both lookup calls (no pending
+// invitation) so AddFromRegister takes the plain-add JIT branch, and
+// returns fixed active/pending counts via CountPending.
+type igSeat1PlainAddInviteRepo struct {
+	fakeInviteRepo
+	countPending int
+}
+
+func (r *igSeat1PlainAddInviteRepo) FindPendingByKeycloakUser(context.Context, uuid.UUID, uuid.UUID) (*domain.PendingInvitation, error) {
+	return nil, nil
+}
+func (r *igSeat1PlainAddInviteRepo) FindPendingByEmail(context.Context, uuid.UUID, string) (*domain.PendingInvitation, error) {
+	return nil, nil
+}
+func (r *igSeat1PlainAddInviteRepo) CountPending(_ context.Context, _ uuid.UUID) (int, error) {
+	return r.countPending, nil
+}
+
+// igSeat1PlainAddTenantRepo locks and returns a fixed licensed_seats count.
+type igSeat1PlainAddTenantRepo struct {
+	port.TenantRepositoryNoop
+	licensedSeats int
+}
+
+func (r *igSeat1PlainAddTenantRepo) LockByID(context.Context, uuid.UUID) error { return nil }
+func (r *igSeat1PlainAddTenantRepo) LicensedSeatsForUpdate(_ context.Context, _ uuid.UUID) (int, error) {
+	return r.licensedSeats, nil
+}
+
+// igSeat1PlainAddMemberRepo returns a fixed CountActive.
+type igSeat1PlainAddMemberRepo struct {
+	igPreflightMemberRepo
+	countActive int
+}
+
+func (r *igSeat1PlainAddMemberRepo) CountActive(_ context.Context, _ uuid.UUID) (int, error) {
+	return r.countActive, nil
+}
+
+// TestInvitation_AddFromRegister_PlainAdd_AtCap_ReturnsSeatLimitReached
+// verifies IAM-6 / CD-54: the JIT plain-add path (no pending invitation)
+// enforces SEAT-1 and returns ErrSeatLimitReached when
+// active + pending >= licensed_seats.
+func TestInvitation_AddFromRegister_PlainAdd_AtCap_ReturnsSeatLimitReached(t *testing.T) {
+	svc := service.NewInvitationService(
+		&igSeat1PlainAddInviteRepo{countPending: 2},
+		&igSeat1PlainAddMemberRepo{countActive: 3},
+		nil, nil,
+		&igSeat1PlainAddTenantRepo{licensedSeats: 5}, // 3 active + 2 pending = 5 >= 5
+		nil, nil,
+		&passthroughTxRunner{},
+		nil, 7,
+	)
+
+	_, err := svc.AddFromRegister(
+		context.Background(), uuid.New(), uuid.New(), uuid.New(), "",
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, domain.ErrSeatLimitReached)
+}
+
+// TestInvitation_AddFromRegister_PlainAdd_BelowCap_Proceeds
+// confirms the plain-add path does NOT block when seats are available.
+// CountActive=2, CountPending=1, LicensedSeats=5 → 3 < 5 → no block.
+// The Insert call (not faked here) would fail with "not used", so we
+// check that the error is NOT ErrSeatLimitReached — the seat check passed.
+func TestInvitation_AddFromRegister_PlainAdd_BelowCap_Proceeds(t *testing.T) {
+	svc := service.NewInvitationService(
+		&igSeat1PlainAddInviteRepo{countPending: 1},
+		&igSeat1PlainAddMemberRepo{countActive: 2},
+		nil, nil,
+		&igSeat1PlainAddTenantRepo{licensedSeats: 5}, // 2 + 1 = 3 < 5 → passes cap
+		nil, nil,
+		&passthroughTxRunner{},
+		nil, 7,
+	)
+
+	_, err := svc.AddFromRegister(
+		context.Background(), uuid.New(), uuid.New(), uuid.New(), "",
+	)
+
+	// Cap check passed; Insert succeeds (noop returns nil). Confirm no error.
+	require.NoError(t, err)
+}

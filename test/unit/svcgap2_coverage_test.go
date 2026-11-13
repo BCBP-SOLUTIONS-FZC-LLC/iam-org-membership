@@ -733,7 +733,7 @@ func TestRemoveUser_RPCallAfterSuccess(t *testing.T) {
 	tenants := &svcgapRuTenantRepo{lockErr: nil}
 	rp := &fakeRPClient{}
 
-	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, rp, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, rp, nil, &passthroughTxRunner{}, nil)
 	err := svc.RemoveUser(context.Background(), tenantID, userID, actorID)
 	require.NoError(t, err)
 	assert.True(t, rp.revokeCalled, "AUTH-8: RevokeUserSessions must be called after successful RemoveUser")
@@ -777,7 +777,7 @@ func TestRemoveUser_WithRequestCtx(t *testing.T) {
 	}
 	ctx := requestctx.WithContext(context.Background(), rc)
 
-	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, txRunner, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, txRunner, nil)
 	err := svc.RemoveUser(ctx, tenantID, userID, actorID)
 	require.NoError(t, err)
 	require.NotEmpty(t, pub.events)

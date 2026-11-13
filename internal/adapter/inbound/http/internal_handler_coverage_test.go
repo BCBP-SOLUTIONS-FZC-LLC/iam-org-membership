@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -212,7 +211,7 @@ func TestAddMember_PlainAdd_KeycloakIDDefaults_201(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
 	mems := &ihMembershipInsertRepo{}
 	repo := &iahInviteRepo{}
-	svc := service.NewInvitationService(repo, mems, nil, nil, &happyTenantRepo{}, &happyRPClient{}, happyCacheStub{}, happyTxRunner{}, nil, 7)
+	svc := service.NewInvitationService(repo, mems, nil, nil, &ihSeatTenantRepo{seats: 100}, &happyRPClient{}, happyCacheStub{}, happyTxRunner{}, nil, 7)
 	h := &InternalHandler{invitation: svc}
 
 	body := fmt.Sprintf(`{"user_id":"%s"}`, userID)
@@ -462,13 +461,12 @@ func TestGetSeatUsageInternal_InvalidTenantID_400(t *testing.T) {
 // I11-H-01: full happy path → 200.
 func TestGetSeatUsageInternal_Success_200(t *testing.T) {
 	tenantID := uuid.New()
-	overageSince := time.Now().UTC().Add(-24 * time.Hour)
 	tenants := &happyTenantRepo{findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
-		return &domain.Tenant{ID: id, LicensedSeats: 10, OverageSince: &overageSince}, nil
+		return &domain.Tenant{ID: id, LicensedSeats: 10}, nil
 	}}
 	mems := &mhMemRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 3, nil }}
 	invs := &iahInviteRepo{countPendingFn: func(context.Context, uuid.UUID) (int, error) { return 1, nil }}
-	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, invs, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, invs, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
@@ -477,8 +475,6 @@ func TestGetSeatUsageInternal_Success_200(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"active_users":3`)
-	assert.Contains(t, w.Body.String(), "overage_since")
-	assert.Contains(t, w.Body.String(), "grace_ends_at")
 }
 
 // I11-ERR-01: tenant not found → 404.
@@ -486,7 +482,7 @@ func TestGetSeatUsageInternal_NotFound_404(t *testing.T) {
 	tenants := &happyTenantRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
 		return nil, domain.NewError(domain.ErrTenantNotFound, "tenant not found")
 	}}
-	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
@@ -505,7 +501,7 @@ func TestCheckMemberExists_NotFound_ActiveFalse(t *testing.T) {
 	mems := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
 	}}
-	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
@@ -521,7 +517,7 @@ func TestCheckMemberExists_Suspended_ActiveFalse(t *testing.T) {
 	mems := &mhMemRepo{findByUserFn: func(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
 		return &domain.TenantMembership{ID: uuid.New(), TenantID: tid, UserID: uid, Status: domain.MembershipSuspended}, nil
 	}}
-	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
@@ -538,7 +534,7 @@ func TestCheckMemberExists_Active_ActiveTrue(t *testing.T) {
 	mems := &mhMemRepo{findByUserFn: func(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
 		return &domain.TenantMembership{ID: membershipID, TenantID: tid, UserID: uid, Status: domain.MembershipActive}, nil
 	}}
-	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
@@ -555,7 +551,7 @@ func TestCheckMemberExists_GenericError(t *testing.T) {
 	mems := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrDBUnavailable, "db down")
 	}}
-	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mems, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
@@ -605,7 +601,7 @@ func TestAssigneeOverride_Success_200(t *testing.T) {
 	deptMems := &drhDeptMemRepo{listByUserFn: func(_ context.Context, tid, uid uuid.UUID) ([]domain.DeptMembership, error) {
 		return []domain.DeptMembership{{TenantID: tid, UserID: uid, DepartmentID: deptID, RoleLevel: domain.DeptApprover}}, nil
 	}}
-	svc := service.NewMembershipService(mems, roles, deptMems, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mems, roles, deptMems, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	body := fmt.Sprintf(`{"new_user_id":"%s","department_id":"%s","required_level":"approver","actor_id":"%s"}`,
@@ -624,7 +620,7 @@ func TestAssigneeOverride_ActorNotElevated_403(t *testing.T) {
 	roles := &mhRoleRepo{listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
 		return nil, nil // no elevated roles for anyone
 	}}
-	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &InternalHandler{membership: svc}
 
 	body := fmt.Sprintf(`{"new_user_id":"%s","department_id":"%s","required_level":"approver","actor_id":"%s"}`,

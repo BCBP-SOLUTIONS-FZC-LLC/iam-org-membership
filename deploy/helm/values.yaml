@@ -113,7 +113,6 @@ env:
 
   # Business timers (LLD §12).
   INVITATION_EXPIRY_DAYS: "7"
-  SEAT_OVERAGE_GRACE_DAYS: "30"
   # CD-23: grace before cancelled → suspended (30 days). Must equal RP
   # CANCELLED_GRACE_DAYS. RP offboards at suspended + 60 days (90 days total
   # from cancellation). Do NOT change without a joint RP + Core release.
@@ -338,9 +337,6 @@ cronjobs:
   realm-config-sync:
     schedule: "*/10 * * * *"
     job: realm-config-sync
-  seat-overage-reconcile:
-    schedule: "0 */6 * * *"
-    job: seat-overage-reconcile
   trial-cleanup:
     schedule: "0 2 * * *"
     job: trial-cleanup

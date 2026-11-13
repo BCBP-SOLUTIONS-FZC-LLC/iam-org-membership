@@ -148,7 +148,7 @@ func buildRemoveUserSvc(
 	m port.MembershipRepository, r port.TenantRoleRepository, dm port.DeptMembershipRepository,
 	rp port.RealmProvisionerClient, wf port.WorkflowClient, tr port.TxRunner,
 ) *service.MembershipService {
-	return service.NewMembershipService(m, r, dm, &port.TenantRepositoryNoop{}, nil, nil, rp, wf, tr, nil, 30)
+	return service.NewMembershipService(m, r, dm, &port.TenantRepositoryNoop{}, nil, nil, rp, wf, tr, nil)
 }
 
 // happyRemoveUserFakes returns fakes primed for a fully-successful cascade.
@@ -308,7 +308,7 @@ func TestMembership_RemoveUser_TenantLockErrorPropagates(t *testing.T) {
 			return &port.DelegateImpact{}, nil
 		},
 	}
-	svc := service.NewMembershipService(nil, nil, nil, &ruTenantRepo{lockErr: lockErr}, nil, nil, nil, wf, &ruTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(nil, nil, nil, &ruTenantRepo{lockErr: lockErr}, nil, nil, nil, wf, &ruTxRunner{}, nil)
 	err := svc.RemoveUser(context.Background(), uuid.New(), uuid.New(), uuid.New())
 	assert.ErrorIs(t, err, lockErr)
 }

@@ -43,7 +43,6 @@ var registry = map[string]jobs.Func{
 	"invitation-expiry":      jobs.InvitationExpiry,
 	"invitation-kc-cleanup":  jobs.InvitationKCCleanup,
 	"realm-config-sync":      jobs.RealmConfigSync,
-	"seat-overage-reconcile": jobs.SeatOverageReconcile,
 	"trial-cleanup":          jobs.TrialCleanup,
 	"outbox-prune":           jobs.OutboxPrune,
 	"processed-events-prune": jobs.ProcessedEventsPrune,
@@ -92,7 +91,7 @@ func run() int {
 
 	// SYSTEM_DATABASE_URL unset means the sysPool built below silently
 	// reuses the RLS-scoped app DSN, so every cross-tenant sweep this
-	// binary runs (ListRealmSyncPending, seat-overage/trial-cleanup scans,
+	// binary runs (ListRealmSyncPending, trial-cleanup scans,
 	// I-16-adjacent reads) RLS-filters to zero rows instead of erroring —
 	// no alert fires. Fail fast outside dev rather than degrade silently;
 	// mirrors cmd/server/main.go's validateRequiredEnv SYSTEM_DATABASE_URL
@@ -317,7 +316,6 @@ func run() int {
 		Metrics:                  metrics.Recorder{},
 		AuditLog:                 auditlogclient.New(rawLog),
 		BatchLimit:               envInt("RECONCILER_BATCH_LIMIT", 500),
-		SeatOverageGraceDays:     envInt("SEAT_OVERAGE_GRACE_DAYS", 30),
 		TrialGraceDays:           envInt("TRIAL_GRACE_DAYS", 15),
 		OutboxRetentionDays:      envInt("OUTBOX_RETENTION_DAYS", 8),
 		ProcessedEventsTTLDays:   envInt("PROCESSED_EVENTS_TTL_DAYS", 8),

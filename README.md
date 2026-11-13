@@ -275,7 +275,7 @@ Both extracted services lost a composite FK into `tenant_memberships` across the
 
 ### 7. Subscribing to SNS events
 
-This service publishes to two topics via a transactional outbox — 12 events on `iam.membership.events`, 2 on `iam.tenant.events`.
+This service publishes to two topics via a transactional outbox — 10 events on `iam.membership.events`, 2 on `iam.tenant.events`.
 
 | Event | Topic | Trigger |
 |---|---|---|
@@ -284,7 +284,6 @@ This service publishes to two topics via a transactional outbox — 12 events on
 | `MembershipRevoked` | membership | User removed from tenant — shared cascade signal for Delegation + Tender-ACL's own async cascades |
 | `TenderAssigneeOverridden` | membership | I-13 validate-and-emit |
 | `MFAReset` | membership | P-34 — sole audit record for an MFA reset, consumed by Audit Log's catch-all |
-| `TenantSeatOverageStarted`/`Resolved` | membership | Seat usage crosses/returns from over `licensed_seats` |
 | `TenantStateChanged` | membership | Relay of a consumed lifecycle event that actually changed `status`/`plan` — lets Workflow subscribe to one topic instead of three |
 | `TenantMembershipsPurged` | membership | Tenant offboarding — Delegation/Tender-ACL/Group-Mapping run their own cascade-deletes |
 | `TenantCreated` / `TrialStarted` | tenant | The only two events this service produces on `iam.tenant.events` |
@@ -303,21 +302,20 @@ No generic per-caller/per-endpoint rate limiter exists in `internal/adapter/inbo
 
 ### 10. Background reconcilers you may observe
 
-9 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
+8 CronJobs, one Helm manifest, each `cmd/reconciler --job=<name>` against the same image:
 
 | CronJob (`--job=`) | Schedule | Purpose |
 |---|---|---|
 | `invitation-expiry` | `*/5 * * * *` | Sweeps `pending_invitations` past `expires_at` → `expired`, sets `kc_cleanup_pending` |
 | `invitation-kc-cleanup` | `*/10 * * * *` | Idempotent `RealmProvisioner.DeleteUser` for rows with `kc_cleanup_pending` |
 | `realm-config-sync` | `*/10 * * * *` | Retries `realm_sync_pending` tenants against Realm Provisioner (T-15 Option A) |
-| `seat-overage-reconcile` | `0 */6 * * *` | Self-heals `overage_since`/`grace_ends_at` for any missed set/clear |
 | `trial-cleanup` | `0 2 * * *` | Hard-deletes trial tenants past grace beyond `trial_expired` |
 | `outbox-prune` | `0 3 * * *` | Prunes published `outbox_events` past `OUTBOX_RETENTION_DAYS` |
 | `processed-events-prune` | `0 4 * * *` | Prunes `processed_events` rows past `PROCESSED_EVENTS_TTL_DAYS` |
 | `parked-events-replay` | `*/5 * * * *` | EVT-18 backstop: replays events parked for a tenant before its row existed, once the row exists (I-1 normally replays them immediately) |
 | `trial-ledger-prune` | `30 4 * * *` | CR-4 retention: deletes `trial_signup_ledger` rows older than `TRIAL_LEDGER_RETENTION_DAYS` (default 730), in batches, so the email HMAC is not kept forever (GDPR storage limitation); a pruned email can start a new trial |
 
-The 5 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_seat_overage_active`, `iam_org_membership_pending_invitations_stale`, `iam_org_membership_parked_tenant_events_stale`), plus a 6th exporter for the `iam_rls_violations_total` counter (`pgadapter.GaugeRepository.RLSViolationCounts`, mirrors `iam-user-profile`'s `runRLSViolationExporter`), run as **ticker goroutines inside `cmd/server`** (`runBusinessExporters`, `exporters.go`), not CronJobs.
+The 4 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_membership_realm_sync_pending`, `iam_org_membership_pending_invitations_stale`, `iam_org_membership_parked_tenant_events_stale`), plus a 5th exporter for the `iam_rls_violations_total` counter (`pgadapter.GaugeRepository.RLSViolationCounts`, mirrors `iam-user-profile`'s `runRLSViolationExporter`), run as **ticker goroutines inside `cmd/server`** (`runBusinessExporters`, `exporters.go`), not CronJobs.
 
 ---
 
@@ -325,7 +323,7 @@ The 5 business-metric gauges (`iam_org_membership_tenant_ownerless`, `iam_org_me
 
 ### Prerequisites
 
-- Go 1.26.10+
+- Go 1.26.11+
 - Docker (Postgres, PgBouncer, Valkey, floci — `make docker-up`)
 - `GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/*` (`GONOSUMDB` too) and an SSH key registered with the BCBP org
 
@@ -610,7 +608,6 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `TOKEN_SERVICE_BASE_URL` / `TOKEN_SERVICE_TIMEOUT_MS` | — / `1000` | AUTH-9/IB-3 service-account-not-grantable check (P-6/I-3 invite/register, P-10/P-28 role-grant) — fails open, degrading to allow (structural composite-FK bar, TR-8/DM-4, is the primary guarantee) |
 | `AUDIT_LOG_BASE_URL` / `AUDIT_LOG_TIMEOUT_MS` | — / `3000` | iam-audit-log AL-5 direct-write for `config.tenant_setting.changed` (P-2), `invitation.created/revoked/expired` (P-6/P-31/reconciler). **Fail-open** — calls are best-effort fire-and-forget; an outage never blocks P-2 or invite flows. Unset logs a WARN at startup and skips all AL-5 writes silently. Sustained failures surface on `IAMAuditDeliveryFailed` alert (`iam_org_membership_audit_delivery_failed_total{entry_type}`) |
 | `INVITATION_EXPIRY_DAYS` | `7` | Must equal Keycloak's invite action-token lifespan |
-| `SEAT_OVERAGE_GRACE_DAYS` | `30` | Informational seat-overage grace window (SEAT-5) — Billing owns enforcement |
 | `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's cancellation-to-suspension threshold — this service owns the math so RP's sweep never keeps a second copy of the rule |
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300` | EVT-15 future-time clamp |
 | `INVITE_REINVITE_COOLDOWN_MINUTES` / `INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR` | `15` / `60` / `10` | PI-11/PI-12 invite throttles (per email / per tenant / per inviting actor, SECURITY-5) |
@@ -647,7 +644,7 @@ Per the IAM Platform Observability Standard's three-tier hierarchy (`internal/ad
 
 - **Tier 1 — `platform_*`** (concept common across domains; carries `domain="iam"` + `service` + `environment`): `platform_messages_received_total` / `platform_messages_processed_total` / `platform_messages_failed_total` (`{queue,event_type[,reason]}`, SQS consumer lifecycle — recorded by platform-events), `platform_duplicate_messages_total{queue,event_type}` (IDEMP-4, counted by platform-events' inbox), `platform_dlq_messages_total{operation,event_type,reason}` (counted only by platform-events, once per DLQ forward; this service's own reject reasons — `future_time_clamp` (EVT-15) and `schema_violation` — are on the Tier-3 `iam_org_membership_consumed_event_rejected_total`, and both page), `platform_dependency_request_seconds{dependency,operation,outcome}` (`dependency` = the downstream peer, e.g. catalog\|group_mapping\|delegation — distinct from the `service` const label). Tier-1 collectors are built from the central Platform Observability Registry (`gincommon.NewShared*Vec`). Identity: `gincommon.Config.Domain = "iam"` (also `OBSERVABILITY_DOMAIN`), environment from `APP_ENV` (`local|dev|test|staging|prod` only). Label values follow the registry vocabulary, and CI runs platform-gincommon's `metricslint` on a real scrape (`make metrics-lint`).
 - **Tier 2 — `iam_*`** (concept shared across IAM-domain services; carries `service` + `environment`, no `domain`): `iam_rls_violations_total{violation_type}`, `iam_auth_session_revoke_failed_total{reason}`.
-- **Tier 3 — `iam_org_membership_*`** (unique to this service; built with `gincommon.NewCounterVec`/`NewGauge`/`NewHistogramVec`, which validate the name and derive the prefix from the service name — no raw `prometheus.New*`): `unknown_event_acknowledged_total{event_type}`, `consumed_event_rejected_total{event_type,reason}`, `processed_events_duplicates_total{consumer}`, `dependency_call_duration_seconds` / `dependency_call_failures_total{target_service,endpoint[,reason]}`, `delegate_suspend_impact_total`, `delegate_removal_blocked_total{scope}`, `delegate_reassignment_total{action}`, `tenant_ownerless_escalated_total{reason}`, `seat_overage_started_total{cause}`, `seat_limit_reached_total{plan}`, `invite_throttled_total{reason}`, `realm_sync_failed_total{stage}`, `membership_exists_check_total{caller,result}` (I-15), `public_tenant_resolve_total{result}` (PUB-1), `catalog_cache_invalidated_total` (catalog-orgm-q Gap-12), `audit_delivery_failed_total{entry_type}` (AL-5 best-effort failure counter — fires `IAMAuditDeliveryFailed` alert when nonzero for 10 min), `trial_eligibility_check_total{result}` (CR-4 Signup BFF gate, `eligible`\|`already_used`), `department_list_total{result}` (I-20 call volume), `lifecycle_event_skipped_total{event_type}` (EVT-14, reclassified to Tier 3), `lifecycle_event_lag_seconds{event_type}` (reclassified to Tier 3), plus 5 gauges refreshed by ticker goroutines every 5 minutes against the BYPASSRLS sys pool: `tenant_ownerless`, `realm_sync_pending`, `seat_overage_active`, `pending_invitations_stale`, `parked_tenant_events_stale`.
+- **Tier 3 — `iam_org_membership_*`** (unique to this service; built with `gincommon.NewCounterVec`/`NewGauge`/`NewHistogramVec`, which validate the name and derive the prefix from the service name — no raw `prometheus.New*`): `unknown_event_acknowledged_total{event_type}`, `consumed_event_rejected_total{event_type,reason}`, `processed_events_duplicates_total{consumer}`, `dependency_call_duration_seconds` / `dependency_call_failures_total{target_service,endpoint[,reason]}`, `delegate_suspend_impact_total`, `delegate_removal_blocked_total{scope}`, `delegate_reassignment_total{action}`, `tenant_ownerless_escalated_total{reason}`, `seat_limit_reached_total{plan}`, `invite_throttled_total{reason}`, `realm_sync_failed_total{stage}`, `membership_exists_check_total{caller,result}` (I-15), `public_tenant_resolve_total{result}` (PUB-1), `catalog_cache_invalidated_total` (catalog-orgm-q Gap-12), `audit_delivery_failed_total{entry_type}` (AL-5 best-effort failure counter — fires `IAMAuditDeliveryFailed` alert when nonzero for 10 min), `trial_eligibility_check_total{result}` (CR-4 Signup BFF gate, `eligible`\|`already_used`), `department_list_total{result}` (I-20 call volume), `lifecycle_event_skipped_total{event_type}` (EVT-14, reclassified to Tier 3), `lifecycle_event_lag_seconds{event_type}` (reclassified to Tier 3), plus 4 gauges refreshed by ticker goroutines every 5 minutes against the BYPASSRLS sys pool: `tenant_ownerless`, `realm_sync_pending`, `pending_invitations_stale`, `parked_tenant_events_stale`.
 
 The full generated inventory is [`docs/observability/metric-registry.md`](docs/observability/metric-registry.md) (`make metrics-inventory`; commit it with any metric change). `/metrics` is served by `gincommon.MetricsHandler()` on `METRICS_PORT`. A CI script (`.github/scripts/check-metric-naming.sh`) enforces naming/suffix/label-set rules on every PR (no raw `prometheus.New*`; shared collectors use registry names only, service collectors Tier-3 names only), and `make metrics-lint` (`.github/scripts/metricslint.sh`) runs gincommon's `metricslint` on a real scrape, the alert/dashboard references and inventory drift. Passthrough `http_*`/`events_*`/`outbox_*`/`sqs_*` (`platform-gincommon`/`platform-events`) and `pgcommon_*` pool/query instruments round out the surface.
 
@@ -667,15 +664,15 @@ Alert rules live in `deploy/monitoring/app-alerts.yml` (26), `slo-rules.yml` (5)
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers + 6 metric-exporter goroutines (5 gauges + `iam_rls_violations_total` counter) |
-| `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 7 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
+| `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 8 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | One-shot schema migration (`cmd/migrate` → `postgres.MigrateSchema`: platform-events' `outbox.ApplySchema`, then the domain migrations); exits 0 on success or "already up to date", 1 on failure, with operator hints for a dirty migration or a version missing from the build |
 
-Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.26.10-alpine` builder; a `debian:bookworm-slim` `certs` stage, whose patched CA bundle (ca-certificates deb12u2, DLA-4845-1) replaces distroless's until distroless ships it; and the `gcr.io/distroless/static-debian12:nonroot` runtime (no shell, non-root, UID 65532), into which only the three compiled binaries and that CA bundle are copied. `EXPOSE 8080 9090`.
+Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.26.11-alpine` builder; a `debian:bookworm-slim` `certs` stage, whose patched CA bundle (ca-certificates deb12u2, DLA-4845-1) replaces distroless's until distroless ships it; and the `gcr.io/distroless/static-debian12:nonroot` runtime (no shell, non-root, UID 65532), into which only the three compiled binaries and that CA bundle are copied. `EXPOSE 8080 9090`.
 
 ### Helm chart
 
-`deploy/helm/` renders one `Deployment` plus the 7 `CronJob`s above from the same image reference. HPA: `minReplicas: 2` / `maxReplicas: 8`, CPU 70% / memory 75%. PDB `minAvailable: 1`. Resources: CPU `100m`/`500m`, Memory `256Mi`/`512Mi`. `terminationGracePeriodSeconds: 75` (max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain + 10 s pool drain + 5 s buffer). Schema migrations run once per release in the `<release>-migrate` pre-install/pre-upgrade hook Job (`deploy/helm/templates/migrate-job.yaml`, hook weight 0 — the chart's Secret is a weight -10 hook so `MIGRATION_DATABASE_URL` exists first; `backoffLimit: 1`, `activeDeadlineSeconds: 900`). A failed migration fails the release instead of crash-looping pods. The migrate pod deliberately does not carry the chart's selector labels, so the Service, PDB and NetworkPolicy never select it. Replicas start with `RUN_MIGRATIONS=false`; `migrations.job.enabled=false` falls back to migrate-at-startup. `startupProbe` covers cold start (120 s budget) before liveness/readiness take over.
+`deploy/helm/` renders one `Deployment` plus the 8 `CronJob`s above from the same image reference. HPA: `minReplicas: 2` / `maxReplicas: 8`, CPU 70% / memory 75%. PDB `minAvailable: 1`. Resources: CPU `100m`/`500m`, Memory `256Mi`/`512Mi`. `terminationGracePeriodSeconds: 75` (max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain + 10 s pool drain + 5 s buffer). Schema migrations run once per release in the `<release>-migrate` pre-install/pre-upgrade hook Job (`deploy/helm/templates/migrate-job.yaml`, hook weight 0 — the chart's Secret is a weight -10 hook so `MIGRATION_DATABASE_URL` exists first; `backoffLimit: 1`, `activeDeadlineSeconds: 900`). A failed migration fails the release instead of crash-looping pods. The migrate pod deliberately does not carry the chart's selector labels, so the Service, PDB and NetworkPolicy never select it. Replicas start with `RUN_MIGRATIONS=false`; `migrations.job.enabled=false` falls back to migrate-at-startup. `startupProbe` covers cold start (120 s budget) before liveness/readiness take over.
 
 ### Migration safety
 
@@ -804,12 +801,11 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 
 | Consumer | Queue | Events consumed |
 |---|---|---|
-| **Audit Log Service** | `membership-audit-q` | Catch-all — all 12 membership events + `TenantCreated`, `TrialStarted` on `iam.tenant.events` |
+| **Audit Log Service** | `membership-audit-q` | Catch-all — all 10 membership events + `TenantCreated`, `TrialStarted` on `iam.tenant.events` |
 | **AuthZ Enrichment** | `membership-authz-q` | `DepartmentMembership*`, `TenantRole*`, `MembershipRevoked` — cache invalidation for `om:memberships:{tenant}:{user}` |
 | **Realm Provisioner** | `membership-realm-q` | `DepartmentMembershipGranted`/`LevelChanged`, `TenantRoleGranted`/`Revoked` — add/drop `requires-mfa` realm role |
-| **Notification** | `membership-notification-q` | `DepartmentMembership*`, `TenantRole*`, `TenantSeatOverage*` — user/admin emails + seat-overage banner |
+| **Notification** | `membership-notification-q` | `DepartmentMembership*`, `TenantRole*` — user/admin emails |
 | **Workflow Service** | `membership-workflow-q` | `TenderAssigneeOverridden`, `DepartmentMembership*`, `TenantStateChanged`, `MembershipRevoked`, `TenantMembershipsPurged` — assignee reconciliation + tenant-state pause/resume/terminate + removed-user cleanup + tenant purge |
-| **Billing** | `membership-billing-q` | `TenantSeatOverageStarted`/`Resolved` only — seat-overage grace/enforcement |
 | **Entitlements Service** | `membership-entitlements-q` | `TenantMembershipsPurged` only (CD-25) — purge per-tenant snapshots on offboarding |
 | **Usage & Metering** | `membership-usage-q` | `TenantMembershipsPurged` only (CD-25) — purge raw usage events on offboarding |
 | **Delegation Service** | `delegation-cascade-q` | `MembershipRevoked`, `TenantMembershipsPurged` — async end of delegation rows on removal/offboarding |
@@ -826,7 +822,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 |---|---|
 | **PostgreSQL** (`org_membership` DB, shared RDS Multi-AZ) | Primary store — 10 tables, `FORCE ROW LEVEL SECURITY`, PgBouncer transaction pooling |
 | **Valkey** (Redis-compatible) | Advisory cache (`om:memberships:*`, 300 s ± 30 s jitter) — a miss or outage falls through to Postgres, never a hard failure |
-| **AWS SNS** | Two topics: `iam.membership.events` (12 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
+| **AWS SNS** | Two topics: `iam.membership.events` (10 event types via `RoutingPublisher`) and `iam.tenant.events` (2 event types) |
 | **AWS SQS** | `tenant-orgm-q`, `billing-orgm-q`, and `catalog-orgm-q` (each with a `-dlq`, `maxReceiveCount=5`); `catalog-orgm-q` subscribes to Catalog's `iam-catalog-events` with filter `[DepartmentCatalogChanged, PlanCatalogChanged]` (SRE/platform Terraform) |
 | **AWS Glue Schema Registry** | `iam-membership-events` and `iam-tenant-events` — version UUIDs resolved once at startup by definition (publish); consumers only strip the header, and validate against embedded consumed schemas |
 

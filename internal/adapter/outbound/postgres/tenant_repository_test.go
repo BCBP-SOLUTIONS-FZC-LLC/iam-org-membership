@@ -15,11 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tenantRow builds a 27-element []any in tenantSelectColumns order for use
+// tenantRow builds a 26-element []any in tenantSelectColumns order for use
 // with fakeRow/fakeRows in tests that need a scanTenant-compatible row.
 // Pass nil for featureFlagsJSON to get a NULL feature_flags column;
 // pass nil for deletedAt for a soft-delete = NULL row (non-deleted tenant).
-// CD-37: residency_mode added at index 22 (between overage_since and record_version).
 func tenantRow(featureFlagsJSON []byte, deletedAt *time.Time) []any { //nolint:unparam
 	now := time.Now().UTC().Truncate(time.Second)
 	return []any{
@@ -53,9 +52,9 @@ func tenantRow(featureFlagsJSON []byte, deletedAt *time.Time) []any { //nolint:u
 		"en",
 		// licensed_seats
 		int(10),
-		// ownerless_since, overage_since (*time.Time)
-		(*time.Time)(nil), (*time.Time)(nil),
-		// residency_mode (CD-37, index 22)
+		// ownerless_since (*time.Time)
+		(*time.Time)(nil),
+		// residency_mode (index 21)
 		string(domain.ResidencyModeStandard),
 		// record_version
 		int64(1),
@@ -194,81 +193,6 @@ func TestTenantRepo_SetFeatureFlags_ExecErrorPassesThrough(t *testing.T) {
 	err := NewTenantRepository(nil).
 		SetFeatureFlags(injectTx(context.Background(), tx), uuid.New(), []byte(`{}`), 1)
 	assert.ErrorIs(t, err, execErr)
-}
-
-// ── LockSeatOccupancy (SEAT-1 preflight FOR UPDATE) ─────────────────────
-
-func TestTenantRepo_LockSeatOccupancy_HappyPath(t *testing.T) {
-	callCount := 0
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			callCount++
-			switch callCount {
-			case 1:
-				return &fakeRow{values: []any{10, (*time.Time)(nil)}}
-			case 2:
-				return &fakeRow{values: []any{7}}
-			default:
-				return &fakeRow{values: []any{2}}
-			}
-		},
-	}
-	occ, err := NewTenantRepository(nil).
-		LockSeatOccupancy(injectTx(context.Background(), tx), uuid.New())
-	require.NoError(t, err)
-	assert.Equal(t, 10, occ.LicensedSeats)
-	assert.Equal(t, 7, occ.Active)
-	assert.Equal(t, 2, occ.Pending)
-}
-
-func TestTenantRepo_LockSeatOccupancy_FirstQueryErrorPassesThrough(t *testing.T) {
-	queryErr := errors.New("lock failed")
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{err: queryErr}
-		},
-	}
-	_, err := NewTenantRepository(nil).
-		LockSeatOccupancy(injectTx(context.Background(), tx), uuid.New())
-	assert.ErrorIs(t, err, queryErr)
-}
-
-func TestTenantRepo_LockSeatOccupancy_SecondQueryErrorPassesThrough(t *testing.T) {
-	queryErr := errors.New("active count failed")
-	callCount := 0
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			callCount++
-			if callCount == 1 {
-				return &fakeRow{values: []any{10, (*time.Time)(nil)}}
-			}
-			return &fakeRow{err: queryErr}
-		},
-	}
-	_, err := NewTenantRepository(nil).
-		LockSeatOccupancy(injectTx(context.Background(), tx), uuid.New())
-	assert.ErrorIs(t, err, queryErr)
-}
-
-func TestTenantRepo_LockSeatOccupancy_ThirdQueryErrorPassesThrough(t *testing.T) {
-	queryErr := errors.New("pending count failed")
-	callCount := 0
-	tx := &fakeTx{
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			callCount++
-			switch callCount {
-			case 1:
-				return &fakeRow{values: []any{10, (*time.Time)(nil)}}
-			case 2:
-				return &fakeRow{values: []any{7}}
-			default:
-				return &fakeRow{err: queryErr}
-			}
-		},
-	}
-	_, err := NewTenantRepository(nil).
-		LockSeatOccupancy(injectTx(context.Background(), tx), uuid.New())
-	assert.ErrorIs(t, err, queryErr)
 }
 
 // ── optimisticConflictOrNotFound ────────────────────────────────────────
@@ -525,7 +449,7 @@ func TestTenantRepo_ClearOwnerlessSince_ExecErrorPassesThrough(t *testing.T) {
 	assert.ErrorIs(t, err, execErr)
 }
 
-// ── LockByID / LicensedSeatsForUpdate / SetOverageSince / SetLastEventAt ─
+// ── LockByID / LicensedSeatsForUpdate / SetLastEventAt ───────────────────
 
 func TestTenantRepo_LockByID_ExecErrorPassesThrough(t *testing.T) {
 	execErr := errors.New("lock failed")
@@ -548,18 +472,6 @@ func TestTenantRepo_LicensedSeatsForUpdate_ReturnsCount(t *testing.T) {
 		LicensedSeatsForUpdate(injectTx(context.Background(), tx), uuid.New())
 	require.NoError(t, err)
 	assert.Equal(t, 15, n)
-}
-
-func TestTenantRepo_SetOverageSince_ExecErrorPassesThrough(t *testing.T) {
-	execErr := errors.New("exec failed")
-	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, execErr
-		},
-	}
-	err := NewTenantRepository(nil).
-		SetOverageSince(injectTx(context.Background(), tx), uuid.New(), nil)
-	assert.ErrorIs(t, err, execErr)
 }
 
 func TestTenantRepo_SetLastEventAt_ExecErrorPassesThrough(t *testing.T) {
