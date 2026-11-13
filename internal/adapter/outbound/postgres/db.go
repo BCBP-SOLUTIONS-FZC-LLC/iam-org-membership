@@ -83,8 +83,8 @@ func SystemPoolConfig(dsn string, log port.Logger) pgcommon.Config {
 }
 
 // SystemDSNFromEnv returns the DSN for the privileged cross-tenant pool used
-// by the reconciler binary and the seat-overage / realm-sync / trial-cleanup
-// jobs. In production it MUST point to org_membership_migrator (BYPASSRLS,
+// by the reconciler binary and the realm-sync / trial-cleanup jobs.
+// In production it MUST point to org_membership_migrator (BYPASSRLS,
 // RLS-4). Falls back to DSNFromEnv() for local dev — cross-tenant queries
 // will then be RLS-filtered to zero rows (safe no-op).
 func SystemDSNFromEnv() string {

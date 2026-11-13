@@ -247,7 +247,7 @@ func main() {
 	defer pool.Close()
 
 	// sysPool: BYPASSRLS pool used by reconciler jobs, cross-tenant metric
-	// exporters, I-16, and the seat-overage reconciler (LLD §4.4). In
+	// exporters, and I-16 (LLD §4.4). In
 	// production SYSTEM_DATABASE_URL must point to org_membership_migrator
 	// (RLS-4). In dev it falls back to DSNFromEnv() so single-role setups
 	// keep working, with a warning so the operator knows cross-tenant
@@ -551,7 +551,6 @@ func main() {
 	// ── 7c. Business-observability exporter goroutines (§11.2) ──────────
 	// Populate iam_org_membership_tenant_ownerless /
 	// iam_org_membership_realm_sync_pending /
-	// iam_org_membership_seat_overage_active /
 	// iam_org_membership_pending_invitations_stale gauges every
 	// 5 minutes from the sysPool (BYPASSRLS). Follows the sibling
 	// iam-user-profile2 pattern — exporters live as goroutines, not
@@ -596,7 +595,6 @@ func main() {
 	tokenServiceClient := tokenserviceclient.New(log)
 	auditLogClient := auditlogclient.New(log)
 
-	seatOverageDays := envInt("SEAT_OVERAGE_GRACE_DAYS", 30)
 	// I-16 (§16 RP-C3): bound against sysPool (BYPASSRLS), NOT pool — RP's
 	// subscription-lapse sweep needs every tenant past grace, cross-tenant,
 	// the same reason the reconciler jobs and business-metric exporters
@@ -618,7 +616,7 @@ func main() {
 		WithIDPReader(rpClient).
 		WithTxRunner(txRunner)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
-	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log, seatOverageDays).
+	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log).
 		WithTokenServiceClient(tokenServiceClient)
 	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogReader, delegationCheckClient, wfClient, cache, txRunner).
 		WithLogger(log).

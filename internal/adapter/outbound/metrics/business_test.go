@@ -68,7 +68,6 @@ func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	assert.NotNil(t, UnknownEventAcknowledged, "UnknownEventAcknowledged must be initialised")
 	assert.NotNil(t, DelegateSuspendImpact, "DelegateSuspendImpact must be initialised")
 	assert.NotNil(t, TenantOwnerlessEscalated, "TenantOwnerlessEscalated must be initialised")
-	assert.NotNil(t, SeatOverageStarted, "SeatOverageStarted must be initialised")
 	assert.NotNil(t, SeatLimitReached, "SeatLimitReached must be initialised")
 	assert.NotNil(t, InviteThrottled, "InviteThrottled must be initialised")
 	assert.NotNil(t, RealmSyncFailed, "RealmSyncFailed must be initialised")
@@ -77,7 +76,6 @@ func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	assert.NotNil(t, MembershipExistsCheck, "MembershipExistsCheck must be initialised")
 	assert.NotNil(t, TenantOwnerless, "TenantOwnerless must be initialised")
 	assert.NotNil(t, RealmSyncPending, "RealmSyncPending must be initialised")
-	assert.NotNil(t, SeatOverageActive, "SeatOverageActive must be initialised")
 	assert.NotNil(t, PendingInvitationsStale, "PendingInvitationsStale must be initialised")
 	assert.NotNil(t, PlanChangeCheckTotal, "PlanChangeCheckTotal must be initialised")
 }
@@ -105,7 +103,6 @@ func TestMetricNamesStable(t *testing.T) {
 	AuthSessionRevokeFailed.WithLabelValues("stability_check").Inc()
 	DelegateSuspendImpact.WithLabelValues("stability_check").Inc()
 	TenantOwnerlessEscalated.WithLabelValues("stability_check").Inc()
-	SeatOverageStarted.WithLabelValues("stability_check").Inc()
 	SeatLimitReached.WithLabelValues("stability_check").Inc()
 	InviteThrottled.WithLabelValues("stability_check").Inc()
 	RealmSyncFailed.WithLabelValues("stability_check").Inc()
@@ -132,7 +129,6 @@ func TestMetricNamesStable(t *testing.T) {
 		"iam_org_membership_unknown_event_acknowledged_total",
 		"iam_org_membership_delegate_suspend_impact_total",
 		"iam_org_membership_tenant_ownerless_escalated_total",
-		"iam_org_membership_seat_overage_started_total",
 		"iam_org_membership_seat_limit_reached_total",
 		"iam_org_membership_invite_throttled_total",
 		"iam_org_membership_realm_sync_failed_total",
@@ -140,7 +136,6 @@ func TestMetricNamesStable(t *testing.T) {
 		"iam_org_membership_delegate_reassignment_total",
 		"iam_org_membership_tenant_ownerless",
 		"iam_org_membership_realm_sync_pending",
-		"iam_org_membership_seat_overage_active",
 		"iam_org_membership_pending_invitations_stale",
 		"iam_org_membership_plan_change_check_total",
 		"iam_org_membership_department_list_total",
@@ -261,7 +256,6 @@ func TestHelpTextsMentionInvariantIDs(t *testing.T) {
 	need := map[string]string{
 		"iam_org_membership_lifecycle_event_skipped_total":     "EVT-14",
 		"platform_dlq_messages_total":                          "dead-letter",
-		"iam_org_membership_seat_overage_started_total":        "SEAT-5",
 		"iam_org_membership_seat_limit_reached_total":          "SEAT-1",
 		"iam_org_membership_tenant_ownerless_escalated_total":  "TM-12",
 		"iam_org_membership_processed_events_duplicates_total": "IDEMP-4",

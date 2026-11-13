@@ -20,7 +20,7 @@ func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 		&t.CancelledAt, &suspensionSource, &t.LastEventAt,
 		&t.RealmID, &realmType, &t.KeycloakShard, &t.MFAFreshnessSeconds,
 		&t.LocalAccountsEnabled, &t.RealmSyncPending, &t.DefaultLocale,
-		&t.LicensedSeats, &t.OwnerlessSince, &t.OverageSince, &residencyMode,
+		&t.LicensedSeats, &t.OwnerlessSince, &residencyMode,
 		&t.RecordVersion, &t.CreatedAt, &t.UpdatedAt, &t.DeletedAt,
 	)
 	if err != nil {

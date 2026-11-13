@@ -87,19 +87,6 @@ type MFAResetPayload struct {
 	ActorID  uuid.UUID `json:"actor_id"`
 }
 
-type TenantSeatOverageStartedPayload struct {
-	TenantID           uuid.UUID `json:"tenant_id"`
-	LicensedSeats      int       `json:"licensed_seats"`
-	ActiveUsers        int       `json:"active_users"`
-	PendingInvitations int       `json:"pending_invitations"`
-	OverageSince       time.Time `json:"overage_since"`
-}
-
-type TenantSeatOverageResolvedPayload struct {
-	TenantID   uuid.UUID `json:"tenant_id"`
-	ResolvedAt time.Time `json:"resolved_at"`
-}
-
 // TenantMembershipsPurgedPayload is EventTenantMembershipsPurged's data —
 // Core's own tenant-level cascade signal on a real
 // suspended/whatever→offboarded transition (see

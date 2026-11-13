@@ -100,7 +100,6 @@ type Tenant struct {
 	DefaultLocale          string
 	LicensedSeats          int           // T-8
 	OwnerlessSince         *time.Time    // T-13
-	OverageSince           *time.Time    // SEAT-5
 	ResidencyMode          ResidencyMode // CD-37: 'standard' (default) | 'strict'
 	RecordVersion          int64
 	CreatedAt              time.Time

@@ -676,18 +676,9 @@ definitions:
       active_users:
         example: 12
         type: integer
-      grace_ends_at:
-        format: date-time
-        type: string
       licensed_seats:
         example: 25
         type: integer
-      over_cap:
-        example: false
-        type: boolean
-      overage_since:
-        format: date-time
-        type: string
       pending_invitations:
         example: 3
         type: integer
@@ -822,8 +813,6 @@ definitions:
       mfa_freshness_seconds:
         type: integer
       name:
-        type: string
-      overage_since:
         type: string
       ownerless_since:
         type: string
@@ -2698,8 +2687,8 @@ paths:
       - roles
   /tenants/{id}/seat-usage:
     get:
-      description: AUTH-2. Returns `{active_users, pending_invitations, licensed_seats,
-        over_cap, overage_since, grace_ends_at}` (SEAT-1..5).
+      description: AUTH-2. Returns `{active_users, pending_invitations, licensed_seats}`
+        (SEAT-1).
       parameters:
       - description: Tenant UUID
         format: uuid

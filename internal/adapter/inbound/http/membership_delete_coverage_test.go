@@ -49,7 +49,7 @@ func buildRemoveSvc(mem *mhMemRepo, wf port.WorkflowClient, rp port.RealmProvisi
 	roles := &mhRoleRepo{}
 	return service.NewMembershipService(
 		mem, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{},
-		happyCacheStub{}, rp, wf, p8TxRunner{}, nil, 30,
+		happyCacheStub{}, rp, wf, p8TxRunner{}, nil,
 	)
 }
 
