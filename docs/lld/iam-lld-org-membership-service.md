@@ -3445,7 +3445,7 @@ The three gauges and `iam_rls_violations_total` are fed by the five exporter gor
 |---|---|
 | Availability / HTTP | `IAMOrgMembershipDown`, `…ReplicasMissing`, `…HighErrorRate`, `…CriticalErrorRate`, `…I8HotPathLatency`, `…HighLatency`, `…CriticalLatency` |
 | Inbound events | `IAMFutureLifecycleEventRejected` (EVT-15), `IAMConsumedEventSchemaViolation` (EVT-17), `IAMMalformedInboundMessage`, `IAMSignupProvisioningRejected` (warning — backstop dead-lettered a signup, rev 2.38), `IAMStaleLifecycleEventSkippedElevated` (EVT-14), `IAMUnknownEventType`, `IAMOrgMembershipConsumerDead` (`platform_messages_received_total` rate 0 per queue), `IAMOrgMembershipDLQBacklog` (`platform_dlq_depth > 0`), `IAMParkedTenantEventsStale` (warning — `iam_org_membership_parked_tenant_events_stale > 0` for 15 min, EVT-18, rev 2.41) |
-| Outbox | `IAMOrgMembershipOutboxDeadLetters`, `IAMOrgMembershipOutboxOrderingBlocked` (`platform_outbox_ordering_blocked_events > 0` for 15m), `IAMOrgMembershipOutboxBacklog` (`platform_outbox_oldest_pending_age > 300`) |
+| Outbox | `IAMOrgMembershipOutboxDeadLetters`, `IAMOrgMembershipOutboxOrderingBlocked` (`platform_outbox_ordering_blocked_events > 0` for 15m), `IAMOrgMembershipOutboxBacklog` (`platform_outbox_oldest_pending_age_seconds > 300`) |
 | Database | `IAMOrgMembershipDBPoolSaturated` (acquired / max connections), `IAMOrgMembershipDBAcquireErrors` (critical), `IAMOrgMembershipDBRetriesExhausted` (`platform_db_transaction_retries_exhausted_total`) |
 | Data integrity / business | `IAMOrgMembershipTenantHeaderPathMismatch` (info, IAPI-6), `IAMCrossTenantRLSViolation`, `IAMTenantOwnerless`, `IAMRealmSyncPendingSustained`, `IAMPendingInvitationsStale`, `IAMSessionRevokeFailedSustained` (AUTH-8) |
 
