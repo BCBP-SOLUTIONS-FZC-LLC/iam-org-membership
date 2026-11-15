@@ -173,7 +173,7 @@ spec:
           # failing transiently (no attempt is counted, so nothing dead-letters) or
           # the runner cannot keep up.
           expr: |
-            max by (domain, service, environment) (platform_outbox_oldest_pending_age{job={{ include "iam-org-membership.fullname" . | quote }}}) > 300
+            max by (domain, service, environment) (platform_outbox_oldest_pending_age_seconds{job={{ include "iam-org-membership.fullname" . | quote }}}) > 300
           for: 10m
           labels:
             severity: warning
