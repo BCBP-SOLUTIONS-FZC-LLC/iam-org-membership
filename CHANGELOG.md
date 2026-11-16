@@ -6,6 +6,18 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-15 — BUG-10, database connection failure)
+
+- **A database connection that cannot be opened now answers `503 DB_UNAVAILABLE`, not `500 INTERNAL_ERROR` (BUG-10, LLD §17):** `IsDBUnavailable` (`postgres/db.go`) also recognises `*pgconn.ConnectError` (refused / unreachable, no SQLSTATE), also when wrapped with `%w` or joined, so every route maps it like SQLSTATE class 08 (seen live on I-13 and CR-4); other errors keep their status.
+
+### Fixed (2026-11-16 — QA workbook gaps)
+
+- **Valkey is advisory, not a hard dependency:** a Valkey outage no longer fails `/readyz` and requests continue without the cache. `/readyz` answers 503 only when the pool, outbox or consumers are not ready.
+- **Outbox sequence grant (migration 000008):** the app role is granted the outbox sequence so event writes no longer fail on a permission error.
+- **Re-invite cooldown survives a revoke:** a revoked invitation keeps its email while the `INVITE_REINVITE_COOLDOWN_MINUTES` cooldown (default 60) can still match it; the invitation-expiry CronJob, which now reads the same setting, erases that PII on its next run after the cooldown has passed.
+- **Local floci setup:** queue subscriptions now use the LLD event filters, and a `tenant-realm-q` queue is added for `TrialStarted`.
+- **Other QA workbook gap fixes:** the remaining gap fixes from the O&M test report, with their tests.
+
 ### Changed (2026-11-04 — TND-Q4 role gate widened, LLD rev 2.47)
 
 - **I-13 assignee-override role gate widened: `tenant_admin` added (TND-Q4, confirmed 2026-11-04)** —
