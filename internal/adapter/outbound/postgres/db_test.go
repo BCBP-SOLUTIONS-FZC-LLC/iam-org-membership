@@ -322,6 +322,53 @@ func TestWrapConnErr_NilPassesThrough(t *testing.T) {
 	assert.NoError(t, wrapConnErr(nil))
 }
 
+// realConnectError returns a genuine *pgconn.ConnectError (its inner error is
+// unexported, so it cannot be built by hand): a dial to 127.0.0.1:1 is
+// refused at once, no database needed.
+func realConnectError(t *testing.T) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := pgconn.Connect(ctx, "postgres://bug10@127.0.0.1:1/bug10?sslmode=disable&connect_timeout=2")
+	if conn != nil {
+		_ = conn.Close(ctx)
+	}
+	var connectErr *pgconn.ConnectError
+	require.True(t, errors.As(err, &connectErr), "expected *pgconn.ConnectError, got %T: %v", err, err)
+	return err
+}
+
+// BUG-10: a connection that cannot be opened (*pgconn.ConnectError, no
+// SQLSTATE) is db_unavailable (503) like SQLSTATE class 08 — also when
+// wrapped with %w or joined — and nothing else changes class.
+func TestWrapConnErr_ConnectionFailureMapsToDBUnavailable(t *testing.T) {
+	ce := realConnectError(t)
+	for _, tc := range []struct {
+		name    string
+		err     error
+		want503 bool
+	}{
+		{"bare ConnectError", ce, true},
+		{"ConnectError wrapped twice with %w", fmt.Errorf("actor role check: %w", fmt.Errorf("begin tx: %w", ce)), true},
+		{"ConnectError inside errors.Join", errors.Join(errors.New("acquire"), ce), true},
+		{"SQLSTATE 08006 still db_unavailable", &pgconn.PgError{Code: "08006"}, true},
+		{"constraint violation 23514 unchanged", &pgconn.PgError{Code: "23514"}, false},
+		{"ordinary error unchanged", errors.New("something else went wrong"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapConnErr(tc.err)
+			assert.Equal(t, tc.want503, IsDBUnavailable(tc.err))
+			if tc.want503 {
+				assert.ErrorIs(t, got, domain.ErrDBUnavailable)
+				assert.ErrorIs(t, got, tc.err, "the original error stays in the chain")
+				return
+			}
+			assert.NotErrorIs(t, got, domain.ErrDBUnavailable)
+			assert.Same(t, tc.err, got, "a non-availability error passes through unchanged")
+		})
+	}
+}
+
 // TestItoa_ZeroReturns100 covers the n <= 0 branch in itoa.
 func TestItoa_ZeroReturns100(t *testing.T) {
 	assert.Equal(t, "100", itoa(0))
