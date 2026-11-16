@@ -18,9 +18,9 @@ import (
 
 const exporterInterval = 5 * time.Minute
 
-// runBusinessExporters starts 5 goroutines that keep the T-13, T-15,
-// SEAT-5, invitation-stale and parked-tenant-events-stale (EVT-18) gauges
-// fresh. gauges MUST be constructed
+// runBusinessExporters starts 4 goroutines that keep the T-13, T-15,
+// invitation-stale and parked-tenant-events-stale (EVT-18) gauges
+// fresh. Gauges MUST be constructed
 // over the BYPASSRLS sysPool (§4.4) since these queries are cross-tenant.
 //
 // Every exporter emits once at startup (populates the gauge before the
@@ -41,14 +41,6 @@ func runBusinessExporters(ctx context.Context, gauges *pgadapter.GaugeRepository
 			return err
 		}
 		metrics.RealmSyncPending.Set(float64(n))
-		return nil
-	})
-	go tick(ctx, "seat_overage_active", log, func() error {
-		n, err := gauges.CountSeatOverageActive(ctx)
-		if err != nil {
-			return err
-		}
-		metrics.SeatOverageActive.Set(float64(n))
 		return nil
 	})
 	go tick(ctx, "pending_invitations_stale", log, func() error {

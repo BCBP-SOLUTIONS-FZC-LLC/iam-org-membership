@@ -175,10 +175,6 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	var gdprWipeRan bool
-	// The SEAT-5 transition of a TenantSeatsChanged projection, read back
-	// after commit so the started metric counts committed transitions only.
-	var overage service.SeatOverageTransition
-	gucCtx = context.WithValue(gucCtx, seatOverageKey{}, &overage)
 	// One transaction: the processed_events claim (first, so a concurrent
 	// duplicate waits on it and is then skipped), the EVT-14 row lock, the
 	// projection and the relay events (port.Inbox).
@@ -205,7 +201,6 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	if txErr != nil {
 		return txErr
 	}
-	service.CountSeatOverageStarted(overage)
 
 	// Post-commit DELs run detached from the handler deadline: the commit has
 	// landed, so a ctx cancelled by a slow projection must not skip the
@@ -633,29 +628,14 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return prevStatus, prevPlan, err
 		}
-		if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:            port.LifecycleSetLicensedSeats,
 			LicensedSeats: payload.LicensedSeats,
-		}); err != nil {
-			return prevStatus, prevPlan, err
-		}
-		// GAP-18, SEAT-5: every TenantSeatsChanged consume re-evaluates the
-		// overage marker in the same transaction (a decrease below usage
-		// starts the grace clock, an increase can resolve it).
-		t, err := service.ReevaluateSeatOverage(ctx, c.tenants, tenantID, service.SeatOverageSource{
-			Actor: "iam-system", IPAddress: "system", UserAgent: "iam-org-membership/billing-orgm-q-consumer",
 		})
-		if h, ok := ctx.Value(seatOverageKey{}).(*service.SeatOverageTransition); ok {
-			*h = t
-		}
 		return prevStatus, prevPlan, err
 	}
 	return prevStatus, prevPlan, nil
 }
-
-// seatOverageKey carries a *service.SeatOverageTransition from the
-// TenantSeatsChanged projection back to Handle.
-type seatOverageKey struct{}
 
 // ── event classification ─────────────────────────────────────────────────
 

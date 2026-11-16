@@ -544,19 +544,11 @@ func (h *InternalHandler) GetSeatUsage(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	resp := gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"active_users":        usage.ActiveUsers,
 		"pending_invitations": usage.PendingInvitations,
 		"licensed_seats":      usage.LicensedSeats,
-		"over_cap":            usage.OverCap,
-	}
-	if usage.OverageSince != nil {
-		resp["overage_since"] = usage.OverageSince
-	}
-	if usage.GraceEndsAt != nil {
-		resp["grace_ends_at"] = usage.GraceEndsAt
-	}
-	c.JSON(http.StatusOK, resp)
+	})
 }
 
 // I-12 (GET /tenants/:id/tenders/:tender_id/acl/:user_id, "tender ACL

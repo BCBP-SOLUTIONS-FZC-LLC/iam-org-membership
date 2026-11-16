@@ -54,8 +54,8 @@ const (
 // this service uses two registries, iam-membership-events and
 // iam-tenant-events, one per SNS topic): construct one per topic with the
 // schema names that belong to that topic (see AllSchemaNames +
-// domain.TopicForEvent in cmd/server/main.go for how the 14 embedded
-// schemas are split 12/2 between the two).
+// domain.TopicForEvent in cmd/server/main.go for how the 12 embedded
+// schemas are split 10/2 between the two).
 //
 // Event Type strings (e.g. "DepartmentMembershipGranted") are the
 // PascalCase Glue schema name and envelope.type. schema-gov extract 0.4
@@ -319,8 +319,6 @@ var schemaFileNames = map[string]string{
 	"tenant_realm_ready.json":                  "TenantRealmReady",
 	"tenant_role_granted.json":                 domain.EventTenantRoleGranted,
 	"tenant_role_revoked.json":                 domain.EventTenantRoleRevoked,
-	"tenant_seat_overage_resolved.json":        domain.EventTenantSeatOverageResolved,
-	"tenant_seat_overage_started.json":         domain.EventTenantSeatOverageStarted,
 	"tenant_seats_changed.json":                "TenantSeatsChanged",
 	"tenant_state_changed.json":                domain.EventTenantStateChanged,
 	"tenant_subscription_cancelled.json":       "TenantSubscriptionCancelled",

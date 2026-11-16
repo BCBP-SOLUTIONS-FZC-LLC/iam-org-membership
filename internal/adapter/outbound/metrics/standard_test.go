@@ -94,7 +94,6 @@ func exerciseEveryCollector(t *testing.T) {
 	UnknownEventAcknowledged.WithLabelValues("SomethingNew").Inc()
 	DelegateSuspendImpact.WithLabelValues("true").Inc()
 	TenantOwnerlessEscalated.WithLabelValues("user_removed").Inc()
-	IncSeatOverageStarted(SeatOverageCauseReconciler)
 	IncSeatLimitReached("trial")
 	IncInviteThrottled(InviteThrottleReinviteTooSoon)
 	IncRealmSyncFailed("patch_realm_config")

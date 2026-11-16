@@ -46,10 +46,7 @@ func (f *fakeRealmProvisioner) PatchRealmConfig(context.Context, uuid.UUID, port
 // on the exact stage label without touching the real Prometheus registry.
 type fakeJobMetrics struct {
 	realmSyncFailedStages []string
-	seatOverageStarted    int
 }
-
-func (f *fakeJobMetrics) IncSeatOverageStarted() { f.seatOverageStarted++ }
 
 func (f *fakeJobMetrics) IncRealmSyncFailed(stage string) {
 	f.realmSyncFailedStages = append(f.realmSyncFailedStages, stage)

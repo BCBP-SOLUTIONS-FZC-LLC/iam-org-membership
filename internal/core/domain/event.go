@@ -51,10 +51,8 @@ const (
 	// catch-all filter) records the actor + target of the reset, per RP's
 	// confirmed HLD §8.2.6 flow ("Audit Log records MFAReset with actor and
 	// target").
-	EventMFAReset                  = "MFAReset"
-	EventTenantSeatOverageStarted  = "TenantSeatOverageStarted"
-	EventTenantSeatOverageResolved = "TenantSeatOverageResolved"
-	EventTenantStateChanged        = "TenantStateChanged"
+	EventMFAReset           = "MFAReset"
+	EventTenantStateChanged = "TenantStateChanged"
 	// EventMembershipRevoked replaces two cascades RemoveUser/DeleteMember
 	// used to perform synchronously, in the same DB transaction, via
 	// DelegationRepository.SoftDeleteForUser and
@@ -114,13 +112,12 @@ func TopicForEvent(eventType string) string {
 	}
 }
 
-// IsProducedEvent reports whether eventType is one of the 14 events this
+// IsProducedEvent reports whether eventType is one of the 12 events this
 // service publishes (and therefore registers in Glue). schema-gov extract
-// also writes the 14 consumed, producer-owned payloads (13 from Realm
-// Provisioner/Billing on tenant-orgm-q/billing-orgm-q, plus
-// DepartmentCatalogChanged from Catalog Service on catalog-orgm-q) into
-// the same schema directory for coverage; those must not be prefetched or
-// registered here.
+// also writes the consumed, producer-owned payloads (from Realm Provisioner/
+// Billing on tenant-orgm-q/billing-orgm-q, plus DepartmentCatalogChanged from
+// Catalog Service on catalog-orgm-q) into the same schema directory for
+// coverage; those must not be prefetched or registered here.
 func IsProducedEvent(eventType string) bool {
 	switch eventType {
 	case EventDepartmentMembershipGranted,
@@ -130,8 +127,6 @@ func IsProducedEvent(eventType string) bool {
 		EventTenantRoleRevoked,
 		EventTenderAssigneeOverridden,
 		EventMFAReset,
-		EventTenantSeatOverageStarted,
-		EventTenantSeatOverageResolved,
 		EventTenantStateChanged,
 		EventMembershipRevoked,
 		EventTenantMembershipsPurged,

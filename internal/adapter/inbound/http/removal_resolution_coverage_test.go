@@ -29,7 +29,7 @@ func buildResolutionHandler(wf port.WorkflowClient) *MembershipHandler {
 			return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: domain.MembershipActive, RecordVersion: 1}, nil
 		},
 	}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, wf, happyTxRunner{}, nil)
 	return &MembershipHandler{svc: svc}
 }
 

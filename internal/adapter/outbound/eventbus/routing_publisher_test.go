@@ -102,8 +102,6 @@ func TestP10Router003_MembershipEventsRouteToMembership(t *testing.T) {
 		domain.EventMembershipRevoked,
 		domain.EventTenderAssigneeOverridden,
 		domain.EventMFAReset,
-		domain.EventTenantSeatOverageStarted,
-		domain.EventTenantSeatOverageResolved,
 		domain.EventTenantStateChanged,
 	}
 	for _, et := range membershipTypes {

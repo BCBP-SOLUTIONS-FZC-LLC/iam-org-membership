@@ -2,11 +2,26 @@
 # Local push gate: Trivy CVE scan of the built image, the same check as
 # ci.yml's "Trivy CVE scan" job (make trivy). Builds the Docker image, so it
 # needs Docker running and takes a few minutes on a cold cache.
-# Skip once with `git push --no-verify` or SKIP_TRIVY=1 git push.
+# Skip once with `git push --no-verify` or SKIP_TRIVY=1 git push. A push that
+# only deletes remote refs (git push origin --delete <branch>) is skipped:
+# nothing is uploaded, so there is no image to check.
 set -euo pipefail
 
 if [ "${SKIP_TRIVY:-}" = "1" ]; then
   echo "[pre-push] SKIP_TRIVY=1 — skipping Trivy scan"
+  exit 0
+fi
+
+# stdin: one "<local ref> <local oid> <remote ref> <remote oid>" line per ref;
+# a deletion has an all-zero local oid.
+pushes_commits=0
+while read -r _local_ref local_oid _remote_ref _remote_oid; do
+  case "$local_oid" in
+    *[!0]*) pushes_commits=1 ;;
+  esac
+done
+if [ "$pushes_commits" = "0" ]; then
+  echo "[pre-push] only deleting remote refs — skipping Trivy scan"
   exit 0
 fi
 

@@ -1,7 +1,7 @@
 // internal_handler_supplement_test.go fills handler-layer coverage gaps in
 // InternalHandler that are not covered by the existing test suite:
 //
-//   - GetSeatUsage (71.4%): service error path, OverageSince field population
+//   - GetSeatUsage: service error path
 //   - CheckMemberExists (78.3%): inactive member (Status != MembershipActive),
 //     ErrMemberNotFound path
 //   - AssignFromGroups (68.8%): user_id nil check, service error path
@@ -12,7 +12,6 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -33,7 +32,7 @@ func TestInternalGetSeatUsage_ServiceError_500(t *testing.T) {
 	svc := service.NewMembershipService(
 		&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{},
 		tenants, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{},
-		&drhWorkflowClient{}, happyTxRunner{}, nil, 30,
+		&drhWorkflowClient{}, happyTxRunner{}, nil,
 	)
 	h := &InternalHandler{membership: svc}
 
@@ -43,34 +42,6 @@ func TestInternalGetSeatUsage_ServiceError_500(t *testing.T) {
 	h.GetSeatUsage(c)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-// TestInternalGetSeatUsage_WithOverageSince_IncludesField verifies that when
-// the tenant has OverageSince set (and seatOverageDays > 0), the response
-// includes both "overage_since" and "grace_ends_at".
-func TestInternalGetSeatUsage_WithOverageSince_IncludesField(t *testing.T) {
-	overageStart := time.Now().UTC().Add(-48 * time.Hour)
-	tenants := &happyTenantRepo{findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
-		return &domain.Tenant{ID: id, LicensedSeats: 5, OverageSince: &overageStart}, nil
-	}}
-	mem := &mhMemRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 6, nil }}
-	inv := &iahInviteRepo{countPendingFn: func(context.Context, uuid.UUID) (int, error) { return 0, nil }}
-	// seatOverageDays=30 so GraceEndsAt will be populated.
-	svc := service.NewMembershipService(
-		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
-		tenants, inv, happyCacheStub{}, &happyRPClient{},
-		&drhWorkflowClient{}, happyTxRunner{}, nil, 30,
-	)
-	h := &InternalHandler{membership: svc}
-
-	tenantID := uuid.New()
-	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
-	setParams(c, "id", tenantID.String())
-	h.GetSeatUsage(c)
-
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), `"overage_since"`)
-	assert.Contains(t, w.Body.String(), `"grace_ends_at"`)
 }
 
 // ── CheckMemberExists error paths ─────────────────────────────────────────
@@ -85,7 +56,7 @@ func TestInternalCheckMemberExists_NotFound_200Active_False(t *testing.T) {
 	svc := service.NewMembershipService(
 		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{},
-		&drhWorkflowClient{}, happyTxRunner{}, nil, 30,
+		&drhWorkflowClient{}, happyTxRunner{}, nil,
 	)
 	h := &InternalHandler{membership: svc}
 
@@ -110,7 +81,7 @@ func TestInternalCheckMemberExists_Suspended_200Active_False(t *testing.T) {
 	svc := service.NewMembershipService(
 		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{},
-		&drhWorkflowClient{}, happyTxRunner{}, nil, 30,
+		&drhWorkflowClient{}, happyTxRunner{}, nil,
 	)
 	h := &InternalHandler{membership: svc}
 
@@ -134,7 +105,7 @@ func TestInternalCheckMemberExists_Active_200Active_True(t *testing.T) {
 	svc := service.NewMembershipService(
 		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{},
-		&drhWorkflowClient{}, happyTxRunner{}, nil, 30,
+		&drhWorkflowClient{}, happyTxRunner{}, nil,
 	)
 	h := &InternalHandler{membership: svc}
 
@@ -157,7 +128,7 @@ func TestInternalCheckMemberExists_ServiceError_Propagates(t *testing.T) {
 	svc := service.NewMembershipService(
 		mem, &mhRoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{},
-		&drhWorkflowClient{}, happyTxRunner{}, nil, 30,
+		&drhWorkflowClient{}, happyTxRunner{}, nil,
 	)
 	h := &InternalHandler{membership: svc}
 

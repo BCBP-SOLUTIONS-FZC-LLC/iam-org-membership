@@ -6,17 +6,26 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
-### Fixed (2026-11-15 — BUG-10, database connection failure)
+### Removed (2026-11-13 — CD-54 seat-overage retirement, LLD rev 2.49)
 
-- **A database connection that cannot be opened now answers `503 DB_UNAVAILABLE`, not `500 INTERNAL_ERROR` (BUG-10, LLD §17):** `IsDBUnavailable` (`postgres/db.go`) also recognises `*pgconn.ConnectError` (refused / unreachable, no SQLSTATE), also when wrapped with `%w` or joined, so every route maps it like SQLSTATE class 08 (seen live on I-13 and CR-4); other errors keep their status.
+- **CD-54: Seat-overage feature fully retired** — Prepaid seat model means overage cannot occur; member creation is blocked at SEAT-1 when `licensed_seats` are exhausted. `licensed_seats` reductions land only at renewal; Core never receives a value below seats in use (IAM-4). Removed:
+  - `TenantSeatOverageStarted` and `TenantSeatOverageResolved` events, their Glue schemas (`tenant_seat_overage_started.json`, `tenant_seat_overage_resolved.json`), and their entries in `api/asyncapi.yaml` and `domain/event.go`. Membership event count on `iam.membership.events` reduced from 12 to 10.
+  - `seat-overage-reconcile` CronJob (`cmd/reconciler/jobs/seat_overage.go` deleted, removed from `cmd/reconciler/main.go` registry, removed from `deploy/helm/values.yaml`). CronJob count reduced from 9 to 8.
+  - `overage_since` column from `domain.Tenant`, `tenants` SQL queries (`tenantSelectColumns`, `scanTenant`), and all DTOs (`TenantResponse`, `SeatUsageResponse`). `SeatUsageResponse` / `SeatUsage` now returns only `{active_users, pending_invitations, licensed_seats}`.
+  - `iam_org_membership_seat_overage_active` gauge, `iam_org_membership_seat_overage_started_total` counter, and `SeatOverageActive`/`SeatOverageStarted` package vars from `metrics/business.go`. Exporter goroutine count in `cmd/server/exporters.go` reduced from 5 to 4.
+  - `SEAT_OVERAGE_GRACE_DAYS` env var, `SeatOverageGraceDays` from `jobs.Context`.
+  - `membership-billing-q` SNS filter / queue reference from `api/asyncapi.yaml` (Billing no longer subscribes to membership events for overage enforcement).
+  - `port.TenantRepository.LockSeatOccupancy` and `SetOverageSince` interface methods; `postgres.TenantRepository.LockSeatOccupancy`, `SetOverageSince`, and `ListSeatOverageCandidates`; `port.SeatOccupancy.OverageSince` field; `port.ReconcilerStore.ListSeatOverageCandidates`; `postgres.GaugeRepository.CountSeatOverageActive`.
+  - `IAMSeatOverageActive` alert from `deploy/monitoring/app-alerts.yml`; `iam_org_membership_seat_overage_active` from the `iam:reconciler_markers:sum` SLO-3 formula in `deploy/monitoring/slo-rules.yml`; `IAMSeatOverageActiveApproachingGrace` alert from `deploy/helm/templates/prometheusrule.yaml`.
+  - `iam_org_membership_seat_overage_active`/`seat_overage_started_total` rows from `docs/observability/metric-registry.md` (regenerated via `make metrics-inventory`).
+  - SEAT-3, SEAT-4, SEAT-5 invariants marked retired in `database-schema.md`.
 
-### Fixed (2026-11-16 — QA workbook gaps)
+### Changed (2026-11-13 — dependency updates, reconciler fix, Go 1.26.11)
 
-- **Valkey is advisory, not a hard dependency:** a Valkey outage no longer fails `/readyz` and requests continue without the cache. `/readyz` answers 503 only when the pool, outbox or consumers are not ready.
-- **Outbox sequence grant (migration 000008):** the app role is granted the outbox sequence so event writes no longer fail on a permission error.
-- **Re-invite cooldown survives a revoke:** a revoked invitation keeps its email while the `INVITE_REINVITE_COOLDOWN_MINUTES` cooldown (default 60) can still match it; the invitation-expiry CronJob, which now reads the same setting, erases that PII on its next run after the cooldown has passed.
-- **Local floci setup:** queue subscriptions now use the LLD event filters, and a `tenant-realm-q` queue is added for `TrialStarted`.
-- **Other QA workbook gap fixes:** the remaining gap fixes from the O&M test report, with their tests.
+- **platform-events v2.2.1 → v2.3.0, platform-gincommon → v2.6.0** (governance decision PA-D34): the outbox oldest-pending-age gauge is now `platform_outbox_oldest_pending_age_seconds`. v2.3.0 emits it alongside the deprecated `platform_outbox_oldest_pending_age` (same value) until the sunset (not before 2026-12-15); gincommon v2.6.0's registry has the new entry and flags the old name as deprecated. The outbox-stall alert (`deploy/monitoring/app-alerts.yml`, Helm `PrometheusRule` regenerated) and the runbook now use the `_seconds` name, same threshold and `for`. `docs/observability/metric-registry.md` regenerated (`make metrics-inventory`).
+- **Go 1.26.11** — toolchain upgraded to fix `GO-2026-6859` (HTTP/1 server crash due to `MaxBytesReader` header race in `net/http`; `govulncheck` now reports `No vulnerabilities found`).
+- **Module updates** — AWS SDK v2 (`aws-sdk-go-v2` v1.47.5→v1.48.0, config v1.33.13→v1.33.18, credentials v1.20.13→v1.21.0, glue v1.172.2→v1.175.1, sns v1.47.7→v1.48.0, sqs v1.52.8→v1.53.0 and transitive chain); `jackc/pgx/v5` v5.12.0→v5.13.0; `testcontainers-go` v0.44.0→v0.45.0 (and postgres module). `go mod tidy` applied; build and unit tests pass.
+- **Reconciler context-cancellation fix** — `trial-cleanup`, `parked-events-replay`, `invitation-kc-cleanup`, and `realm-config-sync` job loops now check `ctx.Err()` before each iteration, matching the existing pattern in `outbox-prune`. When `RECONCILER_TIMEOUT` fires mid-loop, the job now exits cleanly rather than spinning through remaining items (each of which would fail with `context.DeadlineExceeded` and produce misleading failure-count log spam).
 
 ### Changed (2026-11-04 — TND-Q4 role gate widened, LLD rev 2.47)
 

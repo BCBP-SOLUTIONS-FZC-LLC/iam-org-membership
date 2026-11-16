@@ -61,7 +61,6 @@ func TestNewTenantHandler_Constructs(t *testing.T) {
 func TestTenantToResponse_CopiesAllFields(t *testing.T) {
 	trialEnds := time.Now().Add(7 * 24 * time.Hour)
 	subStarted := time.Now().Add(-time.Hour)
-	overageSince := time.Now().Add(-24 * time.Hour)
 	updatedAt := time.Now()
 
 	src := &domain.Tenant{
@@ -79,7 +78,6 @@ func TestTenantToResponse_CopiesAllFields(t *testing.T) {
 		RealmSyncPending:      false,
 		DefaultLocale:         "en-US",
 		LicensedSeats:         25,
-		OverageSince:          &overageSince,
 		RecordVersion:         7,
 		UpdatedAt:             updatedAt,
 	}
@@ -100,7 +98,6 @@ func TestTenantToResponse_CopiesAllFields(t *testing.T) {
 	assert.False(t, got.RealmSyncPending)
 	assert.Equal(t, "en-US", got.DefaultLocale)
 	assert.Equal(t, 25, got.LicensedSeats)
-	assert.Equal(t, &overageSince, got.OverageSince)
 	assert.EqualValues(t, 7, got.RecordVersion)
 	assert.Equal(t, updatedAt, got.UpdatedAt)
 }

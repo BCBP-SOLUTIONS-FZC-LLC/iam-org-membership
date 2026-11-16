@@ -2810,7 +2810,7 @@ const docTemplate = `{
         },
         "/tenants/{id}/seat-usage": {
             "get": {
-                "description": "AUTH-2. Returns ` + "`" + `{active_users, pending_invitations, licensed_seats, over_cap, overage_since, grace_ends_at}` + "`" + ` (SEAT-1..5).",
+                "description": "AUTH-2. Returns ` + "`" + `{active_users, pending_invitations, licensed_seats}` + "`" + ` (SEAT-1).",
                 "produces": [
                     "application/json"
                 ],
@@ -3898,21 +3898,9 @@ const docTemplate = `{
                     "type": "integer",
                     "example": 12
                 },
-                "grace_ends_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
                 "licensed_seats": {
                     "type": "integer",
                     "example": 25
-                },
-                "over_cap": {
-                    "type": "boolean",
-                    "example": false
-                },
-                "overage_since": {
-                    "type": "string",
-                    "format": "date-time"
                 },
                 "pending_invitations": {
                     "type": "integer",
@@ -4107,9 +4095,6 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "name": {
-                    "type": "string"
-                },
-                "overage_since": {
                     "type": "string"
                 },
                 "ownerless_since": {

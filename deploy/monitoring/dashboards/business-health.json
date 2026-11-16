@@ -1,6 +1,6 @@
 {
   "title": "iam-org-membership — Business Health",
-  "description": "Business-observability gauges: seat overage, pending invitations stale, tenant ownerless, realm sync pending.",
+  "description": "Business-observability gauges: pending invitations stale, tenant ownerless, realm sync pending.",
   "schemaVersion": 36,
   "version": 1,
   "tags": ["iam", "iam-org-membership", "business"],

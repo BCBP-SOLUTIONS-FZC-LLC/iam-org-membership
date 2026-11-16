@@ -22,6 +22,9 @@ func ParkedEventsReplay(ctx context.Context, jctx *Context) (Result, error) {
 		return res, fmt.Errorf("list tenants with parked events: %w", err)
 	}
 	for _, tenantID := range tenantIDs {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
 		res.Attempted++
 		n, err := jctx.ParkedReplayer.ReplayParkedSweep(ctx, tenantID)
 		if err != nil {

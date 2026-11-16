@@ -57,6 +57,7 @@ func (h *MeHandler) SessionContext(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, SessionContextToResponse(sc))
 }
 

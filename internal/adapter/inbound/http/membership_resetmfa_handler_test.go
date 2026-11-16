@@ -46,7 +46,7 @@ func TestResetMFA_Success_204(t *testing.T) {
 		rpCalled = true
 		return nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantOwnerCtx(tenantID))
@@ -64,7 +64,7 @@ func TestResetMFA_MemberNotFound_404(t *testing.T) {
 	mem := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "no membership")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantOwnerCtx(tenantID))
@@ -81,7 +81,7 @@ func TestResetMFA_MemberNotActive_422(t *testing.T) {
 	mem := &mhMemRepo{findByUserFn: func(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
 		return &domain.TenantMembership{ID: uuid.New(), TenantID: tid, UserID: uid, Status: domain.MembershipSuspended, RecordVersion: 1}, nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantOwnerCtx(tenantID))
@@ -101,7 +101,7 @@ func TestResetMFA_RPOutage_503(t *testing.T) {
 	rp := &happyRPClient{resetMFAFn: func(context.Context, uuid.UUID, uuid.UUID) error {
 		return errors.New("rp-9 outage")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantOwnerCtx(tenantID))

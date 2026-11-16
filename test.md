@@ -300,8 +300,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X POST \
 { "id": "...", "email": "new.user@acme.com", "status": "pending",
   "expires_at": "2026-07-28T...", "record_version": 1 }
 ```
-**Events emitted:** on `iam.membership.events`
-- **`TenantSeatOverageStarted`** — ONLY if this invite pushes `active + pending` above `licensed_seats` for the first time
+**Events emitted:** on `iam.membership.events` — none on success (seat overage events retired, CD-54)
 **Errors:**
 - `409 seat_limit_reached` — SEAT-1 cap (payload carries `licensed_seats`)
 - `409 invitation_already_exists` — active pending row for same email
@@ -347,7 +346,6 @@ curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
 - **`DepartmentMembershipRevoked`** — one per dept the user was in
 - **`TenantRoleRevoked`** — one per tenant-level role (§16 A14 multi-role)
 - **`MembershipRevoked`** — one event, consumed by Delegation Service and Tender-ACL Service for their own async cascades (post-decomposition, Core owns neither table any more) and by AuthZ Enrichment for `om:memberships` cache eviction
-- **`TenantSeatOverageResolved`** — if this drops the tenant back under cap
 **Errors:**
 - `409 workflow_resolution_required` — sync WorkflowClient.GetDelegateImpact returned >0 active workflows. Resolve via P-26 below.
 - `422 last_owner_removal` — TM-8 (payload carries `owners_remaining: 1`)
@@ -363,8 +361,7 @@ curl -sS -w "\nHTTP %{http_code}\n" \
 ```
 **Response:** `200 OK`
 ```json
-{ "active_users": 42, "pending_invitations": 3, "licensed_seats": 50,
-  "over_cap": false, "overage_since": null, "grace_ends_at": null }
+{ "active_users": 42, "pending_invitations": 3, "licensed_seats": 50 }
 ```
 **Events emitted:** none
 
@@ -478,8 +475,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
 ```
 **Response:** `200 OK`.
 Side effect: sets `kc_cleanup_pending=true` (PI-9) — durable compensation for the pending KC user. The `invitation-kc-cleanup` cron picks it up and calls RP `DeleteUser`.
-**Events emitted:** on `iam.membership.events`
-- **`TenantSeatOverageResolved`** — ONLY if this revoke drops the tenant back under cap
+**Events emitted:** on `iam.membership.events` — none (seat overage events retired, CD-54)
 
 ---
 
@@ -553,7 +549,6 @@ Cascade (single tx): soft-delete membership, revoke all tenant roles + departmen
 - **`DepartmentMembershipRevoked`** × depts
 - **`TenantRoleRevoked`** × tenant roles
 - **`MembershipRevoked`** — consumed by Delegation Service and Tender-ACL Service for their own async cascades, and by AuthZ Enrichment for `om:memberships` cache eviction
-- **`TenantSeatOverageResolved`** — if this drops back under cap
 
 ### GET /api/v1/internal/users/{id}/memberships — I-8 (HOT PATH)
 
@@ -786,7 +781,7 @@ aws $SQS sqs receive-message \
       | .Body | fromjson'
 ```
 
-Swap `TenantRoleGranted` for any event type you care about — `MembershipRevoked`, `TenantSeatOverageStarted`, `TenderAssigneeOverridden`, etc.
+Swap `TenantRoleGranted` for any event type you care about — `MembershipRevoked`, `TenderAssigneeOverridden`, `TenantStateChanged`, etc.
 
 ### 7. Fastest option during dev — read the outbox directly
 

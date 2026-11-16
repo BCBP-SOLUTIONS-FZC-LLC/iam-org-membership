@@ -67,7 +67,7 @@ func buildMembershipSvcWithTx(m port.MembershipRepository, r port.TenantRoleRepo
 		m, r, nil, &port.TenantRepositoryNoop{}, nil, nil,
 		&fakeRPClient{}, // rp: non-nil so RevokeUserSessions doesn't panic
 		nil,             // workflow
-		&passthroughTxRunner{}, nil, 0,
+		&passthroughTxRunner{}, nil,
 	)
 }
 

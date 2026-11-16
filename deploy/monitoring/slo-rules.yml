@@ -11,8 +11,8 @@
 #         non-5xx status (excludes intentional 4xx like optimistic-lock 409).
 #
 #  SLO-3  Reconciler convergence
-#         Target: durable markers (realm_sync_pending, kc_cleanup_pending,
-#         overage_since) clear within 2 CronJob cycles (default 20 min).
+#         Target: durable markers (realm_sync_pending, kc_cleanup_pending)
+#         clear within 2 CronJob cycles (default 20 min).
 #
 # Recording rules pre-compute the SLI numerator/denominator so alert rules
 # can key off a scalar. SLIs aggregate by (domain, service, environment) —
@@ -192,12 +192,11 @@ groups:
             Check Valkey connectivity, eviction rate, and om:memberships TTL.
           runbook: "iam-org-membership/i8-latency"
 
-  # ── OBS-5: SLO-3 composite gauge fix (remove 5x weighting, add seat_overage) ─
+  # ── OBS-5: SLO-3 composite gauge ────────────────────────────────────────────
   - name: iam_org_membership_slo3_fixed
     rules:
       - record: iam:reconciler_markers:sum
         expr: |
           iam_org_membership_tenant_ownerless
           + iam_org_membership_realm_sync_pending
-          + iam_org_membership_seat_overage_active
           + iam_org_membership_pending_invitations_stale

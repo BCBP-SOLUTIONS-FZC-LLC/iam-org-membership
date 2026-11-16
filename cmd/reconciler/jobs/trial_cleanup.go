@@ -32,6 +32,9 @@ func TrialCleanup(ctx context.Context, jctx *Context) (Result, error) {
 	}
 
 	for _, tenantID := range candidates {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
 		res.Attempted++
 		if err := deleteOneTrial(ctx, jctx, tenantID); err != nil {
 			jctx.Logger.Warn("trial-cleanup: tenant failed",

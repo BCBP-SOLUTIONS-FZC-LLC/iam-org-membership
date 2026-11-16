@@ -299,7 +299,7 @@ func buildReconcileRolesSvc(
 	txRunner port.TxRunner,
 	rp port.RealmProvisionerClient,
 ) *service.MembershipService {
-	return service.NewMembershipService(mem, roles, nil, tenants, nil, nil, rp, nil, txRunner, nil, 30)
+	return service.NewMembershipService(mem, roles, nil, tenants, nil, nil, rp, nil, txRunner, nil)
 }
 
 // TestReconcileRoles_GrantEmitsEvent covers the Grant path inside the tx
@@ -503,7 +503,7 @@ func TestMembership_SetStatus_Suspend_OwnerLastOwner(t *testing.T) {
 	}
 	rp := &fakeRPClient{}
 	// Use passthroughTxRunner so LockByID succeeds (TenantRepositoryNoop).
-	svc := service.NewMembershipService(m, ownerRoles, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(m, ownerRoles, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil)
 
 	_, err := svc.SetStatus(context.Background(), tenantID, userID, domain.MembershipSuspended, 1)
 	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval)
@@ -528,7 +528,7 @@ func TestMembership_SetStatus_Suspend_OwnerMoreOwners(t *testing.T) {
 		},
 	}
 	rp := &fakeRPClient{}
-	svc := service.NewMembershipService(m, ownerRoles, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(m, ownerRoles, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, &passthroughTxRunner{}, nil)
 
 	res, err := svc.SetStatus(context.Background(), tenantID, userID, domain.MembershipSuspended, 1)
 	require.NoError(t, err)
@@ -568,7 +568,7 @@ func TestRemoveUser_EmitsAllEvents(t *testing.T) {
 		},
 	}
 	tenants := &svcgapRuTenantRepo{lockErr: nil}
-	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, txRunner, nil, 30)
+	svc := service.NewMembershipService(mem, roles, deptMems, tenants, nil, nil, nil, nil, txRunner, nil)
 
 	err := svc.RemoveUser(context.Background(), tenantID, userID, actorID)
 	require.NoError(t, err)
@@ -610,7 +610,7 @@ func TestMembership_ResetUserMFA_RequestCtxEnvelope(t *testing.T) {
 		},
 	}
 
-	svc := service.NewMembershipService(mem, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, txRunner, nil, 30)
+	svc := service.NewMembershipService(mem, noOwnerRoleRepo{}, nil, &port.TenantRepositoryNoop{}, nil, nil, rp, nil, txRunner, nil)
 	err := svc.ResetUserMFA(context.Background(), tenantID, userID, actorID)
 	require.NoError(t, err)
 
@@ -659,7 +659,7 @@ func TestValidateAndEmit_RequestCtxEnvelope(t *testing.T) {
 
 	svc := service.NewMembershipService(memRepo, roleRepo,
 		&svcgapAssigneeEligibleDM{deptID: deptID, level: domain.DeptApprover},
-		&port.TenantRepositoryNoop{}, nil, nil, nil, nil, txRunner, nil, 30)
+		&port.TenantRepositoryNoop{}, nil, nil, nil, nil, txRunner, nil)
 
 	err := svc.ValidateAndEmitAssigneeOverride(context.Background(),
 		tenantID, tenderID, newUserID, deptID, domain.DeptApprover, actorID)

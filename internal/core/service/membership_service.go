@@ -34,7 +34,6 @@ type MembershipService struct {
 	workflow        port.WorkflowClient
 	txRunner        port.TxRunner
 	logger          port.SlogStyleLogger
-	seatOverageDays int
 }
 
 // NewMembershipService builds a MembershipService. logger may be nil —
@@ -51,13 +50,12 @@ func NewMembershipService(
 	workflow port.WorkflowClient,
 	txRunner port.TxRunner,
 	logger port.Logger,
-	seatOverageDays int,
 ) *MembershipService {
 	return &MembershipService{
 		memberships: memberships, roles: roles, deptMemberships: deptMemberships,
 		tenants: tenants, invitations: invitations,
 		cache: cache, rp: rp, workflow: workflow, txRunner: txRunner,
-		logger: port.NewSlogStyleLogger(logger), seatOverageDays: seatOverageDays,
+		logger: port.NewSlogStyleLogger(logger),
 	}
 }
 
@@ -520,7 +518,6 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		}
 	}
 
-	var overage SeatOverageTransition
 	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
 		// Step 2 — TM-13 lock (LLD line 1183).
 		if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
@@ -625,23 +622,11 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		if _, err := s.memberships.SetStatus(txCtx, tenantID, userID, domain.MembershipLeft, mem.RecordVersion); err != nil {
 			return err
 		}
-		// GAP-18, SEAT-5: a removal can bring usage back to/under the cap;
-		// re-evaluated inside the tenant row lock taken above.
-		t, err := ReevaluateSeatOverage(txCtx, s.tenants, tenantID, SeatOverageSource{
-			Actor: actorID.String(), IPAddress: rcIP, UserAgent: rcUA,
-		})
-		overage = t
-		return err
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	CountSeatOverageStarted(overage)
-	if overage != SeatOverageUnchanged && s.cache != nil {
-		// overage_since is part of the cached tenant row (om:tenant, P-1).
-		_ = s.cache.Delete(context.WithoutCancel(ctx), cacheKeyTenant(tenantID))
-	}
-
 	s.invalidateMember(ctx, tenantID, userID)
 
 	// Step 6 — AUTH-8 best-effort session revoke.
@@ -840,8 +825,7 @@ func (s *MembershipService) ResetUserMFA(ctx context.Context, tenantID, userID, 
 }
 
 // SeatUsage is P-27/I-11. Reads active_users + pending_invitations vs
-// licensed_seats. over_cap = active + pending >= licensed_seats (SEAT-3: at-cap is overage).
-// PERF-4: cache read before Postgres; cache write after — 30s TTL (CACHE-5).
+// licensed_seats. PERF-4: cache read before Postgres; cache write after — 30s TTL (CACHE-5).
 // SEAT-1 mutators already evict cacheKeySeatUsage on every membership/invite change.
 func (s *MembershipService) SeatUsage(ctx context.Context, tenantID uuid.UUID) (*domain.SeatUsage, error) {
 	const seatTTL = 30 * time.Second
@@ -871,12 +855,6 @@ func (s *MembershipService) SeatUsage(ctx context.Context, tenantID uuid.UUID) (
 		ActiveUsers:        active,
 		PendingInvitations: pending,
 		LicensedSeats:      t.LicensedSeats,
-		OverCap:            active+pending >= t.LicensedSeats,
-		OverageSince:       t.OverageSince,
-	}
-	if t.OverageSince != nil && s.seatOverageDays > 0 {
-		end := t.OverageSince.Add(time.Duration(s.seatOverageDays) * 24 * time.Hour)
-		usage.GraceEndsAt = &end
 	}
 	if s.cache != nil {
 		if raw, err := jsonMarshal(usage); err == nil {

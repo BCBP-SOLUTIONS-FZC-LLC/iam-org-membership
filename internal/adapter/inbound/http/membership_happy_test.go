@@ -39,7 +39,7 @@ func TestMembershipList_Success_200(t *testing.T) {
 	roles := &mhRoleRepo{listByUserFn: func(_ context.Context, tid, uid uuid.UUID) ([]domain.TenantRole, error) {
 		return []domain.TenantRole{{TenantID: tid, UserID: uid, RoleCode: domain.RoleTenantAdmin}}, nil
 	}}
-	svc := service.NewMembershipService(mem, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -52,7 +52,7 @@ func TestMembershipList_Success_200(t *testing.T) {
 
 func TestMembershipList_InvalidLimit(t *testing.T) {
 	tenantID := uuid.New()
-	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -65,7 +65,7 @@ func TestMembershipList_InvalidLimit(t *testing.T) {
 
 func TestMembershipList_InvalidCursor(t *testing.T) {
 	tenantID := uuid.New()
-	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -87,7 +87,7 @@ func TestMembershipGet_Success_200(t *testing.T) {
 	roles := &mhRoleRepo{listByUserFn: func(_ context.Context, tid, uid uuid.UUID) ([]domain.TenantRole, error) {
 		return []domain.TenantRole{{TenantID: tid, UserID: uid, RoleCode: domain.RoleTenantAdmin}}, nil
 	}}
-	svc := service.NewMembershipService(mem, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, roles, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -103,7 +103,7 @@ func TestMembershipGet_NotFound(t *testing.T) {
 	mem := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "no membership")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -122,7 +122,7 @@ func TestMembershipSeatUsage_Success_200(t *testing.T) {
 	}}
 	mem := &mhMemRepo{countActiveFn: func(context.Context, uuid.UUID) (int, error) { return 5, nil }}
 	inv := &iahInviteRepo{countPendingFn: func(context.Context, uuid.UUID) (int, error) { return 2, nil }}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, inv, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, inv, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))
@@ -133,7 +133,6 @@ func TestMembershipSeatUsage_Success_200(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"active_users":5`)
 	assert.Contains(t, w.Body.String(), `"pending_invitations":2`)
 	assert.Contains(t, w.Body.String(), `"licensed_seats":10`)
-	assert.Contains(t, w.Body.String(), `"over_cap":false`)
 }
 
 func TestMembershipSeatUsage_TenantNotFound(t *testing.T) {
@@ -141,7 +140,7 @@ func TestMembershipSeatUsage_TenantNotFound(t *testing.T) {
 	tenants := &happyTenantRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
 		return nil, domain.NewError(domain.ErrTenantNotFound, "tenant not found")
 	}}
-	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(&mhMemRepo{}, &mhRoleRepo{}, &drhDeptMemRepo{}, tenants, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodGet, "/", ``, tenantOwnerCtx(tenantID))

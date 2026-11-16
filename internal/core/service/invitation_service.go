@@ -504,9 +504,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 	}
 
 	var mem *domain.TenantMembership
-	var overage SeatOverageTransition
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
-		overage = SeatOverageUnchanged // a retried transaction starts clean
 		// TM-13 lock on tenants for the entire acceptance.
 		if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 			return err
@@ -569,6 +567,33 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 				return ferr
 			}
 		}
+		// SEAT-1 (CD-54): plain-add JIT path holds no prior seat reservation
+		// (no pending invitation was issued), so we must enforce the cap here
+		// under the tenant FOR UPDATE lock already held above. The invited path
+		// (pending != nil) held a seat at invite time (P-6) so no re-check is
+		// needed; the expired-invitation sub-case above already re-checks.
+		if pending == nil {
+			licensed, err := s.tenants.LicensedSeatsForUpdate(txCtx, tenantID)
+			if err != nil {
+				return err
+			}
+			active, err := s.memberships.CountActive(txCtx, tenantID)
+			if err != nil {
+				return err
+			}
+			pendCount, err := s.invites.CountPending(txCtx, tenantID)
+			if err != nil {
+				return err
+			}
+			if active+pendCount >= licensed {
+				return domain.NewError(domain.ErrSeatLimitReached, "seat limit reached").WithDetails(map[string]any{
+					"licensed_seats":      licensed,
+					"active_users":        active,
+					"pending_invitations": pendCount,
+				})
+			}
+		}
+
 		// Insert, or re-add a removed user (a 'left' row is reactivated in
 		// place, TM-1), or find the existing row (uq_tm_active_user).
 		out, ierr := s.memberships.Insert(txCtx, &domain.TenantMembership{
@@ -579,25 +604,6 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 		}
 		mem = out
 		pub, _ := port.EventPublisherFromContext(txCtx)
-
-		// SEAT-5: a plain add (no invitation behind it — federated JIT or
-		// self-provisioning, LLD §8.10 I-3) is not seat-capped, so it can take
-		// usage past licensed_seats. Re-evaluate the overage marker in this tx,
-		// under the tenant row lock taken above, so overage_since and
-		// TenantSeatOverageStarted commit with the add. This never blocks the
-		// add. An acceptance needs no re-evaluation: the seat moves from
-		// pending to active and the total is unchanged (PI-3).
-		if pending == nil {
-			src := SeatOverageSource{Actor: "iam-system"}
-			if rc, ok := requestctx.FromContext(txCtx); ok {
-				src.IPAddress, src.UserAgent = rc.ClientIP, rc.UserAgent
-			}
-			t, rerr := ReevaluateSeatOverage(txCtx, s.tenants, tenantID, src)
-			if rerr != nil {
-				return rerr
-			}
-			overage = t
-		}
 
 		if pending != nil {
 			// Flip invitation to accepted (PI-4).
@@ -654,11 +660,6 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 	if err != nil {
 		return nil, err
 	}
-	CountSeatOverageStarted(overage)
-	if overage != SeatOverageUnchanged && s.cache != nil {
-		// overage_since is part of the cached tenant row (om:tenant, P-1).
-		_ = s.cache.Delete(ctx, cacheKeyTenant(tenantID))
-	}
 	// SECURITY-8: best-effort PII erasure for the invitation that was just
 	// accepted. Runs outside the transaction so a failure here cannot roll
 	// back the acceptance. Only attempted when an invitation was matched.
@@ -703,7 +704,6 @@ func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, 
 	// commit together, so a crash between them cannot leave a revoked row
 	// whose Keycloak user nobody will delete.
 	var inv *domain.PendingInvitation
-	var overage SeatOverageTransition
 	revoke := func(txCtx context.Context) error {
 		// Tenant row first — the same lock order as I-3 acceptance (tenant,
 		// then invitation), so a concurrent revoke and accept cannot deadlock.
@@ -720,17 +720,6 @@ func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, 
 			return err
 		}
 		inv = out
-		// GAP-7, SEAT-5: revoking a pending invitation frees a seat, which
-		// can bring the tenant back to/under licensed_seats.
-		if s.tenants != nil {
-			src := SeatOverageSource{Actor: "iam-system"}
-			if rc, ok := requestctx.FromContext(txCtx); ok {
-				src = SeatOverageSource{Actor: rc.UserID.String(), IPAddress: rc.ClientIP, UserAgent: rc.UserAgent}
-			}
-			t, err := ReevaluateSeatOverage(txCtx, s.tenants, tenantID, src)
-			overage = t
-			return err
-		}
 		return nil
 	}
 	var err error
@@ -741,10 +730,6 @@ func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, 
 	}
 	if err != nil {
 		return nil, err
-	}
-	CountSeatOverageStarted(overage)
-	if overage != SeatOverageUnchanged && s.cache != nil {
-		_ = s.cache.Delete(ctx, cacheKeyTenant(tenantID)) // overage_since is in om:tenant
 	}
 	// GAP-17, PI-6: a best-effort compensating Realm-Provisioner DeleteUser is
 	// attempted inline, after commit. On success the marker is cleared; on

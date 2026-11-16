@@ -30,8 +30,6 @@ func TestTopicForEvent_MembershipEvents(t *testing.T) {
 		domain.EventMembershipRevoked,
 		domain.EventTenantMembershipsPurged,
 		domain.EventTenderAssigneeOverridden,
-		domain.EventTenantSeatOverageStarted,
-		domain.EventTenantSeatOverageResolved,
 		domain.EventTenantStateChanged,
 	}
 	for _, ev := range membershipTypes {
@@ -56,15 +54,13 @@ func TestIsProducedEvent_OutboundCatalogue(t *testing.T) {
 		domain.EventTenantRoleRevoked,
 		domain.EventTenderAssigneeOverridden,
 		domain.EventMFAReset,
-		domain.EventTenantSeatOverageStarted,
-		domain.EventTenantSeatOverageResolved,
 		domain.EventTenantStateChanged,
 		domain.EventMembershipRevoked,
 		domain.EventTenantMembershipsPurged,
 		domain.EventTenantCreated,
 		domain.EventTrialStarted,
 	}
-	assert.Len(t, produced, 14)
+	assert.Len(t, produced, 12)
 	for _, ev := range produced {
 		assert.True(t, domain.IsProducedEvent(ev), "produced event %s must be recognized", ev)
 	}

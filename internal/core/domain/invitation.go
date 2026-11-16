@@ -44,13 +44,10 @@ type InvitationDeptMapping struct {
 }
 
 // SeatUsage is the P-27 / I-11 response envelope. Computed under FOR UPDATE
-// inside SEAT-1's transactional cap check (§8.10, SEAT-1..5).
+// inside SEAT-1's transactional cap check (§8.10, SEAT-1).
 type SeatUsage struct {
 	TenantID           uuid.UUID
 	ActiveUsers        int
 	PendingInvitations int
 	LicensedSeats      int
-	OverCap            bool       // active + pending > licensed_seats
-	OverageSince       *time.Time // SEAT-5 marker
-	GraceEndsAt        *time.Time // OverageSince + SEAT_OVERAGE_GRACE_DAYS
 }

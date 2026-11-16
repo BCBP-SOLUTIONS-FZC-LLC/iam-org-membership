@@ -388,7 +388,7 @@ func TestReconcileRoles_Idempotent(t *testing.T) {
 		mems, roles, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
-		happyTxRunner{}, nil, 30,
+		happyTxRunner{}, nil,
 	)
 	h := NewMembershipHandler(svc)
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantOwnerCtx(tenant))
@@ -411,7 +411,7 @@ func TestReconcileRoles_UserNotFound(t *testing.T) {
 		mems, &p28RoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
-		happyTxRunner{}, nil, 30,
+		happyTxRunner{}, nil,
 	)
 	h := NewMembershipHandler(svc)
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantOwnerCtx(tenant))
@@ -552,7 +552,7 @@ func TestReconcileRoles_TenantNotFound(t *testing.T) {
 		mems, &p28RoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
-		happyTxRunner{}, nil, 30,
+		happyTxRunner{}, nil,
 	)
 	h := NewMembershipHandler(svc)
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantOwnerCtx(tenant))
@@ -654,7 +654,7 @@ func buildMinimalMembershipSvc() *service.MembershipService {
 		&happyMembershipRepo{}, &p28RoleRepo{}, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
-		happyTxRunner{}, nil, 30,
+		happyTxRunner{}, nil,
 	)
 }
 
@@ -672,7 +672,7 @@ func buildMembershipSvcWithRoles(roles port.TenantRoleRepository) *service.Membe
 		mems, roles, &drhDeptMemRepo{},
 		&happyTenantRepo{}, &iahInviteRepo{},
 		happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{},
-		happyTxRunner{}, nil, 30,
+		happyTxRunner{}, nil,
 	)
 }
 

@@ -20,6 +20,9 @@ func InvitationKCCleanup(ctx context.Context, jctx *Context) (Result, error) {
 	}
 
 	for _, t := range targets {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
 		res.Attempted++
 		if t.KeycloakUserID == nil {
 			// Nothing to delete in Keycloak; clear the marker to avoid a

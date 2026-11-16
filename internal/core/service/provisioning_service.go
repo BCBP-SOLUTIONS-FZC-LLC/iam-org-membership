@@ -499,10 +499,8 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 	}
 
 	escalated := false
-	var overage SeatOverageTransition
 	err := s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
 		escalated = false
-		overage = SeatOverageUnchanged
 		// BUG-6, TM-13: serialize on the tenant row before reading the owner
 		// set, so two concurrent removals of the last two owners cannot each
 		// count "one owner left" and both skip ownerless_since (TM-12).
@@ -630,18 +628,8 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 				escalated = flipped
 			}
 		}
-		// GAP-18, SEAT-5: re-evaluate the overage marker for the removal,
-		// inside the tenant row lock taken above.
-		t, err := ReevaluateSeatOverage(txCtx, s.tenants, tenantID, SeatOverageSource{Actor: "iam-system"})
-		overage = t
-		return err
+		return nil
 	})
-	if err == nil {
-		CountSeatOverageStarted(overage)
-		if overage != SeatOverageUnchanged && s.cache != nil {
-			_ = s.cache.Delete(gucCtx, cacheKeyTenant(tenantID)) // overage_since is in om:tenant
-		}
-	}
 	// CACHE-8: evict the removed user's I-8 projection and the list caches
 	// after commit, so AuthZ Enrichment and eligibility readers stop seeing
 	// the deleted membership. Also runs on the idempotent already-deleted

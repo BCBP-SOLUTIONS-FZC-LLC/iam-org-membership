@@ -10,7 +10,7 @@ import (
 
 // GaugeRepository serves the read-only, cross-tenant aggregate queries that
 // back the DB-state gauges in §11.2 (tenant_ownerless, realm_sync_pending,
-// seat_overage_active, pending_invitations_stale). Those gauges are counts
+// pending_invitations_stale). Those gauges are counts
 // of current table state rather than event tallies, so nothing on a request
 // or reconciler path can maintain them; cmd/server polls this repository
 // on an interval instead.
@@ -49,15 +49,6 @@ SELECT count(*) FROM tenants
 // CountRealmSyncPending returns tenants waiting on a realm-config sync (T-15).
 func (r *GaugeRepository) CountRealmSyncPending(ctx context.Context) (int64, error) {
 	return r.count(ctx, realmSyncPendingSQL)
-}
-
-const seatOverageActiveSQL = `
-SELECT count(*) FROM tenants
- WHERE overage_since IS NOT NULL AND deleted_at IS NULL`
-
-// CountSeatOverageActive returns tenants currently in seat overage (SEAT-5).
-func (r *GaugeRepository) CountSeatOverageActive(ctx context.Context) (int64, error) {
-	return r.count(ctx, seatOverageActiveSQL)
 }
 
 const pendingInvitationsStaleSQL = `

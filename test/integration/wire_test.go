@@ -256,40 +256,6 @@ func TestMembershipLaneIsolated(t *testing.T) {
 	assert.Empty(t, other, "P12-ROUTE-002: membership event must NOT cross-leak into tenant topic")
 }
 
-// ── P12-FILTER-001 ──────────────────────────────────────────────────────────
-
-// TestBillingQueueOnlyOverage — the membership-billing-q
-// filter policy limits it to TenantSeatOverageStarted / Resolved. A
-// TenantRoleGranted must be dropped by the subscription filter.
-func TestBillingQueueOnlyOverage(t *testing.T) {
-	e := newPhase12Env(t)
-	topic := e.createTopic(t, "iam-membership-events")
-	billingQ := e.createQueue(t, "membership-billing-q", "", 0)
-	auditQ := e.createQueue(t, "membership-audit-q", "", 0)
-
-	filter := `{"EventType":["TenantSeatOverageStarted","TenantSeatOverageResolved"]}`
-	e.subscribeQueue(t, topic, billingQ, filter)
-	e.subscribeQueue(t, topic, auditQ, "") // no filter — receives everything
-
-	// Send an overage event → billing queue receives it.
-	e.publishEnvelope(t, topic, domain.EventTenantSeatOverageStarted,
-		mustMarshal(t, map[string]string{"tenant_id": uuid.NewString()}), nil)
-	got := e.receiveMessages(t, billingQ, 1, 10*time.Second)
-	require.Len(t, got, 1, "P12-FILTER-001: overage event must reach filtered billing queue")
-
-	// Send a role-grant event → billing queue must NOT receive it (filter drops).
-	e.publishEnvelope(t, topic, domain.EventTenantRoleGranted,
-		mustMarshal(t, map[string]string{"role": "tenant_admin"}), nil)
-	// Audit queue (no filter) must still receive it — proves the message
-	// actually reached SNS and was accepted; only the subscription filter
-	// dropped it from billing.
-	auditMsgs := e.receiveMessages(t, auditQ, 2, 10*time.Second) // overage + role grant
-	require.GreaterOrEqual(t, len(auditMsgs), 1, "audit must still receive un-filtered messages")
-
-	extra := e.drainQueue(t, billingQ, 3*time.Second)
-	assert.Empty(t, extra, "P12-FILTER-001: TenantRoleGranted must NOT reach billing (filter policy drops it)")
-}
-
 // ── P12-FILTER-002 ──────────────────────────────────────────────────────────
 
 // TestWorkflowQueueDropsOverage — the membership-workflow-q
@@ -315,12 +281,6 @@ func TestWorkflowQueueDropsOverage(t *testing.T) {
 		mustMarshal(t, map[string]string{"tenant_id": uuid.NewString()}), nil)
 	got = e.receiveMessages(t, workflowQ, 1, 10*time.Second)
 	require.Len(t, got, 1, "P12-FILTER-002: TenantMembershipsPurged must reach workflow queue")
-
-	// Should NOT reach workflow queue — overage is off the accept list.
-	e.publishEnvelope(t, topic, domain.EventTenantSeatOverageStarted,
-		mustMarshal(t, map[string]string{"tenant_id": uuid.NewString()}), nil)
-	extra := e.drainQueue(t, workflowQ, 3*time.Second)
-	assert.Empty(t, extra, "P12-FILTER-002: overage event must NOT reach workflow queue")
 }
 
 // ── P12-FILTER-003 ──────────────────────────────────────────────────────────

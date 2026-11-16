@@ -90,7 +90,7 @@ func TestReconcileRoles_RPFailOpen(t *testing.T) {
 		},
 	}
 	svc := service.NewMembershipService(mems, roles, &drhDeptMemRepo{}, &happyTenantRepo{},
-		&iahInviteRepo{}, happyCacheStub{}, rp, nil, happyTxRunner{}, nil, 30)
+		&iahInviteRepo{}, happyCacheStub{}, rp, nil, happyTxRunner{}, nil)
 	h := NewMembershipHandler(svc)
 
 	c, w := buildCtx(http.MethodPut, "/", `{"roles":["tender_admin"]}`, tenantOwnerCtx(tenant))
@@ -162,14 +162,6 @@ var _ port.DeptRoleLabelRepository = (*i1LabelRepo)(nil)
 // i1MemRepo is a MembershipRepository stub for I-1 TrialSignup tests.
 // Insert returns the membership (needed for the role grant step).
 type i1MemRepo struct{}
-
-// i1NewMemberRepo is i1MemRepo for a user who is not yet a member: I-3's
-// plain add answers 409 member_already_exists for an existing one (PI-10).
-type i1NewMemberRepo struct{ i1MemRepo }
-
-func (r *i1NewMemberRepo) FindByUserID(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
-	return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
-}
 
 func (r *i1MemRepo) List(context.Context, uuid.UUID, *domain.MembershipListCursor, int) (*domain.MembershipListPage, error) {
 	return nil, nil
@@ -345,8 +337,8 @@ func (addMemberTxRunner) RunInTx(ctx context.Context, fn func(context.Context) e
 func TestAddMember_PlainAdd_201(t *testing.T) {
 	tenantID := uuid.New()
 	userID := uuid.New()
-	svc := service.NewInvitationService(&iahInviteRepo{}, &i1NewMemberRepo{}, &i1RoleRepo{}, &drhDeptMemRepo{},
-		&happyTenantRepo{}, &happyRPClient{}, happyCacheStub{}, addMemberTxRunner{}, nil, 7)
+	svc := service.NewInvitationService(&iahInviteRepo{}, &i1MemRepo{}, &i1RoleRepo{}, &drhDeptMemRepo{},
+		&ihSeatTenantRepo{seats: 100}, &happyRPClient{}, happyCacheStub{}, addMemberTxRunner{}, nil, 7)
 	h := &InternalHandler{invitation: svc}
 	body := `{"user_id":"` + userID.String() + `","keycloak_user_id":"` + uuid.New().String() + `"}`
 	c, w := buildCtx(http.MethodPost, "/", body, iamSystemCtx(tenantID))

@@ -32,7 +32,7 @@ func TestResetMFA_HappyPath_OwnerResetsMember(t *testing.T) {
 	rp := &happyRPClient{resetMFAFn: func(context.Context, uuid.UUID, uuid.UUID) error {
 		return nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantOwnerCtx(tenantID))
@@ -89,7 +89,7 @@ func TestResetMFA_NotFound_TenantNotExist(t *testing.T) {
 	mem := &mhMemRepo{findByUserFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 		return nil, domain.NewError(domain.ErrMemberNotFound, "tenant not found")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, &happyRPClient{}, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	// Use tenantOwnerCtx(unknownTenant) so requireTenantAdmin passes the tenant-match
@@ -115,7 +115,7 @@ func TestResetMFA_Dep_RPTimeout_503(t *testing.T) {
 	rp := &happyRPClient{resetMFAFn: func(context.Context, uuid.UUID, uuid.UUID) error {
 		return domain.NewError(domain.ErrRealmProvisionerUnavailable, "rp timeout")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantAdminCtx(tenantID))
@@ -144,7 +144,7 @@ func TestResetMFA_BL_SelfReset_Allowed(t *testing.T) {
 	rp := &happyRPClient{resetMFAFn: func(context.Context, uuid.UUID, uuid.UUID) error {
 		return nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	// Build a RequestContext where actor UserID == path user_id.
@@ -176,7 +176,7 @@ func TestResetMFA_BL_EventPayload(t *testing.T) {
 		rpCalled = true
 		return nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantAdminCtx(tenantID))
@@ -203,7 +203,7 @@ func TestResetMFA_Evt_NoEventOnRPFailure(t *testing.T) {
 	rp := &happyRPClient{resetMFAFn: func(context.Context, uuid.UUID, uuid.UUID) error {
 		return domain.NewError(domain.ErrRealmProvisionerUnavailable, "rp failure")
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, happyCacheStub{}, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantAdminCtx(tenantID))
@@ -229,7 +229,7 @@ func TestResetMFA_Cache_NoInvalidation(t *testing.T) {
 	rp := &happyRPClient{resetMFAFn: func(context.Context, uuid.UUID, uuid.UUID) error {
 		return nil
 	}}
-	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, spy, rp, &drhWorkflowClient{}, happyTxRunner{}, nil, 30)
+	svc := service.NewMembershipService(mem, &mhRoleRepo{}, &drhDeptMemRepo{}, &happyTenantRepo{}, &iahInviteRepo{}, spy, rp, &drhWorkflowClient{}, happyTxRunner{}, nil)
 	h := &MembershipHandler{svc: svc}
 
 	c, w := buildCtx(http.MethodPost, "/", ``, tenantAdminCtx(tenantID))

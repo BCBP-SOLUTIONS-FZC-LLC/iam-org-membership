@@ -123,7 +123,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogDepts, catalogPlans, txRunner, nil, rp)
 	tenantSvc := service.NewTenantService(tenantRepo, nil, rp)
 	deptSvc := service.NewDepartmentService(catalogDepts, tenantDeptRepo, nil)
-	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, nil, rp, wf, txRunner, nil, 30)
+	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, nil, rp, wf, txRunner, nil)
 	deptMemSvc := service.NewDeptMembershipService(deptMemRepo, membershipRepo, tenantDeptRepo, catalogDepts, nil, wf, nil, txRunner)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, nil)
 	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, nil, nil)

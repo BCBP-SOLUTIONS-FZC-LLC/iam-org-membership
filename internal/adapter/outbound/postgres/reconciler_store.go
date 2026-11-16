@@ -10,8 +10,7 @@ import (
 )
 
 // ReconcilerStore implements port.ReconcilerStore against the BYPASSRLS
-// sysPool. Cross-tenant sweeps (seat-overage candidates, realm-sync,
-// trial hard-delete) live here so
+// sysPool. Cross-tenant sweeps (realm-sync, trial hard-delete) live here so
 // cmd/reconciler/jobs never issues SQL.
 type ReconcilerStore struct {
 	pool *pgcommon.Pool
@@ -21,29 +20,6 @@ var _ port.ReconcilerStore = (*ReconcilerStore)(nil)
 
 func NewReconcilerStore(pool *pgcommon.Pool) *ReconcilerStore {
 	return &ReconcilerStore{pool: pool}
-}
-
-func (s *ReconcilerStore) ListSeatOverageCandidates(ctx context.Context, limit int) ([]uuid.UUID, error) {
-	var ids []uuid.UUID
-	err := withPool(ctx, s.pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			SELECT id FROM tenants
-			WHERE deleted_at IS NULL
-			LIMIT $1`, limit)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id uuid.UUID
-			if err := rows.Scan(&id); err != nil {
-				return err
-			}
-			ids = append(ids, id)
-		}
-		return rows.Err()
-	})
-	return ids, err
 }
 
 func (s *ReconcilerStore) ListRealmSyncPending(ctx context.Context, limit int) ([]port.RealmSyncCandidate, error) {

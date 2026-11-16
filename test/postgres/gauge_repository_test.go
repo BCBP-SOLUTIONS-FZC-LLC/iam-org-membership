@@ -1,9 +1,8 @@
 //go:build integration
 
 // GaugeRepository (internal/adapter/outbound/postgres/gauge_repository.go)
-// backs the four cmd/server metric-exporter goroutines (§11.2:
+// backs the three cmd/server metric-exporter goroutines (§11.2:
 // iam_org_membership_tenant_ownerless, iam_org_membership_realm_sync_pending,
-// iam_org_membership_seat_overage_active,
 // iam_org_membership_pending_invitations_stale). It is cross-tenant and must run against
 // the BYPASSRLS sysPool — these tests assert the real row-count SQL against
 // the live schema, which a mocked-transaction unit test can't meaningfully
@@ -57,23 +56,6 @@ func TestGaugeRepo_CountRealmSyncPending_CountsOnlyPendingNonDeleted(t *testing.
 
 	repo := pgadapter.NewGaugeRepository(sysPool)
 	n, err := repo.CountRealmSyncPending(ctx)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, n)
-}
-
-func TestGaugeRepo_CountSeatOverageActive_CountsOnlyOverageNonDeleted(t *testing.T) {
-	t.Parallel()
-	_, rawPool, sysPool := setupTestDB(t)
-	ctx := context.Background()
-
-	overage := seedTenant(t, ctx, rawPool, "gauge-overage-1")
-	_, err := rawPool.Exec(ctx, `UPDATE tenants SET overage_since = now() WHERE id = $1`, overage)
-	require.NoError(t, err)
-
-	_ = seedTenant(t, ctx, rawPool, "gauge-overage-2")
-
-	repo := pgadapter.NewGaugeRepository(sysPool)
-	n, err := repo.CountSeatOverageActive(ctx)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, n)
 }
@@ -136,13 +118,9 @@ func TestGaugeRepo_AllCountsZeroOnEmptySchema(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, n2)
 
-	n3, err := repo.CountSeatOverageActive(ctx)
+	n3, err := repo.CountPendingInvitationsStale(ctx)
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, n3)
-
-	n4, err := repo.CountPendingInvitationsStale(ctx)
-	require.NoError(t, err)
-	assert.EqualValues(t, 0, n4)
 
 	counts, err := repo.RLSViolationCounts(ctx, 5*time.Minute)
 	require.NoError(t, err)

@@ -1,9 +1,9 @@
 package unit_test
 
 // Service-level tests for the code-vs-LLD fixes of 2026-11-11 (LLD rev 2.52):
-// SEAT-5 overage re-evaluation (GAP-7 / GAP-18), I-3 member_already_exists
-// (GAP-24), PI-6 inline Keycloak-user delete on revoke (GAP-17), BUG-5
-// character count, GAP-21 inactive department skipped by I-10.
+// I-3 member_already_exists (GAP-24), PI-6 inline Keycloak-user delete on
+// revoke (GAP-17), BUG-5 character count, GAP-21 inactive department skipped
+// by I-10.
 
 import (
 	"context"
@@ -19,85 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// ── SEAT-5: ReevaluateSeatOverage ───────────────────────────────────────
-
-type lgSeatTenantRepo struct {
-	port.TenantRepositoryNoop
-	occ     port.SeatOccupancy
-	lockErr error
-	set     []*time.Time
-	calls   int
-}
-
-func (r *lgSeatTenantRepo) LockSeatOccupancy(context.Context, uuid.UUID) (port.SeatOccupancy, error) {
-	return r.occ, r.lockErr
-}
-func (r *lgSeatTenantRepo) SetOverageSince(_ context.Context, _ uuid.UUID, since *time.Time) error {
-	r.calls++
-	r.set = append(r.set, since)
-	return nil
-}
-
-func seatCtx(pub *ruPublisher) context.Context {
-	return port.WithEventPublisher(context.Background(), pub)
-}
-
-func TestReevaluateSeatOverage_OverCapStartsMarkerAndEmits(t *testing.T) {
-	repo := &lgSeatTenantRepo{occ: port.SeatOccupancy{LicensedSeats: 2, Active: 3}}
-	pub := &ruPublisher{}
-	got, err := service.ReevaluateSeatOverage(seatCtx(pub), repo, uuid.New(), service.SeatOverageSource{Actor: "iam-system"})
-	require.NoError(t, err)
-	assert.Equal(t, service.SeatOverageStarted, got)
-	require.Len(t, repo.set, 1)
-	assert.NotNil(t, repo.set[0], "overage_since set")
-	require.Len(t, pub.events, 1)
-	assert.Equal(t, domain.EventTenantSeatOverageStarted, pub.events[0].Type)
-}
-
-func TestReevaluateSeatOverage_BackUnderCapClearsMarkerAndEmits(t *testing.T) {
-	since := time.Now().Add(-time.Hour)
-	repo := &lgSeatTenantRepo{occ: port.SeatOccupancy{LicensedSeats: 5, Active: 3, OverageSince: &since}}
-	pub := &ruPublisher{}
-	got, err := service.ReevaluateSeatOverage(seatCtx(pub), repo, uuid.New(), service.SeatOverageSource{Actor: "u"})
-	require.NoError(t, err)
-	assert.Equal(t, service.SeatOverageResolved, got)
-	require.Len(t, repo.set, 1)
-	assert.Nil(t, repo.set[0], "overage_since cleared")
-	require.Len(t, pub.events, 1)
-	assert.Equal(t, domain.EventTenantSeatOverageResolved, pub.events[0].Type)
-}
-
-func TestReevaluateSeatOverage_NoTransition(t *testing.T) {
-	since := time.Now()
-	for name, occ := range map[string]port.SeatOccupancy{
-		"still over cap":  {LicensedSeats: 2, Active: 3, OverageSince: &since},
-		"still under cap": {LicensedSeats: 5, Active: 3},
-		"exactly at cap":  {LicensedSeats: 3, Active: 2, Pending: 1},
-	} {
-		t.Run(name, func(t *testing.T) {
-			repo := &lgSeatTenantRepo{occ: occ}
-			pub := &ruPublisher{}
-			got, err := service.ReevaluateSeatOverage(seatCtx(pub), repo, uuid.New(), service.SeatOverageSource{})
-			require.NoError(t, err)
-			assert.Equal(t, service.SeatOverageUnchanged, got)
-			assert.Zero(t, repo.calls)
-			assert.Empty(t, pub.events)
-		})
-	}
-}
-
-func TestReevaluateSeatOverage_LockErrorPropagates(t *testing.T) {
-	lockErr := errors.New("lock failed")
-	_, err := service.ReevaluateSeatOverage(context.Background(), &lgSeatTenantRepo{lockErr: lockErr}, uuid.New(), service.SeatOverageSource{})
-	assert.ErrorIs(t, err, lockErr)
-}
-
-func TestReevaluateSeatOverage_NilRepoIsNoop(t *testing.T) {
-	got, err := service.ReevaluateSeatOverage(context.Background(), nil, uuid.New(), service.SeatOverageSource{})
-	require.NoError(t, err)
-	assert.Equal(t, service.SeatOverageUnchanged, got)
-}
 
 // ── GAP-24 / PI-10: I-3 plain add for an existing member → 409 ──────────
 
@@ -140,56 +61,6 @@ func TestAddFromRegister_PlainAdd_RemovedMember_ReAdded(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, inserted)
 	assert.Equal(t, domain.MembershipActive, got.Status)
-}
-
-// ── SEAT-5: the I-3 plain add re-evaluates the overage marker ──────────
-
-// lgI3SeatTenantRepo reports the occupancy seen after the add (the helper
-// reads it under the tenant row lock, inside the same tx).
-type lgI3SeatTenantRepo struct {
-	arTenantRepo
-	occ port.SeatOccupancy
-	set []*time.Time
-}
-
-func (r *lgI3SeatTenantRepo) LockSeatOccupancy(context.Context, uuid.UUID) (port.SeatOccupancy, error) {
-	return r.occ, nil
-}
-func (r *lgI3SeatTenantRepo) SetOverageSince(_ context.Context, _ uuid.UUID, since *time.Time) error {
-	r.set = append(r.set, since)
-	return nil
-}
-
-func TestAddFromRegister_PlainAdd_OverCap_StartsOverage(t *testing.T) {
-	// Tenant was at exactly its 2 seats; the plain add makes 3 active.
-	tenants := &lgI3SeatTenantRepo{occ: port.SeatOccupancy{LicensedSeats: 2, Active: 3}}
-	pub := &arPub{}
-	svc := buildAddFromRegisterSvc(&arInviteRepo{}, tenants, &arMembershipRepo{}, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{pub: pub})
-
-	got, err := svc.AddFromRegister(context.Background(), uuid.New(), uuid.New(), uuid.Nil, "")
-	require.NoError(t, err, "SEAT-5 never blocks the add")
-	assert.Equal(t, domain.MembershipActive, got.Status)
-	require.Len(t, tenants.set, 1)
-	assert.NotNil(t, tenants.set[0], "overage_since stamped")
-	var started int
-	for _, e := range pub.events {
-		if e.Type == domain.EventTenantSeatOverageStarted {
-			started++
-		}
-	}
-	assert.Equal(t, 1, started)
-}
-
-func TestAddFromRegister_PlainAdd_AtCap_NoOverage(t *testing.T) {
-	// 1 seat used of 2 before the add → exactly at cap after it: no marker.
-	tenants := &lgI3SeatTenantRepo{occ: port.SeatOccupancy{LicensedSeats: 2, Active: 2}}
-	pub := &arPub{}
-	svc := buildAddFromRegisterSvc(&arInviteRepo{}, tenants, &arMembershipRepo{}, &arRoleRepo{}, &arDeptMemRepo{}, nil, &arTxRunner{pub: pub})
-
-	_, err := svc.AddFromRegister(context.Background(), uuid.New(), uuid.New(), uuid.Nil, "")
-	require.NoError(t, err)
-	assert.Empty(t, tenants.set)
-	assert.Empty(t, pub.events)
 }
 
 // ── GAP-17 / PI-6: revoke deletes the Keycloak user inline (best-effort) ──

@@ -103,13 +103,6 @@ type TenantRepository interface {
 	// under optimistic lock, including offboarded (deleted_at IS NOT NULL) rows.
 	SetRealmFields(ctx context.Context, id uuid.UUID, realmID string, realmType domain.RealmType, shard string, recordVersion int64) error
 
-	// LockSeatOccupancy is SEAT-5: FOR UPDATE the tenants row then count
-	// active memberships + unexpired pending invitations.
-	LockSeatOccupancy(ctx context.Context, id uuid.UUID) (SeatOccupancy, error)
-
-	// SetOverageSince writes or clears tenants.overage_since. nil clears.
-	SetOverageSince(ctx context.Context, id uuid.UUID, since *time.Time) error
-
 	// LockForProjection takes SELECT … FOR UPDATE on the live tenants row
 	// for EVT-14. Missing / soft-deleted row returns (nil, nil).
 	LockForProjection(ctx context.Context, id uuid.UUID) (*TenantProjectionLock, error)
@@ -167,14 +160,6 @@ type TenantLifecyclePatch struct {
 	LicensedSeats     int
 }
 
-// SeatOccupancy is the locked SEAT-5 snapshot for one tenant.
-type SeatOccupancy struct {
-	LicensedSeats int
-	OverageSince  *time.Time
-	Active        int
-	Pending       int
-}
-
 // TenantRepositoryNoop is a compile-time stub for tests that only override
 // a subset of TenantRepository. Embed it so new methods don't break fakes.
 type TenantRepositoryNoop struct{}
@@ -210,12 +195,6 @@ func (TenantRepositoryNoop) MarkOwnerlessIfUnset(context.Context, uuid.UUID) (bo
 	return false, nil
 }
 func (TenantRepositoryNoop) SetRealmFields(context.Context, uuid.UUID, string, domain.RealmType, string, int64) error {
-	return nil
-}
-func (TenantRepositoryNoop) LockSeatOccupancy(context.Context, uuid.UUID) (SeatOccupancy, error) {
-	return SeatOccupancy{}, nil
-}
-func (TenantRepositoryNoop) SetOverageSince(context.Context, uuid.UUID, *time.Time) error {
 	return nil
 }
 func (TenantRepositoryNoop) LockForProjection(context.Context, uuid.UUID) (*TenantProjectionLock, error) {
