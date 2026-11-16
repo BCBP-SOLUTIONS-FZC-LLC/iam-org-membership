@@ -6,6 +6,13 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-16 — documentation consistency, docs-consistency-reviewer agent)
+
+- **New `.claude/agents/docs-consistency-reviewer.md`** (Read, Grep, Glob), modelled on iam-audit-log's: checks the docs a diff touches, or should have touched, against the code and each other, and flags what `swag-check`, `metrics-lint`, `helm-access-check` and `changelog-check` would reject. Listed in `.claude/CLAUDE.md`.
+- **Stated facts aligned with the code** across README, ARCHITECTURE, CONTRIBUTING, VERSIONING, the LLD, `.claude/*.md`, `docs/architecture/`, `docs/observability/runbooks.md` and `deploy/iam/README.md`: LLD rev 2.49; Go 1.26.11; `platform-gincommon/v2` v2.6.0, `platform-events/v2` v2.3.0, `platform-pgcommon/v2` v2.0.2 (LLD §3.1 still showed v1.5.0/v2.0.0); 5 exporter goroutines (4 gauges + `iam_rls_violations_total`) and 8 CronJobs (no `seat_overage_active` / `seat-overage-reconcile` left as live); 10 domain tables plus `rls_violation_log`; migrations `000000`–`000007`; `record_version` on 7 of 10 tables (not `processed_events`, `pending_tenant_events`, `trial_signup_ledger`); `iam.tenant.events` carries 3 events; 28 schemas (13 produced, 15 consumed); 28 counters / 3 histograms / 4 gauges; OTEL trace export can be turned off (`OTEL_EXPORTER_OTLP_ENDPOINT=none` or `OTEL_TRACES_EXPORTER=none`). `.claude/database-schema.md` no longer says the `overage_since` column and `idx_tenants_seat_overage` were dropped: both remain in `000000_initial_schema`, unused.
+- **Diagrams in sync**: every `docs/architecture/mermaid/*.mmd` now matches its inline copy in ARCHITECTURE.md. The data-model diagram regains `overage_since` and `pending_tenant_events` and gains `trial_signup_ledger`.
+- Comment-only Go changes: `domain.IsProducedEvent` (13 events, was 12) and `cmd/reconciler/main.go` (8 CronJobs, was 7).
+
 ### Removed (2026-11-13 — CD-54 seat-overage retirement, LLD rev 2.49)
 
 - **CD-54: Seat-overage feature fully retired** — Prepaid seat model means overage cannot occur; member creation is blocked at SEAT-1 when `licensed_seats` are exhausted. `licensed_seats` reductions land only at renewal; Core never receives a value below seats in use (IAM-4). Removed:

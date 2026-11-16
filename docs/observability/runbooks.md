@@ -265,7 +265,7 @@ Two cases specific to signup provisioning (LLD rev 2.33):
 
 **Meaning.** The combined durable markers (`iam:reconciler_markers:sum`: ownerless + realm-sync-pending + seat-overage + stale-invitation gauges) have stayed above 5 for 20 minutes. Some reconciler is not converging.
 
-**Triage.** Check which gauge is high, then that reconciler's CronJob (`realm-config-sync`, `invitation-expiry`, `seat-overage-reconcile`) or the O-7 operator action for ownerless tenants.
+**Triage.** Check which gauge is high, then that reconciler's CronJob (`realm-config-sync`, `invitation-expiry`, `parked-events-replay`) or the O-7 operator action for ownerless tenants.
 
 ## Write availability
 
