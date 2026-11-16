@@ -727,7 +727,7 @@ docker build -t iam-org-membership:local --secret id=go_private_token,src=<(echo
 | Endpoint | Returns | Checks |
 |---|---|---|
 | `GET /healthz` | `200 {"status":"ok"}` | Pure liveness — never inspects a dependency |
-| `GET /readyz` | `200`/`503` | App Postgres pool, sys (BYPASSRLS) Postgres pool, Valkey, outbox runner, and SQS consumer goroutines (OBS-1), each via its own `Health(ctx)` |
+| `GET /readyz` | `200`/`503` | App Postgres pool, sys (BYPASSRLS) Postgres pool, Valkey, outbox runner, and SQS consumer goroutines (OBS-1), each via its own `Health(ctx)`. Valkey is advisory (CACHE-9): a failing cache is reported as `"cache":"degraded"` and does not turn the probe `503` |
 
 ### Minimum required environment variables
 

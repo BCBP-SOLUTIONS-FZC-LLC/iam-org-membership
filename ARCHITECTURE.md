@@ -400,7 +400,7 @@ sequenceDiagram
                 Handler ← executes here
 ```
 
-`/healthz` and `/readyz` (`registerInfraRoutes`) and the docs surface (`registerDocsRoutes`, gated by `DocsConfig.active()`) are registered **before** this chain, so a load-balancer probe with no headers still gets `200`. `/healthz` is pure liveness — it never inspects a dependency; `/readyz` checks the app Postgres pool, the `sysPool` (BYPASSRLS, a separate physical connection so a credential rotation on that role alone is caught), Valkey, the outbox runner (`select` on its `Ready()` channel), and one heartbeat per wired SQS consumer (a consumer goroutine that exits marks itself dead), returning `503` on any failure. `RequireActiveTenant`/`RequireActiveMembership` bypass `iam-system` and `platform_operator` principals — those internal/operator control paths must be able to reach a `trial_expired`/`suspended` tenant to restore it.
+`/healthz` and `/readyz` (`registerInfraRoutes`) and the docs surface (`registerDocsRoutes`, gated by `DocsConfig.active()`) are registered **before** this chain, so a load-balancer probe with no headers still gets `200`. `/healthz` is pure liveness — it never inspects a dependency; `/readyz` checks the app Postgres pool, the `sysPool` (BYPASSRLS, a separate physical connection so a credential rotation on that role alone is caught), Valkey, the outbox runner (`select` on its `Ready()` channel), and one heartbeat per wired SQS consumer (a consumer goroutine that exits marks itself dead), returning `503` on any failure except Valkey: the cache is advisory (CACHE-9), so a failing cache is only reported as `"cache":"degraded"` and the probe stays `200`. `RequireActiveTenant`/`RequireActiveMembership` bypass `iam-system` and `platform_operator` principals — those internal/operator control paths must be able to reach a `trial_expired`/`suspended` tenant to restore it.
 
 ---
 
@@ -719,7 +719,7 @@ flowchart TD
     subgraph ttl["TTL Self-Healing (CACHE-9, FAIL-2)"]
         T1[Cache unavailable / DEL fails / 50 ms timeout] --> T2["Advisory — Postgres (or, for read-through keys, the owning service) is source of truth"]
         T2 --> T3["Stale entry expires at TTL boundary\nNext read fetches from source and re-populates"]
-        T3 --> T4["/readyz fails on a Valkey outage, pulling the pod from rotation;\nrequests already in flight still fall through to Postgres"]
+        T3 --> T4["/readyz stays 200 on a Valkey outage (cache: degraded), so pods stay in rotation;\nevery request falls through to Postgres"]
     end
 
     note1["CACHE-1 — All tenant-scoped keys are tenant-prefixed (mirrors RLS boundary); om:plans/om:departments are deliberately tenant-agnostic global catalogs\nCACHE-2 — Cache advisory only; miss/timeout falls through to Postgres or the owning service\nCACHE-4 — Jitter ±30 s prevents thundering herd on many-key expiry\nNo Valkey timeout env var — 50ms read/write / 100ms dial hardcoded in valkey.New's client options"]
@@ -1165,7 +1165,7 @@ if tag.RowsAffected() == 0 {
 
 **Failure invariants (FAIL-1..5):**
 - **FAIL-1** — A dependency failure never leaves partial local state. Every multi-step write (trial signup's 7 steps, removal's cascade) is one `RunInTx`; a failure at any step rolls back everything, business row and outbox row alike.
-- **FAIL-2** — Cache failures degrade latency only. A Valkey outage costs one extra Postgres round-trip per request; `/readyz` still fails on it (unlike most advisory caches) specifically so a degraded pod is pulled from rotation before every cache miss amplifies DB load platform-wide.
+- **FAIL-2** — Cache failures degrade latency only. A Valkey outage costs one extra Postgres round-trip per request; `/readyz` stays `200` and reports `"cache":"degraded"` (CACHE-9), because failing it would pull every pod out of rotation at once while the API still answers from Postgres. The client makes one attempt per command (no retries), so a down Valkey costs milliseconds, and failed invalidations are counted in `iam_org_membership_cache_invalidation_failed_total`.
 - **FAIL-3** — Outbox delivery is at-least-once (SNS→SQS); `processed_events` makes consumption exactly-once at each consumer.
 - **FAIL-4** — All 9 CronJobs are safe to re-run; each re-selects only still-eligible rows (`WHERE status = 'pending'`-style predicates), so a restart mid-batch never double-applies.
 - **FAIL-5** — Missing tenant context fails closed. The app pool with no bound GUC returns 0 rows under RLS rather than leaking; only the deliberately-separate `sysPool` (no `GUCProvider` at all) can see across tenants.
