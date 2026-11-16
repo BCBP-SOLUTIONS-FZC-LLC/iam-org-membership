@@ -80,10 +80,13 @@ func TestPatchMemberLifecycle_Suspended_200(t *testing.T) {
 // ── I4-HP-03: PATCH status=left → 200 ────────────────────────────────────────
 
 // Test Case ID: I4-HP-03
-func TestPatchMemberLifecycle_Left_200(t *testing.T) {
+// I-4 refuses status=left: a removal goes through I-5 / P-8, which cascade
+// role grants (otherwise an I-3 re-add would restore them, TM-1/TM-9).
+func TestPatchMemberLifecycle_Left_400(t *testing.T) {
 	tenantID := uuid.New()
-	mem := &mhMemRepo{setStatusFn: func(_ context.Context, tid, uid uuid.UUID, s domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
-		return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
+	mem := &mhMemRepo{setStatusFn: func(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
+		t.Fatal("repo must not be reached for status=left")
+		return nil, nil
 	}}
 	h := &InternalHandler{provisioning: buildProvisioningForI4(mem)}
 
@@ -91,7 +94,7 @@ func TestPatchMemberLifecycle_Left_200(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	h.PatchMemberLifecycle(c)
 
-	assert.Less(t, w.Code, 300, w.Body.String())
+	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
 }
 
 // ── I4-VAL-02: bad tenant_id → 400 ───────────────────────────────────────────

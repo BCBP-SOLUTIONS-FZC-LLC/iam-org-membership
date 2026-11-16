@@ -46,6 +46,9 @@ func (p *ruPublisher) Enqueue(_ context.Context, e *domain.DomainEvent) error {
 type ruMembershipRepo struct {
 	findByUserIDFn func(ctx context.Context, tenantID, userID uuid.UUID) (*domain.TenantMembership, error)
 	softDeleteFn   func(ctx context.Context, tenantID, userID uuid.UUID, expectedVersion int64) error
+	// setStatusFn backs SetStatus; P-8 marks the row status='left' through it
+	// (TM-4/TM-5), so a removal-write error is injected here.
+	setStatusFn func(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, expectedVersion int64) (*domain.TenantMembership, error)
 }
 
 func (f *ruMembershipRepo) List(context.Context, uuid.UUID, *domain.MembershipListCursor, int) (*domain.MembershipListPage, error) {
@@ -57,7 +60,10 @@ func (f *ruMembershipRepo) FindByUserID(ctx context.Context, tenantID, userID uu
 func (f *ruMembershipRepo) Insert(context.Context, *domain.TenantMembership) (*domain.TenantMembership, error) {
 	return nil, nil
 }
-func (f *ruMembershipRepo) SetStatus(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
+func (f *ruMembershipRepo) SetStatus(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, v int64) (*domain.TenantMembership, error) {
+	if f.setStatusFn != nil {
+		return f.setStatusFn(ctx, tenantID, userID, status, v)
+	}
 	return nil, nil
 }
 func (f *ruMembershipRepo) SoftDelete(ctx context.Context, tenantID, userID uuid.UUID, expectedVersion int64) error {

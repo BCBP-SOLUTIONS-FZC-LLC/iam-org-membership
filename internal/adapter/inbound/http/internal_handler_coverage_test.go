@@ -30,6 +30,12 @@ type ihMembershipInsertRepo struct {
 	insertFn func(context.Context, *domain.TenantMembership) (*domain.TenantMembership, error)
 }
 
+// FindByUserID: the user is not a member yet, so I-3's plain add proceeds to
+// Insert (an existing member is 409 member_already_exists, PI-10).
+func (r *ihMembershipInsertRepo) FindByUserID(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+	return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
+}
+
 func (r *ihMembershipInsertRepo) Insert(ctx context.Context, m *domain.TenantMembership) (*domain.TenantMembership, error) {
 	if r.insertFn != nil {
 		return r.insertFn(ctx, m)

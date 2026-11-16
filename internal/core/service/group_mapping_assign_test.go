@@ -422,3 +422,60 @@ func TestAssignFromGroups_DeptAndRoleFromDifferentGroups_NotPaired(t *testing.T)
 	assert.Empty(t, got.AssignedDepts)
 	assert.False(t, assignCalled)
 }
+
+// ── AssignFromGroups — GAP-21 / TD-6: inactive department skipped ─────────
+
+type gmaTenantDeptRepo struct {
+	active map[uuid.UUID]bool
+}
+
+func (f *gmaTenantDeptRepo) List(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (f *gmaTenantDeptRepo) ListActive(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (f *gmaTenantDeptRepo) Find(_ context.Context, tid, did uuid.UUID) (*domain.TenantDepartment, error) {
+	on, ok := f.active[did]
+	if !ok {
+		return nil, domain.NewError(domain.ErrDepartmentNotFound, "not activated")
+	}
+	return &domain.TenantDepartment{TenantID: tid, DepartmentID: did, IsActive: on}, nil
+}
+func (f *gmaTenantDeptRepo) Activate(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantDepartment, error) {
+	return nil, nil
+}
+func (f *gmaTenantDeptRepo) SetActive(context.Context, uuid.UUID, uuid.UUID, bool, int64) (*domain.TenantDepartment, error) {
+	return nil, nil
+}
+
+func TestAssignFromGroups_InactiveDepartmentSkipped(t *testing.T) {
+	tenantID := uuid.New()
+	active, inactive, never := uuid.New(), uuid.New(), uuid.New()
+	dm := []domain.GroupDeptMapping{
+		{TenantID: tenantID, KeycloakGroupName: "g1", DepartmentID: active},
+		{TenantID: tenantID, KeycloakGroupName: "g2", DepartmentID: inactive},
+		{TenantID: tenantID, KeycloakGroupName: "g3", DepartmentID: never},
+	}
+	dr := []domain.GroupDeptRoleMapping{
+		{TenantID: tenantID, KeycloakGroupName: "g1", RoleCode: domain.DeptReviewer},
+		{TenantID: tenantID, KeycloakGroupName: "g2", RoleCode: domain.DeptReviewer},
+		{TenantID: tenantID, KeycloakGroupName: "g3", RoleCode: domain.DeptReviewer},
+	}
+	mem := &gmaMembershipRepo{findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+		return &domain.TenantMembership{ID: uuid.New()}, nil
+	}}
+	var assigned []uuid.UUID
+	deptMems := &gmaDeptMemRepo{assignFn: func(_ context.Context, tid, uid, did, _ uuid.UUID, level domain.DeptRole, _ uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
+		assigned = append(assigned, did)
+		return &domain.DeptMembership{TenantID: tid, UserID: uid, DepartmentID: did, RoleLevel: level}, nil, nil
+	}}
+	svc := buildAssignFromGroupsSvc(t, tenantID, dm, dr, nil, mem, &gmaRoleRepo{}, deptMems, &gmaTxRunner{}, nil).
+		WithTenantDepartments(&gmaTenantDeptRepo{active: map[uuid.UUID]bool{active: true, inactive: false}})
+
+	got, err := svc.AssignFromGroups(context.Background(), tenantID, uuid.New(), []string{"g1", "g2", "g3"})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{active}, assigned, "only the active department is written (TD-6)")
+	assert.Equal(t, []uuid.UUID{active}, got.AssignedDepts)
+	assert.ElementsMatch(t, []uuid.UUID{inactive, never}, got.SkippedDepts)
+}

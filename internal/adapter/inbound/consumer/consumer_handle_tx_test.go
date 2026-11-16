@@ -518,3 +518,31 @@ func TestHandle_IsProcessedError_PropagatesError(t *testing.T) {
 type errSentinel string
 
 func (e errSentinel) Error() string { return string(e) }
+
+// TestHandle_LifecycleProjection_EvictsTenantCache verifies the post-commit
+// eviction for ordinary (non-wipe) projections — LLD §6 post-commit DEL and
+// §8.2: without it P-1 / I-9 / I-14 / I-17 served the pre-event tenant
+// (plan, status, seats) for up to the 600 s om:tenant TTL.
+func TestHandle_LifecycleProjection_EvictsTenantCache(t *testing.T) {
+	tenantID := uuid.New()
+	cache := &htCache{}
+	tenants := &htTenantRepo{
+		lockForProjectionFn: func(context.Context, uuid.UUID) (*port.TenantProjectionLock, error) {
+			return &port.TenantProjectionLock{Status: domain.StatusTrial, Plan: domain.PlanStarter}, nil
+		},
+		applyLifecyclePatchFn: func(context.Context, uuid.UUID, port.TenantLifecyclePatch) (int64, error) { return 1, nil },
+	}
+	c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, &htIdempotency{}), tenants, nil, cache, 5*time.Minute, nil)
+
+	err := c.Handle(context.Background(), events.Envelope[json.RawMessage]{
+		ID: uuid.New().String(), Type: "TrialExpired", TenantID: tenantID.String(),
+		Timestamp: time.Now().UTC().Add(-time.Second),
+	})
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{
+		"om:tenant:" + tenantID.String(),
+		"om:locale:" + tenantID.String(),
+		"om:seat_usage:" + tenantID.String(),
+	}, cache.deletedKeys, "a committed projection must evict the tenant-row-derived keys")
+}

@@ -123,7 +123,10 @@ func TestDeptMembershipAssign_LevelDecrease_ActiveDelegateBlocks(t *testing.T) {
 	assert.Equal(t, 1, de.Details["active_workflows"])
 }
 
-func TestDeptMembershipAssign_LevelDecrease_WorkflowFailOpenAllowsDecrease(t *testing.T) {
+// LLD WFI-8 (line 3050): "A Workflow Service call failure (`5xx`/timeout) at
+// **any** step … returns `503 workflow_service_unavailable` with no DB write".
+// LLD §20.5 (line 4119): P-10 dept demotion against Workflow is "fail-closed".
+func TestDeptMembershipAssign_LevelDecrease_WorkflowError_503(t *testing.T) {
 	tenantID, userID, deptID := uuid.New(), uuid.New(), uuid.New()
 	delegationID := uuid.New()
 	existing := &domain.DeptMembership{TenantID: tenantID, UserID: userID, DepartmentID: deptID, RoleLevel: domain.DeptApprover}
@@ -143,8 +146,8 @@ func TestDeptMembershipAssign_LevelDecrease_WorkflowFailOpenAllowsDecrease(t *te
 	svc := service.NewDeptMembershipService(&fullDeptMemRepo{existing: existing}, mem, td, nil, delClient, wf, nil, &passthroughTxRunner{})
 
 	got, err := svc.Assign(context.Background(), tenantID, userID, deptID, domain.DeptPreparator, uuid.New())
-	require.NoError(t, err, "WFI-9 fail-open: workflow unavailable must allow the level decrease")
-	assert.Equal(t, domain.DeptPreparator, got.RoleLevel)
+	require.ErrorIs(t, err, domain.ErrWorkflowServiceUnavailable, "WFI-8 / §20.5: Workflow unavailable must refuse the level decrease")
+	assert.Nil(t, got)
 }
 
 func TestDeptMembershipAssign_LevelDecrease_NoActiveDelegationSkipsGate(t *testing.T) {

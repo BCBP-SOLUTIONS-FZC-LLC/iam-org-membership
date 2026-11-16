@@ -126,10 +126,11 @@ func TestDeptMembershipAssign_LevelChange(t *testing.T) {
 	first, _, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptPreparator, uuid.Nil)
 	require.NoError(t, err)
 
-	// Level change → old soft-deleted, new inserted.
+	// Level change → DM-3: the existing row is updated in place (GAP-22).
 	second, previous, err := repo.Assign(tctx, tenantID, userID, deptID, membershipID, domain.DeptApprover, uuid.Nil)
 	require.NoError(t, err)
-	assert.NotEqual(t, first.ID, second.ID, "level change gets a fresh row for audit history")
+	assert.Equal(t, first.ID, second.ID, "DM-3: role changes are UPDATEs on the existing row")
+	assert.Greater(t, second.RecordVersion, first.RecordVersion, "the update bumps record_version")
 	assert.Equal(t, domain.DeptApprover, second.RoleLevel)
 	require.NotNil(t, previous, "level change must report the pre-change row")
 	assert.Equal(t, domain.DeptPreparator, previous.RoleLevel, "previous must be the level before this call")

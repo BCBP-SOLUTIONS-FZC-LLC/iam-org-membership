@@ -109,7 +109,8 @@ func TestDepartmentPatch_IsActiveNil_400(t *testing.T) {
 	c, w := buildCtx(http.MethodPatch, "/", `{"record_version":1}`, tenantOwnerCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
-	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
+	// LLD §17: a body with no mutable field is 400 no_mutable_field (GAP-25).
+	assertErrorCode(t, w, http.StatusBadRequest, "NO_MUTABLE_FIELD")
 }
 
 // ── internal_handler.go: PatchMemberLifecycle ShouldBindJSON error (231.47,234.3) ──

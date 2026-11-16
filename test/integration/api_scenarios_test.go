@@ -113,16 +113,16 @@ func TestAPIScenarios_I3_AddMember(t *testing.T) {
 		assertStatus(t, resp, http.StatusCreated)
 	})
 
-	t.Run("I3-IDP-01 re-add same member → 201 idempotent (PI-10)", func(t *testing.T) {
-		// PI-10: uq_tm_active_user ON CONFLICT DO NOTHING returns the existing row.
-		// Handler returns 201 for both fresh and idempotent adds (LLD I-3 @Success 201).
+	t.Run("I3-IDP-01 re-add same active member → 409 member_already_exists (PI-10)", func(t *testing.T) {
+		// PI-10 / LLD §17: the plain-add branch bounces an existing active
+		// member with 409 member_already_exists (GAP-24, LLD rev 2.52).
 		body := toJSON(map[string]any{
 			"user_id": tt.MemberID, "email": "member@test.com", "full_name": "Test Member",
 		})
 		resp := e.do(t, http.MethodPost, "/api/v1/internal/tenants/"+tt.TenantID+"/members",
 			body, isSys(tt.TenantID))
 		defer func() { _ = resp.Body.Close() }()
-		assertStatus(t, resp, http.StatusCreated)
+		assertStatus(t, resp, http.StatusConflict)
 	})
 
 	t.Run("I3-NF-01 unknown tenant → 404", func(t *testing.T) {
@@ -232,14 +232,15 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 		assertStatus(t, resp, http.StatusForbidden)
 	})
 
-	t.Run("I4-HP-03 set status left → 200", func(t *testing.T) {
+	t.Run("I4-HP-03 set status left → 400 (removal goes through I-5 / P-8)", func(t *testing.T) {
+		// LLD rev 2.52: I-4 carries Keycloak enable/disable only; a bare flip
+		// to 'left' would skip the role cascade (TM-9 / TR-9).
 		body := toJSON(map[string]any{"status": "left", "record_version": memberRV})
 		resp := e.do(t, http.MethodPatch,
 			"/api/v1/internal/tenants/"+tt.TenantID+"/members/"+tt.MemberID,
 			body, isSys(tt.TenantID))
 		defer func() { _ = resp.Body.Close() }()
-		b := assertStatus(t, resp, http.StatusOK)
-		hasField(t, b, "status", "left")
+		assertStatus(t, resp, http.StatusBadRequest)
 	})
 }
 
@@ -549,13 +550,14 @@ func TestAPIScenarios_GT_GetTenant(t *testing.T) {
 		assertStatus(t, resp, http.StatusNotFound)
 	})
 
-	t.Run("GT-VAL-01 invalid UUID → 400", func(t *testing.T) {
-		// Use iam-system so middleware doesn't reject the invalid path UUID first;
-		// parseTenantIDParam in the handler returns 400 for "not-a-uuid".
+	t.Run("GT-VAL-01 iam-system on a tenant-facing route → 403 (AUTH-5)", func(t *testing.T) {
+		// AUTH-5 (BUG-7, LLD rev 2.52): the system principal is refused on
+		// /api/v1/tenants/* before any path parsing, so this request (which
+		// used iam-system to reach the handler's 400 for "not-a-uuid") is 403.
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/not-a-uuid",
 			"", isSys(tt.TenantID))
 		defer func() { _ = resp.Body.Close() }()
-		assertStatus(t, resp, http.StatusBadRequest)
+		assertStatus(t, resp, http.StatusForbidden)
 	})
 
 	t.Run("GT-SEC-01 cross-tenant attempt → 404 (other tenant not found)", func(t *testing.T) {
@@ -939,14 +941,14 @@ func TestAPIScenarios_P10_AssignDeptMember(t *testing.T) {
 			"got %d", resp2.StatusCode)
 	})
 
-	t.Run("P10-VAL-01 invalid level → 422", func(t *testing.T) {
+	t.Run("P10-VAL-01 invalid level → 400 invalid_role_level (LLD §17)", func(t *testing.T) {
 		body := toJSON(map[string]any{"level": "invalid_level", "record_version": 1})
 		resp := e.do(t, http.MethodPut,
 			fmt.Sprintf("/api/v1/tenants/%s/departments/%s/members/%s",
 				tt.TenantID, DeptEngID, tt.MemberID),
 			body, isOwner(tt.OwnerID, tt.TenantID))
 		defer func() { _ = resp.Body.Close() }()
-		assertStatus(t, resp, http.StatusUnprocessableEntity)
+		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
 	t.Run("P10-VAL-02 assign non-member → 422", func(t *testing.T) {
@@ -1208,22 +1210,22 @@ func TestAPIScenarios_P28_ReconcileRoles(t *testing.T) {
 		assert.Empty(t, roles, "all elevated roles stripped — roles must be empty")
 	})
 
-	t.Run("P28-VAL-01 unknown role → 422", func(t *testing.T) {
+	t.Run("P28-VAL-01 unknown role → 400 invalid_role (LLD §17)", func(t *testing.T) {
 		body := toJSON(map[string]any{"roles": []string{"superman"}, "record_version": memberRV})
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
 		defer func() { _ = resp.Body.Close() }()
-		assertStatus(t, resp, http.StatusUnprocessableEntity)
+		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
-	t.Run("P28-VAL-02 member role is derived (not persistent) → 422", func(t *testing.T) {
+	t.Run("P28-VAL-02 member role is derived (not persistent) → 400 invalid_role (LLD §17)", func(t *testing.T) {
 		body := toJSON(map[string]any{"roles": []string{"member"}, "record_version": memberRV})
 		resp := e.do(t, http.MethodPut,
 			"/api/v1/tenants/"+tt.TenantID+"/members/"+tt.MemberID+"/roles",
 			body, isOwner(tt.OwnerID, tt.TenantID))
 		defer func() { _ = resp.Body.Close() }()
-		assertStatus(t, resp, http.StatusUnprocessableEntity)
+		assertStatus(t, resp, http.StatusBadRequest)
 	})
 
 	t.Run("P28-NF-01 unknown user → 404", func(t *testing.T) {

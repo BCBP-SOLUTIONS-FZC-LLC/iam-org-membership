@@ -460,7 +460,13 @@ func TestMembership_RemoveUser_MembershipSoftDeleteErrorPropagates(t *testing.T)
 		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
 			return &domain.TenantMembership{ID: uuid.New(), RecordVersion: 1}, nil
 		},
-		softDeleteFn: func(context.Context, uuid.UUID, uuid.UUID, int64) error { return softDeleteErr },
+		// P-8 marks the row left via SetStatus (TM-4/TM-5).
+		setStatusFn: func(_ context.Context, _, _ uuid.UUID, st domain.MembershipStatus, _ int64) (*domain.TenantMembership, error) {
+			if st != domain.MembershipLeft {
+				return nil, errors.New("P-8 must set status=left")
+			}
+			return nil, softDeleteErr
+		},
 	}
 	r := &ruRoleRepo{
 		listByUserFn:           func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) { return nil, nil },

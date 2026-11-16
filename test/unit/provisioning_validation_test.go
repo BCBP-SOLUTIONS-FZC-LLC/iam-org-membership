@@ -190,9 +190,19 @@ func TestProvisioning_SetMembershipStatus_InvalidStatus_Returns400(t *testing.T)
 // Test Case ID:      GAP-AUTH-2-ALLOWED-01
 // Feature:           I-4 · valid statuses pass whitelist (active, suspended, left)
 // Priority: P1 · Severity: Major · Automation Status: Automated
+// I-4 refuses 'left' (removal goes through I-5 / P-8, which cascade).
+func TestProvisioning_SetMembershipStatus_Left_Refused(t *testing.T) {
+	m := &fakeMembershipRepo{setStatusFn: func(context.Context, uuid.UUID, uuid.UUID, domain.MembershipStatus, int64) (*domain.TenantMembership, error) {
+		t.Fatal("repo must not be reached for status=left")
+		return nil, nil
+	}}
+	_, err := buildProvisioningSvc(m).SetMembershipStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipLeft, 1)
+	assert.ErrorIs(t, err, domain.ErrValidation)
+}
+
 func TestProvisioning_SetMembershipStatus_ValidStatuses_PassWhitelist(t *testing.T) {
 	for _, status := range []domain.MembershipStatus{
-		domain.MembershipActive, domain.MembershipSuspended, domain.MembershipLeft,
+		domain.MembershipActive, domain.MembershipSuspended,
 	} {
 		t.Run(string(status), func(t *testing.T) {
 			called := false
