@@ -3,8 +3,8 @@
 The Org & Membership (Core) Service — the **organizational/business system of record** in the IAM subsystem. It owns tenants (plan, subscription lifecycle, trial/cancellation/suspension timers, MFA freshness), department activation, tenant memberships and elevated tenant-level roles, department-level role grants, the two-step invite→accept staging flow, and per-tenant feature-flag overrides. It is the hot-path source of truth AuthZ Enrichment reads on every authenticated request via I-8.
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`
-**Module:** Go 1.26.10 · private module · deployed as three binaries from one image (`cmd/server`, `cmd/reconciler`, `cmd/migrate`)
-**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.47** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
+**Module:** Go 1.26.11 · private module · deployed as three binaries from one image (`cmd/server`, `cmd/reconciler`, `cmd/migrate`)
+**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.49** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
 
 ---
 
@@ -163,8 +163,8 @@ Clean Architecture — dependencies point inward; outer layers never import inne
 ```
 iam-org-membership/
 ├── cmd/
-│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrate-at-startup unless RUN_MIGRATIONS=false, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 6 metric-exporter goroutines (exporters.go — 5 gauges + iam_rls_violations_total counter); wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
-│   ├── reconciler/                    # Single binary, --job=<name>; jobs/ holds the 7 CronJob entry points
+│   ├── server/                        # HTTP composition root: pool+GUC wiring, migrate-at-startup unless RUN_MIGRATIONS=false, outbox runner, 3 SQS consumers (tenant-orgm-q/billing-orgm-q/catalog-orgm-q), 5 metric-exporter goroutines (exporters.go — 4 gauges + iam_rls_violations_total counter); wiring.go holds the topic-publisher/codec/SQS-consumer builder helpers factored out of main.go
+│   ├── reconciler/                    # Single binary, --job=<name>; jobs/ holds the 8 CronJob entry points
 │   └── migrate/                       # One-shot schema migration (postgres.MigrateSchema: platform-events outbox schema, then domain migrations) — the Helm pre-install/pre-upgrade hook Job
 ├── internal/
 │   ├── core/
@@ -177,7 +177,7 @@ iam-org-membership/
 │       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged / PlanCatalogChanged — cache invalidation, CACHE-11); dedup.go (processOnce/ackUnknown over port.Inbox)
 │       │   └── sqspipeline/           # Inbound pipeline every queue runs: NewConsumer/EnvForQueue (consumer.go), RequireDLQ + routeRejectsToDLQ (dlq.go), consumed-schema Validator + Handler (inbound_schema.go)
 │       └── outbound/
-│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cd50_pending_tenant_events, 000005_cr4_trial_signup_ledger)
+│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cd50_pending_tenant_events, 000005_cr4_trial_signup_ledger, 000006_cr4_trial_ledger_hardening, 000007_migrator_grants)
 │           ├── valkey/                # Cache adapter (go-redis/v9) — advisory only
 │           ├── eventbus/              # RoutingPublisher (two topics) + outbox runner + embedded event schemas
 │           ├── workflow/               # Workflow Service HTTP client (§8.8 delegate-impact)
@@ -192,7 +192,7 @@ iam-org-membership/
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.47 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.49 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   ├── architecture/                  # Standalone Mermaid diagrams
 │   ├── observability/                 # Observability standard implementation, generated metric-registry.md, migration.md, runbooks.md
@@ -676,7 +676,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Migration safety
 
-Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), `000004_cd50_pending_tenant_events` (CD-50 parked-events table), and `000005_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema` before them.
+Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), `000004_cd50_pending_tenant_events` (CD-50 parked-events table), `000005_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate), `000006_cr4_trial_ledger_hardening` (CR-4 grants, `tenant_id` claim column, hash-format CHECK) and `000007_migrator_grants` (MIG-10). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema` before them.
 
 ---
 
@@ -859,7 +859,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.47 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.49 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/observability/`](docs/observability/README.md) | Observability standard implementation: identity, tiers, CI enforcement, SLOs; generated [metric inventory](docs/observability/metric-registry.md); [renamed metrics](docs/observability/migration.md); [alert runbooks](docs/observability/runbooks.md) |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 | [`docs/runbook-outbox-dead-letter.md`](docs/runbook-outbox-dead-letter.md) | Inspecting and reprocessing `outbox_dead_letters` |

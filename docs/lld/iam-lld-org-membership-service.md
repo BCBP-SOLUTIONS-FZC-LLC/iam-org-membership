@@ -349,9 +349,9 @@ iam-org-membership/
 
 ```
 require (
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon    v1.5.0
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2        v2.0.0
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2      v2.0.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2     v2.6.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2        v2.3.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2      v2.0.2
 )
 ```
 
@@ -1165,7 +1165,7 @@ CREATE INDEX idx_processed_events_prune ON processed_events (processed_at);
 
 #### `rls_violation_log`
 
-A **ninth table**, not part of the eight domain tables above — a sampled security-audit trail, not application state. Written only by `log_rls_violation()` (below), called from inside `rls_check_tenant()` on every RLS policy check.
+An **eleventh table**, not one of the ten domain tables — a sampled security-audit trail, not application state. Written only by `log_rls_violation()` (below), called from inside `rls_check_tenant()` on every RLS policy check.
 
 ```sql
 CREATE TABLE rls_violation_log (
@@ -1251,7 +1251,7 @@ This means a caller can only read or write the `tenants` row for their own tenan
 
 ### 4.4 Migrations
 
-Forward-only, additive; column drops split across two releases. `postgres.MigrateSchema(ctx, dsn, log)` applies platform-events' outbox schema first (`outbox.ApplySchema` — `outbox_events`, `outbox_dead_letters`, left as the library defines them), then the domain migrations (`RunMigrations`, a pgcommon `migrate.Runner` over the embedded `migrations/`), whose GRANTs on the outbox tables need them to exist; both run over the direct `MIGRATION_DATABASE_URL` under the runner's advisory lock. It runs once per release in the `cmd/migrate` Helm hook Job (§13.1); `cmd/server` runs it at startup only when `RUN_MIGRATIONS` is unset or true (local dev, tests). `migrate.ErrMigrationDirty` and `ErrVersionNotInSource` are wrapped with the next step to take (repair-and-force, or deploy the newer image / run the down migration). On-disk migrations today: `000000_initial_schema`, `000001_check_constraints` (`chk_full_name_length`, `chk_display_name_length`), `000002_pub1_pending_invitations_email_idx` (`idx_pi_email_pending`, PUB-1). `org_membership_migrator` has `BYPASSRLS`. Same CI verification queries apply (no `BYPASSRLS` on `org_membership_app`, all tenant-scoped tables have `rowsecurity = true AND forcerls = true`).
+Forward-only, additive; column drops split across two releases. `postgres.MigrateSchema(ctx, dsn, log)` applies platform-events' outbox schema first (`outbox.ApplySchema` — `outbox_events`, `outbox_dead_letters`, left as the library defines them), then the domain migrations (`RunMigrations`, a pgcommon `migrate.Runner` over the embedded `migrations/`), whose GRANTs on the outbox tables need them to exist; both run over the direct `MIGRATION_DATABASE_URL` under the runner's advisory lock. It runs once per release in the `cmd/migrate` Helm hook Job (§13.1); `cmd/server` runs it at startup only when `RUN_MIGRATIONS` is unset or true (local dev, tests). `migrate.ErrMigrationDirty` and `ErrVersionNotInSource` are wrapped with the next step to take (repair-and-force, or deploy the newer image / run the down migration). On-disk migrations today: `000000_initial_schema`, `000001_check_constraints` (`chk_full_name_length`, `chk_display_name_length`), `000002_pub1_pending_invitations_email_idx` (`idx_pi_email_pending`, PUB-1), `000003_cd37_residency_mode`, `000004_cd50_pending_tenant_events`, `000005_cr4_trial_signup_ledger`, `000006_cr4_trial_ledger_hardening`, `000007_migrator_grants` (MIG-10). `org_membership_migrator` has `BYPASSRLS`. Same CI verification queries apply (no `BYPASSRLS` on `org_membership_app`, all tenant-scoped tables have `rowsecurity = true AND forcerls = true`).
 
 **Decomposition drops (originally migrations 000013–000016, dev-stage; now folded into the single consolidated `000000_initial_schema` migration, §19.1).** The decomposition applied four table-group drops, in dev-stage where **nothing is deployed** — so they were **outright `DROP TABLE` / `DROP TYPE` statements, not the MIG-1 expand/contract split** (that discipline exists to protect a running deployment during rollout; with no live data or replicas there was no rollout to protect). Described below by their original incremental numbering for historical clarity — those numbers no longer exist as separate files on disk (see §19.1):
 
@@ -3433,7 +3433,7 @@ Per the IAM Platform Observability Standard's three-tier hierarchy (platform-gin
 | `iam_org_membership_realm_sync_pending` | 3 | Gauge | — | Tenants with `realm_sync_pending=true` (T-15); the failure counter is `iam_org_membership_realm_sync_failed_total` above |
 | `iam_org_membership_pending_invitations_stale` | 3 | Gauge | — | Pending invitations past `expires_at` that `invitation-expiry` hasn't flipped yet — no `tenant_id` label |
 
-The three gauges and `iam_rls_violations_total` are fed by the five exporter goroutines in `cmd/server/exporters.go` (5-minute ticker over the BYPASSRLS `sysPool`). The reconciler shares the server's `service="iam-org-membership"` identity and pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob`.
+The four gauges and `iam_rls_violations_total` are fed by the five exporter goroutines in `cmd/server/exporters.go` (5-minute ticker over the BYPASSRLS `sysPool`). The reconciler shares the server's `service="iam-org-membership"` identity and pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob`.
 
 **Not implemented:** `iam_org_membership_membership_joins_total`/`_leaves_total`, `iam_group_mapping_resolution_errors_total`, `iam_org_membership_memberships_cache_hit_ratio`, `iam_org_membership_membership_lookup_latency_seconds`, `iam_org_membership_invitations_created_total`/`_accepted_total`/`_expired_total`/`_revoked_total`, `iam_org_membership_invite_kc_cleanup_pending`/`_failed_total`. None exists in `internal/adapter/outbound/metrics/business.go`; treat them as targets, not current fact. *(Corrected rev 2.18: `platform_queue_depth`/`platform_dlq_depth` and `platform_retry_total`, previously listed here as deliberately not implemented, are emitted by platform-events — queue-depth sampling is on, `SQS_QUEUE_DEPTH_INTERVAL` 60s.)*
 
