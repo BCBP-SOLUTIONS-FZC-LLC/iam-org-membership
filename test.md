@@ -85,7 +85,7 @@ curl -sS -w "\nHTTP %{http_code}\n" "$BASE/healthz"
 ```bash
 curl -sS -w "\nHTTP %{http_code}\n" "$BASE/readyz"
 ```
-**Response:** `200` when everything's up, `503` if pool/cache/outbox not ready.
+**Response:** `200` when everything's up, `503` if pool/outbox/consumers not ready. A Valkey outage keeps `200` and reports `"cache":"degraded"` (CACHE-9).
 **Events emitted:** none
 
 ### GET /metrics — Prometheus scrape
