@@ -142,7 +142,11 @@ create_queue_with_dlq catalog-orgm-q
 # NOTE (RP-OM-14): TenantReactivated(source=operator) arrives here from RP
 # (RP-10 undoing RP-14, T-16) — this is an implicit dependency; OM handles
 # it in the same applyProjection case as the billing-orgm-q TenantReactivated.
-subscribe_queue iam-tenant-events tenant-orgm-q
+# ENV-3, EVT-3 (no self-consumption): filtered to the consumed set so O&M
+# never receives its own TenantCreated/TrialStarted. Keep this list in sync
+# with knownEvents in membership_event_consumer.go (tenant-lifecycle kinds + TenantReactivated).
+subscribe_queue iam-tenant-events tenant-orgm-q \
+  '{"EventType": ["TenantIdentityProvisioned","TenantRealmReady","TenantConverted","DirectPaidSignup","TrialExpired","TrialReactivated","TenantSuspended","TenantOffboarded","TenantReactivated"]}'
 
 # billing-orgm-q ← billing-events (no filter — consumes all Billing events).
 subscribe_queue billing-events billing-orgm-q
@@ -166,10 +170,11 @@ subscribe_queue iam-catalog-events catalog-orgm-q \
 create_queue_with_dlq membership-audit-q
 subscribe_queue iam-membership-events membership-audit-q
 
-# AuthZ Enrichment — membership & tenant-role events only.
+# AuthZ Enrichment — membership & tenant-role events, plus MembershipRevoked
+# (ENV-1, LLD §7.3.2: evicts the removed user's om:memberships entry).
 create_queue_with_dlq membership-authz-q
 subscribe_queue iam-membership-events membership-authz-q \
-  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked"]}'
+  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked","MembershipRevoked"]}'
 
 # Realm Provisioner — dept-approver + tenant-owner/admin transitions
 # (drives the requires-mfa realm role, §6.5).
@@ -219,6 +224,12 @@ subscribe_queue iam-tenant-events tenant-audit-q
 create_queue_with_dlq tenant-notification-q
 subscribe_queue iam-tenant-events tenant-notification-q \
   '{"EventType": ["TenantCreated","TrialStarted"]}'
+
+# Realm Provisioner — TrialStarted only (ENV-2, LLD §7.3.2 / RP-4): records
+# trial_ends_at for RP's own realm-side trial-expiry sweep.
+create_queue_with_dlq tenant-realm-q
+subscribe_queue iam-tenant-events tenant-realm-q \
+  '{"EventType": ["TrialStarted"]}'
 
 # ────────────────────────────────────────────────────────────────────────
 # Glue Schema Registry (LLD §7.3.1, SCHEMA-7) — one registry per SNS topic,
