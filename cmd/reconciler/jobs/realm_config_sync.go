@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 )
@@ -30,6 +31,14 @@ func RealmConfigSync(ctx context.Context, jctx *Context) (Result, error) {
 		if err := jctx.RealmProvisioner.PatchRealmConfig(ctx, t.TenantID, port.RealmConfigPatch{
 			LocalAccountsEnabled: &t.LocalAccountsEnabled,
 		}); err != nil {
+			if errors.Is(err, port.ErrRealmConfigQueued) {
+				// T-15: accepted but not applied yet — keep the marker; the
+				// next run re-sends the (idempotent) patch until RP applies it.
+				jctx.Logger.Info("realm-config-sync: RP queued the change — leaving marker until applied",
+					"tenant_id", t.TenantID)
+				res.Skipped++
+				continue
+			}
 			jctx.Logger.Warn("realm-config-sync: RP call failed — leaving marker",
 				"tenant_id", t.TenantID, "error", err.Error())
 			res.Failed++
@@ -49,6 +58,6 @@ func RealmConfigSync(ctx context.Context, jctx *Context) (Result, error) {
 		res.Succeeded++
 	}
 	jctx.Logger.Info("realm-config-sync complete",
-		"attempted", res.Attempted, "succeeded", res.Succeeded, "failed", res.Failed)
+		"attempted", res.Attempted, "succeeded", res.Succeeded, "failed", res.Failed, "queued", res.Skipped)
 	return res, nil
 }

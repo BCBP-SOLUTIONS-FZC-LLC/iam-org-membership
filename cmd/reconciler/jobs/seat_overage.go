@@ -19,10 +19,10 @@ import (
 //	overage_since IS NULL && active + pending > licensed_seats
 //	    → set overage_since=now(); emit TenantSeatOverageStarted
 //
-// Regular SEAT-1 mutators (invite create, member add/remove, seats change)
-// also handle these transitions inline; this job is the daily backstop
-// for edge cases (e.g. TenantSeatsChanged reducing licensed_seats through
-// the SQS consumer). Both transitions emit their event atomically with
+// The TenantSeatsChanged consume, member removal (P-8 / I-5) and invitation
+// revoke (P-31) run the same rule inline (service.ReevaluateSeatOverage,
+// SEAT-5 — kept in step with this job, which may not import the service
+// package per .go-arch-lint.yml); this job is the backstop. Both transitions emit their event atomically with
 // the tenants UPDATE (EVT-10).
 func SeatOverageReconcile(ctx context.Context, jctx *Context) (Result, error) {
 	var res Result

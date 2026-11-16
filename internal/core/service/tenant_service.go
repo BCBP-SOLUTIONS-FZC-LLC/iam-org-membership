@@ -202,13 +202,12 @@ func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *do
 	if patch == nil {
 		return nil, false, domain.NewError(domain.ErrValidation, "patch is required")
 	}
-	// Empty body — no fields to update; return current tenant as a no-op.
-	// P-2 LLD has no detailed spec for this case; treat as idempotent read.
+	// GAP-1, LLD §17: a PATCH body with no field this endpoint may change is
+	// 400 no_mutable_field (nothing to apply).
 	if patch.Name == nil && patch.DefaultLocale == nil &&
 		patch.LocalAccountsEnabled == nil && patch.MFAFreshnessSeconds == nil &&
 		patch.ResidencyMode == nil {
-		t, err := s.tenants.FindByID(ctx, tenantID)
-		return t, false, err
+		return nil, false, domain.NewError(domain.ErrNoMutableField, "the request body contains no field this endpoint can change")
 	}
 	// T-10: mfa_freshness_seconds must be in [60, 900].
 	if patch.MFAFreshnessSeconds != nil {

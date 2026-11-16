@@ -322,6 +322,9 @@ func run() int {
 		OutboxRetentionDays:      envInt("OUTBOX_RETENTION_DAYS", 8),
 		ProcessedEventsTTLDays:   envInt("PROCESSED_EVENTS_TTL_DAYS", 8),
 		TrialLedgerRetentionDays: envInt("TRIAL_LEDGER_RETENTION_DAYS", 730),
+		// Same variable and default as cmd/server (PI-11) so revoked-invite
+		// PII is held exactly as long as the cooldown can still use it.
+		ReinviteCooldown: time.Duration(envInt("INVITE_REINVITE_COOLDOWN_MINUTES", 60)) * time.Minute,
 	}
 
 	res, err := fn(ctx, jctx)

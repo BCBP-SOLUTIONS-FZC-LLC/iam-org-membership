@@ -28,8 +28,20 @@ func InvitationExpiry(ctx context.Context, jctx *Context) (Result, error) {
 	}
 	res.Attempted = n
 	res.Succeeded = n
+
+	// SECURITY-8 deferred erase for revokes: P-31 keeps the email while the
+	// PI-11 cooldown can still match it; once the window has passed it is
+	// scrubbed here. A failure fails the run (after the expiry above has
+	// committed) so the CronJob-failure alert fires: this sweep is the only
+	// thing that erases a revoked invitee's PII, so it must never fail quietly.
+	erased, eerr := jctx.Invitations.EraseRevokedPII(ctx, time.Now().UTC().Add(-jctx.ReinviteCooldown), jctx.BatchLimit)
+	if eerr != nil {
+		res.Failed++
+		return res, fmt.Errorf("invitation-expiry: erase revoked-invitation PII: %w", eerr)
+	}
 	jctx.Logger.Info("invitation-expiry complete",
 		"attempted", res.Attempted, "succeeded", res.Succeeded,
+		"revoked_pii_erased", erased,
 		"at", time.Now().UTC())
 
 	// AL-5 best-effort audit (invitation.expired, D-6). Emit one batch entry

@@ -54,6 +54,12 @@ func (h *OperatorHandler) SetFeatureFlags(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
+	// OBS-7: record_version is required (LLD §5.4 O-4, CONC-1); versions start
+	// at 1, so a missing or zero value is a bad request, not a version conflict.
+	if req.RecordVersion <= 0 {
+		HandleError(c, domain.NewError(domain.ErrValidation, "record_version is required"))
+		return
+	}
 	// RLS-6: override GUC with the PATH tenant so operator cross-tenant
 	// mutations are scoped to the target tenant, not the header tenant.
 	ctx := c.Request.Context()

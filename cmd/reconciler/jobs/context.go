@@ -74,6 +74,10 @@ type Context struct {
 	OutboxRetentionDays      int // outbox-prune window
 	ProcessedEventsTTLDays   int // PE-1 8-day retention (default)
 	TrialLedgerRetentionDays int // CR-4 trial_signup_ledger retention (default 730)
+	// ReinviteCooldown mirrors the server's PI-11 INVITE_REINVITE_COOLDOWN_MINUTES:
+	// invitation-expiry erases a revoked invitation's PII once it is older
+	// than this (SECURITY-8, deferred so PI-11 can still match the email).
+	ReinviteCooldown time.Duration
 }
 
 // Result summarises a reconciler run.

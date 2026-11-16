@@ -42,7 +42,12 @@ func (h *InvitationHandler) List(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	invs, err := h.svc.List(c.Request.Context(), tenantID)
+	var invs []domain.PendingInvitation
+	if c.Query("include_terminal") == "true" {
+		invs, err = h.svc.ListIncludingTerminal(c.Request.Context(), tenantID)
+	} else {
+		invs, err = h.svc.List(c.Request.Context(), tenantID)
+	}
 	if err != nil {
 		HandleError(c, err)
 		return
@@ -175,5 +180,17 @@ func invitationToResponse(inv domain.PendingInvitation) InvitationResponse {
 		Status:        string(inv.Status),
 		ExpiresAt:     inv.ExpiresAt,
 		RecordVersion: inv.RecordVersion,
+		// GAP-4, LLD §5.4 P-30 item shape.
+		InitialTenantRoles: rolesToStrings(inv.InitialTenantRoles),
+		InvitedBy:          inv.InvitedBy,
+		CreatedAt:          inv.CreatedAt,
 	}
+}
+
+func rolesToStrings(rs []domain.TenantRoleCode) []string {
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, string(r))
+	}
+	return out
 }

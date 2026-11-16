@@ -384,6 +384,12 @@ func (r *TenantRepository) SetRealmFields(ctx context.Context, id uuid.UUID, rea
 			`UPDATE tenants SET realm_id = $2, realm_type = $3, keycloak_shard = $4 WHERE id = $1 AND record_version = $5`,
 			id, realmID, string(realmType), shard, recordVersion)
 		if err != nil {
+			// OBS-13: a dedicated realm_id already used by another tenant
+			// (uq_tenants_realm_id_dedicated) is a 409 conflict, not a 500.
+			if pgcommon.IsUniqueViolation(err) {
+				return domain.NewError(domain.ErrConflict, "realm_id is already used by another tenant").
+					WithDetails(map[string]any{"code": "realm_id_taken"})
+			}
 			return err
 		}
 		if tag.RowsAffected() == 0 {

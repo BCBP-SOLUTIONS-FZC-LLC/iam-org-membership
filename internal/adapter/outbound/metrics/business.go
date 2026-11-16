@@ -241,6 +241,17 @@ var (
 	// are silently missing and should alert.
 	AuditDeliveryFailed *prometheus.CounterVec
 
+	// CacheInvalidationFailed counts failed Valkey DELs by key family
+	// (key_type = tenant, memberships, members, ...). The DEL is never
+	// retried, so every increment is an entry that may be served stale
+	// until its TTL (CACHE-2/CACHE-9).
+	CacheInvalidationFailed *prometheus.CounterVec
+
+	// CacheErrors counts failed Valkey operations (not misses) by op
+	// (get, mget, set, setnx, del). Every one degrades to a Postgres read
+	// or a skipped write; a sustained nonzero rate means the cache is down.
+	CacheErrors *prometheus.CounterVec
+
 	// PlanChangeCheckTotal counts I-18 plan-change pre-check outcomes
 	// (CD-20) by result: allowed, blocked, or error (RP unavailable).
 	PlanChangeCheckTotal *prometheus.CounterVec
@@ -466,6 +477,22 @@ func (Recorder) IncSeatOverageStarted() { IncSeatOverageStarted(SeatOverageCause
 func IncCatalogCacheInvalidated() {
 	if CatalogCacheInvalidated != nil {
 		CatalogCacheInvalidated.Inc()
+	}
+}
+
+// IncCacheInvalidationFailed records one failed cache DEL for keyType.
+// Nil-safe.
+func IncCacheInvalidationFailed(keyType string) {
+	if CacheInvalidationFailed != nil {
+		CacheInvalidationFailed.WithLabelValues(keyType).Inc()
+	}
+}
+
+// IncCacheError records one failed cache operation (op = get, mget, set,
+// setnx or del). Nil-safe.
+func IncCacheError(op string) {
+	if CacheErrors != nil {
+		CacheErrors.WithLabelValues(op).Inc()
 	}
 }
 
@@ -818,6 +845,14 @@ func registerServiceMetrics() {
 	CatalogCacheInvalidated = must(gincommon.NewCounter(nil,
 		"iam_org_membership_catalog_cache_invalidated_total",
 		"Catalog cache invalidations via catalog-orgm-q: DepartmentCatalogChanged (om:departments) and PlanCatalogChanged (om:plans) events that successfully cleared their primary+stale cache keys (Gap-12/CAT-GAP-004)."))
+	CacheInvalidationFailed = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_cache_invalidation_failed_total",
+		"Valkey cache invalidations (DEL) that failed, by key_type. Never retried: each increment is an entry that may be served stale until its TTL (CACHE-2/CACHE-9).",
+		"key_type"))
+	CacheErrors = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_cache_errors_total",
+		"Failed Valkey operations (not misses) by op: get, mget, set, setnx, del. Advisory cache (CACHE-9): each degrades to a Postgres read or a skipped write.",
+		"op"))
 	AuditDeliveryFailed = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_audit_delivery_failed_total",
 		"AL-5 direct-write calls that returned an error from best-effort fire-and-forget audit goroutines (TenantService, InvitationService). Audit outages are fail-open; a sustained nonzero rate means audit records are silently missing.",
@@ -937,5 +972,14 @@ func prewarm() {
 		"invitation.created", "invitation.revoked", "invitation.expired",
 	} {
 		AuditDeliveryFailed.WithLabelValues(et)
+	}
+	for _, kt := range []string{
+		"tenant", "locale", "members", "memberships", "roles", "grm", "gdm", "gtrm",
+		"dept_members", "seat_usage", "departments", "plans", "other",
+	} {
+		CacheInvalidationFailed.WithLabelValues(kt)
+	}
+	for _, op := range []string{"get", "mget", "set", "setnx", "del"} {
+		CacheErrors.WithLabelValues(op)
 	}
 }

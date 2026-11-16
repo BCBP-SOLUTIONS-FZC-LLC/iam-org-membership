@@ -175,6 +175,10 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	}
 
 	var gdprWipeRan bool
+	// The SEAT-5 transition of a TenantSeatsChanged projection, read back
+	// after commit so the started metric counts committed transitions only.
+	var overage service.SeatOverageTransition
+	gucCtx = context.WithValue(gucCtx, seatOverageKey{}, &overage)
 	// One transaction: the processed_events claim (first, so a concurrent
 	// duplicate waits on it and is then skipped), the EVT-14 row lock, the
 	// projection and the relay events (port.Inbox).
@@ -201,11 +205,48 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 	if txErr != nil {
 		return txErr
 	}
+	service.CountSeatOverageStarted(overage)
 
+	// Post-commit DELs run detached from the handler deadline: the commit has
+	// landed, so a ctx cancelled by a slow projection must not skip the
+	// eviction (same reasoning as invalidateMember, LLD rev 2.49).
+	evictCtx := context.WithoutCancel(ctx)
 	if gdprWipeRan {
-		c.evictAfterWipe(ctx, tenantID)
+		c.evictAfterWipe(evictCtx, tenantID)
+	} else {
+		c.evictAfterProjection(evictCtx, tenantID)
 	}
 	return nil
+}
+
+// evictAfterProjection deletes the tenant-level cache entries a lifecycle /
+// billing projection can change (plan, status, realm, seats, trial dates) —
+// LLD §6 post-commit DEL rule and §8.2 (DEL om:tenant after TenantConverted).
+// Without it P-1, I-9, I-14 and I-17 served the pre-event tenant for up to
+// the 600 s om:tenant TTL. Runs after commit; best-effort and advisory only
+// (CACHE-2/9). A deduplicated or recency-skipped event also lands here — the
+// extra DEL just costs one cache miss.
+func (c *MembershipEventConsumer) evictAfterProjection(ctx context.Context, tenantID uuid.UUID) {
+	if c.cache == nil {
+		return
+	}
+	if err := c.cache.Delete(ctx, projectionCacheKeys(tenantID)...); err != nil {
+		c.logger.Warn("lifecycle projection: cache invalidation failed (advisory-only, not fatal)",
+			"tenant_id", tenantID, "error", err)
+	}
+}
+
+// projectionCacheKeys are the tenant-row-derived keys a projection can stale:
+// the tenant record itself (plan/status/realm/licensed_seats/feature context),
+// its locale projection, and the seat-usage projection (licensed_seats).
+// Per-user om:memberships entries carry subscription_status too but are not
+// enumerable; they expire on their own TTL (CACHE-2/9, as for the wipe).
+func projectionCacheKeys(tenantID uuid.UUID) []string {
+	return []string{
+		fmt.Sprintf("om:tenant:%s", tenantID),
+		fmt.Sprintf("om:locale:%s", tenantID),
+		fmt.Sprintf("om:seat_usage:%s", tenantID),
+	}
 }
 
 // tenantGUC binds the RLS GUC to the target tenant so RLS lets the consumer
@@ -592,14 +633,29 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return prevStatus, prevPlan, err
 		}
-		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+		if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:            port.LifecycleSetLicensedSeats,
 			LicensedSeats: payload.LicensedSeats,
+		}); err != nil {
+			return prevStatus, prevPlan, err
+		}
+		// GAP-18, SEAT-5: every TenantSeatsChanged consume re-evaluates the
+		// overage marker in the same transaction (a decrease below usage
+		// starts the grace clock, an increase can resolve it).
+		t, err := service.ReevaluateSeatOverage(ctx, c.tenants, tenantID, service.SeatOverageSource{
+			Actor: "iam-system", IPAddress: "system", UserAgent: "iam-org-membership/billing-orgm-q-consumer",
 		})
+		if h, ok := ctx.Value(seatOverageKey{}).(*service.SeatOverageTransition); ok {
+			*h = t
+		}
 		return prevStatus, prevPlan, err
 	}
 	return prevStatus, prevPlan, nil
 }
+
+// seatOverageKey carries a *service.SeatOverageTransition from the
+// TenantSeatsChanged projection back to Handle.
+type seatOverageKey struct{}
 
 // ── event classification ─────────────────────────────────────────────────
 

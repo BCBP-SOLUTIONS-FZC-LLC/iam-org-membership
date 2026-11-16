@@ -156,8 +156,10 @@ type RoleLabelResponse struct {
 }
 
 type RoleLabelPatchRequest struct {
-	DisplayName   string `json:"display_name"`
-	RecordVersion int64  `json:"record_version"`
+	// New display label. A body without it is 400 no_mutable_field; an
+	// empty one is 400 validation_error.
+	DisplayName   *string `json:"display_name"`
+	RecordVersion int64   `json:"record_version"`
 }
 
 // Group mapping DTOs (GroupDeptRoleMappingWire/GroupTenantRoleMappingWire/
@@ -193,6 +195,10 @@ type InvitationResponse struct {
 	Status        string    `json:"status"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	RecordVersion int64     `json:"record_version"`
+	// Tenant roles granted when the invitation is accepted.
+	InitialTenantRoles []string  `json:"initial_tenant_roles"`
+	InvitedBy          uuid.UUID `json:"invited_by"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 // InvitationRevokeRequest is the P-31 body. PI-8 optimistic-lock version.
@@ -498,8 +504,11 @@ type InternalJITRequest struct {
 // InternalJITResponse is the I-10 success shape — echoes what the JIT
 // step actually applied (dept assignments + additive tenant-role grants).
 type InternalJITResponse struct {
-	AssignedDepts      []uuid.UUID `json:"assigned_departments" swaggertype:"array,string" format:"uuid"`
+	// Departments assigned or level-changed by this call.
+	AssignedDepts      []uuid.UUID `json:"assigned_depts" swaggertype:"array,string" format:"uuid"`
 	GrantedTenantRoles []string    `json:"granted_tenant_roles" example:"tender_admin,tenant_admin"`
+	// Mapped departments not assigned because they are not active for the tenant.
+	SkippedDepts []uuid.UUID `json:"skipped_depts,omitempty" swaggertype:"array,string" format:"uuid"`
 }
 
 // AssigneeOverrideRequest is the I-13 body.
