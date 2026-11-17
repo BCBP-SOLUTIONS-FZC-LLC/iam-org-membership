@@ -97,6 +97,29 @@ func (r *TenantRoleRepository) CountActiveOwners(ctx context.Context, tenantID u
 	return n, err
 }
 
+// CountActiveOwnersActive is the suspend-path TM-8 guard query.
+// Joins tenant_memberships to exclude suspended owners from the count.
+func (r *TenantRoleRepository) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	var n int
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT count(*)
+			FROM   tenant_roles tr
+			WHERE  tr.tenant_id = $1
+			  AND  tr.role_code = 'tenant_owner'
+			  AND  tr.deleted_at IS NULL
+			  AND  EXISTS (
+			           SELECT 1
+			           FROM   tenant_memberships tm
+			           WHERE  tm.tenant_id  = tr.tenant_id
+			             AND  tm.user_id    = tr.user_id
+			             AND  tm.status     = 'active'
+			             AND  tm.deleted_at IS NULL
+			       )`, tenantID).Scan(&n)
+	})
+	return n, err
+}
+
 func (r *TenantRoleRepository) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	if tr.ID == uuid.Nil {
 		tr.ID = uuid.New()

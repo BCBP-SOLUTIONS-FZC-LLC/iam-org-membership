@@ -157,6 +157,9 @@ func (f *fakeTenantRoleRepo) ListByRole(context.Context, uuid.UUID, domain.Tenan
 func (f *fakeTenantRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
+func (f *fakeTenantRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return f.CountActiveOwners(ctx, tenantID)
+}
 func (f *fakeTenantRoleRepo) Revoke(context.Context, uuid.UUID, uuid.UUID, domain.TenantRoleCode) (*domain.TenantRole, error) {
 	return nil, nil
 }

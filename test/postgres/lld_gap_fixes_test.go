@@ -249,6 +249,87 @@ func TestLLDFix_BUG6_ConcurrentLastOwnersRemoved_OwnerlessSet(t *testing.T) {
 	}
 }
 
+// bug9AddOwner inserts one more tenant_owner whose membership has the given status.
+func bug9AddOwner(t *testing.T, ctx context.Context, fx *testFixtures, tenantID uuid.UUID, status string) {
+	t.Helper()
+	userID := uuid.New()
+	var memID uuid.UUID
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
+		INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, $3::membership_status) RETURNING id`,
+		tenantID, userID, status).Scan(&memID))
+	_, err := fx.rawPool.Exec(ctx, `
+		INSERT INTO tenant_roles (tenant_id, user_id, tenant_membership_id, role_code, granted_by)
+		VALUES ($1, $2, $3, 'tenant_owner', $2)`, tenantID, userID, memID)
+	require.NoError(t, err)
+}
+
+// bug9SuspendOwner runs P-7 SetStatus(suspended) on the user's current record_version and returns the status after the call and the error.
+func bug9SuspendOwner(t *testing.T, ctx context.Context, fx *testFixtures, tenantID, userID uuid.UUID) (string, error) {
+	t.Helper()
+	var rv int64
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&rv))
+	_, err := fx.Membership.SetStatus(withTenant(ctx, tenantID), tenantID, userID, domain.MembershipSuspended, rv)
+	var status string
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT status::text FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&status))
+	return status, err
+}
+
+// BUG-9, TM-8: the only active owner cannot be suspended (no other owners at all).
+func TestBUG9_SuspendOwner_OneActive_Refused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-one")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval, "TM-8: last active owner")
+	assert.Equal(t, "active", status, "the refused suspend changes nothing")
+}
+
+// BUG-9, TM-8 (the regression case): 1 active + 2 suspended owners; suspended owners do not count, so the active one cannot be suspended.
+func TestBUG9_SuspendOwner_OneActiveTwoSuspended_Refused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-one-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval, "TM-8: A is the last ACTIVE owner")
+	assert.Equal(t, "active", status, "the refused suspend changes nothing")
+}
+
+// BUG-9, TM-8: with 2 active owners, suspending one succeeds.
+func TestBUG9_SuspendOwner_TwoActive_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "active")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+}
+
+// BUG-9, TM-8: with 2 active + 2 suspended owners, suspending an active one succeeds.
+func TestBUG9_SuspendOwner_TwoActiveTwoSuspended_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-two-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "active")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+}
+
 // CD-54 (LLD §4.2 tenants, SEAT-1/SEAT-3): a P-8 removal frees the seat, so an I-3 plain add that was refused at the cap now succeeds.
 func TestCD54_RemovalFreesSeat_ThenI3AddAtCapSucceeds(t *testing.T) {
 	t.Parallel()

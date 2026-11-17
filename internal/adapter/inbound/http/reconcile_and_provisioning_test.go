@@ -208,6 +208,9 @@ func (r *i1RoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCod
 	return nil, nil
 }
 func (r *i1RoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 1, nil }
+func (r *i1RoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *i1RoleRepo) Grant(_ context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	if tr.ID == uuid.Nil {
 		tr.ID = uuid.New()

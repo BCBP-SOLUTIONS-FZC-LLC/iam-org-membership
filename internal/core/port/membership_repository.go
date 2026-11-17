@@ -63,6 +63,10 @@ type TenantRoleRepository interface {
 	// CountActiveOwners is a hot-path count for TM-8 last-owner guard.
 	CountActiveOwners(ctx context.Context, tenantID uuid.UUID) (int, error)
 
+	// CountActiveOwnersActive counts tenant_owner grants whose membership
+	// status is active. Used by the suspend-path TM-8 guard.
+	CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error)
+
 	// Grant creates an elevated role row. chk_tr_no_member enforces the
 	// role is not 'member' at DB level.
 	Grant(ctx context.Context, r *domain.TenantRole) (*domain.TenantRole, error)

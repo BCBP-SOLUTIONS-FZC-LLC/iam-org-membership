@@ -69,6 +69,9 @@ func (noOwnerRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleC
 	return nil, nil
 }
 func (noOwnerRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 2, nil }
+func (r noOwnerRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (noOwnerRoleRepo) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil
 }
@@ -296,6 +299,9 @@ func (r *ownerRoleRepo) CountActiveOwners(ctx context.Context, tid uuid.UUID) (i
 		return r.countFn(ctx, tid)
 	}
 	return 1, nil
+}
+func (r *ownerRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
 }
 func (r *ownerRoleRepo) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil

@@ -127,6 +127,9 @@ func (r *tsRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCod
 	return nil, nil
 }
 func (r *tsRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (r *tsRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *tsRoleRepo) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	if r.grantFn != nil {
 		return r.grantFn(ctx, tr)

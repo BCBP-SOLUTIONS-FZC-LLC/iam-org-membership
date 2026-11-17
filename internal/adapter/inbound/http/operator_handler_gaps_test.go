@@ -81,6 +81,9 @@ func (f *oghRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCo
 func (f *oghRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
+func (f *oghRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return f.CountActiveOwners(ctx, tenantID)
+}
 func (f *oghRoleRepo) Revoke(context.Context, uuid.UUID, uuid.UUID, domain.TenantRoleCode) (*domain.TenantRole, error) {
 	return nil, nil
 }

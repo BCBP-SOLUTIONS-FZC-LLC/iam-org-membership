@@ -491,6 +491,9 @@ type countingRoleRepo struct {
 func (r *countingRoleRepo) CountActiveOwners(_ context.Context, _ uuid.UUID) (int, error) {
 	return r.countResult, r.countErr
 }
+func (r *countingRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 
 // TestMembershipService_ReconcileRoles_LastOwnerStrip_Returns422 verifies the
 // TM-8 guard: stripping owner from the last active owner must return

@@ -66,6 +66,9 @@ func (f *gmaRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCo
 	return nil, nil
 }
 func (f *gmaRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (f *gmaRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return f.CountActiveOwners(ctx, tenantID)
+}
 func (f *gmaRoleRepo) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	if f.grantFn != nil {
 		return f.grantFn(ctx, tr)

@@ -76,6 +76,9 @@ func (r *noErrRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRole
 func (r *noErrRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) {
 	return 2, nil
 }
+func (r *noErrRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *noErrRoleRepo) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil
 }

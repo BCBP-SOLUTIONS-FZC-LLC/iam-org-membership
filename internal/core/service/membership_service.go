@@ -236,7 +236,7 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 				if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 					return err
 				}
-				owners, err := s.roles.CountActiveOwners(txCtx, tenantID)
+				owners, err := s.roles.CountActiveOwnersActive(txCtx, tenantID)
 				if err != nil {
 					return err
 				}

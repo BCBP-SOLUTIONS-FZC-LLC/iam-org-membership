@@ -625,6 +625,9 @@ func (r *p28RoleRepo) CountActiveOwners(ctx context.Context, t uuid.UUID) (int, 
 	}
 	return 2, nil // default: more than 1 owner so no TM-8 trigger
 }
+func (r *p28RoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *p28RoleRepo) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	if r.grantFn != nil {
 		return r.grantFn(ctx, tr)
