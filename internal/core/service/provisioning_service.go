@@ -37,17 +37,6 @@ type ProvisioningService struct {
 	// trialLedger is the CR-4 append-only cross-tenant ledger (trial_signup_ledger).
 	// Optional: nil disables both the eligibility check and the atomic write in I-1.
 	trialLedger port.TrialSignupLedgerRepository
-	// workflow backs I-5's delegate-impact pre-check (§8.8, WFI-1/WFI-8) —
-	// see WithWorkflow. Optional: nil skips the gate.
-	workflow port.WorkflowClient
-}
-
-// WithWorkflow wires the Workflow Service client for I-5's delegate-impact
-// gate (LLD I-5 row, §8.8 WFI-1): the Keycloak-deletion path is gated the
-// same way as the admin P-8 removal.
-func (s *ProvisioningService) WithWorkflow(wf port.WorkflowClient) *ProvisioningService {
-	s.workflow = wf
-	return s
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -448,39 +437,6 @@ func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID,
 	return mem, nil
 }
 
-// deleteMemberGate is I-5's delegate-impact pre-check (LLD I-5 row, §8.8
-// WFI-1/WFI-3/WFI-8), run outside any transaction before state changes:
-// active workflows depending on the user → 409 workflow_resolution_required;
-// a Workflow failure → 503 workflow_service_unavailable (never fail-open).
-// A member that is already gone skips the gate so Keycloak webhook retries
-// stay idempotent no-ops (TM-12).
-func (s *ProvisioningService) deleteMemberGate(ctx context.Context, tenantID, userID uuid.UUID) error {
-	if s.workflow == nil {
-		return nil
-	}
-	if _, err := s.memberships.FindByUserID(ctx, tenantID, userID); err != nil {
-		if errors.Is(err, domain.ErrMemberNotFound) {
-			return nil
-		}
-		return err
-	}
-	impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, nil)
-	if err != nil {
-		return domain.NewError(domain.ErrWorkflowServiceUnavailable, "workflow service unavailable")
-	}
-	if impact.ActiveWorkflows > 0 {
-		metrics.IncDelegateRemovalBlocked(metrics.DelegateBlockScopeTenantRemoval)
-		return domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").
-			WithDetails(map[string]any{
-				"active_workflows": impact.ActiveWorkflows,
-				"delegate_user_id": userID,
-				"workflow_ids":     impact.WorkflowIDs,
-				"allowed_actions":  []string{string(RemovalReplaceDelegate), string(RemovalStopWorkflows)},
-			})
-	}
-	return nil
-}
-
 // DeleteMember is I-5: full cascade on Keycloak USER_DELETE. Soft-deletes
 // tenant_memberships + cascades tenant_roles, dept_memberships. Sets
 // ownerless_since if we just removed the last active tenant_owner
@@ -493,10 +449,6 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-
-	if err := s.deleteMemberGate(gucCtx, tenantID, userID); err != nil {
-		return err
-	}
 
 	escalated := false
 	err := s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {

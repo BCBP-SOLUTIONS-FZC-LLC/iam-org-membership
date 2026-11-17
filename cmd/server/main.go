@@ -609,8 +609,7 @@ func main() {
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log).
 		WithParkedEvents(parkedEvents, membershipConsumer).
-		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool)).
-		WithWorkflow(wfClient) // I-5 delegate-impact gate (§8.8 WFI-1)
+		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool))
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
 		WithAuditLog(auditLogClient).
 		WithPlanCatalog(catalogReader).
