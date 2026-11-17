@@ -187,7 +187,7 @@ subscribe_queue iam-membership-events membership-realm-q \
 # now live on iam-delegation's own topic (iam.delegation.events), not here.
 create_queue_with_dlq membership-notification-q
 subscribe_queue iam-membership-events membership-notification-q \
-  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked","TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
+  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked"]}'
 
 # Workflow Service — override + membership + tenant-state relay, plus
 # MembershipRevoked (removed user's templates/assignments) and
@@ -198,11 +198,6 @@ subscribe_queue iam-membership-events membership-notification-q \
 create_queue_with_dlq membership-workflow-q
 subscribe_queue iam-membership-events membership-workflow-q \
   '{"EventType": ["TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged","MembershipRevoked","TenantMembershipsPurged"]}'
-
-# Billing Service — narrow filter, seat-overage only (§16 A59, SEAT-3/5).
-create_queue_with_dlq membership-billing-q
-subscribe_queue iam-membership-events membership-billing-q \
-  '{"EventType": ["TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
 
 # Delegation Service cascade queue (Gap OM-2 fix, Option A) —
 # iam-delegation consumes MembershipRevoked and TenantMembershipsPurged to
@@ -249,8 +244,6 @@ register_schema iam-membership-events mfa_reset.json                           M
 register_schema iam-membership-events tenant_memberships_purged.json           TenantMembershipsPurged
 register_schema iam-membership-events tenant_role_granted.json                 TenantRoleGranted
 register_schema iam-membership-events tenant_role_revoked.json                 TenantRoleRevoked
-register_schema iam-membership-events tenant_seat_overage_resolved.json        TenantSeatOverageResolved
-register_schema iam-membership-events tenant_seat_overage_started.json         TenantSeatOverageStarted
 register_schema iam-membership-events tenant_state_changed.json                TenantStateChanged
 register_schema iam-membership-events tender_assignee_overridden.json          TenderAssigneeOverridden
 
