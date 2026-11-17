@@ -5,7 +5,7 @@
 #   validate-test ──────┐
 #   build-image ────────┤──► trivy ──────┐
 #                       │   smoke ───────┤──► pr-summary (PR events only)
-#                       └────────────────┤──► push       (push events only, needs quality too)
+#                       └────────────────┤──► push       (pushes to main only, needs quality too)
 #   validate-quality ───────────────────┘
 #
 # build-image lints the Dockerfile (Hadolint + .dockerignore check) as its
@@ -277,7 +277,11 @@ jobs:
     name: Push image → GHCR
     runs-on: ubuntu-latest
     needs: [validate-test, trivy, smoke, validate-quality]
-    if: github.event_name == 'push'
+    # main/master only: the Verify step accepts only a Sigstore certificate
+    # issued for refs/heads/(main|master), so a feature-branch push used to
+    # build, push and sign an image and then fail verification. Feature
+    # branches are covered by the pull_request run (build, trivy, smoke).
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     # amd64-only publish with provenance/SBOM attestations can exceed 10 minutes.
     timeout-minutes: 25
     permissions:

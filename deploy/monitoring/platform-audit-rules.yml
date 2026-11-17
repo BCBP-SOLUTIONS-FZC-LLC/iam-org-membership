@@ -8,8 +8,13 @@
 #   PlatformAuditRunnerAbsent because each environment's Prometheus loads
 #   this file and scrapes only its own pods; a fixed environment would fire
 #   in every other one.
-# Routing: severity labels route to the iam-org-membership on-call like
-# app-alerts.yml. Owner of parked rows (PlatformAuditEntriesParked): the
+# The Helm chart deploys the same rules (templates/prometheusrule-platform-
+# audit.yaml from files/platform-audit.rules.yml, with the environment
+# matcher filled from APP_ENV); this file is the raw twin for non-Helm loaders.
+# Routing: the governed alerts carry no `team` label (adding one would change
+# a governed label set, PA-D32), so Alertmanager must route
+# alertname=~"PlatformAudit.*", service="iam-org-membership" to the
+# iam-org-membership on-call. Owner of parked rows (PlatformAuditEntriesParked): the
 # iam-org-membership on-call; dispose with auditoutbox.Requeue/Discard/Resolve
 # (platform-audit docs/guides/operators.md).
 #

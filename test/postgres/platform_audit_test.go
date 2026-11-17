@@ -315,6 +315,7 @@ func TestAudit_RunnerDeliversToAuditLog(t *testing.T) {
 	srv.AssertRecorded(t, audittest.Match{EntryType: port.AuditEntryInvitationCreated, TenantID: tenantID, Action: "create"})
 	srv.AssertRecorded(t, audittest.Match{EntryType: port.AuditEntryTenantSettingChanged, TenantID: tenantID, Action: "update"})
 	srv.AssertNoDuplicates(t)
+	srv.AssertStableKeys(t)
 
 	var left int
 	require.NoError(t, fx.rawPool.QueryRow(ctx, `SELECT count(*) FROM pending_audit_entries`).Scan(&left))
