@@ -103,12 +103,24 @@ func TestOperator_SetFeatureFlags_NoChangeNotAudited(t *testing.T) {
 
 func TestOperator_SetFeatureFlags_SystemActorWithoutCaller(t *testing.T) {
 	rec := &ffRecorder{}
-	svc := buildOperatorWithPool(ffVersionedRepo(nil, 4, time.Time{}), recTxRunner{rec: rec}, nil)
+	updatedAt := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+	svc := buildOperatorWithPool(ffVersionedRepo(nil, 4, updatedAt), recTxRunner{rec: rec}, nil)
 	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{"sso_enabled": true}, 3)
 	require.NoError(t, err)
 	require.Len(t, rec.entries, 1)
 	assert.Equal(t, port.SystemAuditActor(), rec.entries[0].Actor)
-	assert.False(t, rec.entries[0].OccurredAt.IsZero())
+	assert.Equal(t, updatedAt, rec.entries[0].OccurredAt)
+}
+
+// OccurredAt comes from the written row (platform-audit LLD §5.3 rule 2): a
+// row without a timestamp fails the write instead of keying the entry on the
+// call time.
+func TestOperator_SetFeatureFlags_ZeroRowTimestampFailsTheWrite(t *testing.T) {
+	rec := &ffRecorder{}
+	svc := buildOperatorWithPool(ffVersionedRepo(nil, 4, time.Time{}), recTxRunner{rec: rec}, nil)
+	_, err := svc.SetFeatureFlags(context.Background(), uuid.New(), map[string]any{"sso_enabled": true}, 3)
+	require.ErrorContains(t, err, "zero OccurredAt")
+	assert.Empty(t, rec.entries)
 }
 
 func TestOperator_SetFeatureFlags_RecorderErrorFailsTheWrite(t *testing.T) {

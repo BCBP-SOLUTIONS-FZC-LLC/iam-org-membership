@@ -25,6 +25,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/audit"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
@@ -197,6 +198,19 @@ func run() int {
 	}
 	if err != nil {
 		log.Error("init platform-pgcommon metrics", "error", err.Error())
+		return 1
+	}
+	// platform-audit's collectors, so the invitation-expiry sweep's enqueue
+	// outcomes (invalid / insert_rejected) are counted and pushed with this
+	// run's metrics, not only logged.
+	auditMetricWarnings, err := audit.InitMetrics(audit.MetricsIdentity{
+		Domain: identity["domain"], Service: identity["service"], Environment: identity["environment"],
+	}, gincommon.MetricsRegisterer())
+	for _, w := range auditMetricWarnings {
+		log.Warn("platform-audit metric disabled", "metric", w.Metric, "error", w.Error())
+	}
+	if err != nil {
+		log.Error("init platform-audit metrics", "error", err.Error())
 		return 1
 	}
 

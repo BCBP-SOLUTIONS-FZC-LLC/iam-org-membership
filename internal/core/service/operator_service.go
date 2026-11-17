@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -87,7 +88,11 @@ func (s *OperatorService) recordFeatureFlagChange(ctx context.Context, tenantID 
 	}
 	occurredAt := row.UpdatedAt
 	if occurredAt.IsZero() {
-		occurredAt = time.Now().UTC()
+		// OccurredAt must come from the change (platform-audit LLD §5.3
+		// rule 2): the row's timestamp, which RETURNING / the re-read always
+		// sets. A zero value is a bug, so fail the transaction rather than
+		// key the entry on the call time.
+		return errors.New("audit: zero OccurredAt — the written row carried no timestamp")
 	}
 	return rec.Record(ctx, port.AuditEntry{
 		IdempotencyKey:  fmt.Sprintf("%s:%s:%d", port.AuditEntryTenantSettingChanged, tenantID, row.RecordVersion),

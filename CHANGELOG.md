@@ -6,6 +6,15 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-17 — platform-audit adoption review)
+
+- **Helm `AUDIT_LOG_BASE_URL` defaults to `http://iam-audit-log.iam.svc.cluster.local:8080`** (Audit Log's Service port). The empty default crash-looped prod (`validateRequiredEnv`) and left staging delivering nothing with no alert (`PlatformAuditDeliveryDisabled` is prod-only).
+- **The chart deploys platform-audit's rules:** new `templates/prometheusrule-platform-audit.yaml` renders `deploy/helm/files/platform-audit.rules.yml` (the library's v0.1.0 file verbatim) with `<service>` = `env.APP_NAME`, `<environment>` = `env.APP_ENV`, `<mode>` = `outbox_deliver`, so `PlatformAuditRunnerAbsent` keeps its environment matcher. `deploy/monitoring/platform-audit-rules.yml` stays as the raw twin. The governed alerts carry no `team` label: Alertmanager routes `alertname=~"PlatformAudit.*", service="iam-org-membership"` to this service's on-call.
+- **CI:** `make audit-typecheck` (platform-audit's `audittypecheck`, a `tool` in `go.mod` like golangci-lint, so `go mod download` fetches it; warnings) runs in `validate-quality`. The shared-registry metrics test registers `audit.InitMetrics`, so `metricslint check` covers the `platform_audit_*` collectors.
+- **The reconciler registers `audit.InitMetrics`**, so the invitation-expiry sweep's enqueue outcomes are counted and pushed, not only logged.
+- **`OccurredAt` has no `time.Now()` fallback:** P-2, O-4 and the invitation entries fail the transaction if the written row carries no timestamp (platform-audit LLD §5.3 rule 2; unreachable in production, where `RETURNING`/the re-read always sets it).
+- **Tests:** the runner delivery test asserts `AssertStableKeys`; `make test-postgres` (and `make test`'s plain variant) timeout 300s → 900s (the package takes ~250s locally).
+
 ### Changed (2026-11-17 — O-4 feature-flag audit, LLD rev 2.51)
 
 - **O-4 `PATCH /operator/tenants/:id/feature-flags` is audited:** `OperatorService.SetFeatureFlags` enqueues AL-5 `config.tenant_setting.changed` in the same transaction as the `feature_flags` write (decision 2026-11-17: feature flags are tenant configuration). Key `config.tenant_setting.changed:<tenant>:<record_version>` (shared with P-2), `OccurredAt` = row `updated_at`, metadata lists each changed flag as `created`/`enabled`/`disabled`/`modified`/`removed` with old and new values. A replace that changes nothing is not audited. Tests: `internal/core/service/operator_setfeatureflags_audit_test.go`, `TestAudit_O4_FeatureFlagsEnqueueOnCommit`.
