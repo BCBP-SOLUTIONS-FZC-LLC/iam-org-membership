@@ -758,26 +758,53 @@ func TestInvitationRepo_CountCreatedInWindow_ScanErrorPassesThrough(t *testing.T
 
 // ── ExpireOverdue (invitation-expiry reconciler) ─────────────────────────
 
-func TestInvitationRepo_ExpireOverdue_ReturnsRowsAffected(t *testing.T) {
+func TestInvitationRepo_ExpireOverdue_ReturnsExpiredRows(t *testing.T) {
+	id1, id2, tenant := uuid.New(), uuid.New(), uuid.New()
+	exp := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	rows := &fakeRows{scripted: [][]any{{id1, tenant, exp}, {id2, tenant, exp.Add(time.Hour)}}}
 	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.NewCommandTag("UPDATE 6"), nil
+		queryFn: func(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+			assert.Contains(t, sql, "RETURNING id, tenant_id, expires_at")
+			assert.Equal(t, []any{50}, args)
+			return rows, nil
 		},
 	}
-	n, err := NewInvitationRepository(nil).ExpireOverdue(injectTx(context.Background(), tx), 50)
+	got, err := NewInvitationRepository(nil).ExpireOverdue(injectTx(context.Background(), tx), 50)
 	require.NoError(t, err)
-	assert.Equal(t, 6, n)
+	assert.Equal(t, []domain.ExpiredInvitation{
+		{ID: id1, TenantID: tenant, ExpiresAt: exp},
+		{ID: id2, TenantID: tenant, ExpiresAt: exp.Add(time.Hour)},
+	}, got)
+	assert.True(t, rows.closed)
 }
 
-func TestInvitationRepo_ExpireOverdue_ExecErrorPassesThrough(t *testing.T) {
-	execErr := errors.New("exec failed")
+func TestInvitationRepo_ExpireOverdue_QueryErrorPassesThrough(t *testing.T) {
+	queryErr := errors.New("query failed")
 	tx := &fakeTx{
-		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, execErr
+		queryFn: func(context.Context, string, ...any) (pgx.Rows, error) {
+			return nil, queryErr
 		},
 	}
 	_, err := NewInvitationRepository(nil).ExpireOverdue(injectTx(context.Background(), tx), 50)
-	assert.ErrorIs(t, err, execErr)
+	assert.ErrorIs(t, err, queryErr)
+}
+
+func TestInvitationRepo_ExpireOverdue_ScanAndIterErrorsPassThrough(t *testing.T) {
+	scanErr, iterErr := errors.New("scan failed"), errors.New("iter failed")
+	for name, rows := range map[string]*fakeRows{
+		"scan": {scripted: [][]any{{uuid.New(), uuid.New(), time.Now()}}, scanErr: scanErr},
+		"iter": {iterErr: iterErr},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tx := &fakeTx{queryFn: func(context.Context, string, ...any) (pgx.Rows, error) { return rows, nil }}
+			_, err := NewInvitationRepository(nil).ExpireOverdue(injectTx(context.Background(), tx), 50)
+			if name == "scan" {
+				assert.ErrorIs(t, err, scanErr)
+			} else {
+				assert.ErrorIs(t, err, iterErr)
+			}
+		})
+	}
 }
 
 // ── scanInvitation branches ───────────────────────────────────────────────

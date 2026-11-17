@@ -96,6 +96,12 @@ type RouterConfig struct {
 	// URLs are unset in a dev environment).
 	Consumers []Pinger
 
+	// Liveness are background loops /healthz checks: a deadlocked or dead
+	// loop fails liveness (and the pod restarts), a dependency outage never
+	// does. The platform-audit runner's Alive() goes here, not in /readyz
+	// (platform-audit §11.6). Nil entries are skipped.
+	Liveness []Pinger
+
 	// StrictTenantPathValidation makes BindPathTenant reject (400
 	// TENANT_MISMATCH) an /internal/tenants/:id/* request whose x-tenant-id
 	// differs from the path tenant, instead of overriding the header.
@@ -160,6 +166,7 @@ type healthHandlers struct {
 	cache       Pinger
 	outbox      Pinger
 	consumers   []Pinger // per-queue heartbeats (OBS-1); nil entries skipped
+	liveness    []Pinger // background-loop heartbeats for /healthz; nil entries skipped
 }
 
 func registerInfraRoutes(r *gin.Engine, cfg RouterConfig) {
@@ -169,6 +176,7 @@ func registerInfraRoutes(r *gin.Engine, cfg RouterConfig) {
 		cache:       cfg.Cache,
 		outbox:      cfg.Outbox,
 		consumers:   cfg.Consumers,
+		liveness:    cfg.Liveness,
 	}
 	r.GET("/healthz", h.healthz)
 	r.GET("/readyz", h.readyz)
@@ -178,16 +186,27 @@ func registerInfraRoutes(r *gin.Engine, cfg RouterConfig) {
 	// Mirrors iam-tender-acl's identical split.
 }
 
-// healthz is a pure liveness check: if the process can answer HTTP at all,
-// it reports ok. It never inspects dependencies — see /readyz for that.
+// healthz is a liveness check: ok while the process answers HTTP and its
+// background loops (the platform-audit delivery runner) are not stalled. It
+// never inspects dependencies — see /readyz for that.
 //
 // @Summary      Liveness probe
-// @Description  Always returns ok if the process can answer HTTP at all. Never inspects dependencies.
+// @Description  Returns ok while the process answers HTTP and its background loops (the audit delivery runner) are not stalled; 503 when one is. Never inspects dependencies.
 // @Tags         infra
 // @Produce      json
 // @Success      200  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
 // @Router       /healthz [get]
 func (h *healthHandlers) healthz(c *gin.Context) {
+	for _, p := range h.liveness {
+		if p == nil {
+			continue
+		}
+		if err := p.Health(c.Request.Context()); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "error": err.Error()})
+			return
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 

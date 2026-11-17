@@ -29,6 +29,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
@@ -277,6 +278,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 
 	// Apply outbox schema then domain migrations
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
+	require.NoError(t, auditoutbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))
 
 	// Grant privileges to app role

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	pgdomain "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/domain"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
@@ -40,8 +41,11 @@ func RunMigrations(ctx context.Context, dsn string, log ...port.Logger) error {
 
 // MigrateSchema brings the database to this build's schema: platform-events'
 // outbox schema first (outbox_events, outbox_dead_letters — the library's
-// own, left as it defines it), then the domain migrations, whose GRANTs on
-// those tables apply only if they already exist. Both run over the direct
+// own, left as it defines it), then platform-audit's (pending_audit_entries,
+// tracked in platform_audit_schema_migrations), then the domain migrations,
+// whose GRANTs on the event outbox apply only if it already exists and whose
+// 000008 adds pending_audit_entries' RLS and grants (and fails without the
+// table). Both run over the direct
 // DSN under pgmigrate's advisory lock.
 //
 // It is run once per release by the migrate Job (cmd/migrate, a Helm
@@ -57,6 +61,9 @@ func MigrateSchema(ctx context.Context, dsn string, log port.Logger) error {
 	}
 	if err := outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: dsn, Logger: logger}); err != nil {
 		return explainMigrationError("outbox schema", err)
+	}
+	if err := auditoutbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: dsn, Logger: logger}); err != nil {
+		return explainMigrationError("audit outbox schema", err)
 	}
 	if err := RunMigrations(ctx, dsn, log); err != nil {
 		return explainMigrationError("domain migrations", err)

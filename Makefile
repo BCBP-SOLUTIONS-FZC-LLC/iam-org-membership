@@ -53,6 +53,7 @@ TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/outbound/tokenservice/... \
                       ./internal/adapter/outbound/httpx/... \
                       ./internal/adapter/outbound/metrics/... \
+                      ./internal/adapter/outbound/auditrecorder/... \
                       ./internal/adapter/outbound/valkey/... \
                       ./internal/core/port/... \
                       ./internal/core/service/... \

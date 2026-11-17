@@ -9,7 +9,7 @@ How this service implements the standard defined and enforced by [platform-ginco
 | Collector construction and registration order | `internal/adapter/outbound/metrics/business.go` (`Register`, `registerShared`) |
 | Ratification tracking for Proposed Tier 1 candidates | `internal/adapter/outbound/metrics/registry.go` (`PlatformRegistry`) |
 | Compliance checks in CI | `.github/scripts/metricslint.sh`, `check-metric-naming.sh`, `metrics-registry-lint.sh` |
-| Alerts, recording rules, SLOs | `deploy/monitoring/app-alerts.yml`, `slo-rules.yml`, `deploy/helm/templates/prometheusrule.yaml` |
+| Alerts, recording rules, SLOs | `deploy/monitoring/app-alerts.yml`, `slo-rules.yml`, `platform-audit-rules.yml` (vendored from platform-audit v0.1.0; re-vendor on upgrade), `deploy/helm/templates/prometheusrule.yaml` |
 | Dashboards, HPA | `deploy/monitoring/dashboards/`, `deploy/monitoring/prometheus-adapter-rule.yaml` |
 | Renamed and removed metric names | [`migration.md`](migration.md) |
 | Alert runbooks | [`runbooks.md`](runbooks.md) |
@@ -18,11 +18,12 @@ How this service implements the standard defined and enforced by [platform-ginco
 
 | Library | Version | Emits here | Wiring |
 |---|---|---|---|
-| platform-gincommon | v1.6.0 | `platform_http_*`, `platform_build_info`, `platform_library_info{library="platform-gincommon"}`; owns the registry and `metricslint` | `gincommon.ObservabilityMiddlewares(cfg)` in `internal/adapter/inbound/http/router.go`; `/metrics` served by `gincommon.MetricsHandler()` on `METRICS_PORT` |
-| platform-events/v2 | v2.2.1 | `platform_messages_*`, `platform_retry_total`, `platform_dlq_messages_total`, `platform_duplicate_messages_total` (inbox), `platform_outbox_*`, `platform_dependency_request_seconds` (SNS/SQS/codec), `platform_event_propagation_seconds`, ... | `events.InitMetrics(events.MetricsIdentityFromLabels(gincommon.MetricsConstLabels()), gincommon.MetricsRegisterer())` |
-| platform-pgcommon/v2 | v2.0.1 | `platform_db_*`, labelled `pool="default"` (app pool) and `pool="system"` (BYPASSRLS pool) | `pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(...), gincommon.MetricsRegisterer())`, before `pgcommon.NewPool` |
+| platform-gincommon | v2.6.0 | `platform_http_*`, `platform_build_info`, `platform_library_info{library="platform-gincommon"}`; owns the registry and `metricslint` | `gincommon.ObservabilityMiddlewares(cfg)` in `internal/adapter/inbound/http/router.go`; `/metrics` served by `gincommon.MetricsHandler()` on `METRICS_PORT` |
+| platform-events/v2 | v2.3.0 | `platform_messages_*`, `platform_retry_total`, `platform_dlq_messages_total`, `platform_duplicate_messages_total` (inbox), `platform_outbox_*`, `platform_dependency_request_seconds` (SNS/SQS/codec), `platform_event_propagation_seconds`, ... | `events.InitMetrics(events.MetricsIdentityFromLabels(gincommon.MetricsConstLabels()), gincommon.MetricsRegisterer())` |
+| platform-pgcommon/v2 | v2.0.2 | `platform_db_*`, labelled `pool="default"` (app pool) and `pool="system"` (BYPASSRLS pool) | `pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(...), gincommon.MetricsRegisterer())`, before `pgcommon.NewPool` |
+| platform-audit | v0.1.0 | `platform_audit_*` (audit-outbox backlog, delivery outcomes and lag, runner liveness); all approved (PA-D32) | `audit.InitMetrics(audit.MetricsIdentity{...}, gincommon.MetricsRegisterer())` in `cmd/server`'s `initLibraryMetrics`, after `pgmetrics`; alerts and recording rules in `deploy/monitoring/platform-audit-rules.yml`, dashboard `deploy/monitoring/dashboards/platform-audit.json` |
 
-All three register on `gincommon.MetricsRegisterer()`, so one scrape serves every collector. `metrics.Register` is a no-op until gincommon's identity is initialised (the constructors need it), so it must run after `ObservabilityMiddlewares`; every test binary initialises gincommon with the production service name first. Order in both binaries: `ObservabilityMiddlewares` (fixes the identity) → `metrics.Register` (builds this service's collectors, including the registry-shared ones a library later adopts) → `events.InitMetrics` → `pgmetrics.InitWithIdentity` → pools. `TestStandard_LibrariesShareRegistryCollectors` pins that order: platform-events must adopt the shared collectors, not be refused.
+All four register on `gincommon.MetricsRegisterer()`, so one scrape serves every collector. `metrics.Register` is a no-op until gincommon's identity is initialised (the constructors need it), so it must run after `ObservabilityMiddlewares`; every test binary initialises gincommon with the production service name first. Order in both binaries: `ObservabilityMiddlewares` (fixes the identity) → `metrics.Register` (builds this service's collectors, including the registry-shared ones a library later adopts) → `events.InitMetrics` → `pgmetrics.InitWithIdentity` → pools. `TestStandard_LibrariesShareRegistryCollectors` pins that order: platform-events must adopt the shared collectors, not be refused.
 
 ## Identity
 

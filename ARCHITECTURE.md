@@ -2,7 +2,7 @@
 
 This document describes the internal structure, dependency rules, and runtime data flows of `iam-org-membership`.
 
-`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.11) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.49, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 8 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
+`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.11) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.51, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner, the platform-audit outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 8 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service. This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -19,11 +19,11 @@ The service is organised in concentric Clean Architecture layers. Inner layers h
 ```mermaid
 graph TD
     subgraph cmd["Composition Roots  —  cmd/ (three binaries, one image)"]
-        main["server/main.go + wiring.go + exporters.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6) + BYPASSRLS sysPool (PoolName=system)\nRUN_MIGRATIONS unset/true → MigrateSchema at startup (Helm sets false — the migrate hook Job owns it)\nrouter registration + gincommon.ObservabilityMiddlewares\n/metrics = gincommon.MetricsHandler() on METRICS_PORT (9090)\n3 SQS consumers via sqspipeline (tenant-orgm-q · billing-orgm-q · catalog-orgm-q)\n5 in-process metric exporters (ticker goroutines, 5 min):\n  iam_org_membership_tenant_ownerless · iam_org_membership_realm_sync_pending\n  iam_org_membership_pending_invitations_stale · iam_org_membership_parked_tenant_events_stale\n  iam_rls_violations_total (counter, rls_violation_log scrape)\nRoutingPublisher (2 SNS topics, each with its own GlueCodec) + outbox runner\ngraceful shutdown: SIGTERM → HTTP + SQS drain (parallel, ≤30s) → outbox (30s) → both pools (parallel, fresh 10s)\nterminationGracePeriodSeconds=75"]
+        main["server/main.go + wiring.go + exporters.go\nwire all dependencies\npgcommon.NewPool with GUCProvider = GUCSetFromContext (RLS-6) + BYPASSRLS sysPool (PoolName=system)\nRUN_MIGRATIONS unset/true → MigrateSchema at startup (Helm sets false — the migrate hook Job owns it)\nrouter registration + gincommon.ObservabilityMiddlewares\n/metrics = gincommon.MetricsHandler() on METRICS_PORT (9090)\n3 SQS consumers via sqspipeline (tenant-orgm-q · billing-orgm-q · catalog-orgm-q)\n5 in-process metric exporters (ticker goroutines, 5 min):\n  iam_org_membership_tenant_ownerless · iam_org_membership_realm_sync_pending\n  iam_org_membership_pending_invitations_stale · iam_org_membership_parked_tenant_events_stale\n  iam_rls_violations_total (counter, rls_violation_log scrape)\nRoutingPublisher (2 SNS topics, each with its own GlueCodec) + outbox runner\nplatform-audit auditoutbox.Runner on sysPool (AL-5 delivery; in /healthz liveness, not /readyz)\ngraceful shutdown: SIGTERM → HTTP + SQS drain (parallel, ≤30s) → outbox (30s) ∥ audit runner Stop (10s) → both pools (parallel, fresh 10s)\nterminationGracePeriodSeconds=75"]
         swagger_info["server/swagger_info.go\nSwaggo API metadata annotations"]
         reconciler["reconciler/main.go\nsingle binary, --job=<name> dispatch\nselects one of 8 CronJobs (§13.1):\n  invitation-expiry · invitation-kc-cleanup\n  realm-config-sync · trial-cleanup\n  outbox-prune · processed-events-prune\n  parked-events-replay · trial-ledger-prune\nRECONCILER_STATEMENT_TIMEOUT (2m) on both pools\nmetrics pushed to PROMETHEUS_PUSHGATEWAY_URL, grouped by cronjob"]
         jobs["reconciler/jobs/\none file per CronJob, depends on port/domain only"]
-        migrate["migrate/main.go\npostgres.MigrateSchema: outbox.ApplySchema → domain RunMigrations\nMIGRATION_DATABASE_URL (direct, non-PgBouncer), MIGRATE_TIMEOUT=10m\nHelm pre-install/pre-upgrade hook Job, exits 0/1"]
+        migrate["migrate/main.go\npostgres.MigrateSchema: outbox.ApplySchema → auditoutbox.ApplySchema → domain RunMigrations\nMIGRATION_DATABASE_URL (direct, non-PgBouncer), MIGRATE_TIMEOUT=10m\nHelm pre-install/pre-upgrade hook Job, exits 0/1"]
     end
 
     subgraph adapters_in["Inbound Adapters  —  internal/adapter/inbound/"]
@@ -33,9 +33,10 @@ graph TD
     end
 
     subgraph adapters_out["Outbound Adapters  —  internal/adapter/outbound/"]
-        postgres["postgres/\nTenantRepository · TenantDepartmentRepository\nMembershipRepository · TenantRoleRepository (incl. ListByUsers — P-4 batch)\nDeptMembershipRepository (incl. ListByUsers — P-4 batch) · DeptRoleLabelRepository\nInvitationRepository · InboxRepository (platform-events inbox.Store Process/Prune)\nAuthZRepository · ReconcilerStore · GaugeRepository\nTenantRepository on the BYPASSRLS sysPool: I-16 ListSubscriptionLapses + PUB-1 ResolveByIdentifier\nTxRunner (RunInTxWithRetryOpts + wrapConnErr) · MigrateSchema (outbox schema + domain migrations)\nOptimistic locking (record_version) on 7 of 10 tables (TRG-1)\nmigrations/ — 000000_initial_schema + 000001..000007\n(check_constraints · pub1 email idx · cd37 residency_mode · cd50 pending_tenant_events\n · cr4 trial_signup_ledger · cr4 hardening · migrator_grants)"]
+        postgres["postgres/\nTenantRepository · TenantDepartmentRepository\nMembershipRepository · TenantRoleRepository (incl. ListByUsers — P-4 batch)\nDeptMembershipRepository (incl. ListByUsers — P-4 batch) · DeptRoleLabelRepository\nInvitationRepository · InboxRepository (platform-events inbox.Store Process/Prune)\nAuthZRepository · ReconcilerStore · GaugeRepository\nTenantRepository on the BYPASSRLS sysPool: I-16 ListSubscriptionLapses + PUB-1 ResolveByIdentifier\nTxRunner (RunInTxWithRetryOpts + wrapConnErr; injects EventPublisher + AuditRecorder into tx ctx)\nMigrateSchema (outbox schema + audit-outbox schema + domain migrations)\nOptimistic locking (record_version) on 7 of 10 tables (TRG-1)\nmigrations/ — 000000_initial_schema + 000001..000008\n(check_constraints · pub1 email idx · cd37 residency_mode · cd50 pending_tenant_events\n · cr4 trial_signup_ledger · cr4 hardening · migrator_grants · audit_outbox)"]
         valkey["valkey/\nCacheAdapter (go-redis/v9) — advisory only (CACHE-2/CACHE-9)\n50ms read/write timeout hardcoded, no env var\nWorking caches: om:memberships · om:tenant · om:seat_usage · om:plans/departments (+:stale)\nom:grm/gdm/gtrm (+:stale)\nDeclared, not populated: om:members · om:roles · om:locale · om:dept_members"]
         eventbus["eventbus/\nPublisher.Enqueue — outbox.EnqueueOrdered keyed {tenant_id}/{subject}\n  under pg_advisory_xact_lock (outbox.Enqueue when no subject)\nRoutingPublisher (own local type, not platform-events)\n  routes by domain.TopicForEvent(env.Type) →\n    iam.membership.events (10 events)\n    iam.tenant.events (3 events: TenantCreated, TrialStarted, TenantSettingChanged)\nOutbox runner · ValidatingCodec (enqueue-time) · GlueCodec ×2 (publish-time, events.WithCodec)\nschemas/*.json embedded via //go:embed"]
+        auditrecorder["auditrecorder/\nport.AuditRecorder impl over platform-audit auditoutbox.Enqueuer\nAL-5 entries → pending_audit_entries on the business tx (PA-INV-3)\nLoadConfig: AUDIT_* (AUDIT_SOURCE_SERVICE default iam-org-membership)\nAudit Log outage never fails a request (AUDIT-CALLER-1)"]
         httpx["httpx/\nNewClient(timeout) — shared otelhttp transport\nW3C traceparent + x-request-id forwarding"]
         workflow["workflow/\nport.WorkflowClient impl (HTTP, §8.8 — talks to Workflow Service,\n  unrelated to the delegation-domain extraction)\nGetDelegateImpact · ReassignDelegate · CancelByDelegate\nWORKFLOW_TIMEOUT_MS=3000"]
         rp["realmprovisioner/\nport.RealmProvisionerClient impl (HTTP)\nCreateInvitedUser (§8.10) · DeleteUser (idempotent, PI-9)\nPatchRealmConfig (T-15) · RevokeUserSessions (AUTH-8 fail-open) · ResetMFA (RP-9 fail-closed)\nREALM_PROVISIONER_TIMEOUT_MS=3000"]
@@ -43,7 +44,7 @@ graph TD
         groupmappingclient["groupmappingclient/\nport.GroupMappingClient impl (HTTP)\nPOST /internal/tenants/:id/group-resolution (I-10 JIT)\nADR-0007 Wave 2, fails OPEN (empty resolution)\nGROUP_MAPPING_TIMEOUT_MS=300"]
         delegationcheck["delegationcheck/\nport.DelegationCheckClient impl (HTTP)\nGET /internal/delegations/dept-delegate (§8.8.4 precision lookup)\nADR-0008, fails OPEN\nDELEGATION_TIMEOUT_MS=1000 (raised from 300, Gap-8 fix)"]
         tokenservice["tokenservice/\nport.TokenServiceClient impl (HTTP)\nGET /service-accounts?principal_sub= (Token Service TS-5)\nAUTH-9/IB-3, fails OPEN — degrades to allowing the membership-create\n(P-6/I-3) / role-grant (P-10/P-28) operation\nTOKEN_SERVICE_TIMEOUT_MS=1000"]
-        metrics["metrics/\nbusiness.go + registry.go — 28 counters, 3 histograms, 4 gauges, three-tier IAM Platform\nObservability Standard (platform_*/iam_*/iam_org_membership_*):\nTier 1 (gincommon.NewShared*Vec): platform_duplicate_messages_total{queue,event_type}\n  platform_dlq_messages_total{operation,event_type,reason} · platform_dependency_request_seconds{dependency,operation,outcome}\nTier 2 (gincommon.NewShared*Vec): iam_rls_violations_total · iam_auth_session_revoke_failed_total\nTier 3 (gincommon.NewCounterVec/NewGauge/NewHistogramVec): 24 iam_org_membership_* counters (incl. catalog_cache_invalidated_total,\n  audit_delivery_failed_total{entry_type}, lifecycle_event_skipped_total, department_list_total),\n  4 gauges (tenant_ownerless · realm_sync_pending · pending_invitations_stale · parked_tenant_events_stale),\n  iam_org_membership_dependency_call_duration_seconds · iam_org_membership_lifecycle_event_lag_seconds\nRegister is a no-op until gincommon is initialised; CD-54 removed seat_overage_active gauge + seat_overage_started_total counter"]
+        metrics["metrics/\nbusiness.go + registry.go — 27 counters, 3 histograms, 4 gauges, three-tier IAM Platform\nObservability Standard (platform_*/iam_*/iam_org_membership_*):\nTier 1 (gincommon.NewShared*Vec): platform_duplicate_messages_total{queue,event_type}\n  platform_dlq_messages_total{operation,event_type,reason} · platform_dependency_request_seconds{dependency,operation,outcome}\nTier 2 (gincommon.NewShared*Vec): iam_rls_violations_total · iam_auth_session_revoke_failed_total\nTier 3 (gincommon.NewCounterVec/NewGauge/NewHistogramVec): 23 iam_org_membership_* counters (incl. catalog_cache_invalidated_total,\n  lifecycle_event_skipped_total, department_list_total),\n  4 gauges (tenant_ownerless · realm_sync_pending · pending_invitations_stale · parked_tenant_events_stale),\n  iam_org_membership_dependency_call_duration_seconds · iam_org_membership_lifecycle_event_lag_seconds\nRegister is a no-op until gincommon is initialised; CD-54 removed seat_overage_active gauge + seat_overage_started_total counter"]
     end
 
     subgraph eventschema_grp["Embedded Schemas  —  eventbus/schemas/"]
@@ -52,7 +53,7 @@ graph TD
 
     subgraph core["Core  —  internal/core/"]
         service["service/\nTenantService · DepartmentService · RoleLabelService\nMembershipService (§8.8 RemoveUser + delegate-impact pre-check;\n  SEAT-1; TM-8/TM-12/TM-13; P-34 ResetMFA)\nInvitationService (§8.10 Invite / AcceptInvitation, PI-11/PI-12 throttles)\nDeptMembershipService (§8.8.4 dept-scope gating)\nProvisioningService (§8.1 trial signup, I-1) · OperatorService (O-4/O-7)\nAuthZService (I-8, depends on port.AuthZRepository, not *pgcommon.Pool)\nCatalogService — CLIENT-SIDE read-through, NOT a table owner\nGroupMappingService — CLIENT-SIDE resolve, NOT a table owner\nSubscriptionLapseService (I-16) · TenantResolutionService (PUB-1) — both sysPool-bound\nTenantService.PlanChangeCheck (I-17/I-18, CD-13/CD-20) — port.RealmIDPReader + PlanCatalogReader"]
-        port["port/\nTenantRepository (incl. ResolveByIdentifier, PUB-1) · TenantDepartmentRepository · MembershipRepository\nTenantRoleRepository · DeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · AuthZRepository · ReconcilerStore\nCache · EventPublisher · TxRunner (+ WithTx/TxFromContext) · Inbox · InboxPruner · Logger\nWorkflowClient · RealmProvisionerClient · CatalogAdminClient · TokenServiceClient\nDepartmentCatalogReader · PlanCatalogReader · GroupMappingClient · DelegationCheckClient\ntrace.go — OTel span-context abstractions (SpanContext, SetSpanContextExtractor, SetConsumerSpanFunc, WrapConsumerSpan)\n  keeping the OTel trace API out of adapters (OBS-7/OBS-9)\n(no UserProfileClient — removed as dead code, §16 OQ-5)"]
+        port["port/\nTenantRepository (incl. ResolveByIdentifier, PUB-1) · TenantDepartmentRepository · MembershipRepository\nTenantRoleRepository · DeptMembershipRepository · DeptRoleLabelRepository\nInvitationRepository · AuthZRepository · ReconcilerStore\nCache · EventPublisher · AuditRecorder · TxRunner (+ WithTx/TxFromContext) · Inbox · InboxPruner · Logger\nWorkflowClient · RealmProvisionerClient · CatalogAdminClient · TokenServiceClient\nDepartmentCatalogReader · PlanCatalogReader · GroupMappingClient · DelegationCheckClient\ntrace.go — OTel span-context abstractions (SpanContext, SetSpanContextExtractor, SetConsumerSpanFunc, WrapConsumerSpan)\n  keeping the OTel trace API out of adapters (OBS-7/OBS-9)\n(no UserProfileClient — removed as dead code, §16 OQ-5)"]
         domain["domain/\nTenant · Department · Plan · TenantMembership · DeptMembership\nTenantRoleCode · DeptRole · GroupDeptMapping/GroupDeptRoleMapping/GroupTenantRoleMapping\n  (read-through cache result types, not local tables)\nPendingInvitation · DomainEvent payload types · TopicForEvent\nDomainError catalogue (sentinels grouped by §17 status family)\n(no Delegation, no TenderACLEntry — tables moved to sibling services)"]
     end
 
@@ -79,6 +80,7 @@ graph TD
     main        --> groupmappingclient
     main        --> delegationcheck
     main        --> tokenservice
+    main        --> auditrecorder
     main        --> metrics
     main        --> service
     reconciler  --> jobs
@@ -86,6 +88,7 @@ graph TD
     reconciler  --> postgres
     reconciler  --> eventbus
     reconciler  --> rp
+    reconciler  --> auditrecorder
     reconciler  --> metrics
     jobs        --> port
     jobs        --> domain
@@ -122,6 +125,7 @@ graph TD
     groupmappingclient --> port
     delegationcheck --> port
     tokenservice --> port
+    auditrecorder --> port
     port        --> domain
     unit        -.->|"imports"| service
     unit        -.->|"imports"| domain
@@ -162,6 +166,7 @@ graph LR
     groupmappingclient(["adapter/outbound/groupmappingclient"])
     delegationcheck(["adapter/outbound/delegationcheck"])
     tokenservice(["adapter/outbound/tokenservice\n(AUTH-9/IB-3, fails OPEN)"])
+    auditrecorder(["adapter/outbound/auditrecorder\n(platform-audit outbox mode)"])
     httpx(["adapter/outbound/httpx\n(httptransport)"])
     metrics(["adapter/outbound/metrics\n(observability)"])
 
@@ -198,6 +203,7 @@ graph LR
     main        --> groupmappingclient
     main        --> delegationcheck
     main        --> tokenservice
+    main        --> auditrecorder
     main        --> metrics
     main        --> docs_swagger
     main        --> port
@@ -221,6 +227,7 @@ graph LR
     reconciler  --> postgres
     reconciler  --> eventbus
     reconciler  --> realmprovisioner
+    reconciler  --> auditrecorder
     reconciler  --> metrics
     reconciler  --> port
     jobs        --> port
@@ -304,6 +311,7 @@ graph LR
     groupmappingclient --> domain
     delegationcheck --> port
     tokenservice --> port
+    auditrecorder --> port
     workflow    --> httpx
     realmprovisioner --> httpx
     catalogadmin --> httpx
@@ -400,7 +408,7 @@ sequenceDiagram
                 Handler ← executes here
 ```
 
-`/healthz` and `/readyz` (`registerInfraRoutes`) and the docs surface (`registerDocsRoutes`, gated by `DocsConfig.active()`) are registered **before** this chain, so a load-balancer probe with no headers still gets `200`. `/healthz` is pure liveness — it never inspects a dependency; `/readyz` checks the app Postgres pool, the `sysPool` (BYPASSRLS, a separate physical connection so a credential rotation on that role alone is caught), Valkey, the outbox runner (`select` on its `Ready()` channel), and one heartbeat per wired SQS consumer (a consumer goroutine that exits marks itself dead), returning `503` on any failure. `RequireActiveTenant`/`RequireActiveMembership` bypass `iam-system` and `platform_operator` principals — those internal/operator control paths must be able to reach a `trial_expired`/`suspended` tenant to restore it.
+`/healthz` and `/readyz` (`registerInfraRoutes`) and the docs surface (`registerDocsRoutes`, gated by `DocsConfig.active()`) are registered **before** this chain, so a load-balancer probe with no headers still gets `200`. `/healthz` is liveness — it never inspects a dependency, and returns `503` only when a registered background loop (`RouterConfig.Liveness`: the platform-audit delivery runner's `Alive()`) is stalled; the audit runner is deliberately not in `/readyz`, since an Audit Log outage only grows the backlog; `/readyz` checks the app Postgres pool, the `sysPool` (BYPASSRLS, a separate physical connection so a credential rotation on that role alone is caught), Valkey, the outbox runner (`select` on its `Ready()` channel), and one heartbeat per wired SQS consumer (a consumer goroutine that exits marks itself dead), returning `503` on any failure. `RequireActiveTenant`/`RequireActiveMembership` bypass `iam-system` and `platform_operator` principals — those internal/operator control paths must be able to reach a `trial_expired`/`suspended` tenant to restore it.
 
 ---
 
@@ -731,7 +739,7 @@ Note the honest gap this diagram documents: four key builders exist on `valkey.C
 
 ## Data model
 
-Database `org_membership` on shared RDS PostgreSQL (Multi-AZ, PgBouncer transaction pooling). **10 tables** (incl. the cross-tenant, RLS-free `trial_signup_ledger`, CR-4), RLS via the `app.tenant_id` GUC on the 8 tenant-scoped ones — no cross-database foreign keys (the composite FKs the ADR-0007/ADR-0008 decomposition lost are replaced by app-level checks against read-through caches, or by other services' new I-15 existence check, described below the diagram). Since this service has never been deployed, the schema is one consolidated migration (`000000_initial_schema`) rather than an incremental history with dead expand/contract steps to carry forward, followed by seven additive ones: `000001_check_constraints`, `000002_pub1_pending_invitations_email_idx` (PUB-1's pending-email index), `000003_cd37_residency_mode` (`tenants.residency_mode TEXT NOT NULL DEFAULT 'standard'`, CD-37), `000004_cd50_pending_tenant_events` (EVT-18 parked events, CD-50), `000005_cr4_trial_signup_ledger` and `000006_cr4_trial_ledger_hardening` (CR-4), and `000007_migrator_grants` (MIG-10). `processed_events.event_id` is `uuid`, the shape platform-events' inbox requires.
+Database `org_membership` on shared RDS PostgreSQL (Multi-AZ, PgBouncer transaction pooling). **10 tables** (incl. the cross-tenant, RLS-free `trial_signup_ledger`, CR-4), RLS via the `app.tenant_id` GUC on the 8 tenant-scoped ones — no cross-database foreign keys (the composite FKs the ADR-0007/ADR-0008 decomposition lost are replaced by app-level checks against read-through caches, or by other services' new I-15 existence check, described below the diagram). Since this service has never been deployed, the schema is one consolidated migration (`000000_initial_schema`) rather than an incremental history with dead expand/contract steps to carry forward, followed by eight additive ones: `000001_check_constraints`, `000002_pub1_pending_invitations_email_idx` (PUB-1's pending-email index), `000003_cd37_residency_mode` (`tenants.residency_mode TEXT NOT NULL DEFAULT 'standard'`, CD-37), `000004_cd50_pending_tenant_events` (EVT-18 parked events, CD-50), `000005_cr4_trial_signup_ledger` and `000006_cr4_trial_ledger_hardening` (CR-4), `000007_migrator_grants` (MIG-10) and `000008_audit_outbox` (RLS + grants on platform-audit's library-owned `pending_audit_entries`, created by `auditoutbox.ApplySchema` and not counted among the 10 tables). `processed_events.event_id` is `uuid`, the shape platform-events' inbox requires.
 
 > Source: [`docs/architecture/mermaid/data-model.mmd`](docs/architecture/mermaid/data-model.mmd)
 
@@ -1000,7 +1008,7 @@ graph LR
     end
 
     subgraph prom["Prometheus  →  /metrics = gincommon.MetricsHandler() on METRICS_PORT 9090 (inventory: docs/observability/metric-registry.md)"]
-        p1["Tier 1 platform_* from the libraries (gincommon / platform-events / platform-pgcommon):\nplatform_http_requests_total · platform_http_request_duration_seconds{method, route, status_class, error_class}\nplatform_http_active_requests{route} · platform_http_panics_total · platform_build_info{version}\nplatform_messages_received/processed/failed_total · platform_queue_depth · platform_dlq_depth\nplatform_outbox_pending_events · platform_outbox_oldest_pending_age_seconds · platform_outbox_ordering_blocked_events\nplatform_db_* (queries, pool, retries)\n(every series + domain=iam, service, environment)"]
+        p1["Tier 1 platform_* from the libraries (gincommon / platform-events / platform-pgcommon / platform-audit):\nplatform_http_requests_total · platform_http_request_duration_seconds{method, route, status_class, error_class}\nplatform_http_active_requests{route} · platform_http_panics_total · platform_build_info{version}\nplatform_messages_received/processed/failed_total · platform_queue_depth · platform_dlq_depth\nplatform_outbox_pending_events · platform_outbox_oldest_pending_age_seconds · platform_outbox_ordering_blocked_events\nplatform_db_* (queries, pool, retries)\nplatform_audit_* (audit-outbox backlog, deliveries, lag, runner liveness — audit.InitMetrics)\n(every series + domain=iam, service, environment)"]
         p_shared["Tier 1 built here with gincommon.NewShared*Vec, shared with platform-events:\nplatform_dlq_messages_total{operation,event_type,reason}\nplatform_duplicate_messages_total{queue,event_type}  (proposed)\nplatform_dependency_request_seconds{dependency,operation,outcome}  (proposed)"]
         p_rls["Tier 2 iam_* (registry entries since gincommon v1.6.0, proposed):\niam_rls_violations_total{violation_type}  (Layer 3, scraped from rls_violation_log)\niam_auth_session_revoke_failed_total{reason}  (AUTH-8 fail-open)\n(iam_lifecycle_event_skipped_total / iam_lifecycle_event_lag_seconds reclassified → Tier 3, 2026-11-04)"]
         p_wf["Tier 3 — delegate impact (§8.8):\niam_org_membership_delegate_removal_blocked_total{scope}\niam_org_membership_delegate_reassignment_total{action}\niam_org_membership_delegate_suspend_impact_total{checked} (§8.8.5 advisory)"]
@@ -1123,7 +1131,7 @@ sequenceDiagram
     Note over DB: is_local => true ⇒ SET LOCAL semantics.<br/>Value scoped to THIS transaction only.<br/>Never a session-scoped SET — would persist on pooled PgBouncer<br/>backend and leak across tenants (canonical RLS-6 hazard).
 
     Pool ->>+ DB: SELECT / UPDATE / INSERT (application query)
-    Note over DB: RLS policy on the 8 tenant-scoped tables (all but processed_events and trial_signup_ledger;<br/>rls_violation_log is an RLS-disabled audit table):<br/>  ENABLE ROW LEVEL SECURITY<br/>  FORCE ROW LEVEL SECURITY (separate statement — applies the policy to the table owner too)<br/>  REVOKE ALL FROM PUBLIC<br/>  POLICY tenant_isolation USING (rls_check_tenant(tenant_id, TABLE_NAME))<br/>                          WITH CHECK (rls_check_tenant(tenant_id, TABLE_NAME))<br/>rls_check_tenant wraps the GUC read + a 1%-sampled violation-log insert on failure (Layer 3).<br/>Missing/malformed GUC → app_tenant_id() catches the exception, returns NULL → 0 rows (fail closed, FAIL-5).
+    Note over DB: RLS policy on the 8 tenant-scoped tables (all but processed_events and trial_signup_ledger)<br/>and on platform-audit's library-owned pending_audit_entries (000008);<br/>rls_violation_log is an RLS-disabled audit table:<br/>  ENABLE ROW LEVEL SECURITY<br/>  FORCE ROW LEVEL SECURITY (separate statement — applies the policy to the table owner too)<br/>  REVOKE ALL FROM PUBLIC<br/>  POLICY tenant_isolation USING (rls_check_tenant(tenant_id, TABLE_NAME))<br/>                          WITH CHECK (rls_check_tenant(tenant_id, TABLE_NAME))<br/>rls_check_tenant wraps the GUC read + a 1%-sampled violation-log insert on failure (Layer 3).<br/>Missing/malformed GUC → app_tenant_id() catches the exception, returns NULL → 0 rows (fail closed, FAIL-5).
 
     DB -->>- Pool: rows (tenant-scoped) or WITH CHECK violation
 
@@ -1242,13 +1250,13 @@ if tag.RowsAffected() == 0 {
 |---|---|---|
 | `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + 3 SQS consumers (`tenant-orgm-q`/`billing-orgm-q`/`catalog-orgm-q`) + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 8 K8s CronJobs. `RECONCILER_STATEMENT_TIMEOUT` (default 2m) applies to both pools; each run pushes its metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
-| `migrate` | `/migrate` | Schema migrator (`cmd/migrate`): `postgres.MigrateSchema` runs platform-events' `outbox.ApplySchema`, then the domain migrations, and exits 0 or 1. Reads `MIGRATION_DATABASE_URL` (falls back to the app DSN), bounded by `MIGRATE_TIMEOUT` (default 10m). `explainMigrationError` adds a recovery hint for a dirty schema or a version missing from the binary |
+| `migrate` | `/migrate` | Schema migrator (`cmd/migrate`): `postgres.MigrateSchema` runs platform-events' `outbox.ApplySchema`, then platform-audit's `auditoutbox.ApplySchema`, then the domain migrations, and exits 0 or 1. Reads `MIGRATION_DATABASE_URL` (falls back to the app DSN), bounded by `MIGRATE_TIMEOUT` (default 10m). `explainMigrationError` adds a recovery hint for a dirty schema or a version missing from the binary |
 
 Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.26.11-alpine` builder; a `debian:bookworm-slim` `certs` stage, whose patched CA bundle (ca-certificates deb12u2, DLA-4845-1) replaces distroless's until distroless ships it; and the `gcr.io/distroless/static-debian12:nonroot` runtime (no shell, non-root UID 65532), into which only the three compiled binaries and that CA bundle are copied (`make build` builds the same three into `bin/`), which is why `api/asyncapi.yaml` is compiled in via `//go:embed` rather than read from disk at runtime.
 
 ### Helm chart
 
-`deploy/helm/` renders one `Deployment`, a migrate hook `Job` and the 8 `CronJob`s (schedules: `invitation-expiry` `*/5 * * * *`, `invitation-kc-cleanup`/`realm-config-sync` both `*/10 * * * *`, `trial-cleanup` `0 2 * * *`, `outbox-prune` `0 3 * * *`, `processed-events-prune` `0 4 * * *`, `parked-events-replay` `*/5 * * * *`, `trial-ledger-prune` `30 4 * * *`) from the same image reference. **CD-54:** `seat-overage-reconcile` (`0 */6 * * *`) retired. HPA: `minReplicas: 2` / `maxReplicas: 8`, CPU 70% / memory 75%. PDB `minAvailable: 1`. The migrate `Job` (`deploy/helm/templates/migrate-job.yaml`, `migrations.job.enabled: true`) is a `pre-install,pre-upgrade` hook at weight 0, after the chart `Secret` (a hook at weight -10, since the Job reads `MIGRATION_DATABASE_URL` from it). Its pod deliberately does not carry the chart's selector labels, so the Service, PDB and NetworkPolicy never select it. The Deployment sets `RUN_MIGRATIONS=false` while the Job is enabled, so 2–8 replicas never contend for the migration lock and a failed migration fails the release instead of crash-looping pods. Unset or true (local dev, tests), `cmd/server` migrates at startup itself. `terminationGracePeriodSeconds: 75` (max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain + 10 s pool drain + 5 s buffer) — matches `main.go`'s own shutdown ordering: HTTP + metrics-server `Shutdown` in parallel with every SQS consumer's `Stop` → outbox `Stop` → background context cancel → `pool.DrainAndClose` and `sysPool.DrainAndClose` in parallel (fresh 10 s budget) → tracing/logger flush. NetworkPolicy is scoped to `gateway`-namespace ingress plus an `observability`-namespace `prometheus` scrape on the metrics port.
+`deploy/helm/` renders one `Deployment`, a migrate hook `Job` and the 8 `CronJob`s (schedules: `invitation-expiry` `*/5 * * * *`, `invitation-kc-cleanup`/`realm-config-sync` both `*/10 * * * *`, `trial-cleanup` `0 2 * * *`, `outbox-prune` `0 3 * * *`, `processed-events-prune` `0 4 * * *`, `parked-events-replay` `*/5 * * * *`, `trial-ledger-prune` `30 4 * * *`) from the same image reference. **CD-54:** `seat-overage-reconcile` (`0 */6 * * *`) retired. HPA: `minReplicas: 2` / `maxReplicas: 8`, CPU 70% / memory 75%. PDB `minAvailable: 1`. The migrate `Job` (`deploy/helm/templates/migrate-job.yaml`, `migrations.job.enabled: true`) is a `pre-install,pre-upgrade` hook at weight 0, after the chart `Secret` (a hook at weight -10, since the Job reads `MIGRATION_DATABASE_URL` from it). Its pod deliberately does not carry the chart's selector labels, so the Service, PDB and NetworkPolicy never select it. The Deployment sets `RUN_MIGRATIONS=false` while the Job is enabled, so 2–8 replicas never contend for the migration lock and a failed migration fails the release instead of crash-looping pods. Unset or true (local dev, tests), `cmd/server` migrates at startup itself. `terminationGracePeriodSeconds: 75` (max(30 s HTTP drain, 15 s SQS drain, in parallel) + 30 s outbox drain (the audit runner's 10 s `Stop` runs alongside it) + 10 s pool drain + 5 s buffer) — matches `main.go`'s own shutdown ordering: HTTP + metrics-server `Shutdown` in parallel with every SQS consumer's `Stop` → outbox `Stop` in parallel with the platform-audit runner's `Stop` (`auditStopTimeout` 10 s) → background context cancel → `pool.DrainAndClose` and `sysPool.DrainAndClose` in parallel (fresh 10 s budget) → tracing/logger flush. NetworkPolicy is scoped to `gateway`-namespace ingress plus an `observability`-namespace `prometheus` scrape on the metrics port.
 
 ### Migration safety
 
@@ -1323,7 +1331,7 @@ STRIDE analysis of `iam-org-membership`. Every row is grounded in a real mechani
 | **Spoofing** | A gateway-injected identity header is forged to impersonate another user or tenant | `GUCBridgeMiddleware` / `parseBridgedIdentity` | The gateway strips client-supplied identity headers before mesh entry (Envoy is the trust boundary); this service parses and validates the header shape (`uuid.Parse`) but does not itself re-authenticate — a compromised gateway is out of this service's blast-radius control, consistent with the mesh-mTLS model shared across the platform |
 | **Tampering** | Direct PostgreSQL write bypasses RLS and tenant isolation | PostgreSQL | `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` + `REVOKE ALL FROM PUBLIC` on all 8 tenant-scoped tables; only `org_membership_migrator`/`admin_readonly` (`BYPASSRLS`) can bypass, and `org_membership_app` is actively stripped of `BYPASSRLS` if ever found set (RLS-4) |
 | **Tampering** | A record is updated concurrently by two requests, silently discarding one's change | `record_version` optimistic locking | `UPDATE ... WHERE record_version=$N` returns 0 rows on a stale write → `409 optimistic_lock_conflict`, never a silent last-write-wins |
-| **Repudiation** | A mutation with no auditable actor | All write paths | `actor`/`tenant_id` on every outbox envelope and event; the outbox is an immutable per-tenant event log; `MFAReset`'s emission is the sole audit signal Audit Log has for a P-34 reset |
+| **Repudiation** | A mutation with no auditable actor | All write paths | `actor`/`tenant_id` on every outbox envelope and event; the outbox is an immutable per-tenant event log; `MFAReset`'s emission is the sole audit signal Audit Log has for a P-34 reset; P-2/P-6/P-31 and the invitation-expiry sweep write AL-5 entries into `pending_audit_entries` in the same transaction as the change (platform-audit outbox, at-least-once delivery) |
 | **Information Disclosure** | Cross-tenant row read via a missing or malformed GUC | PostgreSQL | `rls_check_tenant`/`app_tenant_id` fail closed (`NULL` on any error) rather than open; RLS Case 5 in `test/postgres/rls_test.go` covers the pooled-backend leakage case specifically (RLS-6) |
 | **Information Disclosure** | `pending_invitations`' PII exception (email + full name) leaks beyond acceptance | `pending_invitations` / GDPR erasure | This is the **one** deliberate non-`user_id`-keyed PII path in the schema (erasure-by-email); every other table is `user_id`-scoped and covered by the standard soft-delete + `ON DELETE CASCADE` on tenant offboarding |
 | **Information Disclosure** | I-15's membership-existence check leaks more than existence to a caller that shouldn't see it | `internal_handler.go` / `CheckMemberExists` | The endpoint returns only `{active, tenant_membership_id}` — never role, department, or PII — by construction, even though the caller (Tender ACL, Delegation) is itself a trusted internal service |
@@ -1382,7 +1390,7 @@ graph LR
         claude[".claude/CLAUDE.md + siblings\narchitecture.md · database-schema.md\napi-caching-events.md · request-flows.md · operations.md"]
         readme["README.md\nmental model · API/event overview · onboarding"]
         asyncapi_yaml["api/asyncapi.yaml\nAsyncAPI — iam.membership.events + iam.tenant.events"]
-        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.49"]
+        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.51"]
         obsdocs["docs/observability/\nmetric-registry.md (generated) · migration.md · runbooks.md"]
     end
 
@@ -1414,6 +1422,6 @@ graph LR
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`docs/observability/README.md`](docs/observability/README.md) | How the observability standard is implemented here, the generated metric inventory (`metric-registry.md`), renamed/removed metric names (`migration.md`) and per-alert runbooks (`runbooks.md`) |
 | [`docs/architecture/README.md`](docs/architecture/README.md) | Standalone Mermaid diagram set index (the 12 `.mmd` files embedded above) |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD (v2.49) — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD (v2.51) — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 
 Render a diagram locally: open any `.mmd` file in a Mermaid-aware IDE (VS Code + Mermaid Preview, IntelliJ + Mermaid plugin) or paste into [mermaid.live](https://mermaid.live).
