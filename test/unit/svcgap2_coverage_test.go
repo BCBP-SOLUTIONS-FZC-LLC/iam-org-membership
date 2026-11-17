@@ -213,7 +213,9 @@ func (r *svcgap2FullInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.Pe
 func (r *svcgap2FullInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error {
 	return nil
 }
-func (r *svcgap2FullInviteRepo) ExpireOverdue(context.Context, int) (int, error) { return 0, nil }
+func (r *svcgap2FullInviteRepo) ExpireOverdue(context.Context, int) ([]domain.ExpiredInvitation, error) {
+	return nil, nil
+}
 func (r *svcgap2FullInviteRepo) MostRecentCreatedAt(ctx context.Context, tid uuid.UUID, email string) (time.Time, error) {
 	if r.mostRecentCreatedAtFn != nil {
 		return r.mostRecentCreatedAtFn(ctx, tid, email)

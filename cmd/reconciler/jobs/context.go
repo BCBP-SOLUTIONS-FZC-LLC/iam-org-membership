@@ -48,6 +48,7 @@ type ParkedReplayer interface {
 // RealmProvisioner.
 type Context struct {
 	TxRunner         port.TxRunner                    // for atomic state + event emit
+	SysTxRunner      port.TxRunner                    // sysPool tx + audit recorder (invitation-expiry, cross-tenant)
 	Tenants          port.TenantRepository            // tenant reads (app pool)
 	Invitations      port.InvitationRepository        // invitation-expiry / kc-cleanup (sysPool)
 	Reconciler       port.ReconcilerStore             // cross-tenant sweeps (sysPool)
@@ -63,9 +64,6 @@ type Context struct {
 	Logger port.SlogStyleLogger
 	// Metrics is nil-checked at every call site — see Metrics doc comment.
 	Metrics Metrics
-	// AuditLog is the AL-5 client for invitation.expired batch entries (D-6).
-	// Nil is safe — missing client silently skips the write.
-	AuditLog port.AuditLogClient
 
 	BatchLimit               int
 	TrialGraceDays           int // trial-cleanup hard-delete threshold

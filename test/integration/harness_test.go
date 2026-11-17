@@ -50,6 +50,7 @@ import (
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
 )
@@ -201,6 +202,7 @@ func newPhase12Env(t *testing.T) *phase12Env {
 	// Apply outbox schema FIRST (creates outbox_events), then domain migrations
 	// (the domain migration alters outbox_events and must run after).
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: pgDSN}))
+	require.NoError(t, auditoutbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: pgDSN}))
 	require.NoError(t, pgadapter.RunMigrations(ctx, pgDSN))
 
 	rawPool, err := dbseed.New(ctx, pgDSN)

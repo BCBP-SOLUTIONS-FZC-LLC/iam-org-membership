@@ -16,7 +16,7 @@ import (
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/cmd/reconciler/jobs"
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
-	auditlogclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditlog"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditrecorder"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
@@ -25,6 +25,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
@@ -294,6 +295,30 @@ func run() int {
 		return 1
 	}
 
+	// platform-audit: the invitation-expiry sweep enqueues its
+	// invitation.expired entries on a sysPool transaction; cmd/server's
+	// runner delivers them. This binary never runs a runner.
+	auditCfg, err := auditrecorder.LoadConfig()
+	if err != nil {
+		log.Error("audit config", "error", err.Error())
+		return 1
+	}
+	auditEnq, err := auditoutbox.NewEnqueuer(auditCfg.EnqueueConfig(rawLog))
+	if err != nil {
+		log.Error("create audit enqueuer", "error", err.Error())
+		return 1
+	}
+	if jobName == "invitation-expiry" {
+		// Enqueue swallows a permission error so the business write
+		// commits; without this check a missing grant would lose every
+		// entry silently.
+		if err := auditoutbox.CheckEnqueueAccess(ctx, sysPool); err != nil {
+			log.Error("audit enqueue access check (sysPool)", "error", err.Error())
+			return 1
+		}
+	}
+	sysTxRunner := pgadapter.NewTxRunner(sysPool, nil).WithAuditRecorder(auditrecorder.New(auditEnq))
+
 	// EVT-18 replay runs the consumer's own projection under each tenant's
 	// GUC on the RLS-scoped app pool. No inbox (the events were already
 	// claimed when parked) and no Catalog client: a parked TrialReactivated
@@ -303,6 +328,7 @@ func run() int {
 		WithParkedEvents(pgadapter.NewParkedTenantEventRepository(pool), pgadapter.NewTxRunner(pool, outboxPublisher))
 	jctx := &jobs.Context{
 		TxRunner:                 pgadapter.NewTxRunner(pool, outboxPublisher),
+		SysTxRunner:              sysTxRunner,
 		Tenants:                  pgadapter.NewTenantRepository(pool),
 		Invitations:              pgadapter.NewInvitationRepository(sysPool),
 		Reconciler:               pgadapter.NewReconcilerStore(sysPool),
@@ -314,7 +340,6 @@ func run() int {
 		TrialLedger:              pgadapter.NewTrialSignupLedgerRepository(pool),
 		Logger:                   log,
 		Metrics:                  metrics.Recorder{},
-		AuditLog:                 auditlogclient.New(rawLog),
 		BatchLimit:               envInt("RECONCILER_BATCH_LIMIT", 500),
 		TrialGraceDays:           envInt("TRIAL_GRACE_DAYS", 15),
 		OutboxRetentionDays:      envInt("OUTBOX_RETENTION_DAYS", 8),

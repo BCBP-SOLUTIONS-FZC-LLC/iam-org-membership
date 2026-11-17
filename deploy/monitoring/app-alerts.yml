@@ -552,28 +552,10 @@ groups:
             membership_event_consumer.go / classify().
           runbook: "iam-org-membership/unknown-event-type"
 
-  # ── Audit delivery (AL-5 best-effort) ───────────────────────────────────────
-  - name: iam_org_membership_audit_delivery
-    rules:
-
-      - alert: IAMAuditDeliveryFailed
-        expr: |
-          sum by (domain, service, environment, entry_type) (
-            rate(iam_org_membership_audit_delivery_failed_total{service="iam-org-membership"}[10m])
-          ) > 0
-        for: 10m
-        labels:
-          severity: ticket
-          team: platform
-          service: iam-org-membership
-        annotations:
-          summary: "iam-org-membership AL-5 audit delivery failures — records may be missing"
-          description: |
-            Best-effort AL-5 direct-write calls from TenantService or InvitationService are
-            returning errors. Audit is fail-open so P-2 / invite flows continue, but
-            entry_type={{ $labels.entry_type }} records are silently absent from the audit log.
-            Check AUDIT_LOG_BASE_URL is set and iam-audit-log is healthy.
-          runbook: "iam-org-membership/audit-delivery-failed"
+  # ── Audit delivery ──────────────────────────────────────────────────────────
+  # AL-5 entries go through platform-audit's outbox; its alerts (backlog,
+  # parked rows, admission, runner stall/absence, error-budget burn) are in
+  # platform-audit-rules.yml, vendored from the library.
 
   # ── SQS consumer health (OBS-2) ─────────────────────────────────────────────
   - name: iam_org_membership_consumer_health

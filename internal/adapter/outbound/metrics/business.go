@@ -230,13 +230,6 @@ var (
 	// Prometheus signal for the cache-propagation path.
 	CatalogCacheInvalidated prometheus.Counter
 
-	// AuditDeliveryFailed counts best-effort AL-5 direct-write calls that
-	// returned an error from the fire-and-forget goroutines in TenantService
-	// and InvitationService. Audit outages do not fail P-2 or invite flows
-	// (fail-open by design), but a sustained nonzero rate means audit records
-	// are silently missing and should alert.
-	AuditDeliveryFailed *prometheus.CounterVec
-
 	// PlanChangeCheckTotal counts I-18 plan-change pre-check outcomes
 	// (CD-20) by result: allowed, blocked, or error (RP unavailable).
 	PlanChangeCheckTotal *prometheus.CounterVec
@@ -449,16 +442,6 @@ func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
 func IncCatalogCacheInvalidated() {
 	if CatalogCacheInvalidated != nil {
 		CatalogCacheInvalidated.Inc()
-	}
-}
-
-// IncAuditDeliveryFailed records one AL-5 direct-write failure from a
-// fire-and-forget audit goroutine. entry_type identifies which entry type
-// failed (e.g. "config.tenant_setting.changed", "invitation.created").
-// Nil-safe.
-func IncAuditDeliveryFailed(entryType string) {
-	if AuditDeliveryFailed != nil {
-		AuditDeliveryFailed.WithLabelValues(entryType).Inc()
 	}
 }
 
@@ -797,10 +780,6 @@ func registerServiceMetrics() {
 	CatalogCacheInvalidated = must(gincommon.NewCounter(nil,
 		"iam_org_membership_catalog_cache_invalidated_total",
 		"Catalog cache invalidations via catalog-orgm-q: DepartmentCatalogChanged (om:departments) and PlanCatalogChanged (om:plans) events that successfully cleared their primary+stale cache keys (Gap-12/CAT-GAP-004)."))
-	AuditDeliveryFailed = must(gincommon.NewCounterVec(nil,
-		"iam_org_membership_audit_delivery_failed_total",
-		"AL-5 direct-write calls that returned an error from best-effort fire-and-forget audit goroutines (TenantService, InvitationService). Audit outages are fail-open; a sustained nonzero rate means audit records are silently missing.",
-		"entry_type"))
 	PlanChangeCheckTotal = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_plan_change_check_total",
 		"I-18 plan-change pre-check (CD-20) outcomes by result: allowed (no SSO blocker), blocked (sso_idp_configured), error (RP unavailable — maps to 503).",
@@ -906,11 +885,5 @@ func prewarm() {
 		"department_not_active", "not_in_department", "level_insufficient",
 	} {
 		AssigneeEligibilityCheck.WithLabelValues(r)
-	}
-	for _, et := range []string{
-		"config.tenant_setting.changed",
-		"invitation.created", "invitation.revoked", "invitation.expired",
-	} {
-		AuditDeliveryFailed.WithLabelValues(et)
 	}
 }

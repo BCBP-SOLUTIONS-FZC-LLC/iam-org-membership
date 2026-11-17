@@ -37,6 +37,15 @@ type PendingInvitation struct {
 	UpdatedAt           time.Time
 }
 
+// ExpiredInvitation is one row the invitation-expiry sweep flipped to
+// expired (PI-5): what the invitation.expired audit entry needs, ids and
+// the expiry instant only.
+type ExpiredInvitation struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	ExpiresAt time.Time
+}
+
 // InvitationDeptMapping is one entry inside the initial_dept_mappings jsonb.
 type InvitationDeptMapping struct {
 	DepartmentID uuid.UUID `json:"department_id"`

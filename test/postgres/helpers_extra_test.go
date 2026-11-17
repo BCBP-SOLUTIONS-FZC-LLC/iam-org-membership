@@ -19,6 +19,8 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditrecorder"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	"sync"
 	"testing"
 
@@ -37,6 +39,8 @@ import (
 // tests can seed data via rawPool (BYPASSRLS) and exercise services via
 // the RLS-enforcing appPool.
 type testFixtures struct {
+	auditEnq *auditoutbox.Enqueuer // platform-audit Enqueuer behind the fixtures' TxRunner
+
 	appPool *pgcommon.Pool
 	rawPool *dbseed.Pool
 	sysPool *pgcommon.Pool // BYPASSRLS — cross-tenant reconciler queries
@@ -154,8 +158,12 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 	require.NoError(t, err)
 	outboxPub := eventbusadapter.New("iam-org-membership-test", codec)
 
-	// TxRunner injects a tx-bound event publisher into ctx.
-	txRunner := pgadapter.NewTxRunner(appPool, outboxPub)
+	// TxRunner injects a tx-bound event publisher and the platform-audit
+	// recorder into ctx, as in production. The Enqueuer is Strict, so an
+	// invalid audit entry fails the test instead of being dropped.
+	auditEnq, err := auditoutbox.NewEnqueuer(auditoutbox.EnqueueConfig{SourceService: auditrecorder.SourceService, Strict: true})
+	require.NoError(t, err)
+	txRunner := pgadapter.NewTxRunner(appPool, outboxPub).WithAuditRecorder(auditrecorder.New(auditEnq))
 
 	// catalogDepts/catalogPlans stand in for the departments/plans catalog
 	// (migration-runbook Phase 4 — LLD §12 step 4: those tables and their
@@ -213,7 +221,8 @@ func buildTestFixtures(t testing.TB) *testFixtures {
 		fx.RP, nil, txRunner, nil, 7,
 	).WithTokenServiceClient(fx.TokenService)
 	fx.AuthZ = service.NewAuthZService(authzRepo, catalogPlans, catalogDepts, nil)
-	fx.Tenant = service.NewTenantService(tenants, nil, fx.RP)
+	fx.Tenant = service.NewTenantService(tenants, nil, fx.RP).WithTxRunner(txRunner)
+	fx.auditEnq = auditEnq
 	fx.Department = service.NewDepartmentService(catalogDepts, tenantDepts, nil)
 	fx.RoleLabel = service.NewRoleLabelService(labels, nil)
 	fx.SubscriptionLapse = service.NewSubscriptionLapseService(sysTenants, 30) // SUBSCRIPTION_GRACE_DAYS default

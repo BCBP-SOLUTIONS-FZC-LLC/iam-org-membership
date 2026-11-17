@@ -1,0 +1,1105 @@
+{
+  "title": "Platform audit delivery",
+  "uid": "platform-audit",
+  "tags": [
+    "platform",
+    "platform-audit",
+    "audit"
+  ],
+  "description": "Reference dashboard for services using platform-audit (LLD \u00a711.5). Panels 1\u20138 are the minimum set; every panel links to its runbook.",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "domain",
+        "label": "Domain",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(platform_audit_deliveries_total, domain)",
+          "refId": "domain"
+        },
+        "definition": "label_values(platform_audit_deliveries_total, domain)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(platform_audit_deliveries_total{domain=\"$domain\"}, service)",
+          "refId": "service"
+        },
+        "definition": "label_values(platform_audit_deliveries_total{domain=\"$domain\"}, service)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1
+      },
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(platform_audit_deliveries_total{domain=\"$domain\",service=\"$service\"}, environment)",
+          "refId": "environment"
+        },
+        "definition": "label_values(platform_audit_deliveries_total{domain=\"$domain\",service=\"$service\"}, environment)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Backlog",
+      "id": 1,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "1. Backlog entries",
+      "id": 2,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:pending_entries:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "pending",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Rows with status pending, including leased rows and rows waiting on skew / not_admitted (max across replicas).",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryStalled",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliverystalled",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "2. Oldest pending entry age",
+      "id": 3,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 900
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:oldest_pending_age_seconds:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "age",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Seconds since the oldest pending row was queued, excluding rows waiting on skew / not_admitted.",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryStalled",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliverystalled",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "2. Oldest pending entry age over time",
+      "id": 4,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 900
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:oldest_pending_age_seconds:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "age",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryStalled",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliverystalled",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "3. Failed (parked) entries",
+      "id": 5,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:failed_entries:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "failed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Parked rows awaiting an operator's disposition (replay, discard, resolve).",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditEntriesParked",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditentriesparked",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "3. Failed (parked) entries and oldest age",
+      "id": 6,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 4,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:failed_entries:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "failed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "platform_audit:oldest_failed_age_seconds:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "oldest failed age (s)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditEntriesParked",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditentriesparked",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "3a. Disposed entries awaiting purge",
+      "id": 7,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:disposed_entries:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "disposed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Should fall back after each purge interval once older than AUDIT_DISPOSED_RETENTION.",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditEntriesParked",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditentriesparked",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Delivery",
+      "id": 8,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "4. Delivery success rate",
+      "id": 9,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:delivery_success_ratio:rate5m{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "success",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Counts attempts, so it drops during an Audit Log outage although no entry is lost; read it next to panels 1 and 2. skew and not_admitted count as failure by design: entries are waiting.",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryStalled",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliverystalled",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "5. Delivery latency p50 / p95 / p99 (Proposed)",
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, operation) (rate(platform_dependency_request_seconds_bucket{domain=\"$domain\",service=\"$service\",environment=\"$environment\",dependency=\"auditlog\"}[5m])))",
+          "legendFormat": "Audit Log call p50 {{operation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(platform_dependency_request_seconds_bucket{domain=\"$domain\",service=\"$service\",environment=\"$environment\",dependency=\"auditlog\"}[5m])))",
+          "legendFormat": "Audit Log call p95 {{operation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, operation) (rate(platform_dependency_request_seconds_bucket{domain=\"$domain\",service=\"$service\",environment=\"$environment\",dependency=\"auditlog\"}[5m])))",
+          "legendFormat": "Audit Log call p99 {{operation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(platform_audit_delivery_lag_seconds_bucket{domain=\"$domain\",service=\"$service\",environment=\"$environment\",operation=\"outbox_deliver\"}[5m])))",
+          "legendFormat": "commit-to-delivery p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "E",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(platform_audit_delivery_lag_seconds_bucket{domain=\"$domain\",service=\"$service\",environment=\"$environment\",operation=\"outbox_deliver\"}[5m])))",
+          "legendFormat": "commit-to-delivery p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "F",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(platform_audit_delivery_lag_seconds_bucket{domain=\"$domain\",service=\"$service\",environment=\"$environment\",operation=\"outbox_deliver\"}[5m])))",
+          "legendFormat": "commit-to-delivery p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Audit Log call latency (shared platform_dependency_request_seconds, still proposed by platform-events) and commit-to-delivery lag (the SLI).",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryErrorBudgetFastBurn",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliveryerrorbudgetfastburn",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "6. Store errors (incl. claim)",
+      "id": 11,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:errors:increase10m{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "{{operation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditStoreErrors",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditstoreerrors",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "7. Delivery enabled",
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 8,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:delivery_enabled:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "enabled",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "0 = AUDIT_LOG_BASE_URL not set: entries only accumulate.",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryDisabled",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliverydisabled",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "8. Runner heartbeat age",
+      "id": 13,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 25
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "up .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - platform_audit_runner_last_tick_timestamp_seconds{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "{{pod}} {{operation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "platform_audit_runner_up{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "up {{pod}} {{operation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Per pod; the threshold line is 5 \u00d7 interval (25 s at the defaults). runner_up is overlaid.",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditRunnerStalled",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditrunnerstalled",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Details",
+      "id": 14,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Attempts by reason",
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:deliveries:rate5m{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "{{operation}} {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditNotAdmitted",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditnotadmitted",
+          "targetBlank": true
+        },
+        {
+          "title": "Runbook: PlatformAuditUnknownEntryType",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditunknownentrytype",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retries and dead-letters by entry type (shared)",
+      "id": 16,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (event_type) (rate(platform_retry_total{domain=\"$domain\",service=\"$service\",environment=\"$environment\",operation=\"audit_deliver\"}[5m]))",
+          "legendFormat": "retry {{event_type}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (event_type, reason) (increase(platform_dlq_messages_total{domain=\"$domain\",service=\"$service\",environment=\"$environment\",operation=\"audit_deliver\"}[1h]))",
+          "legendFormat": "parked {{event_type}} {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditEntriesParked",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditentriesparked",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Audit Log call errors (shared) (Proposed)",
+      "id": 17,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 43
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation, outcome) (rate(platform_dependency_request_seconds_count{domain=\"$domain\",service=\"$service\",environment=\"$environment\",dependency=\"auditlog\"}[5m]))",
+          "legendFormat": "{{operation}} {{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryStalled",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliverystalled",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "SLO attainment 30d and error budget remaining",
+      "id": 18,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 43
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - platform_audit:delivery_lag_slo_error_ratio:rate30d{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "attainment",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "1 - platform_audit:delivery_lag_slo_error_ratio:rate30d{domain=\"$domain\",service=\"$service\",environment=\"$environment\"} / 0.001",
+          "legendFormat": "budget remaining",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "SLO accounting (99.9% within 300 s, 30 d); unaffected by alert silences (PA-D36).",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditDeliveryErrorBudgetFastBurn",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditdeliveryerrorbudgetfastburn",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Entries waiting on Audit Log (skew / not admitted)",
+      "id": 19,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 51
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit:waiting_entries:max{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "waiting",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditNotAdmitted",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditnotadmitted",
+          "targetBlank": true
+        },
+        {
+          "title": "Runbook: PlatformAuditUnknownEntryType",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditunknownentrytype",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Invalid entries by reason",
+      "id": 20,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 51
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (increase(platform_audit_invalid_entries_total{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}[1h]))",
+          "legendFormat": "{{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Entries not recorded: data loss.",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditInvalidEntries",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditinvalidentries",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Buffer entries and drops (buffer mode only)",
+      "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 51
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_audit_buffer_entries{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}",
+          "legendFormat": "buffered {{pod}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (reason) (increase(platform_audit_buffer_dropped_total{domain=\"$domain\",service=\"$service\",environment=\"$environment\"}[1h]))",
+          "legendFormat": "dropped {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "",
+      "links": [
+        {
+          "title": "Runbook: PlatformAuditBufferDropping",
+          "url": "https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md#platformauditbufferdropping",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Library version per pod (Proposed)",
+      "id": 22,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "platform_library_info{domain=\"$domain\",service=\"$service\",environment=\"$environment\",library=\"platform-audit\"}",
+          "legendFormat": "{{pod}} {{library_version}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Shared platform_library_info (still proposed by platform-events).",
+      "links": []
+    }
+  ]
+}

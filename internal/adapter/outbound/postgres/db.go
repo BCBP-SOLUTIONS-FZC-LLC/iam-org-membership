@@ -112,12 +112,22 @@ func MigrationDSNFromEnv() string {
 type TxRunner struct {
 	pool   *pgcommon.Pool
 	events port.EventPublisher
+	audit  port.AuditRecorder
 }
 
 // NewTxRunner constructs a TxRunner. Pass nil for events during bootstrap
 // paths (e.g. migration-only reconciler runs) where no outbox writes occur.
 func NewTxRunner(pool *pgcommon.Pool, events port.EventPublisher) *TxRunner {
 	return &TxRunner{pool: pool, events: events}
+}
+
+// WithAuditRecorder makes RunInTx inject rec into the tx context, so
+// services enqueue Audit Log entries atomically with the business write via
+// port.AuditRecorderFromContext(txCtx). Nil leaves auditing off (tests and
+// bootstrap paths).
+func (r *TxRunner) WithAuditRecorder(rec port.AuditRecorder) *TxRunner {
+	r.audit = rec
+	return r
 }
 
 // writeRetryOpts is pgcommon's documented high-throughput OLTP preset.
@@ -143,6 +153,9 @@ func (r *TxRunner) RunInTx(ctx context.Context, fn func(ctx context.Context) err
 		txCtx := port.WithTx(ctx, tx)
 		if r.events != nil {
 			txCtx = port.WithEventPublisher(txCtx, r.events)
+		}
+		if r.audit != nil {
+			txCtx = port.WithAuditRecorder(txCtx, r.audit)
 		}
 		return fn(txCtx)
 	}))

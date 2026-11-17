@@ -378,12 +378,18 @@ func (r *InvitationRepository) CountCreatedInWindowByActor(ctx context.Context, 
 	return n, err
 }
 
-func (r *InvitationRepository) ExpireOverdue(ctx context.Context, limit int) (int, error) {
-	var n int
+func (r *InvitationRepository) ExpireOverdue(ctx context.Context, limit int) ([]domain.ExpiredInvitation, error) {
+	var out []domain.ExpiredInvitation
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		out = nil
 		// SECURITY-8: erase PII (email, full_name) atomically with the status
 		// flip so expired invitations never retain PII beyond the expiry event.
-		tag, err := tx.Exec(ctx, `
+		// The outer status re-check matters under READ COMMITTED: only the
+		// outer quals are re-evaluated after waiting on a row lock, so without
+		// it a revoke or accept committing mid-sweep would be overwritten and
+		// audited as invitation.expired. SKIP LOCKED leaves rows another
+		// transaction holds to the next sweep.
+		rows, err := tx.Query(ctx, `
 			UPDATE pending_invitations
 			SET status = 'expired', kc_cleanup_pending = true,
 			    email = '', full_name = 'redacted'
@@ -392,14 +398,24 @@ func (r *InvitationRepository) ExpireOverdue(ctx context.Context, limit int) (in
 				WHERE status = 'pending' AND expires_at < now()
 				ORDER BY expires_at
 				LIMIT $1
-			)`, limit)
+				FOR UPDATE SKIP LOCKED
+			)
+			  AND status = 'pending'
+			RETURNING id, tenant_id, expires_at`, limit)
 		if err != nil {
 			return err
 		}
-		n = int(tag.RowsAffected())
-		return nil
+		defer rows.Close()
+		for rows.Next() {
+			var e domain.ExpiredInvitation
+			if err := rows.Scan(&e.ID, &e.TenantID, &e.ExpiresAt); err != nil {
+				return err
+			}
+			out = append(out, e)
+		}
+		return rows.Err()
 	})
-	return n, err
+	return out, err
 }
 
 func (r *InvitationRepository) ClearKCCleanupPendingByID(ctx context.Context, id uuid.UUID) error {

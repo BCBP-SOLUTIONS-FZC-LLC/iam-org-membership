@@ -1,6 +1,6 @@
 // Command migrate brings the org_membership database to this build's schema
-// and exits: platform-events' outbox schema, then the domain migrations
-// (postgres.MigrateSchema). The Helm chart runs it once per release as a
+// and exits: platform-events' outbox schema, platform-audit's
+// pending_audit_entries, then the domain migrations (postgres.MigrateSchema). The Helm chart runs it once per release as a
 // pre-install/pre-upgrade hook Job, so the server replicas (RUN_MIGRATIONS=
 // false) never race for the migration lock at startup.
 //
