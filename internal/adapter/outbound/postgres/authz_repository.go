@@ -40,7 +40,7 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 			localAccountsEnabled                             bool
 			tenantFeatureFlagsJSON                           []byte
 			rolesJSON                                        []byte // array_agg result as JSON array
-			deptsJSON                                        []byte // json_agg result
+			deptsJSON                                        []byte // jsonb_agg result (LATERAL, BUG-19)
 		)
 
 		err := tx.QueryRow(ctx, `
@@ -60,15 +60,7 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 					),
 					'[]'::json
 				) AS roles,
-				COALESCE(
-					json_agg(
-						json_build_object(
-							'department_id', dm.department_id,
-							'role_level',    dm.role_level
-						) ORDER BY dm.department_id
-					) FILTER (WHERE dm.department_id IS NOT NULL),
-					'[]'::json
-				) AS departments
+				depts_agg.depts AS departments
 			FROM tenant_memberships tm
 			JOIN tenants t
 				ON t.id = tm.tenant_id
@@ -76,17 +68,33 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 				ON  tr.tenant_id  = tm.tenant_id
 				AND tr.user_id    = tm.user_id
 				AND tr.deleted_at IS NULL
-			LEFT JOIN dept_memberships dm
-				ON  dm.tenant_id  = tm.tenant_id
-				AND dm.user_id    = tm.user_id
-				AND dm.deleted_at IS NULL
+			-- BUG-19: departments are aggregated once per membership in a
+			-- LATERAL, not joined beside tenant_roles, so N roles no longer
+			-- repeat every department N times. jsonb, not json: json has no
+			-- equality operator, and the value is in the GROUP BY.
+			LEFT JOIN LATERAL (
+				SELECT COALESCE(
+					jsonb_agg(
+						jsonb_build_object(
+							'department_id', dm.department_id,
+							'role_level',    dm.role_level
+						) ORDER BY dm.department_id
+					),
+					'[]'::jsonb
+				) AS depts
+				FROM dept_memberships dm
+				WHERE dm.tenant_id  = tm.tenant_id
+				  AND dm.user_id    = tm.user_id
+				  AND dm.deleted_at IS NULL
+			) depts_agg ON true
 			WHERE tm.tenant_id  = $1
 			  AND tm.user_id    = $2
 			  AND tm.deleted_at IS NULL
 			  AND tm.status <> 'left' -- TM-9: a removed member is not a member
 			GROUP BY
 				tm.status, t.status, t.plan, t.default_locale,
-				t.mfa_freshness_seconds, t.local_accounts_enabled, t.residency_mode, t.feature_flags`,
+				t.mfa_freshness_seconds, t.local_accounts_enabled, t.residency_mode, t.feature_flags,
+				depts_agg.depts`,
 			tenantID, userID,
 		).Scan(
 			&mStatus, &tStatus, &tPlan, &tLocale,
