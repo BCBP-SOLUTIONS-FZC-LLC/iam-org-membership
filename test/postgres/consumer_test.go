@@ -83,7 +83,8 @@ func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
 	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
 
 	firstTS := time.Now().UTC().Add(-30 * time.Minute)
-	env1 := mkEnvelope(t, "TenantSuspended", tenantID, firstTS, map[string]string{})
+	// BUG-14: source is required (no billing_lapse default any more).
+	env1 := mkEnvelope(t, "TenantSuspended", tenantID, firstTS, map[string]string{"source": "billing_lapse"})
 	require.NoError(t, c.Handle(ctx, env1))
 
 	var originalCancelledAt time.Time
@@ -91,7 +92,7 @@ func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
 		`SELECT cancelled_at FROM tenants WHERE id = $1`, tenantID).Scan(&originalCancelledAt))
 	require.False(t, originalCancelledAt.IsZero())
 
-	env2 := mkEnvelope(t, "TenantSuspended", tenantID, time.Now().UTC(), map[string]string{})
+	env2 := mkEnvelope(t, "TenantSuspended", tenantID, time.Now().UTC(), map[string]string{"source": "billing_lapse"})
 	require.NoError(t, c.Handle(ctx, env2))
 
 	var replayedCancelledAt time.Time
@@ -99,6 +100,50 @@ func TestConsumer_TenantSuspended_ReplayPreservesCancelledAt(t *testing.T) {
 		`SELECT cancelled_at FROM tenants WHERE id = $1`, tenantID).Scan(&replayedCancelledAt))
 	assert.True(t, replayedCancelledAt.Equal(originalCancelledAt),
 		"suspended replay must not reset cancelled_at")
+}
+
+// BUG-14: a TenantSuspended whose source is unknown, missing or empty is
+// refused. Handle returns an error, the tenant row is unchanged (status,
+// suspension_source, cancelled_at, last_event_at), no relay is enqueued and
+// processed_events has no row for the event, so it is retried, not acked.
+func TestConsumer_TenantSuspended_UnknownOrMissingSource_RejectedNothingApplied(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+
+	for name, payload := range map[string]map[string]string{
+		"unknown": {"source": "foo"},
+		"missing": {},
+		"empty":   {"source": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tenantID := seedPaidTenant(t, ctx, rawPool, "bug14-"+name)
+			outbox := &captureOutbox{}
+			c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+			env := mkEnvelope(t, "TenantSuspended", tenantID, time.Now().UTC().Add(-time.Second), payload)
+			err := c.Handle(ctx, env)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "TenantSuspended: unknown source")
+
+			var status string
+			var source *string
+			var cancelledAt, lastEventAt *time.Time
+			require.NoError(t, rawPool.QueryRow(ctx,
+				`SELECT status, suspension_source, cancelled_at, last_event_at FROM tenants WHERE id = $1`,
+				tenantID).Scan(&status, &source, &cancelledAt, &lastEventAt))
+			assert.Equal(t, "active", status, "tenant must stay active")
+			assert.Nil(t, source, "suspension_source must stay NULL")
+			assert.Nil(t, cancelledAt, "cancelled_at must not be stamped")
+			assert.Nil(t, lastEventAt, "last_event_at must not move")
+			assert.Equal(t, 0, outbox.count(), "no TenantStateChanged relay")
+
+			var seen int
+			require.NoError(t, rawPool.QueryRow(ctx,
+				`SELECT count(*) FROM processed_events WHERE event_id = $1`, env.ID).Scan(&seen))
+			assert.Equal(t, 0, seen, "a rejected event is not recorded as processed")
+		})
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────
