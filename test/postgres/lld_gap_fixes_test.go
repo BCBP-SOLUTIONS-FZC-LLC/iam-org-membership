@@ -251,6 +251,10 @@ func TestLLDFix_BUG6_ConcurrentLastOwnersRemoved_OwnerlessSet(t *testing.T) {
 
 // GAP-18, SEAT-5: a member removal that brings usage back under the cap
 // clears overage_since and writes TenantSeatOverageResolved.
+// GAP-18 / CD-54: removing a member frees a seat so the next I-3 plain-add
+// (or P-6 invite) can succeed. overage_since is not managed by the service
+// post-CD-54 (prepaid model; IAM-4 prevents seat counts from going below
+// current usage at the Billing layer).
 func TestLLDFix_GAP18_RemovalResolvesOverage(t *testing.T) {
 	t.Parallel()
 	fx := buildTestFixtures(t)
@@ -260,45 +264,38 @@ func TestLLDFix_GAP18_RemovalResolvesOverage(t *testing.T) {
 	sys := withSystemAndTenant(ctx, tenantID)
 	_, err := fx.Invitation.AddFromRegister(sys, tenantID, userID, uuid.Nil, "")
 	require.NoError(t, err)
-	// 2 active members, 1 licensed seat, already in overage.
-	_, err = fx.rawPool.Exec(ctx, `UPDATE tenants SET licensed_seats = 1, overage_since = now() - interval '1 day' WHERE id = $1`, tenantID)
+	// 2 active / 2 licensed — exactly at cap; a third add is blocked.
+	_, err = fx.rawPool.Exec(ctx, `UPDATE tenants SET licensed_seats = 2 WHERE id = $1`, tenantID)
 	require.NoError(t, err)
+	_, err = fx.Invitation.AddFromRegister(sys, tenantID, uuid.New(), uuid.Nil, "")
+	assert.ErrorIs(t, err, domain.ErrSeatLimitReached, "at cap → third add blocked")
 
+	// Remove userID — 1 active / 2 licensed, one seat now free.
 	require.NoError(t, fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, userID, ownerID))
 
-	var cleared bool
-	require.NoError(t, fx.rawPool.QueryRow(ctx, `SELECT overage_since IS NULL FROM tenants WHERE id = $1`, tenantID).Scan(&cleared))
-	assert.True(t, cleared, "usage 1 ≤ 1 seat → overage_since cleared")
-	var events int
-	require.NoError(t, fx.rawPool.QueryRow(ctx,
-		`SELECT count(*) FROM outbox_events WHERE tenant_id = $1 AND event_type = 'TenantSeatOverageResolved'`, tenantID).Scan(&events))
-	assert.Equal(t, 1, events)
+	// A new add now succeeds: removal resolved the blocked seat.
+	newID := uuid.New()
+	mem, addErr := fx.Invitation.AddFromRegister(sys, tenantID, newID, uuid.Nil, "")
+	require.NoError(t, addErr, "removal freed a seat; next plain-add succeeds")
+	assert.Equal(t, domain.MembershipActive, mem.Status)
 }
 
-// SEAT-5: an I-3 plain add on a tenant at exactly its seats is not refused
-// (no seat cap on I-3), but it starts the overage: overage_since is set and
-// one TenantSeatOverageStarted is written in the same transaction.
+// SEAT-5 / CD-54: I-3 plain-add path now enforces SEAT-1; an add that would
+// put the tenant at or over its licensed_seats is rejected with
+// ErrSeatLimitReached. Before CD-54, I-3 was not seat-capped and would
+// instead set overage_since + emit TenantSeatOverageStarted.
 func TestLLDFix_SEAT5_I3PlainAddOverCapStartsOverage(t *testing.T) {
 	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
 	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "seat5-i3-add")
-	// 1 active (the owner) of 1 licensed seat: exactly at cap, no marker.
-	_, err := fx.rawPool.Exec(ctx, `UPDATE tenants SET licensed_seats = 1, overage_since = NULL WHERE id = $1`, tenantID)
+	// 1 active (the owner) at exactly the seat cap.
+	_, err := fx.rawPool.Exec(ctx, `UPDATE tenants SET licensed_seats = 1 WHERE id = $1`, tenantID)
 	require.NoError(t, err)
 
 	userID := uuid.New()
-	mem, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
-	require.NoError(t, err, "I-3 plain add is not seat-capped")
-	assert.Equal(t, domain.MembershipActive, mem.Status)
-
-	var started bool
-	require.NoError(t, fx.rawPool.QueryRow(ctx, `SELECT overage_since IS NOT NULL FROM tenants WHERE id = $1`, tenantID).Scan(&started))
-	assert.True(t, started, "usage 2 > 1 seat → overage_since set")
-	var events int
-	require.NoError(t, fx.rawPool.QueryRow(ctx,
-		`SELECT count(*) FROM outbox_events WHERE tenant_id = $1 AND event_type = 'TenantSeatOverageStarted'`, tenantID).Scan(&events))
-	assert.Equal(t, 1, events)
+	_, err = fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
+	assert.ErrorIs(t, err, domain.ErrSeatLimitReached, "I-3 plain-add at cap is blocked by SEAT-1 (CD-54)")
 }
 
 // §15.2.2 / TM-5: an I-5 identity deletion after a P-8 removal stamps
