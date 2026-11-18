@@ -6,6 +6,13 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Added (2026-11-18 — `audit-admin` operator tool, LLD rev 2.52)
+
+- **`iam-org-membership audit-admin`** (`cmd/server/auditadmin.go`): the operator tool for `pending_audit_entries` rows platform-audit's runner parked (`failed`) or keeps waiting (`skew`, `not_admitted`), ported from Catalog Admin's and Group Mapping's. Commands `list` (with each row's tenant), `list-waiting`, `requeue`, `discard`, `resolve` (`-waiting` for waiting rows on the last two) over the library's audited helpers; `-operator`, `-reason` (1..512 bytes, no personal data) and a selector are required for changes, each of which writes its own `config.audit_delivery.*` entry. Exit codes 0 / 1 (operation failed) / 2 (usage). `main` dispatches it before anything else, so it needs none of the server's other environment.
+- **Pool:** the audit runner's — `SYSTEM_DATABASE_URL` through `SystemPoolConfig` (BYPASSRLS, PgBouncer mode), one connection, pool name `audit_admin`. Without `SYSTEM_DATABASE_URL` (or set to the app DSN) the tool refuses to run: the app role's row security would hide every row. The Enqueuer is built from the server's `auditrecorder.LoadConfig`; no metrics are registered and no runner is started.
+- **Tests:** `cmd/server/auditadmin_test.go` (flag and usage checks; `cmd/server` is now in `TEST_INTERNAL_PKGS`, so its existing tests run in `make test-unit` and CI too) and `TestAudit_AdminTool` (`test/postgres`), which builds the server binary and runs it as `org_membership_migrator` in PgBouncer mode: rows parked in two tenants are listed, requeued and discarded, a waiting row is resolved with `-waiting`, and each change's audit entry is enqueued.
+- **Docs:** runbook *Parked and waiting audit rows*, README *Audit delivery operations* (with the go-live checklist: parked rows have an owner), LLD §20.7 and `.claude` docs name the tool instead of the library's Go helpers.
+
 ### Fixed (2026-11-18 — `audittypecheck` checked nothing)
 
 - **`make audit-typecheck` passed without checking any entry type.** The adapter builds its one `audit.Entry` with a variable `EntryType`, which platform-audit's analyzer cannot see (it checks string constants only). `internal/adapter/outbound/auditrecorder/audit_entry_types_test.go` now lists each emitted type as a constant `audit.Entry` literal, which the analyzer checks against Audit Log's taxonomy and producer restrictions, and `TestAuditEntryTypes_AreComplete` requires every `AuditEntry*` constant in `internal/core/port` to be in that table and in `port.AuditEntryTypes`. Verified: a mistyped constant now produces an `audittypecheck` warning.

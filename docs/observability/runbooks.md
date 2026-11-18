@@ -280,8 +280,34 @@ Two cases specific to signup provisioning (LLD rev 2.33):
 AL-5 entries (`config.tenant_setting.changed` from P-2 and O-4, `invitation.created`, `invitation.revoked`, `invitation.expired`) are written into `pending_audit_entries` in the business transaction and delivered by platform-audit's outbox runner (on the sysPool). Its alerts — `PlatformAuditDeliveryStalled`, `PlatformAuditEntriesParked`, `PlatformAuditNotAdmitted`, `PlatformAuditUnknownEntryType`, `PlatformAuditInvalidEntries`, `PlatformAuditRunnerStalled`, `PlatformAuditRunnerAbsent`, `PlatformAuditDeliveryDisabled`, `PlatformAuditStoreErrors` and the two `PlatformAuditDeliveryErrorBudget*Burn` alerts — are in `deploy/monitoring/platform-audit-rules.yml`, vendored from the library, and their runbooks are platform-audit's [`docs/observability/runbook.md`](https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md).
 
 Service-specific notes:
-- **Owner of parked rows:** the iam-org-membership on-call. Inspect and dispose with `auditoutbox.ListFailed` / `Requeue` / `Discard` / `Resolve` on the sysPool (platform-audit `docs/guides/operators.md`).
+- **Owner of parked rows:** the iam-org-membership on-call, with the server binary's `audit-admin` operator tool (below).
 - **Not admitted (401/403):** the chart's `serviceAccount.name` must be `iam-org-membership` and the principal must be in Audit Log's `internalCallerPrincipals` (and `networkPolicy.internalCallers`). Admission is an Audit Log operational change made by its owners per environment (dev, test, staging, production) and is a go-live prerequisite: no environment is rolled out until its admission is applied and `Client.Probe` returns `ProbeAdmitted`.
 - **Disposed rows** (`resolved`/`discarded`) are scrubbed and purged after `AUDIT_DISPOSED_RETENTION` (default 90 days).
 - **Runner absent:** the runner does not start when `SYSTEM_DATABASE_URL` is unset (the WARN `audit delivery runner not started` at startup); entries queue until a pod with the sysPool runs.
 - An Audit Log outage never fails P-2, O-4, P-6, P-31 or the invitation-expiry CronJob; entries queue and deliver after recovery.
+
+### Parked and waiting audit rows (`PlatformAuditEntriesParked`, `PlatformAuditUnknownEntryType`, `PlatformAuditNotAdmitted`)
+
+**Meaning.** A row in `pending_audit_entries` is **parked** (`status = 'failed'`) when Audit Log permanently rejected it (a `4xx` with an `errorCode` other than the ones below: `last_outcome` `rejected`), the stored entry no longer validates (`invalid`), or the retry budget (`AUDIT_DELIVERY_MAX_ATTEMPTS`, about 4 h of an outage) was spent (`retry`). That change is missing from the audit trail until the row is requeued. A row is **waiting** (still `pending`, never parked) when Audit Log answered `422 UNKNOWN_ENTRY_TYPE` (`skew`: its taxonomy does not have the type yet) or `401`/`403` (`not_admitted`: see *Not admitted* above); the runner keeps retrying it.
+
+**Triage and mitigate.** Use the operator tool built into the server binary, from a running pod (the image is distroless, so `kubectl exec` runs the binary directly; `<fullname>` is the chart's Deployment name):
+
+```
+kubectl exec -n <ns> deploy/<fullname> -- /iam-org-membership audit-admin list
+kubectl exec -n <ns> deploy/<fullname> -- /iam-org-membership audit-admin list-waiting
+kubectl exec -n <ns> deploy/<fullname> -- /iam-org-membership audit-admin requeue -id <row-id> -operator <your-user-uuid> -reason "<why, no personal data>"
+kubectl exec -n <ns> deploy/<fullname> -- /iam-org-membership audit-admin discard -id <row-id> -operator … -reason …            # parked rows that must not be resent
+kubectl exec -n <ns> deploy/<fullname> -- /iam-org-membership audit-admin resolve -waiting -entry-type <type> -operator … -reason …   # waiting rows closed another way
+```
+
+1. `list` / `list-waiting` print each row's id, **tenant**, entry type, last outcome, attempts, failed-at and last error (`"<status> <errorCode>"`), never the entry's content. Filters: `-id` (comma-separated), `-entry-type`, `-last-outcome`, `-failed-before` (RFC 3339, parked rows only), `-limit` (default 100).
+2. Fix the cause on whichever side it lies: an entry Audit Log refuses (a bug in this service's entry or in Audit Log's validation), a type Audit Log has not shipped yet, a missing admission, or an outage that outlasted the budget.
+3. **Parked rows:** `requeue` puts them back to `pending` (the runner delivers them on its next pass); `discard` gives up on rows that must not be resent; `resolve` closes rows whose change reached Audit Log another way (e.g. a corrected entry re-emitted under a new key). **Waiting rows:** they deliver by themselves once the cause is fixed; `discard -waiting` / `resolve -waiting` only for rows that will never be accepted. `requeue` takes parked rows only; `-waiting` is refused with `-failed-before`.
+4. Every `requeue`, `discard` and `resolve` needs `-operator` (your user UUID), `-reason` (1..512 bytes) and at least one selector (`-id`, `-entry-type`, `-last-outcome` or `-failed-before`), and writes its own `config.audit_delivery.requeued` / `.discarded` / `.resolved` audit entry in the same transaction, attributed to `-operator`. **The reason must not contain personal data:** those entries are retained for compliance and never redacted.
+5. Each row keeps its `idempotency_key`, so a replay Audit Log already holds is answered `200` and not duplicated. Discarded and resolved rows become `disposed`, are scrubbed, and are purged after `AUDIT_DISPOSED_RETENTION`.
+
+Exit codes: `0` done, `1` the operation failed (database unreachable, SQL error), `2` usage error (missing `-operator`/`-reason`/selector, bad flag, invalid `AUDIT_*` value).
+
+The tool connects with the pod's **`SYSTEM_DATABASE_URL`** (`org_membership_migrator`, BYPASSRLS — the role the audit runner uses, which sees every tenant's rows), always in PgBouncer mode, with a single connection. It refuses to run when `SYSTEM_DATABASE_URL` is unset or equals the app DSN: `pending_audit_entries` has row security and the app role would see no rows. It reads the same `AUDIT_*` variables as the server; it registers no metrics and starts no runner.
+
+Do not edit `pending_audit_entries` by hand: a hand-written change is not audited, and a hand-written requeue must also clear `failed_at` (CHECK `pending_audit_entries_failed_at`). Never `DELETE` a parked row unless the change is recorded in Audit Log some other way.
