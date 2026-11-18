@@ -9,10 +9,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/service"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,6 +105,46 @@ func TestProvisioning_SetMembershipStatus_SuspendLastActiveOwner_MarksOwnerless(
 	require.NoError(t, err, "I-4 is never refused")
 	assert.Equal(t, domain.MembershipSuspended, got.Status)
 	assert.True(t, markCalled, "TM-12: 0 active owners after the suspend → MarkOwnerlessIfUnset")
+}
+
+// DEC-2 negative path: I-4 suspending an active member who is not a tenant_owner
+// (here a tenant_admin) is a plain suspend: no owner recount, no
+// MarkOwnerlessIfUnset, so no escalation metric or log (both sit behind it).
+func TestProvisioning_SetMembershipStatus_SuspendNonOwner_NoOwnerlessEscalation(t *testing.T) {
+	mem := &ruMembershipRepo{
+		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{Status: domain.MembershipActive, RecordVersion: 1}, nil
+		},
+		setStatusFn: func(_ context.Context, tt, uu uuid.UUID, st domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{TenantID: tt, UserID: uu, Status: st, RecordVersion: ver + 1}, nil
+		},
+	}
+	countCalled := false
+	roles := &ruRoleRepo{
+		listByUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.TenantRole, error) {
+			return []domain.TenantRole{{RoleCode: domain.RoleTenantAdmin}}, nil
+		},
+		countActiveOwnersFn: func(context.Context, uuid.UUID) (int, error) {
+			countCalled = true
+			return 0, nil
+		},
+	}
+	markCalled := false
+	tenants := &invTenantRepo{markOwnerlessIfUnsetFn: func(context.Context, uuid.UUID) (bool, error) {
+		markCalled = true
+		return true, nil
+	}}
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{}, tenants, &arTxRunner{})
+	require.NotNil(t, metrics.TenantOwnerlessEscalated)
+	before := testutil.ToFloat64(metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended"))
+
+	got, err := svc.SetMembershipStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
+	require.NoError(t, err)
+	assert.Equal(t, domain.MembershipSuspended, got.Status)
+	assert.False(t, countCalled, "a non-owner suspend does not recount active owners")
+	assert.False(t, markCalled, "a non-owner suspend never calls MarkOwnerlessIfUnset")
+	assert.Equal(t, before, testutil.ToFloat64(metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended")),
+		"no ownerless escalation counted")
 }
 
 // ── Constructor smoke — every ctor field set, no panic on nil deps ────
