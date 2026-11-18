@@ -633,8 +633,10 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		// ownerless_since. LLD §11.4 / TM-12 line 3807: fire an event-time
 		// counter + ERROR log so on-call is paged the moment escalation
 		// triggers, without waiting for the periodic ownerless-scanner gauge.
+		// BUG-9: count only owners whose membership is active; a suspended
+		// owner left behind does not stop the escalation.
 		if wasOwner {
-			ownerRemaining, err := s.roles.CountActiveOwners(txCtx, tenantID)
+			ownerRemaining, err := s.roles.CountActiveOwnersActive(txCtx, tenantID)
 			if err != nil {
 				return err
 			}

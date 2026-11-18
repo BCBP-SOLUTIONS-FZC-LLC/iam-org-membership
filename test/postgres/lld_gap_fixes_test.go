@@ -614,3 +614,26 @@ func TestBUG9_RemoveOneOfTwoActiveOwners_ThirdSuspended_Succeeds(t *testing.T) {
 	status, _ := bug9fState(t, ctx, fx, tenantID, ownerA)
 	assert.Equal(t, "active", status)
 }
+
+// BUG-9 follow-up, TM-12 L885: I-5 deleting active owner A while only the suspended owner B remains completes and sets ownerless_since.
+// Not parallel: it reads the shared escalation counter.
+func TestBUG9_I5_DeleteActiveOwner_OnlySuspendedRemains_SetsOwnerless(t *testing.T) {
+	phase4TestMetricsInit()
+	require.NotNil(t, metrics.TenantOwnerlessEscalated)
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-i5")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+	before := counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed"))
+
+	require.NoError(t, fx.Provisioning.DeleteMember(withTenant(ctx, tenantID), tenantID, ownerA), "TM-12: never refused")
+	var ownerless bool
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT ownerless_since IS NOT NULL FROM tenants WHERE id = $1`, tenantID).Scan(&ownerless))
+	assert.True(t, ownerless, "the suspended owner B does not count")
+	assert.Equal(t, before+1, counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed")))
+
+	// Replay of the same USER_DELETE: success, no second escalation.
+	require.NoError(t, fx.Provisioning.DeleteMember(withTenant(ctx, tenantID), tenantID, ownerA))
+	assert.Equal(t, before+1, counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed")), "no double count")
+}
