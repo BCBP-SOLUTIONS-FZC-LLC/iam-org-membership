@@ -166,8 +166,8 @@ type i1MemRepo struct{}
 func (r *i1MemRepo) List(context.Context, uuid.UUID, *domain.MembershipListCursor, int) (*domain.MembershipListPage, error) {
 	return nil, nil
 }
-func (r *i1MemRepo) FindByUserID(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
-	return &domain.TenantMembership{TenantID: tid, UserID: uid, Status: domain.MembershipActive, RecordVersion: 1}, nil
+func (r *i1MemRepo) FindByUserID(_ context.Context, _, _ uuid.UUID) (*domain.TenantMembership, error) {
+	return nil, domain.ErrMemberNotFound
 }
 func (r *i1MemRepo) Insert(_ context.Context, m *domain.TenantMembership) (*domain.TenantMembership, error) {
 	if m.ID == uuid.Nil {
