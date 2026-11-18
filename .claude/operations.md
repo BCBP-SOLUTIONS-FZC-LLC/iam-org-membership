@@ -303,7 +303,7 @@ There is no `port.UserProfileClient`/`adapter/outbound/userprofile` integration 
 
 ### 18.4 `event-consumer`
 
-- Event Consumer → O&M: I-3 add/invite-accept; I-4 status update; I-5 soft-delete (delegate-impact gated); I-10 SAML group assertions.
+- Event Consumer → O&M: I-3 add/invite-accept; I-4 status update; I-5 soft-delete (not delegate-impact gated, DEC-1); I-10 SAML group assertions.
 
 ### 18.5 `workflow-service` (new §8.8)
 
@@ -340,7 +340,7 @@ For write operations, O&M availability = O&M × dependency (except fail-open). *
 | Operation | Sync dependency | Posture | On failure | Ref |
 |---|---|---|---|---|
 | Invite (P-6) | RP `CreateInvitedUser` | **fail-closed** | `503 realm_provisioner_unavailable`, no invitation, retryable | §8.10, A11 |
-| User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow `GetDelegateImpact` | **fail-closed** | `503 workflow_service_unavailable`, no change (WFI-8) | §8.8/§8.8.4 |
+| User removal / dept demotion·removal (P-8/P-10/P-11; I-5 makes no Workflow call, DEC-1) | Workflow `GetDelegateImpact` | **fail-closed** | `503 workflow_service_unavailable`, no change (WFI-8) | §8.8/§8.8.4 |
 | Removal resolution (P-26) | Workflow reassign/cancel + re-check | **fail-closed** | `503`, no DB write | §8.8.3 |
 | Suspension (P-7) | Workflow `GetDelegateImpact` (advisory) | **fail-open** | suspend commits, advisory omitted | §8.8.5, C3 |
 | `local_accounts_enabled` change (P-2) | RP `PatchRealmConfig` | **fail-open + durable reconcile** | commits, `realm_sync_pending`, 202, reconciler converges | §4.2, A7 |

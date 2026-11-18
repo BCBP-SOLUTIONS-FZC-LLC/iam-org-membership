@@ -2071,8 +2071,8 @@ components:
       name: MembershipRevoked
       title: Membership Revoked
       summary: |
-        Emitted unconditionally by MembershipService.RemoveUser (P-8/I-5)
-        and ProvisioningService.DeleteMember's underlying path whenever a
+        Emitted unconditionally by MembershipService.RemoveUser (P-8) and by
+        ProvisioningService.DeleteMember (I-5, not gated, DEC-1) whenever a
         user is removed from a tenant. Per LLD §15.2.2 this ONE event is
         shared by BOTH the Delegation Service's delegation-cascade-q
         consumer (ends the removed user's delegation rows) and the
@@ -2674,9 +2674,9 @@ components:
       summary: |
         Consumed by this service, not published. Sets tenants.status=
         'suspended' and tenants.suspension_source from payload.source
-        (default 'billing_lapse' if absent — backward-compatible with
-        producers that predate the operator-suspension path, LLD T-16 /
-        resolves RP-11). On 'billing_lapse' also sets tenants.cancelled_at
+        (required: billing_lapse or operator — a missing, empty or unknown
+        source is refused as schema_violation and dead-lettered, BUG-14;
+        LLD T-16 / resolves RP-11). On 'billing_lapse' also sets tenants.cancelled_at
         =COALESCE(cancelled_at, now()) (T-11: cancelled_at IS NOT NULL iff
         status IN (cancelled, offboarded), or suspended+billing_lapse —
         COALESCE keeps an idempotent replay from resetting an already-set
@@ -2687,8 +2687,8 @@ components:
         into. Confirmed by RP (LLD §16 OQ-7): `source` is present on every
         occurrence — RP's lapse sweep (RP-C3) sends `billing_lapse`
         explicitly, RP-14 sends `operator` — matching this schema's enum
-        verbatim. The "default to 'billing_lapse' if absent" behavior is
-        a defensive fallback only; RP never relies on it.
+        verbatim. There is no default for a missing source any more
+        (BUG-14); RP always sends it.
       x-lifecycle:
         status: active
       x-owner:
@@ -4073,9 +4073,8 @@ components:
             suspension (Realm Provisioner RP-14, §8.12) that may apply
             directly from active/trial, skipping the grace path —
             cancelled_at is deliberately left untouched on this branch
-            (LLD T-16). This service still defaults to 'billing_lapse' if
-            the field is ever absent (defensive fallback only; RP does
-            not rely on it).
+            (LLD T-16). Required: a missing, empty or unknown value is
+            refused as schema_violation and dead-lettered (BUG-14).
 
     TenantOffboardedPayload:
       type: object

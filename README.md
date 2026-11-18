@@ -86,7 +86,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | I-2 | `PATCH /tenants/:id` | Realm Provisioner | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` |
 | I-3 | `POST /tenants/:id/members` | Event Consumer | Add membership from Keycloak `REGISTER` — also the invitation-acceptance path |
 | I-4 | `PATCH /tenants/:id/members/:user_id` | Event Consumer | Update membership status from a Keycloak lifecycle event |
-| I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — delegate-impact gated |
+| I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — not delegate-impact gated, never refused (DEC-1, TM-12) |
 | I-8 | `GET /users/:id/memberships` | **AuthZ Enrichment (hot path)** | Full membership context for header injection — four-table join |
 | I-9 | `GET /tenants/:id/locale` | LLM Service | Tenant default locale for prompt assembly |
 | I-10 | `POST /tenants/:id/dept-memberships` | Event Consumer | SAML group assertion → dept memberships + additive tenant-role grants |
@@ -768,7 +768,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | Invitation KC cleanup reconciler | Realm Provisioner | `outbound/realmprovisioner/` | fail-open | Retry next cron cycle; `kc_cleanup_pending` stays set |
 | `local_accounts_enabled` change (P-2) | Realm Provisioner | `outbound/realmprovisioner/` | fail-open + durable reconcile | Commits; `realm_sync_pending`, reconciler converges |
 | Session revoke on suspend/remove (AUTH-8) | Realm Provisioner | `outbound/realmprovisioner/` | fail-open (best-effort) | Cutoff falls back to access-token TTL + 300 s cache TTL |
-| User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow Service | `outbound/workflow/` | fail-closed | `503 workflow_service_unavailable`, no change committed |
+| User removal / dept demotion·removal (P-8/P-10/P-11; I-5 makes no Workflow call, DEC-1) | Workflow Service | `outbound/workflow/` | fail-closed | `503 workflow_service_unavailable`, no change committed |
 | Suspension advisory (P-7) | Workflow Service | `outbound/workflow/` | fail-open | Suspend commits; advisory call omitted |
 | I-1 plan lookup + dept seeding (ProvisioningService.TrialSignup) | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` on cold-cache + failure — calls happen BEFORE the Postgres tx opens (§8.1). bff-signup retries handle this correctly. |
 | Any P-6/P-24/P-10 catalog validation | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` — the one dependency deliberately not fail-open |
