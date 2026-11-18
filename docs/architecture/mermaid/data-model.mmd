@@ -111,6 +111,12 @@ erDiagram
         timestamptz parked_at
     }
 
+    trial_signup_ledger {
+        text email_hash PK "HMAC-SHA256 of a trial owner's email, 64 lower-case hex (CR-4)"
+        uuid tenant_id "the tenant that claimed it at I-1; no FK, no RLS (cross-tenant)"
+        timestamptz created_at "pruned after TRIAL_LEDGER_RETENTION_DAYS (730)"
+    }
+
     tenants ||--o{ tenant_departments  : "fk_td_tenant, ON DELETE CASCADE"
     tenants ||--o{ tenant_memberships  : "fk_tm_tenant, ON DELETE CASCADE"
     tenants ||--o{ tenant_roles        : "fk_tnr_tenant, ON DELETE CASCADE"

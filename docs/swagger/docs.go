@@ -65,7 +65,7 @@ const docTemplate = `{
     "paths": {
         "/healthz": {
             "get": {
-                "description": "Always returns ok if the process can answer HTTP at all. Never inspects dependencies.",
+                "description": "Returns ok while the process answers HTTP and its background loops (the audit delivery runner) are not stalled; 503 when one is. Never inspects dependencies.",
                 "produces": [
                     "application/json"
                 ],
@@ -76,6 +76,15 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {

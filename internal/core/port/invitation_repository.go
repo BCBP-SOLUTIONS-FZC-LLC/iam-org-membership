@@ -71,8 +71,10 @@ type InvitationRepository interface {
 
 	// ExpireOverdue flips pending invitations past expires_at to expired
 	// and sets kc_cleanup_pending (PI-5 / PI-9). Cross-tenant; callers
-	// MUST construct this repository against a BYPASSRLS pool.
-	ExpireOverdue(ctx context.Context, limit int) (int, error)
+	// MUST construct this repository against a BYPASSRLS pool. Returns the
+	// rows it expired (RETURNING id, tenant_id, expires_at) so the caller
+	// can audit each one in the same transaction.
+	ExpireOverdue(ctx context.Context, limit int) ([]domain.ExpiredInvitation, error)
 
 	// ClearKCCleanupPendingByID clears PI-9's durable marker after RP
 	// DeleteUser succeeds (or when there is no Keycloak user to delete).
@@ -102,7 +104,9 @@ type InvitationRepositoryNoop struct{}
 func (InvitationRepositoryNoop) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
 	return nil, nil
 }
-func (InvitationRepositoryNoop) ExpireOverdue(context.Context, int) (int, error) { return 0, nil }
+func (InvitationRepositoryNoop) ExpireOverdue(context.Context, int) ([]domain.ExpiredInvitation, error) {
+	return nil, nil
+}
 func (InvitationRepositoryNoop) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error {
 	return nil
 }

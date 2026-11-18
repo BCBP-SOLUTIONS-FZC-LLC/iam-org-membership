@@ -145,7 +145,7 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 |---|---|---|---|
 | `om:memberships:{tenant}:{user}` | JSON of full I-8 response + `plan_gen` (not returned) | 300 s ±30 s jitter (CACHE-4) | any membership/role/dept write for this user; §8.9 user-deletion cascade; a `PlanCatalogChanged` for the tenant's plan, by generation mismatch (CACHE-11) |
 | `om:plans:gen:{plan}` | Event id of the plan's last `PlanCatalogChanged` — read in the same `MGET` as `om:memberships`; an entry stamped with another value is a miss (CACHE-11, LLD rev 2.39) | 24 h | Set by `CatalogConsumer`; never deleted |
-| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); I-2; every committed `tenant-orgm-q`/`billing-orgm-q` projection (post-commit, with `om:locale` + `om:seat_usage`, LLD rev 2.51) |
+| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); I-2; every committed `tenant-orgm-q`/`billing-orgm-q` projection (post-commit, with `om:locale` + `om:seat_usage`, LLD rev 2.53) |
 | `om:members:{tenant}:{limit}` | P-4 page-1 only (cursorless), `limit=50` only (CACHE-10) | 120 s | any membership add/remove/update for tenant (CACHE-7) |
 | `om:dept_members:{tenant}:{dept}` | JSON dept member list | 120 s | any dept_memberships write for tenant+dept |
 | `om:locale:{tenant}` | BCP-47 string | 600 s | P-2 with locale change |

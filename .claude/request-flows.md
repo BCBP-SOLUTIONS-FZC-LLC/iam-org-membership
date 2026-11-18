@@ -198,7 +198,8 @@ Admin → POST /tenants/:id/members {email, full_name, initial_tenant_roles, ini
     over-cap? → COMMIT a revoked row (keycloak_user_id, kc_cleanup_pending=true) for durability
                 → 409 seat_limit_reached (SEAT-1), reconciler deletes KC user (PI-9)
     else → INSERT pending_invitations (status=pending, expires_at=now()+INVITATION_EXPIRY_DAYS, keycloak_user_id)
-           + InvitationCreated audit
+           + invitation.created audit entry → pending_audit_entries (same tx, after the SEAT-1 re-check;
+             none on the over-cap branch)
   COMMIT → 202 {invitation_id, status, expires_at}
 
 Keycloak: user clicks link → verify email, set password, enroll MFA
@@ -215,7 +216,9 @@ Event Consumer → POST /internal/tenants/:id/members {user_id, email} (I-3)
 
 **Seat-hold coupling (T-8/SEAT-1):** `INVITATION_EXPIRY_DAYS = 7` must equal Keycloak invite action-token lifespan (HLD §8.2.2's 7-day link) — divergence would either strand a seat past a dead link or free a seat while the link still works.
 
-**Revoke/expiry (PI-5/PI-6):** P-31 revoke → `status=revoked` AND `kc_cleanup_pending=true` **atomically**; `invitation-expiry` CronJob past `expires_at` → same. Both trigger the `invitation-kc-cleanup` reconciler (PI-9) which idempotently calls `RealmProvisioner.DeleteUser`. There is no monthly hard-delete job for terminal `pending_invitations` rows in this repo — no `invitation-cleanup` CronJob exists (see §15.7); terminal rows persist until tenant offboarding cascade or an explicit GDPR erasure-by-email (§15.8).
+**Revoke/expiry (PI-5/PI-6):** P-31 revoke → `status=revoked` AND `kc_cleanup_pending=true` AND the `invitation.revoked` audit entry in **one transaction**; `invitation-expiry` CronJob past `expires_at` → same, with one `invitation.expired` entry per invitation (`ExpireOverdue` `RETURNING id, tenant_id, expires_at`, `RecordBatch` in the same sysPool tx via `jobs.Context.SysTxRunner`). `ExpireOverdue` locks candidates `FOR UPDATE SKIP LOCKED` and re-checks `status = 'pending'` in the outer `WHERE`, so a revoke/accept committing mid-sweep is never overwritten or audited as expired. Both trigger the `invitation-kc-cleanup` reconciler (PI-9) which idempotently calls `RealmProvisioner.DeleteUser`. There is no monthly hard-delete job for terminal `pending_invitations` rows in this repo — no `invitation-cleanup` CronJob exists (see §15.7); terminal rows persist until tenant offboarding cascade or an explicit GDPR erasure-by-email (§15.8).
+
+**Audit entries (AL-5, platform-audit outbox mode, LLD rev 2.50).** `port.AuditRecorder` is injected into the tx ctx by `postgres.TxRunner.WithAuditRecorder` (like `EventPublisher`), so each entry is written to `pending_audit_entries` in the business transaction — it exists iff the change committed (PA-INV-3) — and the `auditoutbox.Runner` in `cmd/server` (sysPool) delivers it at-least-once; an Audit Log outage never fails the request or the CronJob (AUDIT-CALLER-1). Types: `config.tenant_setting.changed` (P-2, key `config.tenant_setting.changed:<tenant>:<record_version after update>`, `OccurredAt` = row `updated_at`; a no-op PATCH — `record_version` unchanged, TRG-3 — is not audited; also O-4 feature-flag changes, same key format, metadata `feature_flags.<key>` = `{change: created|enabled|disabled|modified|removed, old, new}` for changed flags only, LLD rev 2.51), `invitation.created` (P-6), `invitation.revoked` (P-31), `invitation.expired` (`OccurredAt` = `expires_at`); invitation keys are `<type>:<tenant>:<invitation>`. Actor: the user's IdP sub, or `iam_system` with id `00000000-0000-0000-0000-0000000000a1` (CronJob, no caller). Entries carry ids only, never the invitee's email or name; P-2/O-4/P-6/P-31 entries also carry the client IP and user agent (§15.8).
 
 ## 8.11 MFA Reset (P-34, §16 OQ-8/F6)
 
@@ -339,7 +342,7 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 
 **Cross-service pattern:** Keycloak hard-deletes; User Profile scrubs its per-user PII (`display_name`, `phone`, `job_title`, `credentials`, signature, availability); O&M sets membership `status='left'` + `deleted_at`; cascade soft-deletes `tenant_roles`/`dept_memberships` (the two tables Core still owns) and emits one `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2). O&M no longer owns `delegations`/`tender_acl_entries` and does not touch them directly — the Delegation Service and Tender-ACL Service each run their own async cascade off that shared `MembershipRevoked` signal, ending delegation rows and soft-deleting ACL overlays respectively in their own databases; AuthZ Enrichment consumes the same signal to evict the departed user's `om:memberships` cache entry. (This used to be two separate emissions — `MembershipRevoked` plus a `TenantMembershipRemoved` aimed at Tender-ACL — now consolidated into the one shared event per the LLD.)
 
-**P-8 vs I-5 (TM-4/TM-5, LLD rev 2.52):** an admin removal (P-8) sets only `status='left'` (row kept, `deleted_at` NULL; a later I-3 re-add reactivates it); the Keycloak-deletion path (I-5) sets `status='left'` + `deleted_at`.
+**P-8 vs I-5 (TM-4/TM-5, LLD rev 2.54):** an admin removal (P-8) sets only `status='left'` (row kept, `deleted_at` NULL; a later I-3 re-add reactivates it); the Keycloak-deletion path (I-5) sets `status='left'` + `deleted_at`.
 
 **§16 A45 / TR-9:** removal soft-deletes ALL `tenant_roles` rows for the user (symmetric with dept_memberships); one `TenantRoleRevoked` emitted per revoked elevated grant. Suspend (P-7) leaves `tenant_roles` untouched (frozen, M-1).
 
@@ -399,6 +402,7 @@ Idempotent via `processed_events`. The whole wipe (steps 1–3) commits as one t
 | `pending_tenant_events` | until replayed | Claimed (deleted) by the replay that applies it — I-1 right after creating the tenant, or the `parked-events-replay` CronJob. Events whose tenant never gets a row are not pruned automatically; `IAMParkedTenantEventsStale` surfaces them for a decision (EVT-18) |
 | `rls_violation_log` | 30 d (intended) | **No pruning job exists today** — none of the 8 CronJobs touches it; rows accumulate until one is added |
 | `outbox_events` (published) | 8 days | `outbox-prune` CronJob — `outbox.Runner.PrunePublished(ctx, retention, batchLimit)` (`platform-events`), called until a batch comes back short; the hand-rolled `ReconcilerStore.PruneOutbox` it replaced is deleted |
+| `pending_audit_entries` | until delivered | platform-audit's `auditoutbox.Runner` deletes a row on Audit Log 200/201; a parked row (`failed`) stays until an operator disposes of it (`Requeue`/`Discard`/`Resolve`) |
 | `pending_invitations` (terminal) | not hard-deleted by any job | No `invitation-cleanup` CronJob exists in this repo — terminal rows (`accepted`/`expired`/`revoked`) persist until tenant offboarding cascade (`ON DELETE CASCADE`) or an explicit GDPR erasure-by-email (§15.8) |
 
 **Removed from this table (ADR-0008/ADR-0007):** `delegations` and `tender_acl_entries` retention rows — Core owns neither table any more; their soft-delete-then-hard-delete retention is now the Delegation Service's and Tender-ACL Service's own concern in their respective databases.
@@ -413,3 +417,5 @@ O&M stores **no PII beyond opaque UUIDs for members** — `user_id` (Keycloak su
 - **Person-level GDPR erasure** for an invited-but-never-accepted person — scrub `pending_invitations` **by email** (`citext` case-insensitive). Explicit erasure-runbook step; no `user_id` exists. Any not-yet-activated Keycloak shell via `kc_cleanup_pending` (PI-9).
 
 **Only table whose GDPR treatment is keyed on email, not `user_id`.**
+
+**Second, bounded exception — `pending_audit_entries` (platform-audit, LLD rev 2.50):** P-2/O-4/P-6/P-31 audit entries carry the actor's user UUID plus client IP and user agent until delivery (row deleted on Audit Log 200/201), or, for a row parked as `failed`/`skew`/`not_admitted`, until an operator disposes of it (`auditoutbox.Requeue`/`Discard`/`Resolve`; owner: the iam-org-membership on-call). A disposed row (`resolved`/`discarded`) is scrubbed at disposal and purged after `AUDIT_DISPOSED_RETENTION` (default 90 days; PA-OQ-5/PA-D28), so the retention ends there. The library excludes the table from the GDPR scrub.

@@ -157,15 +157,21 @@ env:
   TOKEN_SERVICE_BASE_URL: ""
   TOKEN_SERVICE_TIMEOUT_MS: "1000"
 
-  # iam-audit-log — AL-5 direct-write for config.tenant_setting.changed,
-  # invitation.created/revoked/expired (D-6 subset). Calls are best-effort
-  # and fail-open: P-2 and invite flows always succeed even if this is unset
-  # or unreachable. Unset logs a WARN at startup (AUDIT_LOG_BASE_URL warning)
-  # and skips all AL-5 writes silently — set in staging/prod so audit records
-  # reach iam-audit-log. Sustained failures surface on the
-  # IAMAuditDeliveryFailed alert (iam_org_membership_audit_delivery_failed_total).
-  AUDIT_LOG_BASE_URL: ""
-  AUDIT_LOG_TIMEOUT_MS: "3000"
+  # iam-audit-log AL-5 via platform-audit's outbox (config.tenant_setting.changed,
+  # invitation.created/revoked/expired). Entries are written into
+  # pending_audit_entries in the business transaction and delivered by the
+  # runner on the sysPool, so an Audit Log outage never fails a request.
+  # Unset AUDIT_LOG_BASE_URL disables delivery (entries queue) and is fatal
+  # in prod (validateRequiredEnv), so the default points at Audit Log's
+  # in-cluster Service, which listens on 8080 (iam-audit-log chart
+  # service.port). Override per environment if it lives elsewhere.
+  # AUDIT_SOURCE_SERVICE must equal serviceAccount.name (the principal
+  # admitted in Audit Log's internalCallerPrincipals). The other AUDIT_*
+  # variables keep the library defaults (platform-audit LLD §12).
+  AUDIT_LOG_BASE_URL: "http://iam-audit-log.iam.svc.cluster.local:8080"
+  AUDIT_SOURCE_SERVICE: "iam-org-membership"
+  AUDIT_LOG_TIMEOUT: "5s"
+  AUDIT_CALLER_DOMAIN: "iam"
 
   # OpenTelemetry — read by platform-gincommon (InitTracingWithConfig takes
   # the identity from code, the exporter and sampler from here).

@@ -1,6 +1,6 @@
 //go:build integration
 
-// 000008_outbox_sequence_grants: the runtime roles can draw from
+// 000009_outbox_sequence_grants: the runtime roles can draw from
 // platform-events' outbox_events_ordering_seq when they do not own it.
 // Every keyed enqueue (outbox.EnqueueOrdered) calls nextval() on it, so
 // without the grant I-1 signup and every keyed event path answered 500
@@ -56,5 +56,5 @@ func TestOutboxSequenceGrants_RuntimeRolesNotOwner(t *testing.T) {
 	require.NoError(t, rawPool.QueryRow(ctx, `
 		SELECT has_sequence_privilege('org_membership_app', 'public.grants_probe_seq', 'USAGE')
 		   AND has_sequence_privilege('org_membership_migrator', 'public.grants_probe_seq', 'USAGE')`).Scan(&granted))
-	assert.True(t, granted, "default privileges cover sequences created after 000008")
+	assert.True(t, granted, "default privileges cover sequences created after 000009")
 }

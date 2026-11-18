@@ -265,7 +265,7 @@ Two cases specific to signup provisioning (LLD rev 2.33):
 
 **Meaning.** The combined durable markers (`iam:reconciler_markers:sum`: ownerless + realm-sync-pending + seat-overage + stale-invitation gauges) have stayed above 5 for 20 minutes. Some reconciler is not converging.
 
-**Triage.** Check which gauge is high, then that reconciler's CronJob (`realm-config-sync`, `invitation-expiry`, `seat-overage-reconcile`) or the O-7 operator action for ownerless tenants.
+**Triage.** Check which gauge is high, then that reconciler's CronJob (`realm-config-sync`, `invitation-expiry`, `parked-events-replay`) or the O-7 operator action for ownerless tenants.
 
 ## Write availability
 
@@ -277,14 +277,11 @@ Two cases specific to signup provisioning (LLD rev 2.33):
 
 ## Audit delivery
 
-### IAMAuditDeliveryFailed
+AL-5 entries (`config.tenant_setting.changed` from P-2 and O-4, `invitation.created`, `invitation.revoked`, `invitation.expired`) are written into `pending_audit_entries` in the business transaction and delivered by platform-audit's outbox runner (on the sysPool). Its alerts — `PlatformAuditDeliveryStalled`, `PlatformAuditEntriesParked`, `PlatformAuditNotAdmitted`, `PlatformAuditUnknownEntryType`, `PlatformAuditInvalidEntries`, `PlatformAuditRunnerStalled`, `PlatformAuditRunnerAbsent`, `PlatformAuditDeliveryDisabled`, `PlatformAuditStoreErrors` and the two `PlatformAuditDeliveryErrorBudget*Burn` alerts — are in `deploy/monitoring/platform-audit-rules.yml`, vendored from the library, and their runbooks are platform-audit's [`docs/observability/runbook.md`](https://github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/blob/main/docs/observability/runbook.md).
 
-**Meaning.** `iam_org_membership_audit_delivery_failed_total{entry_type}` is nonzero over 10 minutes. Best-effort AL-5 direct-write goroutines in `TenantService.auditSettingChange` or `InvitationService.auditInviteEvent` are returning errors. P-2 and invite flows are unaffected (fail-open), but the listed `entry_type` audit records are silently absent from iam-audit-log.
-
-**Triage.**
-1. Check `AUDIT_LOG_BASE_URL` is set — if blank, all audit writes are no-ops by design.
-2. Check iam-audit-log's own health (`/healthz`, its own alerts) — an outage there causes all AL-5 calls to fail.
-3. Check for 429 or 5xx from iam-audit-log in this service's structured logs (`grep 'auditlog' <pod-logs>`).
-4. Verify the idempotency key pattern — a restart may cause a burst of retry-eligible calls with the same key (harmless, idempotent).
-
-**Resolve.** Fix the upstream iam-audit-log issue or set `AUDIT_LOG_BASE_URL`. The fire-and-forget goroutines do not retry, so missed entries are permanent once the error passes — reconcile via the Audit Log's own backfill mechanism if compliance requires it.
+Service-specific notes:
+- **Owner of parked rows:** the iam-org-membership on-call. Inspect and dispose with `auditoutbox.ListFailed` / `Requeue` / `Discard` / `Resolve` on the sysPool (platform-audit `docs/guides/operators.md`).
+- **Not admitted (401/403):** the chart's `serviceAccount.name` must be `iam-org-membership` and the principal must be in Audit Log's `internalCallerPrincipals` (and `networkPolicy.internalCallers`). Admission is an Audit Log operational change made by its owners per environment (dev, test, staging, production) and is a go-live prerequisite: no environment is rolled out until its admission is applied and `Client.Probe` returns `ProbeAdmitted`.
+- **Disposed rows** (`resolved`/`discarded`) are scrubbed and purged after `AUDIT_DISPOSED_RETENTION` (default 90 days).
+- **Runner absent:** the runner does not start when `SYSTEM_DATABASE_URL` is unset (the WARN `audit delivery runner not started` at startup); entries queue until a pod with the sysPool runs.
+- An Audit Log outage never fails P-2, O-4, P-6, P-31 or the invitation-expiry CronJob; entries queue and deliver after recovery.

@@ -82,8 +82,8 @@ func TestInvitationRepositoryNoop_AllMethods(t *testing.T) {
 	assert.Nil(t, v)
 	assert.NoError(t, err)
 
-	count, err := n.ExpireOverdue(ctx, 100)
-	assert.Equal(t, 0, count)
+	expired, err := n.ExpireOverdue(ctx, 100)
+	assert.Empty(t, expired)
 	assert.NoError(t, err)
 
 	assert.NoError(t, n.ClearKCCleanupPendingByID(ctx, uuid.New()))

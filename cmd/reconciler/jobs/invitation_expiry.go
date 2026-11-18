@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
-	"github.com/google/uuid"
 )
 
 // InvitationExpiry flips pending invitations past expires_at to 'expired'
@@ -19,15 +19,34 @@ import (
 // the invitation-kc-cleanup reconciler — an expired invite's shell account
 // is not left orphaned.
 //
-// Uses the BYPASSRLS InvitationRepository because the sweep spans tenants.
+// One invitation.expired audit entry per expired invitation is enqueued in
+// the same transaction as the UPDATE (PA-OQ-20), so an entry exists if and
+// only if the expiry committed; the server's audit runner delivers it.
+//
+// Uses the BYPASSRLS InvitationRepository and SysTxRunner because the sweep
+// spans tenants.
 func InvitationExpiry(ctx context.Context, jctx *Context) (Result, error) {
 	var res Result
-	n, err := jctx.Invitations.ExpireOverdue(ctx, jctx.BatchLimit)
+	var expired []domain.ExpiredInvitation
+	sweep := func(txCtx context.Context) error {
+		rows, err := jctx.Invitations.ExpireOverdue(txCtx, jctx.BatchLimit)
+		if err != nil {
+			return err
+		}
+		expired = rows
+		return recordExpired(txCtx, rows)
+	}
+	var err error
+	if jctx.SysTxRunner != nil {
+		err = jctx.SysTxRunner.RunInTx(ctx, sweep)
+	} else {
+		err = sweep(ctx)
+	}
 	if err != nil {
 		return res, err
 	}
-	res.Attempted = n
-	res.Succeeded = n
+	res.Attempted = len(expired)
+	res.Succeeded = len(expired)
 
 	// SECURITY-8 deferred erase for revokes: P-31 keeps the email while the
 	// PI-11 cooldown can still match it; once the window has passed it is
@@ -43,39 +62,30 @@ func InvitationExpiry(ctx context.Context, jctx *Context) (Result, error) {
 		"attempted", res.Attempted, "succeeded", res.Succeeded,
 		"revoked_pii_erased", erased,
 		"at", time.Now().UTC())
-
-	// AL-5 best-effort audit (invitation.expired, D-6). Emit one batch entry
-	// per reconciler run when at least one invitation was expired. Uses a
-	// per-minute idempotency key so back-to-back retries within the same
-	// minute produce a single dedup-collapsed entry in the Audit Log.
-	if n > 0 && jctx.AuditLog != nil {
-		auditInvitationExpiredBatch(ctx, jctx.AuditLog, n)
-	}
-
 	return res, nil
 }
 
-// auditInvitationExpiredBatch posts a single invitation.expired entry
-// representing the full sweep batch (fail-open, 5s hard cap).
-func auditInvitationExpiredBatch(_ context.Context, client port.AuditLogClient, count int) {
-	idemKey := fmt.Sprintf("invitation.expired:batch:%s", time.Now().UTC().Format("2006-01-02T15:04"))
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := client.WriteEntry(ctx, port.AuditWriteRequest{
-			IdempotencyKey:  idemKey,
-			TenantID:        uuid.Nil, // cross-tenant sweep; Audit Log accepts uuid.Nil for system-scope
-			EntryType:       "invitation.expired",
+// recordExpired enqueues one invitation.expired entry per row: system actor,
+// the invitation as target, OccurredAt = expires_at (the business time, the
+// same on every retry of the sweep). No recorder in ctx skips it.
+func recordExpired(ctx context.Context, rows []domain.ExpiredInvitation) error {
+	rec, ok := port.AuditRecorderFromContext(ctx)
+	if !ok || len(rows) == 0 {
+		return nil
+	}
+	entries := make([]port.AuditEntry, 0, len(rows))
+	for _, r := range rows {
+		entries = append(entries, port.AuditEntry{
+			IdempotencyKey:  fmt.Sprintf("%s:%s:%s", port.AuditEntryInvitationExpired, r.TenantID, r.ID),
+			TenantID:        r.TenantID,
+			EntryType:       port.AuditEntryInvitationExpired,
 			Action:          "expire",
-			Actor:           port.AuditActor{Type: "iam_system", ID: "iam-system"},
-			OccurredAt:      time.Now().UTC(),
-			SourceService:   "iam-org-membership",
-			SourceEventType: "InvitationExpiredBatch",
-			IPAddress:       cronIPAddress,
+			Actor:           port.SystemAuditActor(),
+			Target:          &port.AuditTarget{Type: "invitation", ID: r.ID.String()},
+			OccurredAt:      r.ExpiresAt,
+			SourceEventType: "InvitationExpired",
 			UserAgent:       cronUserAgent("invitation-expiry"),
-			Metadata:        map[string]any{"count": count},
-		}); err != nil {
-			_ = err // fail-open — audit outage must not fail the CronJob
-		}
-	}()
+		})
+	}
+	return rec.RecordBatch(ctx, entries)
 }

@@ -4,7 +4,7 @@ This is an internal IAM microservice for the XpertPMS platform. This guide cover
 
 ## Prerequisites
 
-- Go 1.26.6+ (matches `go.mod`)
+- Go 1.26.11+ (matches `go.mod`)
 - Docker (required for PostgreSQL + PgBouncer + Valkey + floci integration tests via `testcontainers-go`)
 - `golangci-lint` is managed as a Go tool (`go tool golangci-lint`) — no separate install needed
 - `GOPRIVATE=github.com/BCBP-SOLUTIONS-FZC-LLC/*` (private module access; also `GONOSUMDB` for the same prefix)

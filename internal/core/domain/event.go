@@ -112,7 +112,7 @@ func TopicForEvent(eventType string) string {
 	}
 }
 
-// IsProducedEvent reports whether eventType is one of the 12 events this
+// IsProducedEvent reports whether eventType is one of the 13 events this
 // service publishes (and therefore registers in Glue). schema-gov extract
 // also writes the consumed, producer-owned payloads (from Realm Provisioner/
 // Billing on tenant-orgm-q/billing-orgm-q, plus DepartmentCatalogChanged from

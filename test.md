@@ -77,7 +77,7 @@ docker exec -it iam-org-membership-postgres-1 \
 ```bash
 curl -sS -w "\nHTTP %{http_code}\n" "$BASE/healthz"
 ```
-**Response:** `200 OK` — `{"status":"ok"}`
+**Response:** `200 OK` — `{"status":"ok"}`; `503` — `{"status":"unhealthy","error":…}` only when the platform-audit delivery runner is stalled (liveness loop, never a dependency check)
 **Events emitted:** none
 
 ### GET /readyz — readiness (pool + cache + outbox)

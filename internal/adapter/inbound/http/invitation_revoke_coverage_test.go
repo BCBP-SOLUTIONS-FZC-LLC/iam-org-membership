@@ -65,7 +65,9 @@ func (r *p31InviteRepo) MostRecentCreatedAt(context.Context, uuid.UUID, string) 
 func (r *p31InviteRepo) CountCreatedInWindow(context.Context, uuid.UUID, time.Time) (int, error) {
 	return 0, nil
 }
-func (r *p31InviteRepo) ExpireOverdue(context.Context, int) (int, error)              { return 0, nil }
+func (r *p31InviteRepo) ExpireOverdue(context.Context, int) ([]domain.ExpiredInvitation, error) {
+	return nil, nil
+}
 func (r *p31InviteRepo) EraseRevokedPII(context.Context, time.Time, int) (int, error) { return 0, nil }
 func (r *p31InviteRepo) ListAll(context.Context, uuid.UUID) ([]domain.PendingInvitation, error) {
 	return nil, nil

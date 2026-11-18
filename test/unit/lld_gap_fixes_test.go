@@ -1,6 +1,6 @@
 package unit_test
 
-// Service-level tests for the code-vs-LLD fixes of 2026-11-11 (LLD rev 2.52):
+// Service-level tests for the code-vs-LLD fixes of 2026-11-11 (LLD rev 2.54):
 // I-3 member_already_exists (GAP-24), PI-6 inline Keycloak-user delete on
 // revoke (GAP-17), BUG-5 character count, GAP-21 inactive department skipped
 // by I-10.
