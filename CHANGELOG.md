@@ -6,6 +6,17 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-18 — QA workbook gaps + merge fixes)
+
+- **BUG-10: refused DB connection mapped to `503 DB_UNAVAILABLE`.** `pgxpool` returns a `*pgconn.PgError` with code `08006` / `08001` / `08004` on a refused connection; the middleware now maps these to `503` with `errorCode: DB_UNAVAILABLE` instead of an unhandled `500`. Swagger regenerated.
+- **Migration 000008 — outbox sequence grant.** `auditoutbox.ApplySchema` creates the `pending_audit_entries_id_seq` sequence; the app role now has `USAGE, SELECT` on it (required for `INSERT ... RETURNING id`). Without this, the first audit enqueue after a fresh deploy would fail with `permission denied for sequence`.
+- **BUG-5: `full_name` length check counts characters, not bytes.** The DB `CHECK` uses PostgreSQL `length()`, which counts Unicode code points. The service previously used Go `len()` (byte count), so multi-byte names (Arabic, CJK) were rejected at ~171 characters instead of 512. Fixed to `utf8.RuneCountInString`.
+- **GAP-24: I-3 plain-add rejects duplicate active/suspended memberships.** On the plain-add branch (no pending invitation), `AddFromRegister` now checks for an existing active or suspended membership before the seat check and returns `409 member_already_exists`. Serialised by the tenant `FOR UPDATE` lock already held.
+- **GAP-17 / PI-6: `Revoke` attempts inline Realm-Provisioner `DeleteUser` after commit.** On success the `kc_cleanup_pending` marker is cleared immediately; on RP failure it stays set and the `invitation-kc-cleanup` reconciler retries (PI-9). The revoke itself never fails over the cleanup.
+- **PI-11 cooldown — `ErasePII` deferred while cooldown is active.** `Revoke` no longer erases PII immediately when `reinviteCooldown > 0`; the email must survive until the window closes so the re-invite throttle can look it up. The `invitation-expiry` reconciler erases revoked rows via `EraseRevokedPII` once the window has passed.
+- **CI: `push`/`pull_request` triggers gated to `main`/`master` branches** (mirrors `iam-user-profile`). Without the branch filter the push job fired on every feature-branch push and failed at Cosign signature verification, whose cert-identity regex only accepts `refs/heads/(main|master)`.
+- **Merge residue fixes.** The merge of main's platform-audit commits into `test/gap-fix` dropped `ListIncludingTerminal` from `InvitationService`, the `CacheInvalidationFailed` and `CacheErrors` Prometheus counters, and the `deleteInvitedUserInline` helper. All restored. Five test stubs updated to implement the new `EraseRevokedPII` and `ListAll` methods added to `port.InvitationRepository` by the platform-audit branch.
+
 ### Changed (2026-11-18 — platform-audit v0.1.2)
 
 - **`platform-audit` and `cmd/audittypecheck` v0.1.1 → v0.1.2.** The PATCH pins iam-audit-log v0.2.0 (one new entry type, Catalog's `config.plan.trial_profile.updated`); no API, schema or behaviour change here.
