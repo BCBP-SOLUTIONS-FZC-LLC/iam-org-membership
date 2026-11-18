@@ -219,10 +219,13 @@ func TestDeptMembership_Assign_LevelDecreaseWithDelegation_WorkflowBlocks(t *tes
 		"level decrease with active dept-scoped delegation must return ErrWorkflowResolutionRequired")
 }
 
-// TestDeptMembership_Assign_LevelDecreaseWithDelegation_WorkflowFails_FailsOpen
-// verifies WFI-9: when the workflow client errors during the precision-scope check,
-// Assign proceeds (fail-open) rather than blocking.
-func TestDeptMembership_Assign_LevelDecreaseWithDelegation_WorkflowFails_FailsOpen(t *testing.T) {
+// TestDeptMembership_Assign_LevelDecreaseWithDelegation_WorkflowFails_503
+// verifies fail-closed P-10 demotion. LLD WFI-8 (line 3050): "A Workflow Service
+// call failure (`5xx`/timeout) at **any** step … returns `503
+// workflow_service_unavailable` with no DB write". LLD §20.5 (line 4119): "User
+// removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow
+// (`GetDelegateImpact`) | fail-closed".
+func TestDeptMembership_Assign_LevelDecreaseWithDelegation_WorkflowFails_503(t *testing.T) {
 	tenantID := uuid.New()
 	userID := uuid.New()
 	deptID := uuid.New()
@@ -246,6 +249,7 @@ func TestDeptMembership_Assign_LevelDecreaseWithDelegation_WorkflowFails_FailsOp
 			return []domain.DeptMembership{currentMem}, nil
 		},
 		assignFn: func(_ context.Context, _, _, _, _ uuid.UUID, level domain.DeptRole, _ uuid.UUID) (*domain.DeptMembership, *domain.DeptMembership, error) {
+			t.Fatal("WFI-8: no DB write when Workflow is unavailable")
 			return newAssigned, &currentMem, nil
 		},
 	}
@@ -262,8 +266,8 @@ func TestDeptMembership_Assign_LevelDecreaseWithDelegation_WorkflowFails_FailsOp
 	)
 
 	got, err := svc.Assign(context.Background(), tenantID, userID, deptID, domain.DeptPreparator, uuid.New())
-	require.NoError(t, err, "WFI-9: workflow error must not block level decrease (fail-open)")
-	require.NotNil(t, got)
+	require.ErrorIs(t, err, domain.ErrWorkflowServiceUnavailable, "WFI-8 / §20.5: P-10 demotion is fail-closed")
+	require.Nil(t, got)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

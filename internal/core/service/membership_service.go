@@ -326,8 +326,8 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 		return nil, nil, domain.NewError(domain.ErrServiceAccountNotGrantable,
 			"service accounts cannot be granted a tenant role")
 	}
-	// Validate: no 'member' in desired set (TR-7). Use ErrInvalidRole (→ 422)
-	// not ErrValidation (→ 400) per LLD §17 invalid_role taxonomy.
+	// Validate: no 'member' in desired set (TR-7). ErrInvalidRole → 400
+	// invalid_role per LLD §17.
 	for _, code := range desired {
 		if code == domain.RoleMember {
 			return nil, nil, domain.NewError(domain.ErrInvalidRole, "member cannot be granted; it is derived").
@@ -494,7 +494,7 @@ const (
 //     row, plus one MembershipRevoked signal (ADR-0008 §6.4, LLD §15.2.2)
 //     so the Delegation and Tender-ACL services asynchronously end this
 //     user's rows in their own databases — atomically (EVT-10).
-//  5. Soft-delete tenant_memberships.
+//  5. Mark the tenant_memberships row status='left' (TM-4/TM-5; deleted_at stays NULL).
 //  6. AUTH-8: post-commit best-effort RP RevokeUserSessions (fail-open).
 func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, actorID uuid.UUID) error {
 	// Step 1 — WFI-3 pre-check (outside tx, before any state change).
@@ -511,6 +511,7 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 			return domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").
 				WithDetails(map[string]any{
 					"active_workflows": impact.ActiveWorkflows,
+					"delegate_user_id": userID,
 					"workflow_ids":     impact.WorkflowIDs,
 					"allowed_actions":  []string{string(RemovalReplaceDelegate), string(RemovalStopWorkflows)},
 				})
@@ -615,8 +616,10 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 				return err
 			}
 		}
-		// Step 5 — the membership row itself.
-		if err := s.memberships.SoftDelete(txCtx, tenantID, userID, mem.RecordVersion); err != nil {
+		// Step 5 — the membership row itself. TM-4/TM-5: a normal removal
+		// keeps the row with status='left'; deleted_at is reserved for the
+		// identity-deletion / GDPR path (I-5, §15.2.2).
+		if _, err := s.memberships.SetStatus(txCtx, tenantID, userID, domain.MembershipLeft, mem.RecordVersion); err != nil {
 			return err
 		}
 		return nil
@@ -624,7 +627,6 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 	if err != nil {
 		return err
 	}
-
 	s.invalidateMember(ctx, tenantID, userID)
 
 	// Step 6 — AUTH-8 best-effort session revoke.

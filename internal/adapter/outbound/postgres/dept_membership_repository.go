@@ -43,7 +43,9 @@ func (r *DeptMembershipRepository) ListByUsers(ctx context.Context, tenantID uui
 	if len(userIDs) == 0 {
 		return nil, nil
 	}
-	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = ANY($2) AND deleted_at IS NULL ORDER BY user_id, department_id`, tenantID, userIDs)
+	// BUG-4: ids bound as text[] (uuidStrings) and cast — pgx cannot encode
+	// a []uuid.UUID in PgBouncer simple-protocol mode.
+	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = ANY($2::uuid[]) AND deleted_at IS NULL ORDER BY user_id, department_id`, tenantID, uuidStrings(userIDs))
 }
 
 func (r *DeptMembershipRepository) ListByDepartment(ctx context.Context, tenantID, departmentID uuid.UUID) ([]domain.DeptMembership, error) {
@@ -109,10 +111,20 @@ func (r *DeptMembershipRepository) Assign(ctx context.Context, tenantID, userID,
 				out = existing
 				return nil
 			}
-			// Level changing — soft-delete old row so the unique index frees.
-			if _, err := tx.Exec(ctx, `UPDATE dept_memberships SET deleted_at = now() WHERE id = $1`, existing.ID); err != nil {
-				return err
+			// Level changing — DM-3: role changes are UPDATEs on the existing
+			// row (same id, history kept by record_version/updated_at), never
+			// delete-then-insert. The row is already locked FOR UPDATE above.
+			changed := tx.QueryRow(ctx, `
+				UPDATE dept_memberships SET role_level = $2, granted_by = $3
+				WHERE id = $1
+				RETURNING `+dmCols,
+				existing.ID, string(level), grantedBy)
+			updated, uerr := scanDeptMembership(changed)
+			if uerr != nil {
+				return uerr
 			}
+			out = updated
+			return nil
 		}
 		// Insert new row. ON CONFLICT DO NOTHING absorbs the race where a
 		// concurrent worker inserted first (they hold uq_dm_active_membership

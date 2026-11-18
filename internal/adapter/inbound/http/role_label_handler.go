@@ -85,8 +85,7 @@ func (h *RoleLabelHandler) Patch(c *gin.Context) {
 	if !allowedRoleCodes[roleCode] {
 		// Path-param validation: return 400 (ErrValidation cause) with the
 		// semantic "invalid_role" code so callers distinguish a bad path param
-		// from a malformed body (VAL02/VAL03). ErrInvalidRole itself is a
-		// domain-rule sentinel (422) used by the service layer.
+		// from a malformed body (VAL02/VAL03).
 		HandleError(c, &domain.DomainError{Code: "invalid_role", Message: "invalid role_code", Cause: domain.ErrValidation})
 		return
 	}
@@ -99,7 +98,12 @@ func (h *RoleLabelHandler) Patch(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	l, err := h.svc.Update(c.Request.Context(), tenantID, roleCode, req.DisplayName, req.RecordVersion)
+	if req.DisplayName == nil {
+		// LLD §17 / GAP-25: display_name is P-13's only mutable field.
+		HandleError(c, domain.NewError(domain.ErrNoMutableField, "the request body contains no field this endpoint can change"))
+		return
+	}
+	l, err := h.svc.Update(c.Request.Context(), tenantID, roleCode, *req.DisplayName, req.RecordVersion)
 	if err != nil {
 		HandleError(c, err)
 		return

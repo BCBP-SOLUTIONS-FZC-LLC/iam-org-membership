@@ -15,6 +15,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // DSNFromEnv builds a PostgreSQL connection URL for the application pool by
@@ -269,10 +270,16 @@ func wrapConnErr(err error) error {
 }
 
 // IsDBUnavailable reports whether err is a database availability failure:
-// SQLSTATE class 08, 53, 57 (except 57014) or 58, or a closed pool.
+// SQLSTATE class 08, 53, 57 (except 57014) or 58, a closed pool, or a
+// connection that could not be opened at all (*pgconn.ConnectError: refused,
+// unreachable, TLS/auth handshake failed — BUG-10; it carries no SQLSTATE, so
+// the class checks above never match it). errors.As also finds it inside
+// fmt.Errorf %w wrapping and errors.Join.
 func IsDBUnavailable(err error) bool {
+	var connectErr *pgconn.ConnectError
 	return pgcommon.IsConnectionException(err) || pgcommon.IsInsufficientResources(err) ||
-		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err) || pgcommon.IsPoolClosed(err)
+		pgcommon.IsOperatorIntervention(err) || pgcommon.IsSystemError(err) || pgcommon.IsPoolClosed(err) ||
+		errors.As(err, &connectErr)
 }
 
 // itoa is a tiny helper so callers can inline a LIMIT clause into a raw SQL

@@ -127,3 +127,18 @@ func TestRealmConfigSync_ListError_PropagatesAndSkipsMetrics(t *testing.T) {
 	assert.Equal(t, Result{}, res)
 	assert.Empty(t, m.realmSyncFailedStages)
 }
+
+// GAP-23, T-15: when the Realm Provisioner only queued the change
+// (applied=false), the marker stays set and the run is not a failure.
+func TestRealmConfigSync_Queued_KeepsMarker(t *testing.T) {
+	jctx, reconciler, rp, m := newRealmSyncTestContext()
+	reconciler.candidates = []port.RealmSyncCandidate{{TenantID: uuid.New(), LocalAccountsEnabled: false}}
+	rp.patchErr = port.ErrRealmConfigQueued
+
+	res, err := RealmConfigSync(context.Background(), jctx)
+
+	require.NoError(t, err)
+	assert.Equal(t, Result{Attempted: 1, Skipped: 1}, res)
+	assert.Empty(t, reconciler.clearedIDs, "realm_sync_pending must stay set until RP applied the change")
+	assert.Empty(t, m.realmSyncFailedStages, "a queued change is not a failure")
+}

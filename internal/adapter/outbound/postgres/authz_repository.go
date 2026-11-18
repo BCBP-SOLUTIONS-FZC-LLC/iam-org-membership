@@ -83,6 +83,7 @@ func (r *AuthZRepository) FindMembershipProjection(ctx context.Context, tenantID
 			WHERE tm.tenant_id  = $1
 			  AND tm.user_id    = $2
 			  AND tm.deleted_at IS NULL
+			  AND tm.status <> 'left' -- TM-9: a removed member is not a member
 			GROUP BY
 				tm.status, t.status, t.plan, t.default_locale,
 				t.mfa_freshness_seconds, t.local_accounts_enabled, t.residency_mode, t.feature_flags`,

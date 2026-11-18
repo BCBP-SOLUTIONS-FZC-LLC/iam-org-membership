@@ -150,15 +150,15 @@ func TestDRepo_DeptMembership(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, second)
 		require.NotNil(t, prevRow, "level change must return previous row")
-		assert.Equal(t, domain.DeptReviewer, second.RoleLevel, "new row must carry the updated level")
-		assert.NotEqual(t, first.ID, second.ID, "level change must produce a new row ID")
+		assert.Equal(t, domain.DeptReviewer, second.RoleLevel, "the row must carry the updated level")
+		assert.Equal(t, first.ID, second.ID, "DM-3 (GAP-22): a level change updates the same row")
 		assert.Equal(t, domain.DeptPreparator, prevRow.RoleLevel, "previous must carry the old level")
 
 		var deletedAt *string
 		err = rawPool.QueryRow(ctx,
 			`SELECT deleted_at::text FROM dept_memberships WHERE id = $1`, first.ID).Scan(&deletedAt)
 		require.NoError(t, err)
-		assert.NotNil(t, deletedAt, "old dept_membership must be soft-deleted after level change")
+		assert.Nil(t, deletedAt, "the row is not soft-deleted by a level change")
 	})
 
 	// DREPO-DM-006 — Assign ON CONFLICT winner path (lines 127,135)

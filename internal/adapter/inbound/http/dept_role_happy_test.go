@@ -251,7 +251,8 @@ func TestDepartmentList_Success_200(t *testing.T) {
 	tenantID := uuid.New()
 	deptA := uuid.New()
 	td := &drhTenantDeptRepo{
-		listFn: func(_ context.Context, tid uuid.UUID) ([]domain.TenantDepartment, error) {
+		// P-3 lists active departments only (TD-4, GAP-11).
+		listActiveFn: func(_ context.Context, tid uuid.UUID) ([]domain.TenantDepartment, error) {
 			return []domain.TenantDepartment{{TenantID: tid, DepartmentID: deptA, IsActive: true, RecordVersion: 1}}, nil
 		},
 	}
@@ -271,7 +272,7 @@ func TestDepartmentList_Success_200(t *testing.T) {
 
 func TestDepartmentList_RepoError(t *testing.T) {
 	tenantID := uuid.New()
-	td := &drhTenantDeptRepo{listFn: func(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
+	td := &drhTenantDeptRepo{listActiveFn: func(context.Context, uuid.UUID) ([]domain.TenantDepartment, error) {
 		return nil, errors.New("db down")
 	}}
 	svc := service.NewDepartmentService(&drhDeptRepo{}, td, drhCache{})
@@ -423,8 +424,8 @@ func TestDeptMembershipAssign_InvalidLevel(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Assign(c)
 
-	// ErrInvalidRole → 422 (same as unknown role codes in other handlers)
-	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	// LLD §17: 400 invalid_role_level (OBS-2).
+	assertErrorCode(t, w, http.StatusBadRequest, "INVALID_ROLE_LEVEL")
 }
 
 func TestDeptMembershipAssign_DeptInactive(t *testing.T) {

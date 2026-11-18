@@ -80,21 +80,42 @@ func (s *DeptMembershipService) isServiceAccountOrDegrade(ctx context.Context, t
 	return isServiceAccount
 }
 
-// deptDelegateOrDegrade calls the Delegation Service's DLG-I3 dept-delegate
-// lookup and, on failure, degrades to nil (tenant-wide impact) rather than
-// failing the whole Assign/Remove — LLD §11.5: "on a Delegation outage the
-// gate degrades to tenant-wide impact (still correct, less precise)".
-func (s *DeptMembershipService) deptDelegateOrDegrade(ctx context.Context, tenantID, userID, deptID uuid.UUID) *uuid.UUID {
+// deptScope is the outcome of the §8.8.4 dept-scope pre-filter that runs
+// before any Workflow call on a P-10 demotion or a P-11 removal.
+type deptScope int
+
+const (
+	// deptScopeNone: the lookup succeeded and the user is not the delegate
+	// on an active dept-scoped delegation for this dept — zero Workflow
+	// calls (WFI-9: "nil result → zero added Workflow Service calls").
+	deptScopeNone deptScope = iota
+	// deptScopeDelegation: a dept delegation was found — dept-scoped
+	// Workflow check with its delegation_id (§8.8.4).
+	deptScopeDelegation
+	// deptScopeTenantWide: the lookup could not be performed — fall back to
+	// the tenant-wide Workflow check (§20.5 "falls back to tenant-wide
+	// impact (correct, less precise)", WFI-11). Also used when no Delegation
+	// client is wired, since "not found" cannot then be established.
+	deptScopeTenantWide
+)
+
+// deptDelegateScope calls the Delegation Service's DLG-I3 dept-delegate
+// lookup and tells "not found" apart from "lookup failed". A failed lookup
+// never fails the Assign/Remove; it widens the Workflow check instead.
+func (s *DeptMembershipService) deptDelegateScope(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*uuid.UUID, deptScope) {
 	if s.delegationCheck == nil {
-		return nil
+		return nil, deptScopeTenantWide
 	}
 	id, err := s.delegationCheck.DeptDelegate(ctx, tenantID, userID, deptID)
 	if err != nil {
 		s.log.WarnContext(ctx, "deptmembership: DeptDelegate call failed — degrading to tenant-wide impact",
 			"tenant_id", tenantID, "user_id", userID, "dept_id", deptID, "error", err.Error())
-		return nil
+		return nil, deptScopeTenantWide
 	}
-	return id
+	if id == nil {
+		return nil, deptScopeNone
+	}
+	return id, deptScopeDelegation
 }
 
 // ListByDepartment is P-9 — dept members by level.
@@ -224,27 +245,34 @@ func (s *DeptMembershipService) Assign(ctx context.Context, tenantID, userID, de
 	return dm, nil
 }
 
-// Remove is P-11 — remove a user from a dept.
-// §8.8.4 / WFI-11 (LLD rev 1.56): if the user is currently the delegate on an
-// active delegation scoped to this department, we must pre-filter to the
-// exact delegation row and pass its id to WorkflowClient.GetDelegateImpact
-// so the workflow-side query is dept-scoped rather than tenant-wide.
-// A `nil` delegation_id preserves today's tenant-wide behavior (§8.8 full
-// removal), which is not what we want here.
+// Remove is P-11 — remove a user from a dept. The §8.8.4 dept-scope
+// pre-filter decides the Workflow check (deptDelegateScope):
+//   - no dept delegation found → zero Workflow calls, removal proceeds (WFI-9);
+//   - dept delegation found    → dept-scoped check with its delegation_id;
+//   - lookup failed            → tenant-wide check (§20.5, WFI-11).
+//
+// A Workflow failure on either check is a hard dependency — 503
+// workflow_service_unavailable, no DB write, retryable (WFI-8, §20.5).
 func (s *DeptMembershipService) Remove(ctx context.Context, tenantID, userID, deptID uuid.UUID, actorID uuid.UUID) (*domain.DeptMembership, error) {
-	delegationID := s.deptDelegateOrDegrade(ctx, tenantID, userID, deptID)
-	impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, delegationID)
-	if err == nil && impact.ActiveWorkflows > 0 {
-		metrics.IncDelegateRemovalBlocked(metrics.DelegateBlockScopeDeptRemoval)
-		return nil, domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").
-			WithDetails(map[string]any{
-				"active_workflows": impact.ActiveWorkflows,
-				"workflow_ids":     impact.WorkflowIDs,
-				"allowed_actions":  []string{"replace_delegate", "stop_workflows"},
-			})
+	delegationID, scope := s.deptDelegateScope(ctx, tenantID, userID, deptID)
+	if scope != deptScopeNone {
+		impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, delegationID)
+		if err != nil {
+			return nil, domain.NewError(domain.ErrWorkflowServiceUnavailable, "workflow service unavailable")
+		}
+		if impact.ActiveWorkflows > 0 {
+			metrics.IncDelegateRemovalBlocked(metrics.DelegateBlockScopeDeptRemoval)
+			return nil, domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").
+				WithDetails(map[string]any{
+					"active_workflows": impact.ActiveWorkflows,
+					"delegate_user_id": userID,
+					"workflow_ids":     impact.WorkflowIDs,
+					"allowed_actions":  []string{"replace_delegate", "stop_workflows"},
+				})
+		}
 	}
 	var dm *domain.DeptMembership
-	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
 		out, rerr := s.deptMemberships.Remove(txCtx, tenantID, userID, deptID)
 		if rerr != nil {
 			return rerr
@@ -342,12 +370,15 @@ func (s *DeptMembershipService) invalidate(ctx context.Context, tenantID, userID
 	)
 }
 
-// demotionGate is the WFI-9/12 check for a dept role-level decrease: if the
-// user is an active delegate on a dept-scoped delegation for deptID and
-// Workflow reports active workflows depending on it, the decrease is
-// refused (409 workflow_resolution_required). Promotions and same-level
-// assignments never trigger it (WFI-12); a Workflow outage allows the
-// decrease (WFI-9 fail-open). Runs outside any transaction.
+// demotionGate is the §8.8.4 check for a dept role-level decrease.
+// Promotions and same-level assignments never trigger it (WFI-12). For a
+// decrease, the dept-scope pre-filter decides the Workflow check
+// (deptDelegateScope): no dept delegation found → zero Workflow calls,
+// demotion proceeds (WFI-9); found → dept-scoped check; lookup failed →
+// tenant-wide check (§20.5, WFI-11). Active workflows → 409
+// workflow_resolution_required. A Workflow failure → 503
+// workflow_service_unavailable with no DB write — fail-closed (WFI-8,
+// §20.5). Runs outside any transaction.
 func (s *DeptMembershipService) demotionGate(ctx context.Context, tenantID, userID, deptID uuid.UUID, level domain.DeptRole) error {
 	if s.workflow == nil {
 		return nil
@@ -365,15 +396,13 @@ func (s *DeptMembershipService) demotionGate(ctx context.Context, tenantID, user
 	if current == nil || level.Rank() >= current.RoleLevel.Rank() {
 		return nil
 	}
-	delegationID := s.deptDelegateOrDegrade(ctx, tenantID, userID, deptID)
-	if delegationID == nil {
+	delegationID, scope := s.deptDelegateScope(ctx, tenantID, userID, deptID)
+	if scope == deptScopeNone {
 		return nil
 	}
 	impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, delegationID)
 	if err != nil {
-		s.log.WarnContext(ctx, "WFI-9: workflow delegate-impact check failed — degrading to allow (fail-open)", "user_id", userID, "error", err.Error())
-		metrics.IncDependencyError("workflow", "get_delegate_impact", metrics.DependencyReasonFallbackServed)
-		return nil
+		return domain.NewError(domain.ErrWorkflowServiceUnavailable, "workflow service unavailable")
 	}
 	if impact.ActiveWorkflows == 0 {
 		return nil
@@ -383,6 +412,7 @@ func (s *DeptMembershipService) demotionGate(ctx context.Context, tenantID, user
 		"active workflows depend on this delegate at the current level").
 		WithDetails(map[string]any{
 			"active_workflows": impact.ActiveWorkflows,
+			"delegate_user_id": userID,
 			"workflow_ids":     impact.WorkflowIDs,
 			"allowed_actions":  []string{"replace_delegate", "stop_workflows"},
 		})

@@ -51,7 +51,10 @@ func (h *DepartmentHandler) List(c *gin.Context) {
 		return
 	}
 
-	views, err := h.svc.ListForTenant(c.Request.Context(), tenantID)
+	// GAP-11, LLD TD-4: tenant-facing department listings filter on both
+	// flags (tenant activation and the catalog entry), so P-3 lists active
+	// departments only (§5.3 "List active departments").
+	views, err := h.svc.ListActiveForTenant(c.Request.Context(), tenantID)
 	if err != nil {
 		HandleError(c, err)
 		return
@@ -183,7 +186,8 @@ func (h *DepartmentHandler) Patch(c *gin.Context) {
 		return
 	}
 	if req.IsActive == nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "is_active is required"))
+		// LLD §17 / GAP-25: is_active is P-25's only mutable field.
+		HandleError(c, domain.NewError(domain.ErrNoMutableField, "the request body contains no field this endpoint can change"))
 		return
 	}
 	td, err := h.svc.SetActive(c.Request.Context(), tenantID, deptID, *req.IsActive, req.RecordVersion)

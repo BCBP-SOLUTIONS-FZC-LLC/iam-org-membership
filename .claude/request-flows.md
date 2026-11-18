@@ -342,6 +342,8 @@ Canonical vocabulary: `optimistic_lock_conflict` / `record_version` (API-3, TM-1
 
 **Cross-service pattern:** Keycloak hard-deletes; User Profile scrubs its per-user PII (`display_name`, `phone`, `job_title`, `credentials`, signature, availability); O&M sets membership `status='left'` + `deleted_at`; cascade soft-deletes `tenant_roles`/`dept_memberships` (the two tables Core still owns) and emits one `MembershipRevoked{tenant_id, user_id, actor_id}` (LLD §15.2.2). O&M no longer owns `delegations`/`tender_acl_entries` and does not touch them directly — the Delegation Service and Tender-ACL Service each run their own async cascade off that shared `MembershipRevoked` signal, ending delegation rows and soft-deleting ACL overlays respectively in their own databases; AuthZ Enrichment consumes the same signal to evict the departed user's `om:memberships` cache entry. (This used to be two separate emissions — `MembershipRevoked` plus a `TenantMembershipRemoved` aimed at Tender-ACL — now consolidated into the one shared event per the LLD.)
 
+**P-8 vs I-5 (TM-4/TM-5, LLD rev 2.52):** an admin removal (P-8) sets only `status='left'` (row kept, `deleted_at` NULL; a later I-3 re-add reactivates it); the Keycloak-deletion path (I-5) sets `status='left'` + `deleted_at`.
+
 **§16 A45 / TR-9:** removal soft-deletes ALL `tenant_roles` rows for the user (symmetric with dept_memberships); one `TenantRoleRevoked` emitted per revoked elevated grant. Suspend (P-7) leaves `tenant_roles` untouched (frozen, M-1).
 
 **§16 A44 / TM-13 last-owner concurrency:** `SELECT ... FOR UPDATE` on tenants row serializes concurrent owner-drops. Two concurrent P-28 revokes of the last two owners: exactly one succeeds, the other gets `422 last_owner_removal`.

@@ -25,9 +25,12 @@ func (r *ParkedTenantEventRepository) Park(ctx context.Context, ev port.ParkedTe
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO pending_tenant_events (event_id, tenant_id, event_type, occurred_at, envelope)
-			VALUES ($1, $2, $3, $4, $5)
+			VALUES ($1, $2, $3, $4, $5::jsonb)
 			ON CONFLICT (event_id) DO NOTHING`,
-			ev.EventID, ev.TenantID, ev.EventType, ev.OccurredAt, ev.Envelope)
+			// BUG-3: bound as text + ::jsonb. A []byte is sent as bytea in
+			// PgBouncer simple-protocol mode and Postgres rejects it for jsonb
+			// (22P02); same pattern as tenant_repository.go feature_flags.
+			ev.EventID, ev.TenantID, ev.EventType, ev.OccurredAt, string(ev.Envelope))
 		return err
 	})
 }

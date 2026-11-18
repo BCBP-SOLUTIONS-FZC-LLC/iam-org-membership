@@ -13,7 +13,13 @@ import (
 
 // MembershipRepository owns tenant_memberships (§16 A14 — lifecycle only,
 // no role data). Uses uq_tm_active_user (WHERE deleted_at IS NULL) as the
-// unique index so a user can rejoin after a soft-leave.
+// unique index.
+//
+// TM-4/TM-5: a normal removal (P-8) keeps the row with status='left' and
+// deleted_at NULL; deleted_at is set only by the identity-deletion / GDPR
+// path (I-5, §15.2.2). A 'left' row grants nothing (TM-9), so every read here
+// that answers "is this user a member" excludes it, and a re-add reactivates
+// the same row (TM-1) instead of inserting a second one.
 type MembershipRepository struct {
 	pool *pgcommon.Pool
 }
@@ -40,7 +46,7 @@ func scanMembership(row pgx.Row) (*domain.TenantMembership, error) {
 // idx_tm_tenant_created). Order: (created_at, id). Cursor represents the
 // last row of the previous page.
 func (r *MembershipRepository) List(ctx context.Context, tenantID uuid.UUID, cursor *domain.MembershipListCursor, limit int) (*domain.MembershipListPage, error) {
-	if limit <= 0 || limit > 200 {
+	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 	var out []domain.TenantMembership
@@ -50,13 +56,13 @@ func (r *MembershipRepository) List(ctx context.Context, tenantID uuid.UUID, cur
 		if cursor == nil {
 			rows, err = tx.Query(ctx, `
 				SELECT `+membershipCols+` FROM tenant_memberships
-				WHERE tenant_id = $1 AND deleted_at IS NULL
+				WHERE tenant_id = $1 AND deleted_at IS NULL AND status <> 'left'
 				ORDER BY created_at ASC, id ASC
 				LIMIT $2`, tenantID, limit+1)
 		} else {
 			rows, err = tx.Query(ctx, `
 				SELECT `+membershipCols+` FROM tenant_memberships
-				WHERE tenant_id = $1 AND deleted_at IS NULL
+				WHERE tenant_id = $1 AND deleted_at IS NULL AND status <> 'left'
 				  AND (created_at, id) > ($2, $3)
 				ORDER BY created_at ASC, id ASC
 				LIMIT $4`, tenantID, cursor.CreatedAt, cursor.ID, limit+1)
@@ -93,7 +99,7 @@ func (r *MembershipRepository) List(ctx context.Context, tenantID uuid.UUID, cur
 func (r *MembershipRepository) FindByUserID(ctx context.Context, tenantID, userID uuid.UUID) (*domain.TenantMembership, error) {
 	var out *domain.TenantMembership
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `SELECT `+membershipCols+` FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`, tenantID, userID)
+		row := tx.QueryRow(ctx, `SELECT `+membershipCols+` FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL AND status <> 'left'`, tenantID, userID)
 		m, err := scanMembership(row)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -107,14 +113,16 @@ func (r *MembershipRepository) FindByUserID(ctx context.Context, tenantID, userI
 	return out, err
 }
 
-// Insert creates a tenant_memberships row (PI-10 idempotent). Redelivery
-// or concurrent retry with the same (tenant_id, user_id) resolves via the
-// uq_tm_active_user partial-unique index. We deliberately DO NOTHING on
-// conflict rather than laundering the row's status (a `suspended` or
-// `left` row must not be silently reset to `active` by a KC re-register
-// — that would bypass SEAT-1 re-check + TM-8 last-owner gate + audit
-// trail). After ON CONFLICT DO NOTHING returns 0 rows, a follow-up SELECT
-// fetches the existing active row so the caller sees the true state.
+// Insert creates a tenant_memberships row. Redelivery or a concurrent retry
+// with the same (tenant_id, user_id) resolves via the uq_tm_active_user
+// partial-unique index:
+//   - no row → a new row is inserted;
+//   - a 'left' row → that row is reactivated to tm.Status (TM-1: status
+//     transitions are UPDATEs on the existing row; a removed user who is
+//     re-added gets the same row back, never a second one);
+//   - an active or suspended row → returned unchanged (a suspended row is
+//     never silently reset by a KC re-register).
+
 func (r *MembershipRepository) Insert(ctx context.Context, tm *domain.TenantMembership) (*domain.TenantMembership, error) {
 	if tm.ID == uuid.Nil {
 		tm.ID = uuid.New()
@@ -136,10 +144,21 @@ func (r *MembershipRepository) Insert(ctx context.Context, tm *domain.TenantMemb
 			out = created
 			return nil
 		}
-		// Insert absorbed by ON CONFLICT — return the existing row unchanged.
-		// Status stays as-is (suspended/left/active); callers wanting to
-		// reactivate a soft-leaver must go through SetStatus with a valid
-		// optimistic-lock version and any relevant policy gates.
+		// Insert absorbed by ON CONFLICT. A 'left' row is reactivated in
+		// place (TM-1); an active/suspended row is returned unchanged.
+		reactivated := tx.QueryRow(ctx, `
+			UPDATE tenant_memberships SET status = $3
+			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL AND status = 'left'
+			RETURNING `+membershipCols,
+			tm.TenantID, tm.UserID, string(tm.Status))
+		back, rerr := scanMembership(reactivated)
+		if rerr != nil && !errors.Is(rerr, pgx.ErrNoRows) {
+			return rerr
+		}
+		if back != nil {
+			out = back
+			return nil
+		}
 		winner := tx.QueryRow(ctx, `
 			SELECT `+membershipCols+` FROM tenant_memberships
 			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
@@ -159,7 +178,7 @@ func (r *MembershipRepository) SetStatus(ctx context.Context, tenantID, userID u
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
 			UPDATE tenant_memberships SET status = $3
-			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL AND record_version = $4
+			WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL AND status <> 'left' AND record_version = $4
 			RETURNING `+membershipCols,
 			tenantID, userID, string(status), expectedVersion)
 		m, err := scanMembership(row)
@@ -175,6 +194,9 @@ func (r *MembershipRepository) SetStatus(ctx context.Context, tenantID, userID u
 	return out, err
 }
 
+// SoftDelete is the identity-deletion path (I-5, §15.2.2): status='left' and
+// deleted_at=now(). Normal removal (P-8) does not use it — it sets
+// status='left' through SetStatus and keeps deleted_at NULL (TM-4/TM-5).
 func (r *MembershipRepository) SoftDelete(ctx context.Context, tenantID, userID uuid.UUID, expectedVersion int64) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		cmd, err := tx.Exec(ctx, `
@@ -188,6 +210,20 @@ func (r *MembershipRepository) SoftDelete(ctx context.Context, tenantID, userID 
 			return r.probeMembership(ctx, tx, tenantID, userID)
 		}
 		return nil
+	})
+}
+
+var _ port.LeftMembershipEraser = (*MembershipRepository)(nil)
+
+// MarkLeftMembershipDeleted stamps deleted_at on a row P-8 already marked
+// 'left', when I-5 reports the identity deleted (§15.2.2). Idempotent.
+func (r *MembershipRepository) MarkLeftMembershipDeleted(ctx context.Context, tenantID, userID uuid.UUID) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE tenant_memberships SET deleted_at = now()
+			WHERE tenant_id = $1 AND user_id = $2 AND status = 'left' AND deleted_at IS NULL`,
+			tenantID, userID)
+		return err
 	})
 }
 
@@ -205,7 +241,7 @@ func (r *MembershipRepository) ListActiveUserIDs(ctx context.Context, tenantID u
 	var ids []uuid.UUID
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT user_id FROM tenant_memberships WHERE tenant_id = $1 AND deleted_at IS NULL`,
+			`SELECT user_id FROM tenant_memberships WHERE tenant_id = $1 AND deleted_at IS NULL AND status <> 'left'`,
 			tenantID)
 		if err != nil {
 			return err
@@ -225,7 +261,7 @@ func (r *MembershipRepository) ListActiveUserIDs(ctx context.Context, tenantID u
 
 func (r *MembershipRepository) probeMembership(ctx context.Context, tx pgx.Tx, tenantID, userID uuid.UUID) error {
 	var currentVersion int64
-	err := tx.QueryRow(ctx, `SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`, tenantID, userID).Scan(&currentVersion)
+	err := tx.QueryRow(ctx, `SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL AND status <> 'left'`, tenantID, userID).Scan(&currentVersion)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NewError(domain.ErrMemberNotFound, "member not found")

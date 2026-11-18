@@ -74,6 +74,27 @@ func (r *InvitationRepository) List(ctx context.Context, tenantID uuid.UUID) ([]
 	return out, err
 }
 
+// ListAll is P-30 with ?include_terminal=true: every status, newest first.
+func (r *InvitationRepository) ListAll(ctx context.Context, tenantID uuid.UUID) ([]domain.PendingInvitation, error) {
+	var out []domain.PendingInvitation
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT `+inviteCols+` FROM pending_invitations WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			inv, err := scanInvitation(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, *inv)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 func (r *InvitationRepository) LockByID(ctx context.Context, id uuid.UUID) (*domain.PendingInvitation, error) {
 	var out *domain.PendingInvitation
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
@@ -364,15 +385,16 @@ func (r *InvitationRepository) CountCreatedInWindow(ctx context.Context, tenantI
 
 // CountCreatedInWindowByActor returns the count of invitations created by a
 // specific actor for the tenant since `since` — SECURITY-5 per-actor hourly
-// rate check. Uses deleted_at IS NULL to exclude hard-deleted rows while still
-// counting revoked/expired/accepted invitations within the window (a revoked
-// invite still consumed a slot in the originating hour).
+// rate check. Counts every status — revoked/expired/accepted invitations within
+// the window still consumed a slot in the originating hour. pending_invitations
+// has no deleted_at column: rows are hard-deleted, so a removed row simply
+// drops out of the count.
 func (r *InvitationRepository) CountCreatedInWindowByActor(ctx context.Context, tenantID, actorID uuid.UUID, since time.Time) (int, error) {
 	var n int
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
 			`SELECT COUNT(*) FROM pending_invitations
-			 WHERE tenant_id = $1 AND invited_by = $2 AND created_at >= $3 AND deleted_at IS NULL`,
+			 WHERE tenant_id = $1 AND invited_by = $2 AND created_at >= $3`,
 			tenantID, actorID, since).Scan(&n)
 	})
 	return n, err
@@ -416,6 +438,30 @@ func (r *InvitationRepository) ExpireOverdue(ctx context.Context, limit int) ([]
 		return rows.Err()
 	})
 	return out, err
+}
+
+// EraseRevokedPII is the deferred SECURITY-8 erase for revoked invitations
+// (see port doc): revoked rows created before createdBefore that still hold
+// an email are scrubbed, oldest first, bounded by limit.
+func (r *InvitationRepository) EraseRevokedPII(ctx context.Context, createdBefore time.Time, limit int) (int, error) {
+	var n int
+	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE pending_invitations
+			SET email = '', full_name = 'redacted'
+			WHERE id IN (
+				SELECT id FROM pending_invitations
+				WHERE status = 'revoked' AND email <> '' AND created_at < $1
+				ORDER BY created_at
+				LIMIT $2
+			)`, createdBefore, limit)
+		if err != nil {
+			return err
+		}
+		n = int(tag.RowsAffected())
+		return nil
+	})
+	return n, err
 }
 
 func (r *InvitationRepository) ClearKCCleanupPendingByID(ctx context.Context, id uuid.UUID) error {

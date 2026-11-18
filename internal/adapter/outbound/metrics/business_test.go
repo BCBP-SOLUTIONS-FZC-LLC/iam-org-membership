@@ -69,6 +69,8 @@ func TestRegisterSucceedsAndPopulatesAllVars(t *testing.T) {
 	assert.NotNil(t, DelegateSuspendImpact, "DelegateSuspendImpact must be initialised")
 	assert.NotNil(t, TenantOwnerlessEscalated, "TenantOwnerlessEscalated must be initialised")
 	assert.NotNil(t, SeatLimitReached, "SeatLimitReached must be initialised")
+	assert.NotNil(t, CacheInvalidationFailed, "CacheInvalidationFailed must be initialised")
+	assert.NotNil(t, CacheErrors, "CacheErrors must be initialised")
 	assert.NotNil(t, InviteThrottled, "InviteThrottled must be initialised")
 	assert.NotNil(t, RealmSyncFailed, "RealmSyncFailed must be initialised")
 	assert.NotNil(t, DelegateRemovalBlocked, "DelegateRemovalBlocked must be initialised")
@@ -366,4 +368,17 @@ func TestPlatformRegistry_EveryEntryHasATier3Predecessor(t *testing.T) {
 		assert.NotEmpty(t, entry.SupersedesTier3,
 			"Proposed entry %q must name at least one Tier-3 predecessor", entry.Name)
 	}
+}
+
+// TestIncCacheHelpers_Increment — Fix 1: the cache failure counters
+// increment by label.
+func TestIncCacheHelpers_Increment(t *testing.T) {
+	ensureRegistered(t)
+	before := testutil.ToFloat64(CacheInvalidationFailed.WithLabelValues("tenant"))
+	IncCacheInvalidationFailed("tenant")
+	assert.Equal(t, before+1, testutil.ToFloat64(CacheInvalidationFailed.WithLabelValues("tenant")))
+
+	beforeOp := testutil.ToFloat64(CacheErrors.WithLabelValues("set"))
+	IncCacheError("set")
+	assert.Equal(t, beforeOp+1, testutil.ToFloat64(CacheErrors.WithLabelValues("set")))
 }

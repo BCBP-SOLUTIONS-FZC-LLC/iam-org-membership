@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
@@ -29,6 +30,9 @@ type GroupMappingService struct {
 	cache              port.Cache
 	groupMappingClient port.GroupMappingClient
 	log                port.SlogStyleLogger // optional — see WithLogger
+	// tenantDepts backs the TD-6 assignability check (GAP-21) — see
+	// WithTenantDepartments. Optional: nil skips the check.
+	tenantDepts port.TenantDepartmentRepository
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -62,6 +66,33 @@ const (
 type JITResult struct {
 	AssignedDepts      []uuid.UUID             `json:"assigned_depts"`
 	GrantedTenantRoles []domain.TenantRoleCode `json:"granted_tenant_roles"`
+	// SkippedDepts lists mapped departments that were not assigned because
+	// they are not active for the tenant (TD-6, GAP-21). Omitted when empty.
+	SkippedDepts []uuid.UUID `json:"skipped_depts,omitempty"`
+}
+
+// WithTenantDepartments wires the tenant_departments repository for the TD-6
+// check: a mapped department that is not active for the tenant is skipped
+// (not assigned) and reported in JITResult.SkippedDepts.
+func (s *GroupMappingService) WithTenantDepartments(r port.TenantDepartmentRepository) *GroupMappingService {
+	s.tenantDepts = r
+	return s
+}
+
+// assignable reports whether deptID is active for the tenant (TD-6). A
+// department never activated for the tenant is not assignable either.
+func (s *GroupMappingService) assignable(ctx context.Context, tenantID, deptID uuid.UUID) (bool, error) {
+	if s.tenantDepts == nil {
+		return true, nil
+	}
+	td, err := s.tenantDepts.Find(ctx, tenantID, deptID)
+	if err != nil {
+		if errors.Is(err, domain.ErrDepartmentNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return td != nil && td.IsActive, nil
 }
 
 // AssignFromGroups is I-10 (§8.5): resolve the caller's Keycloak group
@@ -136,6 +167,7 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 
 	res := &JITResult{}
 	err = s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		*res = JITResult{} // a retried transaction must not append twice
 		pub, _ := port.EventPublisherFromContext(txCtx)
 
 		// Per-(dept, level) event classification (Granted / LevelChanged / no
@@ -143,6 +175,18 @@ func (s *GroupMappingService) AssignFromGroups(ctx context.Context, tenantID, us
 		// atomically-accurate `previous` Assign() itself returns — not a
 		// separate pre-fetch, which would race the same way B15 did.
 		for _, dr := range deptRoles {
+			// GAP-21 / TD-6: an inactive department is not assignable. I-10
+			// skips it (the active ones are still applied) and says so.
+			ok, derr := s.assignable(txCtx, tenantID, dr.DepartmentID)
+			if derr != nil {
+				return derr
+			}
+			if !ok {
+				res.SkippedDepts = append(res.SkippedDepts, dr.DepartmentID)
+				s.log.WarnContext(txCtx, "I-10: mapped department is not active for the tenant — skipped (TD-6)",
+					"tenant_id", tenantID, "user_id", userID, "department_id", dr.DepartmentID)
+				continue
+			}
 			assigned, previous, aerr := s.deptMems.Assign(txCtx, tenantID, userID, dr.DepartmentID, mem.ID, dr.Level, uuid.Nil)
 			if aerr != nil {
 				return aerr

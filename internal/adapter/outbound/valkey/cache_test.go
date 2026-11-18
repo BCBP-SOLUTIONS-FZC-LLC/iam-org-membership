@@ -2,11 +2,16 @@ package valkey
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,6 +66,11 @@ func TestVC_CACHE_002_TimeoutsHaveTightDefaults(t *testing.T) {
 	assert.Equal(t, 100*time.Millisecond, opts.DialTimeout, "DialTimeout default must stay tight")
 	assert.Equal(t, 50*time.Millisecond, opts.ReadTimeout, "ReadTimeout default must stay tight")
 	assert.Equal(t, 50*time.Millisecond, opts.WriteTimeout, "WriteTimeout default must stay tight")
+	// MaxRetries -1 (disabled) is normalised by go-redis to 0 retries; the
+	// go-redis default would be 3. DialerRetries 1 = a single dial attempt
+	// (go-redis default 5, 100 ms apart) — no retry storm with Valkey down.
+	assert.Equal(t, 0, opts.MaxRetries, "command retries must be disabled")
+	assert.Equal(t, 1, opts.DialerRetries, "only one dial attempt per command")
 }
 
 // TestVC_CACHE_003_GetSetRoundtrip — basic write-then-read.
@@ -245,4 +255,170 @@ func TestVC_CACHE_011_KeyBuildersFormatCorrectly(t *testing.T) {
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, tc.got, "%s key builder must match §6.1 exactly", tc.name)
 	}
+}
+
+// ── Valkey outage: fail fast, count and log lost invalidations (Fix 1) ──
+
+var registerMetricsOnce sync.Once
+
+// ensureMetrics initialises gincommon's metric identity and registers the
+// service metrics once per test process (same order as cmd/server).
+func ensureMetrics() {
+	registerMetricsOnce.Do(func() {
+		_ = gincommon.ObservabilityMiddlewares(gincommon.Config{
+			ServiceName: "iam-org-membership", BuildVersion: "test",
+			Domain: "iam", Environment: "test",
+		})
+		metrics.Register("test")
+	})
+}
+
+// warnCapture is a port.Logger that records Warn calls.
+type warnCapture struct {
+	mu    sync.Mutex
+	warns []map[string]any
+	msgs  []string
+}
+
+func (l *warnCapture) Debug(string, map[string]any) {}
+func (l *warnCapture) Info(string, map[string]any)  {}
+func (l *warnCapture) Error(string, map[string]any) {}
+func (l *warnCapture) Warn(msg string, f map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.msgs = append(l.msgs, msg)
+	l.warns = append(l.warns, f)
+}
+
+// downCache returns a Cache pointed at a Valkey that is no longer listening.
+func downCache(t *testing.T) *Cache {
+	t.Helper()
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	addr := mr.Addr()
+	mr.Close()
+	c := New(addr)
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// TestVC_CACHE_FIX1_DeleteFailure_CountsPerKeyTypeAndLogsOnce — a failed
+// DEL increments cache_invalidation_failed_total once per key type and
+// cache_errors_total{op="del"} once, logs exactly one WARN, and still
+// returns the error unchanged to the caller.
+func TestVC_CACHE_FIX1_DeleteFailure_CountsPerKeyTypeAndLogsOnce(t *testing.T) {
+	ensureMetrics()
+	log := &warnCapture{}
+	c := downCache(t).WithLogger(log)
+
+	tenantBefore := testutil.ToFloat64(metrics.CacheInvalidationFailed.WithLabelValues("tenant"))
+	localeBefore := testutil.ToFloat64(metrics.CacheInvalidationFailed.WithLabelValues("locale"))
+	delBefore := testutil.ToFloat64(metrics.CacheErrors.WithLabelValues("del"))
+
+	tid := uuid.New()
+	err := c.Delete(context.Background(), "om:tenant:"+tid.String(), "om:locale:"+tid.String())
+	require.Error(t, err, "the DEL error is still returned to the caller")
+
+	assert.Equal(t, tenantBefore+1, testutil.ToFloat64(metrics.CacheInvalidationFailed.WithLabelValues("tenant")))
+	assert.Equal(t, localeBefore+1, testutil.ToFloat64(metrics.CacheInvalidationFailed.WithLabelValues("locale")))
+	assert.Equal(t, delBefore+1, testutil.ToFloat64(metrics.CacheErrors.WithLabelValues("del")))
+
+	require.Len(t, log.warns, 1, "one WARN per failed DEL call")
+	assert.Contains(t, log.msgs[0], "cache invalidation failed")
+	assert.Equal(t, "tenant,locale", log.warns[0]["key_types"])
+	assert.Contains(t, log.warns[0]["keys"], tid.String())
+}
+
+// TestVC_CACHE_FIX1_DeleteSuccess_NoCountNoLog — a healthy DEL records
+// nothing.
+func TestVC_CACHE_FIX1_DeleteSuccess_NoCountNoLog(t *testing.T) {
+	ensureMetrics()
+	log := &warnCapture{}
+	c, _ := newTestCache(t)
+	c.WithLogger(log)
+
+	before := testutil.ToFloat64(metrics.CacheInvalidationFailed.WithLabelValues("tenant"))
+	require.NoError(t, c.Delete(context.Background(), "om:tenant:"+uuid.NewString()))
+	assert.Equal(t, before, testutil.ToFloat64(metrics.CacheInvalidationFailed.WithLabelValues("tenant")))
+	assert.Empty(t, log.warns)
+}
+
+// TestVC_CACHE_FIX1_GetFailure_CountedMissIsNot — a failed GET counts as a
+// cache error; a plain miss does not.
+func TestVC_CACHE_FIX1_GetFailure_CountedMissIsNot(t *testing.T) {
+	ensureMetrics()
+
+	healthy, _ := newTestCache(t)
+	before := testutil.ToFloat64(metrics.CacheErrors.WithLabelValues("get"))
+	v, err := healthy.Get(context.Background(), "om:tenant:"+uuid.NewString())
+	require.NoError(t, err)
+	assert.Nil(t, v)
+	assert.Equal(t, before, testutil.ToFloat64(metrics.CacheErrors.WithLabelValues("get")), "a miss is not an error")
+
+	_, err = downCache(t).Get(context.Background(), "om:tenant:"+uuid.NewString())
+	require.Error(t, err)
+	assert.Equal(t, before+1, testutil.ToFloat64(metrics.CacheErrors.WithLabelValues("get")))
+}
+
+// TestVC_CACHE_FIX1_DownValkeyFailsFast — with Valkey not listening each
+// command makes one dial attempt and no retries. Before Fix 1 the go-redis
+// defaults (4 attempts × 5 dials) made each call take ~1.7 s.
+func TestVC_CACHE_FIX1_DownValkeyFailsFast(t *testing.T) {
+	ensureMetrics()
+	c := downCache(t)
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		_, _ = c.Get(context.Background(), "om:tenant:"+uuid.NewString())
+		_ = c.Set(context.Background(), "om:tenant:"+uuid.NewString(), []byte("x"), time.Minute)
+	}
+	assert.Less(t, time.Since(start), 500*time.Millisecond, "six calls against a down Valkey must not retry")
+}
+
+// TestVC_CACHE_FIX1_KeyType — the key_type label is the om:{type} family,
+// bounded to known types.
+func TestVC_CACHE_FIX1_KeyType(t *testing.T) {
+	id := uuid.NewString()
+	cases := map[string]string{
+		"om:tenant:" + id:                 "tenant",
+		"om:memberships:" + id + ":" + id: "memberships",
+		"om:members:" + id + ":50":        "members",
+		"om:seat_usage:" + id:             "seat_usage",
+		"om:departments":                  "departments",
+		"om:departments:stale":            "departments",
+		"om:plans:gen:starter":            "plans",
+		"om:unknown:" + id:                "other",
+		"hello":                           "other",
+	}
+	for key, want := range cases {
+		assert.Equal(t, want, keyType(key), key)
+	}
+}
+
+// TestVC_CACHE_FIX1B_DeleteFailure_LogsAtMostTenKeys — a failed DEL of 12
+// keys logs the first 10 plus "(+2 more)"; the counter still sees every
+// key type.
+func TestVC_CACHE_FIX1B_DeleteFailure_LogsAtMostTenKeys(t *testing.T) {
+	ensureMetrics()
+	log := &warnCapture{}
+	c := downCache(t).WithLogger(log)
+
+	keys := make([]string, 12)
+	for i := range keys {
+		keys[i] = "om:tenant:" + uuid.NewString()
+	}
+	require.Error(t, c.Delete(context.Background(), keys...))
+
+	require.Len(t, log.warns, 1)
+	got, ok := log.warns[0]["keys"].(string)
+	require.True(t, ok)
+	assert.True(t, strings.HasSuffix(got, " (+2 more)"), got)
+	for _, k := range keys[:10] {
+		assert.Contains(t, got, k)
+	}
+	for _, k := range keys[10:] {
+		assert.NotContains(t, got, k)
+	}
+	assert.Equal(t, "tenant", log.warns[0]["key_types"])
+
+	assert.Equal(t, strings.Join(keys[:10], ","), logKeys(keys[:10]), "10 keys: no suffix")
 }

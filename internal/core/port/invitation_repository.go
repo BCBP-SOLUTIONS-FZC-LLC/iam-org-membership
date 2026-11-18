@@ -11,6 +11,10 @@ import (
 // InvitationRepository owns pending_invitations (§4.2, §16 A11).
 type InvitationRepository interface {
 	List(ctx context.Context, tenantID uuid.UUID) ([]domain.PendingInvitation, error)
+
+	// ListAll returns every invitation of the tenant, terminal ones included
+	// (accepted / expired / revoked) — P-30 ?include_terminal=true (§5.4).
+	ListAll(ctx context.Context, tenantID uuid.UUID) ([]domain.PendingInvitation, error)
 	FindByID(ctx context.Context, tenantID, id uuid.UUID) (*domain.PendingInvitation, error)
 	FindPendingByEmail(ctx context.Context, tenantID uuid.UUID, email string) (*domain.PendingInvitation, error)
 	FindPendingByKeycloakUser(ctx context.Context, tenantID, keycloakUserID uuid.UUID) (*domain.PendingInvitation, error)
@@ -84,6 +88,13 @@ type InvitationRepository interface {
 	// (reconciler via sysPool) may pass uuid.Nil for tenantID — the
 	// implementation then matches on id alone.
 	ErasePII(ctx context.Context, tenantID, id uuid.UUID) error
+
+	// EraseRevokedPII erases the PII columns on revoked invitations created
+	// before createdBefore whose PII is still present — the deferred half of
+	// SECURITY-8 for revokes, which keep the email until the PI-11 cooldown
+	// window has passed. Returns rows erased. Cross-tenant; callers MUST use
+	// a BYPASSRLS pool.
+	EraseRevokedPII(ctx context.Context, createdBefore time.Time, limit int) (int, error)
 }
 
 // InvitationRepositoryNoop supplies LockByID (and can be embedded so new
@@ -103,3 +114,9 @@ func (InvitationRepositoryNoop) CountCreatedInWindowByActor(context.Context, uui
 	return 0, nil
 }
 func (InvitationRepositoryNoop) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (InvitationRepositoryNoop) ListAll(context.Context, uuid.UUID) ([]domain.PendingInvitation, error) {
+	return nil, nil
+}
+func (InvitationRepositoryNoop) EraseRevokedPII(context.Context, time.Time, int) (int, error) {
+	return 0, nil
+}

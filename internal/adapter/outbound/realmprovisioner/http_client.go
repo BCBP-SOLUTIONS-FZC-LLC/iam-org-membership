@@ -222,16 +222,18 @@ func (c *HTTPClient) PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, p
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		// RP returns 202 when the Keycloak call is transiently unavailable and
 		// the change is queued for reconciliation (applied:false, reconciling:true).
-		// Callers already set realm_sync_pending=true on 202 (T-15 Option A), so
-		// no action is needed here — but logging the reconciling flag makes the
-		// RP-queued path observable during incident investigation.
+		// T-15: the realm has not applied the change yet, so this is reported
+		// as ErrRealmConfigQueued and the caller keeps realm_sync_pending set
+		// (P-2 sets it and answers 202; realm-config-sync leaves it for the
+		// next run). A body without "applied" is treated as applied.
 		var result struct {
-			Applied     bool `json:"applied"`
-			Reconciling bool `json:"reconciling"`
+			Applied     *bool `json:"applied"`
+			Reconciling bool  `json:"reconciling"`
 		}
-		if decErr := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&result); decErr == nil && result.Reconciling {
-			c.warn("rp: PatchRealmConfig accepted but queued for reconciliation — realm_sync_pending will self-heal",
-				"tenant_id", tenantID, "applied", result.Applied)
+		if decErr := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&result); decErr == nil && result.Applied != nil && !*result.Applied {
+			c.warn("rp: PatchRealmConfig accepted but queued for reconciliation — keeping realm_sync_pending",
+				"tenant_id", tenantID, "applied", false, "reconciling", result.Reconciling)
+			return port.ErrRealmConfigQueued
 		}
 		return nil
 	}

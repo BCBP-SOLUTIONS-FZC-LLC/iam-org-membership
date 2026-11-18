@@ -52,7 +52,8 @@ func (h *MembershipHandler) List(c *gin.Context) {
 	limit := 50
 	if s, exists := c.GetQuery("limit"); exists {
 		n, err := strconv.Atoi(s)
-		if err != nil || n <= 0 || n > 200 {
+		// LLD §17 invalid_limit / PAGE-4: limit must be in [1, 100].
+		if err != nil || n <= 0 || n > 100 {
 			HandleError(c, domain.NewError(domain.ErrValidation, "invalid limit").
 				WithDetails(map[string]any{"code": "invalid_limit"}))
 			return
@@ -169,7 +170,8 @@ func (h *MembershipHandler) Patch(c *gin.Context) {
 		return
 	}
 	if req.Status == nil {
-		HandleError(c, domain.NewError(domain.ErrValidation, "status is required"))
+		// LLD §17 / GAP-25: status is P-7's only mutable field.
+		HandleError(c, domain.NewError(domain.ErrNoMutableField, "the request body contains no field this endpoint can change"))
 		return
 	}
 	status := domain.MembershipStatus(*req.Status)
