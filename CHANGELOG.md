@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed (2026-11-18 — platform-audit v0.1.2)
+
+- **`platform-audit` and `cmd/audittypecheck` v0.1.1 → v0.1.2.** The PATCH pins iam-audit-log v0.2.0 (one new entry type, Catalog's `config.plan.trial_profile.updated`); no API, schema or behaviour change here.
+
 ### Fixed (2026-11-18 — platform-audit v0.1.1)
 
 - **The invitation-expiry CronJob failed on every production run.** It enqueues its `invitation.expired` entries with `EnqueueBatch` on the sysPool, which `SystemPoolConfig` always runs in PgBouncer mode; platform-audit v0.1.0 could not encode that call's uuid arrays on the simple protocol (`auditoutbox: enqueue batch: unable to encode []uuid.UUID`), so the sweep's transaction failed and no invitation expired. `platform-audit` and `cmd/audittypecheck` move to v0.1.1, which fixes it. The test harness's sysPool is a direct connection, which is why the suite never saw it: new `TestAudit_InvitationExpirySweepOnPgBouncerModePool` runs the sweep on a PgBouncer-mode pool (it fails on v0.1.0).
