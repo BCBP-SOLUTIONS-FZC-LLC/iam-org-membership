@@ -265,6 +265,6 @@ schema_count=$(( \
 
 echo "Floci init complete."
 echo "  SNS topics:        ${topic_count} (expected 4)"
-echo "  SQS queues+DLQs:   ${queue_count} (expected 22 = 11 pairs)"
-echo "  SNS subscriptions: ${sub_count} (expected 11)"
-echo "  Glue schemas:      ${schema_count} (expected 14 across 2 registries)"
+echo "  SQS queues+DLQs:   ${queue_count} (expected 24 = 12 pairs)"
+echo "  SNS subscriptions: ${sub_count} (expected 12)"
+echo "  Glue schemas:      ${schema_count} (expected 13 across 2 registries)"

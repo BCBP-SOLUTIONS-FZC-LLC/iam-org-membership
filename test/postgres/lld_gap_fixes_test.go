@@ -1,10 +1,13 @@
 //go:build integration
 
-// Real-database tests for the code-vs-LLD fixes of 2026-11-11 (LLD rev 2.52):
-// BUG-3 / BUG-4 in PgBouncer (simple-protocol) mode, GAP-16 removal keeps
-// the row as 'left' and a re-add reactivates it, GAP-22 level change in
-// place, GAP-24 concurrent duplicate I-3, BUG-6 concurrent last-owner
-// removals, GAP-18 / GAP-7 seat-overage re-evaluation.
+// Real-database tests for the code-vs-LLD fixes of 2026-11-11 (LLD rev 2.54)
+// and the fixes that followed: BUG-3 / BUG-4 in PgBouncer (simple-protocol)
+// mode, GAP-16 removal keeps the row as 'left' and a re-add reactivates it,
+// GAP-24 concurrent duplicate I-3, GAP-22 level change in place, BUG-6
+// concurrent last-owner removals, BUG-9 the P-7 suspend last-owner guard
+// counts only active owners, DEC-2 I-4 suspending the last active owner sets
+// ownerless_since, CD-54 seats (a removal frees a seat; an I-3 plain add at
+// the cap is refused), and I-5 after P-8 / on an offboarded tenant.
 package postgres_test
 
 import (
