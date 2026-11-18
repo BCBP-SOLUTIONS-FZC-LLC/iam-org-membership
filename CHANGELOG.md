@@ -16,6 +16,14 @@ This service has never been deployed to any environment — there is no released
 - **P-7 no longer refuses re-suspending an owner who is already suspended.** Since BUG-9 (ef1b685) this returned `422 LAST_OWNER_REMOVAL` when one active owner remained, although the active-owner count does not change; it now returns what the same call returns for a non-owner. Suspending an active owner whose only other owners are suspended is still refused.
 - `port.TenantRoleRepository`: the `CountActiveOwners` comment now says it counts owner role rows only (suspended owners included); `CountActiveOwnersActive` is TM-8's definition.
 
+### Fixed (2026-11-18 — retest decisions DEC-1, DEC-2, BUG-9, BUG-14, BUG-19)
+
+- **I-5 is not gated by the Workflow delegate-impact check (DEC-1, d40335b).** A Keycloak `USER_DELETE` always completes the removal cascade (TM-12): I-5 no longer returns `409 workflow_resolution_required` or `503 workflow_service_unavailable` and makes no Workflow call.
+- **The P-7 suspend guard counts only active owners (BUG-9, ef1b685).** Suspending the last active `tenant_owner` returns `422 LAST_OWNER_REMOVAL` even when suspended owners exist, and two owners suspending each other at the same moment can no longer both succeed.
+- **I-4 suspending the last active owner escalates (DEC-2, a4bf5c3).** The suspend is completed (I-4 is never refused); `ownerless_since` is set in the same transaction, `iam_org_membership_tenant_ownerless_escalated_total{reason="user_suspended"}` is incremented and `tenant_ownerless_escalation` is logged with reason `last_active_owner_suspended`.
+- **`TenantSuspended` requires `source` (BUG-14, 66bc2e2).** A missing, empty or unknown `source` is refused (`schema_violation`, straight to `tenant-orgm-q-dlq`) instead of defaulting to `billing_lapse`.
+- **I-8 lists each department once (BUG-19, 193e332).** A user with several elevated roles no longer gets every department repeated per role; departments are ordered by `department_id`.
+
 ### Fixed (2026-11-18 — platform-audit v0.1.1)
 
 - **The invitation-expiry CronJob failed on every production run.** It enqueues its `invitation.expired` entries with `EnqueueBatch` on the sysPool, which `SystemPoolConfig` always runs in PgBouncer mode; platform-audit v0.1.0 could not encode that call's uuid arrays on the simple protocol (`auditoutbox: enqueue batch: unable to encode []uuid.UUID`), so the sweep's transaction failed and no invitation expired. `platform-audit` and `cmd/audittypecheck` move to v0.1.1, which fixes it. The test harness's sysPool is a direct connection, which is why the suite never saw it: new `TestAudit_InvitationExpirySweepOnPgBouncerModePool` runs the sweep on a PgBouncer-mode pool (it fails on v0.1.0).
