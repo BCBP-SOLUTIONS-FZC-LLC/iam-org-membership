@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-19 — BUG-18: consumed PlanCatalogChanged accepts an unknown or missing plan code)
+
+- **The consumed PlanCatalogChanged schema accepts an unknown or missing plan code (LLD: bump every plan) instead of sending the event to the DLQ (BUG-18).** `internal/adapter/outbound/eventbus/schemas/plan_catalog_changed.json` and the `PlanCatalogChangedPayload` in `api/asyncapi.yaml`: `code` stays a string but loses its `starter|pro|enterprise` enum and is no longer required (`change_type` and `feature_set` stay required). The catalog consumer's existing fallback then retires the cached I-8 projections of every plan. This consumer copy is now deliberately looser than Catalog's producer schema; consumed-only, never registered in Glue.
+
 ### Fixed (2026-11-19 — NEW-CONC-01: one TenantRoleGranted per real role insert)
 
 - **P-28 no longer emits a second TenantRoleGranted when two identical requests race** (event only when the role row is really inserted, EVT-10). `ReconcileRoles` gives each grant an explicit ID and treats a role as granted by this call only when `Grant` returns that ID; when `ON CONFLICT DO NOTHING` returned the row a concurrent call inserted, the role is neither reported as granted nor announced. HTTP status, body and error codes are unchanged.

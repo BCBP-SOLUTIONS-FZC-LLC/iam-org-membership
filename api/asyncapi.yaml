@@ -4126,20 +4126,22 @@ components:
       type: object
       additionalProperties: true
       description: |
-        Catalog's registered PlanCatalogChanged schema (iam-catalog-admin
-        schemas/plan_catalog_changed.json), copied verbatim. Rev 2.39
-        corrected this extract: it previously required `plan_code`, a field
-        the producer never sends (it sends `code`), so every real event
-        would have failed consumed-schema validation and gone to the DLQ.
+        This service's consumer copy of Catalog's PlanCatalogChanged schema
+        (iam-catalog-admin schemas/plan_catalog_changed.json). It is
+        deliberately LOOSER than the producer's schema: `code` is optional
+        and has no enum, because the LLD says a missing or unknown code
+        bumps every plan (BUG-18), so such an event must reach the consumer
+        instead of being rejected to the DLQ. Rev 2.39 corrected this
+        extract: it previously required `plan_code`, a field the producer
+        never sends (it sends `code`), so every real event would have failed
+        consumed-schema validation and gone to the DLQ.
       required:
-        - code
         - change_type
         - feature_set
       properties:
         code:
           type: string
-          enum: [starter, pro, enterprise]
-          description: The plan whose catalog entry changed. The only field this service reads.
+          description: The plan whose catalog entry changed. The only field this service reads. Optional and not an enum here — a missing or unknown code retires the cached I-8 projections of every plan.
           example: enterprise
         change_type:
           type: string
