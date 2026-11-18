@@ -28,6 +28,8 @@ func NewAuthZRepository(pool *pgcommon.Pool) *AuthZRepository {
 // was 3 sequential queries inside a transaction, costing 3 PgBouncer
 // round-trips per I-8 cache miss. Now it is a single QueryRow — one
 // round-trip regardless of how many roles or dept memberships the user has.
+// Departments come from a LATERAL jsonb_agg: each department once, ordered
+// by department_id, however many elevated roles the user holds (BUG-19).
 //
 // NULL aggregates (user has no roles / no dept memberships) are normalised
 // to empty slices so the service layer never sees nil collections.

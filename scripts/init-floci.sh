@@ -8,10 +8,10 @@
 #   4 SNS topics     — iam-membership-events, iam-tenant-events, billing-events,
 #                      iam-catalog-events (Catalog's; stands in for its Terraform)
 #   3 inbound SQS    — tenant-orgm-q, billing-orgm-q, catalog-orgm-q (+ DLQs, maxReceiveCount=5)
-#   8 fan-out SQS    — §7.3.2 consumer queues on the two O&M topics (+ DLQs)
+#   10 fan-out SQS   — §7.3.2 consumer queues on the two O&M topics (+ DLQs)
 #   SNS→SQS subs     — with filter policies on the `EventType` attribute
 #   2 Glue registries — iam-membership-events, iam-tenant-events
-#   15 Glue schemas  — every event this service produces (domain.IsProducedEvent),
+#   13 Glue schemas  — every event this service produces (domain.IsProducedEvent),
 #                      registered from the same JSON Schema Draft-07 files
 #                      eventbus.GlueCodec ships, so GLUE_REGISTRY_MEMBERSHIP_NAME
 #                      / GLUE_REGISTRY_TENANT_NAME can be set in .env and the

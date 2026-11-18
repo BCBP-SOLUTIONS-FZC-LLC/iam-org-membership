@@ -255,15 +255,13 @@ Two cases specific to signup provisioning (LLD rev 2.33):
 
 **Mitigate.** Complete the signup (re-drive I-1 or the backstop event). The CronJob, or I-1 itself, then replays the parked events in order. An event for a signup that was abandoned can be deleted once confirmed.
 
-### IAMSeatOverageActive / IAMSeatOverageActiveApproachingGrace
+### IAMSeatOverageActive / IAMSeatOverageActiveApproachingGrace (retired)
 
-**Meaning.** SEAT-5: tenants have been over their licensed seats (`overage_since` set) for more than 24h. The Helm rule fires 5 days before the `SEAT_OVERAGE_GRACE_DAYS` (30) window closes. This is a business signal for Billing, not a fault.
-
-**Mitigate.** Billing contacts the tenant. Enforcement follows SEAT-4 at the end of the grace window.
+**Retired (CD-54, LLD rev 2.49).** Seat overage was removed with the prepaid seat model: there is no `overage_since` column, no `SEAT_OVERAGE_GRACE_DAYS` setting and no seat-overage alert rule any more. Nothing to do if an old alert of this name is still seen.
 
 ### IAMSLO3_ReconcilerMarkersElevated
 
-**Meaning.** The combined durable markers (`iam:reconciler_markers:sum`: ownerless + realm-sync-pending + seat-overage + stale-invitation gauges) have stayed above 5 for 20 minutes. Some reconciler is not converging.
+**Meaning.** The combined durable markers (`iam:reconciler_markers:sum`: ownerless + realm-sync-pending + stale-invitation gauges) have stayed above 5 for 20 minutes. Some reconciler is not converging.
 
 **Triage.** Check which gauge is high, then that reconciler's CronJob (`realm-config-sync`, `invitation-expiry`, `parked-events-replay`) or the O-7 operator action for ownerless tenants.
 
