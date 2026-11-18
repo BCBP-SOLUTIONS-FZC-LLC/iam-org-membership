@@ -60,11 +60,14 @@ type TenantRoleRepository interface {
 	// (used by TM-8 last-owner guard when role=tenant_owner).
 	ListByRole(ctx context.Context, tenantID uuid.UUID, role domain.TenantRoleCode) ([]domain.TenantRole, error)
 
-	// CountActiveOwners is a hot-path count for TM-8 last-owner guard.
+	// CountActiveOwners counts live tenant_owner role rows only: an owner
+	// whose membership is suspended still counts. It is not TM-8's
+	// definition of an owner; use CountActiveOwnersActive for that.
 	CountActiveOwners(ctx context.Context, tenantID uuid.UUID) (int, error)
 
 	// CountActiveOwnersActive counts tenant_owner grants whose membership
-	// status is active. Used by the suspend-path TM-8 guard.
+	// is active and not deleted: TM-8's definition of an active owner
+	// (LLD L881). Used by the P-7/P-8/P-28 guards and the I-4/I-5 escalation.
 	CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error)
 
 	// Grant creates an elevated role row. chk_tr_no_member enforces the

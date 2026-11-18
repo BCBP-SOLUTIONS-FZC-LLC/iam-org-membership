@@ -96,6 +96,12 @@ func (f *fakeMembershipRepo) List(ctx context.Context, tenantID uuid.UUID, curso
 	return nil, errors.New("not used")
 }
 func (f *fakeMembershipRepo) FindByUserID(ctx context.Context, tenantID, userID uuid.UUID) (*domain.TenantMembership, error) {
+	if f.findByUserIDFn == nil {
+		// BUG-9 follow-up: P-7's owner suspend now reads the target under the
+		// lock; tests that do not set this get "not found", which keeps the
+		// last-owner guard exactly as before.
+		return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
+	}
 	return f.findByUserIDFn(ctx, tenantID, userID)
 }
 func (f *fakeMembershipRepo) Insert(ctx context.Context, tm *domain.TenantMembership) (*domain.TenantMembership, error) {

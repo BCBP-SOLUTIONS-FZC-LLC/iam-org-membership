@@ -499,3 +499,118 @@ func TestLLDFix_I5_OffboardedTenant_NoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, fx.Provisioning.DeleteMember(withTenant(ctx, tenantID), tenantID, ownerID))
 }
+
+// bug9fAddOwner inserts one more tenant_owner whose membership has the given status and returns its user id.
+func bug9fAddOwner(t *testing.T, ctx context.Context, fx *testFixtures, tenantID uuid.UUID, status string) uuid.UUID {
+	t.Helper()
+	userID := uuid.New()
+	var memID uuid.UUID
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
+		INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, $3::membership_status) RETURNING id`,
+		tenantID, userID, status).Scan(&memID))
+	_, err := fx.rawPool.Exec(ctx, `
+		INSERT INTO tenant_roles (tenant_id, user_id, tenant_membership_id, role_code, granted_by)
+		VALUES ($1, $2, $3, 'tenant_owner', $2)`, tenantID, userID, memID)
+	require.NoError(t, err)
+	return userID
+}
+
+// bug9fState returns the user's membership status and whether the user still holds a live tenant_owner row.
+func bug9fState(t *testing.T, ctx context.Context, fx *testFixtures, tenantID, userID uuid.UUID) (string, bool) {
+	t.Helper()
+	var status string
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT status::text FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&status))
+	var owner bool
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM tenant_roles WHERE tenant_id = $1 AND user_id = $2
+		               AND role_code = 'tenant_owner' AND deleted_at IS NULL)`, tenantID, userID).Scan(&owner))
+	return status, owner
+}
+
+// BUG-9 follow-up, TM-8 L881: P-8 removing active owner A while the only other owner is suspended is refused.
+func TestBUG9_RemoveActiveOwner_OtherSuspended_Refused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p8-a")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	err := fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, ownerA, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval, "A is the last ACTIVE owner")
+	status, owner := bug9fState(t, ctx, fx, tenantID, ownerA)
+	assert.Equal(t, "active", status, "A still active")
+	assert.True(t, owner, "A's tenant_owner row kept")
+}
+
+// BUG-9 follow-up: P-8 removing the suspended owner B while A is active succeeds.
+func TestBUG9_RemoveSuspendedOwner_OtherActive_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p8-b")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	require.NoError(t, fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, ownerB, ownerA))
+	status, owner := bug9fState(t, ctx, fx, tenantID, ownerB)
+	assert.Equal(t, "left", status)
+	assert.False(t, owner)
+}
+
+// BUG-9 follow-up, TM-8 L881: P-28 stripping tenant_owner from active A while the only other owner is suspended is refused.
+func TestBUG9_ReconcileStripActiveOwner_OtherSuspended_Refused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p28-a")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	_, _, err := fx.Membership.ReconcileRoles(withSystemAndTenant(ctx, tenantID), tenantID, ownerA,
+		[]domain.TenantRoleCode{}, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval)
+	_, owner := bug9fState(t, ctx, fx, tenantID, ownerA)
+	assert.True(t, owner, "A keeps tenant_owner")
+}
+
+// BUG-9 follow-up: P-28 stripping tenant_owner from the suspended owner B while A is active succeeds.
+func TestBUG9_ReconcileStripSuspendedOwner_OtherActive_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p28-b")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	_, revoked, err := fx.Membership.ReconcileRoles(withSystemAndTenant(ctx, tenantID), tenantID, ownerB,
+		[]domain.TenantRoleCode{}, ownerA)
+	require.NoError(t, err)
+	require.Len(t, revoked, 1)
+	_, owner := bug9fState(t, ctx, fx, tenantID, ownerB)
+	assert.False(t, owner)
+}
+
+// BUG-9 follow-up: P-7 suspending owner B who is already suspended, while A is the only active owner, is not refused.
+func TestBUG9_ResuspendSuspendedOwner_NotRefused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "bug9f-p7")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerB)
+	require.NoError(t, err, "the active-owner count does not change")
+	assert.Equal(t, "suspended", status)
+}
+
+// BUG-9 follow-up control: two active owners plus a suspended third; P-8 removing one active owner succeeds.
+func TestBUG9_RemoveOneOfTwoActiveOwners_ThirdSuspended_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-ctl")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "active")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	require.NoError(t, fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, ownerB, ownerA))
+	status, _ := bug9fState(t, ctx, fx, tenantID, ownerA)
+	assert.Equal(t, "active", status)
+}

@@ -6,6 +6,12 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-18 — BUG-9 follow-up: P-8, P-28 and P-7 owner guards count only active owners)
+
+- **P-8 and P-28 refuse removing or demoting the last active owner.** Removing (P-8) or stripping `tenant_owner` from (P-28) an active owner whose only other owners are suspended now returns `422 LAST_OWNER_REMOVAL` (TM-8 L881: a suspended owner is not an active owner); before, it succeeded and left the tenant with no active owner. Removing or demoting a suspended owner while another owner is active still succeeds, and the existing refusal when no other owner row remains is unchanged. P-28 re-reads the target's membership status under the tenant-row lock.
+- **P-7 no longer refuses re-suspending an owner who is already suspended.** Since BUG-9 (ef1b685) this returned `422 LAST_OWNER_REMOVAL` when one active owner remained, although the active-owner count does not change; it now returns what the same call returns for a non-owner. Suspending an active owner whose only other owners are suspended is still refused.
+- `port.TenantRoleRepository`: the `CountActiveOwners` comment now says it counts owner role rows only (suspended owners included); `CountActiveOwnersActive` is TM-8's definition.
+
 ### Fixed (2026-11-18 — platform-audit v0.1.1)
 
 - **The invitation-expiry CronJob failed on every production run.** It enqueues its `invitation.expired` entries with `EnqueueBatch` on the sysPool, which `SystemPoolConfig` always runs in PgBouncer mode; platform-audit v0.1.0 could not encode that call's uuid arrays on the simple protocol (`auditoutbox: enqueue batch: unable to encode []uuid.UUID`), so the sweep's transaction failed and no invitation expired. `platform-audit` and `cmd/audittypecheck` move to v0.1.1, which fixes it. The test harness's sysPool is a direct connection, which is why the suite never saw it: new `TestAudit_InvitationExpirySweepOnPgBouncerModePool` runs the sweep on a PgBouncer-mode pool (it fails on v0.1.0).
