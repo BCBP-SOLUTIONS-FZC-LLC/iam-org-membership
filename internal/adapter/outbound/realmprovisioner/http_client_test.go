@@ -445,3 +445,27 @@ func TestF8_Smoke_PatchRealmConfig_Returns2xx(t *testing.T) {
 	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag})
 	require.NoError(t, err)
 }
+
+// GAP-23, T-15: 202 with applied=false (queued for reconciliation) is
+// reported as port.ErrRealmConfigQueued so the caller keeps the marker.
+func TestPatchRealmConfig_QueuedNotApplied_ReturnsErrRealmConfigQueued(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"applied":false,"reconciling":true}`))
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	flag := false
+	err := c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag})
+	require.ErrorIs(t, err, port.ErrRealmConfigQueued)
+}
+
+func TestPatchRealmConfig_AppliedTrue_ReturnsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"applied":true}`))
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, 5*time.Second, nil)
+	flag := true
+	require.NoError(t, c.PatchRealmConfig(context.Background(), uuid.New(), port.RealmConfigPatch{LocalAccountsEnabled: &flag}))
+}

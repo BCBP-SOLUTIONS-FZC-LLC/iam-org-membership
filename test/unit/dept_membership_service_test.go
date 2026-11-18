@@ -182,17 +182,19 @@ func TestDeptMembership_Remove_DelegationCheckErrorDegradesToNilDelegationID(t *
 }
 
 func TestDeptMembership_Remove_ReturnsWorkflowResolutionRequiredWhenImpactPositive(t *testing.T) {
-	// WFI-11: department-scoped GetDelegateImpact returns active_workflows > 0
-	// → 409 workflow_resolution_required (must be resolved via P-26 first).
+	// The Delegation lookup fails, so the check falls back to tenant-wide and
+	// a positive impact refuses the removal (409, resolved via P-26).
+	// LLD §20.5 (line 4120): "dept-scope precision leg (P-10/P-11) | Delegation
+	// (`dept-delegate`) | **degrade** | falls back to tenant-wide impact".
 	workflowID := uuid.New()
 	delClient := &fakeDelegationCheckClient{
 		deptDelegateFn: func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*uuid.UUID, error) {
-			return nil, nil // no active delegation → nil delegation_id passed through
+			return nil, errors.New("delegation 503") // lookup failed → tenant-wide fallback
 		},
 	}
 	wf := &fakeWorkflowClient{
 		getDelegateImpactFn: func(_ context.Context, _, _ uuid.UUID, delegationID *uuid.UUID) (*port.DelegateImpact, error) {
-			assert.Nil(t, delegationID, "no active delegation → nil delegation_id (tenant-wide query fallback)")
+			assert.Nil(t, delegationID, "failed lookup → nil delegation_id (tenant-wide query fallback)")
 			return &port.DelegateImpact{ActiveWorkflows: 3, WorkflowIDs: []uuid.UUID{workflowID}}, nil
 		},
 	}
@@ -240,9 +242,9 @@ func TestDeptMembership_Remove_ScopesDelegationIDWhenActiveDelegationExists(t *t
 	require.NoError(t, err)
 }
 
-func TestDeptMembership_Remove_WorkflowFailOpenProceedsWithRemoval(t *testing.T) {
-	// If GetDelegateImpact returns an error, the code path `err == nil && ...`
-	// falls through → removal proceeds (fail-open, WFI-13-spirit).
+func TestDeptMembership_Remove_WorkflowError_503NoRemoval(t *testing.T) {
+	// WFI-8: a GetDelegateImpact error on a removal is a hard dependency —
+	// 503 workflow_service_unavailable and no DB write (never fail-open).
 	wf := &fakeWorkflowClient{
 		getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
 			return nil, errors.New("workflow svc unavailable")
@@ -259,9 +261,9 @@ func TestDeptMembership_Remove_WorkflowFailOpenProceedsWithRemoval(t *testing.T)
 	svc := service.NewDeptMembershipService(repo, nil, nil, nil, nil, wf, nil, &passthroughTxRunner{})
 
 	got, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
-	require.NoError(t, err)
-	assert.NotNil(t, got)
-	assert.True(t, removeCalled, "fail-open: workflow-svc error must not block removal")
+	require.ErrorIs(t, err, domain.ErrWorkflowServiceUnavailable)
+	assert.Nil(t, got)
+	assert.False(t, removeCalled, "WFI-8: no DB write when Workflow is unavailable")
 }
 
 func TestDeptMembership_Remove_TxErrorPropagates(t *testing.T) {

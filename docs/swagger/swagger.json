@@ -1455,7 +1455,7 @@
         },
         "/readyz": {
             "get": {
-                "description": "Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines. Returns 503 if any dependency is not ready.",
+                "description": "Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines. Returns 503 if any required dependency is not ready; Valkey is advisory (CACHE-9) and a failing cache is reported as \"cache\":\"degraded\" with 200.",
                 "produces": [
                     "application/json"
                 ],
@@ -3261,7 +3261,8 @@
         "http.InternalJITResponse": {
             "type": "object",
             "properties": {
-                "assigned_departments": {
+                "assigned_depts": {
+                    "description": "Departments assigned or level-changed by this call.",
                     "type": "array",
                     "items": {
                         "type": "string",
@@ -3277,6 +3278,14 @@
                         "tender_admin",
                         "tenant_admin"
                     ]
+                },
+                "skipped_depts": {
+                    "description": "Mapped departments not assigned because they are not active for the tenant.",
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
                 }
             }
         },
@@ -3474,6 +3483,9 @@
         "http.InvitationResponse": {
             "type": "object",
             "properties": {
+                "created_at": {
+                    "type": "string"
+                },
                 "email": {
                     "type": "string"
                 },
@@ -3487,7 +3499,17 @@
                     "description": "LLD §5.4 P-6 spec key is `invitation_id`. `id` is the legacy alias,\ncarried for one release so downstream clients can migrate; will be\nremoved once tooling ships the rev-1.51-compat build.",
                     "type": "string"
                 },
+                "initial_tenant_roles": {
+                    "description": "Tenant roles granted when the invitation is accepted.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "invitation_id": {
+                    "type": "string"
+                },
+                "invited_by": {
                     "type": "string"
                 },
                 "record_version": {
@@ -3778,6 +3800,7 @@
             "type": "object",
             "properties": {
                 "display_name": {
+                    "description": "New display label. A body without it is 400 no_mutable_field; an\nempty one is 400 validation_error.",
                     "type": "string"
                 },
                 "record_version": {

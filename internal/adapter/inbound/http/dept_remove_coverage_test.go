@@ -173,10 +173,10 @@ func TestDeptRemove_MemberNotInDept_404(t *testing.T) {
 	assertErrorCode(t, w, http.StatusNotFound, "MEMBER_NOT_FOUND")
 }
 
-// ── P11-BL-04: workflow error → fail-open → 200 ───────────────────────────────
+// ── P11-BL-04: workflow error → 503 (WFI-8, no fail-open on removal) ──────────
 
 // Test Case ID: P11-BL-04
-func TestDeptRemove_WorkflowFailOpen_200(t *testing.T) {
+func TestDeptRemove_WorkflowError_503(t *testing.T) {
 	tenantID := uuid.New()
 	wf := &drhWorkflowClient{
 		getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
@@ -190,8 +190,8 @@ func TestDeptRemove_WorkflowFailOpen_200(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	// Workflow failure is fail-open — removal proceeds.
-	assert.Less(t, w.Code, 300, w.Body.String())
+	// WFI-8: a Workflow failure on a removal is a hard dependency.
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "WORKFLOW_SERVICE_UNAVAILABLE")
 }
 
 // ── P11-BL-05: dept-scoped delegate, 0 active workflows → 200 ────────────────
@@ -229,10 +229,10 @@ func TestDeptRemove_ActiveDelegate_409(t *testing.T) {
 	assertErrorCode(t, w, http.StatusConflict, "WORKFLOW_RESOLUTION_REQUIRED")
 }
 
-// ── P11-DEP-01: workflow timeout → fail-open → 200 ───────────────────────────
+// ── P11-DEP-01: workflow timeout → 503 (WFI-8) ───────────────────────────────
 
 // Test Case ID: P11-DEP-01
-func TestDeptRemove_WorkflowTimeout_FailOpen_200(t *testing.T) {
+func TestDeptRemove_WorkflowTimeout_503(t *testing.T) {
 	tenantID := uuid.New()
 	wf := &drhWorkflowClient{
 		getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
@@ -246,7 +246,7 @@ func TestDeptRemove_WorkflowTimeout_FailOpen_200(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String(), "user_id", uuid.New().String())
 	h.Remove(c)
 
-	assert.Less(t, w.Code, 300, w.Body.String())
+	assertErrorCode(t, w, http.StatusServiceUnavailable, "WORKFLOW_SERVICE_UNAVAILABLE")
 }
 
 // ── P11-AUTH-01: nil identity → 401 ──────────────────────────────────────────

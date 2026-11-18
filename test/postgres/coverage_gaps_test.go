@@ -1383,3 +1383,54 @@ func provisionTrialWithOwner(t *testing.T, ctx context.Context, fx *testFixtures
 	})
 	return tenantID, ownerID, err
 }
+
+// ── InvitationRepository.CountCreatedInWindowByActor ──────────────────
+
+// Test Case ID:      COV-INV-CCWA-001
+// Module:            iam-org-membership · Persistence
+// Feature:           pending_invitations · CountCreatedInWindowByActor (SECURITY-5)
+// API:               Internal (P-6 per-actor hourly rate check)
+// Scenario:          Counts only the actor's rows in the window, every status
+// Preconditions:     Tenant with invitations from two actors, one revoked, one outside the window
+// Test Steps:
+//  1. Insert 2 rows for actor A (one pending, one revoked), 1 for actor B,
+//     1 for actor A created 2 hours ago
+//  2. Call CountCreatedInWindowByActor for A with since = 1 hour ago
+//
+// Expected Result:
+//   - Returns 2 (the query runs against the real schema — it referenced a
+//     non-existent deleted_at column and failed every P-6 invite)
+//
+// Priority:          P0
+// Severity:          Critical
+// Automation Status: Automated
+func TestCOVInvCCWA001_CountCreatedInWindowByActor(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+
+	tenantID := seedTenant(t, ctx, rawPool, "inv-ccwa-001")
+	actorA, actorB := uuid.New(), uuid.New()
+
+	insert := func(email string, actor uuid.UUID, status, createdAgo string) {
+		t.Helper()
+		_, err := rawPool.Exec(ctx, `
+			INSERT INTO pending_invitations
+				(id, tenant_id, email, full_name, initial_tenant_roles, initial_dept_mappings,
+				 invited_by, status, expires_at, kc_cleanup_pending, created_at)
+			VALUES (gen_random_uuid(), $1, $2, 'User', '{}', '[]', $3, $4::invitation_status,
+				now() + interval '7 days', false, now() - $5::interval)`,
+			tenantID, email, actor, status, createdAgo)
+		require.NoError(t, err)
+	}
+	insert("a1@example.com", actorA, "pending", "0 minutes")
+	insert("a2@example.com", actorA, "revoked", "10 minutes")
+	insert("b1@example.com", actorB, "pending", "0 minutes")
+	insert("a-old@example.com", actorA, "pending", "2 hours")
+
+	repo := pgadapter.NewInvitationRepository(appPool)
+	since := time.Now().UTC().Add(-1 * time.Hour)
+	count, err := repo.CountCreatedInWindowByActor(withTenant(ctx, tenantID), tenantID, actorA, since)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count, "counts actor A's in-window rows, revoked included; excludes actor B and older rows")
+}

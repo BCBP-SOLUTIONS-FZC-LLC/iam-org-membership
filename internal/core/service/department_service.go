@@ -66,6 +66,9 @@ func (s *DepartmentService) listForTenant(ctx context.Context, tenantID uuid.UUI
 		if err != nil {
 			return nil, err
 		}
+		if activeOnly && !d.IsActive {
+			continue // TD-4: a retired catalog entry is not listed either
+		}
 		out = append(out, TenantDepartmentView{
 			DepartmentID:  td.DepartmentID,
 			Code:          d.Code,

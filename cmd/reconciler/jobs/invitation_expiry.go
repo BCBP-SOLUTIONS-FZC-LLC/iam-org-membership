@@ -47,6 +47,21 @@ func InvitationExpiry(ctx context.Context, jctx *Context) (Result, error) {
 	}
 	res.Attempted = len(expired)
 	res.Succeeded = len(expired)
+
+	// PI-11: erase PII from revoked invitations whose cooldown window has
+	// closed. The cooldown is counted from created_at so a re-invite can be
+	// refused during the window; once it passes the email is no longer needed.
+	if jctx.ReinviteCooldown > 0 {
+		cutoff := time.Now().Add(-jctx.ReinviteCooldown)
+		erased, eraseErr := jctx.Invitations.EraseRevokedPII(ctx, cutoff, jctx.BatchLimit)
+		if eraseErr != nil {
+			jctx.Logger.Warn("invitation-expiry: EraseRevokedPII failed (non-fatal)",
+				"error", eraseErr)
+		} else {
+			jctx.Logger.Info("invitation-expiry: revoked PII erased", "count", erased)
+		}
+	}
+
 	jctx.Logger.Info("invitation-expiry complete",
 		"attempted", res.Attempted, "succeeded", res.Succeeded,
 		"at", time.Now().UTC())

@@ -130,7 +130,9 @@ func setupTestDBWithAppConfig(t testing.TB, adjustApp func(*pgcommon.Config)) (*
 		`GRANT CONNECT ON DATABASE org_membership TO org_membership_app`,
 		`GRANT USAGE ON SCHEMA public TO org_membership_app`,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO org_membership_app`,
-		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO org_membership_app`,
+		// No blanket sequence grant: the migrations must grant every sequence
+		// the app role draws from (000008 — outbox_events_ordering_seq). A
+		// blanket grant here hid that gap from every keyed-enqueue test.
 		`GRANT EXECUTE ON FUNCTION app_tenant_id()                    TO org_membership_app`,
 		`GRANT EXECUTE ON FUNCTION log_rls_violation(text, uuid, text) TO org_membership_app`,
 		`GRANT EXECUTE ON FUNCTION rls_check_tenant(uuid, text)       TO org_membership_app`,

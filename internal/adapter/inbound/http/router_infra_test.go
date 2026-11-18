@@ -110,14 +110,17 @@ func TestReadyz_PostgresDown_Returns503(t *testing.T) {
 
 // ── /readyz — cache down ──────────────────────────────────────────────────
 
-// TestReadyz_CacheDown_Returns503 verifies that when Valkey is unhealthy
-// /readyz returns 503 (cache is advisory everywhere else, but /readyz fails
-// so the pod is removed from rotation — CACHE-9 comment in router.go).
-func TestReadyz_CacheDown_Returns503(t *testing.T) {
+// TestReadyz_CacheDown_Returns200Degraded verifies that when Valkey is
+// unhealthy but every required dependency is ok, /readyz stays ready (200)
+// and reports the cache as degraded — the cache is advisory (CACHE-9), so
+// a Valkey outage must not pull every pod out of rotation.
+func TestReadyz_CacheDown_Returns200Degraded(t *testing.T) {
 	h := &healthHandlers{
-		postgres: pingOK(),
-		cache:    pingFail(errors.New("valkey timeout")),
-		outbox:   pingOK(),
+		postgres:    pingOK(),
+		sysPostgres: pingOK(),
+		cache:       pingFail(errors.New("valkey timeout")),
+		outbox:      pingOK(),
+		consumers:   []Pinger{pingOK()},
 	}
 	eng := setupHealthEngine(h)
 
@@ -125,8 +128,37 @@ func TestReadyz_CacheDown_Returns503(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	eng.ServeHTTP(w, req)
 
-	require.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), `"cache":"down"`)
+	require.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	assert.Contains(t, body, `"cache":"degraded"`)
+	assert.Contains(t, body, `"status":"ready"`)
+	assert.Contains(t, body, `"database":"ok"`)
+}
+
+// TestReadyz_CacheDownAndRequiredDepDown_Returns503 verifies that a degraded
+// cache never masks a real readiness failure: the database, sys database,
+// outbox and consumers still fail /readyz exactly as before.
+func TestReadyz_CacheDownAndRequiredDepDown_Returns503(t *testing.T) {
+	cases := map[string]*healthHandlers{
+		"database": {postgres: pingFail(errors.New("db down")), cache: pingFail(errors.New("valkey down")), outbox: pingOK()},
+		"sys_database": {postgres: pingOK(), sysPostgres: pingFail(errors.New("sys down")),
+			cache: pingFail(errors.New("valkey down")), outbox: pingOK()},
+		"outbox": {postgres: pingOK(), cache: pingFail(errors.New("valkey down")), outbox: pingFail(errors.New("not started"))},
+		"consumer_0": {postgres: pingOK(), cache: pingFail(errors.New("valkey down")), outbox: pingOK(),
+			consumers: []Pinger{pingFail(errors.New("stale heartbeat"))}},
+	}
+	for name, h := range cases {
+		t.Run(name, func(t *testing.T) {
+			eng := setupHealthEngine(h)
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
+			eng.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusServiceUnavailable, w.Code)
+			assert.Contains(t, w.Body.String(), `"cache":"degraded"`)
+			assert.Contains(t, w.Body.String(), `"not ready"`)
+		})
+	}
 }
 
 // ── /readyz — outbox down ─────────────────────────────────────────────────

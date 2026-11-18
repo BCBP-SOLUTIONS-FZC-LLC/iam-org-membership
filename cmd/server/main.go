@@ -296,7 +296,7 @@ func main() {
 	}
 
 	// ── 4. Cache ──────────────────────────────────────────────────────────
-	cache := valkeyadapter.New(envOr("VALKEY_URL", "localhost:6379"))
+	cache := valkeyadapter.New(envOr("VALKEY_URL", "localhost:6379")).WithLogger(log)
 	defer func() {
 		if cerr := cache.Close(); cerr != nil {
 			log.Error("valkey close error", map[string]interface{}{"error": cerr.Error()})
@@ -633,7 +633,8 @@ func main() {
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log).
 		WithParkedEvents(parkedEvents, membershipConsumer).
-		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool))
+		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool)).
+		WithWorkflow(wfClient) // I-5 delegate-impact gate (§8.8 WFI-1)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
 		WithPlanCatalog(catalogReader).
 		WithIDPReader(rpClient).
@@ -645,7 +646,8 @@ func main() {
 		WithLogger(log).
 		WithTokenServiceClient(tokenServiceClient)
 	roleLabelSvc := service.NewRoleLabelService(deptRoleLabelRepo, cache)
-	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache, groupMappingClient).WithLogger(log)
+	groupMappingSvc := service.NewGroupMappingService(membershipRepo, tenantRoleRepo, deptMemRepo, txRunner, cache, groupMappingClient).WithLogger(log).
+		WithTenantDepartments(tenantDeptRepo) // GAP-21 / TD-6 assignability check
 	invitationSvc := service.NewInvitationService(invitationRepo, membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, rpClient, cache, txRunner, log, invitationExpiryDays).
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour).

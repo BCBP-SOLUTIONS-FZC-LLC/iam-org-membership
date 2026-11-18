@@ -88,15 +88,15 @@ func TestProvisioning_NewProvisioningService_ReturnsNonNil(t *testing.T) {
 	assert.NotNil(t, svc, "constructor must not fail on nil collaborators — production wiring supplies them")
 }
 
-// ── I5-DEP-01: DeleteMember has no WorkflowClient dependency ─────────────
-// LLD WFI-1 documents that the WFI-3 pre-check is present only in
-// MembershipService.RemoveUser (P-8). ProvisioningService.DeleteMember (I-5)
-// performs a direct cascade without any workflow availability check, so the
-// Workflow service being unavailable is irrelevant on this path.
+// ── DeleteMember without a WorkflowClient wired ──────────────────────────
+// The I-5 delegate-impact gate (§8.8 WFI-1) is optional wiring
+// (ProvisioningService.WithWorkflow); production always wires it — see
+// provisioning_deletemember_gate_test.go for the gated behaviour. With no
+// client wired, DeleteMember runs the plain cascade.
 //
 // This test wires up the minimum fakes needed for DeleteMember to succeed
 // (plain non-owner member with no dept memberships or delegations) and
-// verifies it returns nil — no workflow client is needed.
+// verifies it returns nil.
 
 func TestProvisioning_DeleteMember_WorkflowNotRequired(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
@@ -117,13 +117,12 @@ func TestProvisioning_DeleteMember_WorkflowNotRequired(t *testing.T) {
 		softDeleteAllForUserFn: func(context.Context, uuid.UUID, uuid.UUID) ([]domain.DeptMembership, error) { return nil, nil },
 	}
 
-	// NewProvisioningService has no WorkflowClient parameter — the WFI-3
-	// pre-check is architecturally absent from the I-5 path.
+	// No WithWorkflow: the I-5 gate is skipped.
 	svc := service.NewProvisioningService(
 		nil, mem, roles, deptMems, nil, nil, nil, nil,
 		&passthroughTxRunner{}, nil, nil,
 	)
 
 	err := svc.DeleteMember(context.Background(), tenantID, userID)
-	assert.NoError(t, err, "I-5 DeleteMember must succeed without any workflow service dependency")
+	assert.NoError(t, err, "I-5 DeleteMember must succeed when no workflow client is wired")
 }

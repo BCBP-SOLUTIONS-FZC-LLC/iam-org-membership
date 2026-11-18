@@ -371,30 +371,28 @@ func TestDeptMembership_Assign_HappyPath_ReturnsDeptMembership(t *testing.T) {
 
 // ── Remove gaps ───────────────────────────────────────────────────────────
 
-// TestDeptMembership_Remove_WorkflowError_FailsOpen verifies WFI-9: when
-// workflow.GetDelegateImpact returns an error, Remove proceeds (fail-open)
-// rather than blocking.
-func TestDeptMembership_Remove_WorkflowError_FailsOpen(t *testing.T) {
+// TestDeptMembership_Remove_WorkflowError_Blocks verifies WFI-8: when
+// workflow.GetDelegateImpact returns an error, Remove refuses with 503
+// workflow_service_unavailable instead of proceeding (WFI-8; §20.5 lists
+// P-11 removal and P-10 demotion as fail-closed).
+func TestDeptMembership_Remove_WorkflowError_Blocks(t *testing.T) {
 	wf := &fakeWorkflowClient{
 		getDelegateImpactFn: func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) (*port.DelegateImpact, error) {
 			return nil, errors.New("workflow_service_unavailable")
 		},
 	}
-	dm := &dmsFullDeptMemRepo{}
-	dm.assignFn = nil // Remove uses removeFn — but dmsFullDeptMemRepo has Remove returning nil, nil
-
-	// We need a Remove method — use fakeDeptMemRepo instead.
 	fakeRepo := &fakeDeptMemRepo{
 		removeFn: func(_ context.Context, _, _, _ uuid.UUID) (*domain.DeptMembership, error) {
-			return &domain.DeptMembership{ID: uuid.New()}, nil
+			t.Fatal("WFI-8: Remove must not write when Workflow is unavailable")
+			return nil, nil
 		},
 	}
 
 	svc := service.NewDeptMembershipService(fakeRepo, nil, nil, nil, nil, wf, nil, &passthroughTxRunner{})
 
 	got, err := svc.Remove(context.Background(), uuid.New(), uuid.New(), uuid.New(), uuid.New())
-	require.NoError(t, err, "WFI-9: workflow error must not block removal (fail-open)")
-	require.NotNil(t, got)
+	require.ErrorIs(t, err, domain.ErrWorkflowServiceUnavailable)
+	require.Nil(t, got)
 }
 
 // TestDeptMembership_Remove_ActiveWorkflows_Returns409 verifies that when

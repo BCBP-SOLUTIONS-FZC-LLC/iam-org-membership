@@ -628,22 +628,7 @@ func TestProvisioningService_TrialSignup_InvalidPlan_ReturnsErrInvalidPlan(t *te
 		"unknown plan must return ErrInvalidPlan before reaching catalog or DB")
 }
 
-// ── C4: Patch — empty patch calls FindByID and propagates its error ───────
+// ── C4: Patch — empty patch ───────────────────────────────────────────────
 
-// TestTenantService_Patch_EmptyPatch_FindByIDError_Propagates verifies that
-// when all patch fields are nil (no-op path), FindByID is called and its
-// error propagates (the remaining uncovered branch in the Patch no-op path).
-func TestTenantService_Patch_EmptyPatch_FindByIDError_Propagates(t *testing.T) {
-	findErr := domain.NewError(domain.ErrTenantNotFound, "tenant not found")
-	repo := &fakeTenantRepo{
-		findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
-			return nil, findErr
-		},
-	}
-	svc := service.NewTenantService(repo, nil, &tsRP{})
-
-	// All-nil patch fields → no-op branch → FindByID called
-	_, _, err := svc.Patch(context.Background(), uuid.New(), &domain.TenantPatch{})
-
-	assert.ErrorIs(t, err, domain.ErrTenantNotFound)
-}
+// (TestTenantService_Patch_EmptyPatch_FindByIDError_Propagates removed: an empty
+// P-2 patch no longer reads the tenant — it is 400 no_mutable_field, GAP-1.)

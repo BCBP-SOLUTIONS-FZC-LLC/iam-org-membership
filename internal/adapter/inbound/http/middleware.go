@@ -405,6 +405,45 @@ func toDomainProblem(err error) error {
 	return err
 }
 
+// RejectSystemPrincipal enforces AUTH-5: the reserved system principal
+// (iam-system, …00a1) is accepted only on /api/v1/internal/* routes. On
+// tenant-facing and operator routes it is refused with 403 and never widens
+// access (BUG-7). Register it first on those groups, before any gate that
+// would otherwise skip its checks for iam-system.
+func RejectSystemPrincipal() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rc, ok := requestctx.FromContext(c.Request.Context())
+		// x-user-id "iam-system" is bridged to uuid.Nil (parseBridgedIdentity),
+		// whatever roles came with it; the sentinel UUID is the same principal.
+		if ok && (rc.IsSystem() || rc.UserID == uuid.Nil || rc.UserID.String() == requestctx.IamSystemSentinelUUID) {
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError("the system principal is accepted only on internal routes").
+				WithCode("INSUFFICIENT_ROLE"))
+			return
+		}
+		c.Next()
+	}
+}
+
+// identityHeaders are the identity headers that must appear at most once.
+var identityHeaders = []string{"x-user-id", "x-tenant-id"}
+
+// RejectAmbiguousIdentityHeaders answers 401 ambiguous_identity_headers (LLD
+// §17, rev 2.16) when an identity header is sent more than once. It runs
+// before gincommon's auth middleware, which rejects the same request but
+// with the generic UNAUTHORIZED code.
+func RejectAmbiguousIdentityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		for _, h := range identityHeaders {
+			if len(c.Request.Header.Values(h)) > 1 {
+				gincommon.AbortWithProblem(c, problem.NewUnauthorizedError("Ambiguous "+h+" header.").
+					WithCode("AMBIGUOUS_IDENTITY_HEADERS"))
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
 // domainErrorToProblem maps a *domain.DomainError to the corresponding
 // platform problem type per LLD §17. The domain message becomes the RFC 9457
 // detail field; status is determined by the error cause. The domain error
@@ -417,6 +456,14 @@ func domainErrorToProblem(de *domain.DomainError) *problem.Error {
 	// to the RFC 9457 / platform-standard UPPER_SNAKE errorCode.
 	code := strings.ToUpper(de.Code)
 	switch {
+	case errors.Is(de.Cause, domain.ErrInvalidRole):
+		// LLD §17: 400 invalid_role (P-28: unknown role_code or 'member') and
+		// 400 invalid_role_level (P-10: level not in preparator/reviewer/
+		// approver). The service names the latter in details.code.
+		if dc, _ := de.Details["code"].(string); dc == "invalid_role_level" {
+			code = strings.ToUpper(dc)
+		}
+		return problem.NewBadRequestError(msg).WithCode(code)
 	case errors.Is(de.Cause, domain.ErrValidation),
 		errors.Is(de.Cause, domain.ErrNoMutableField),
 		errors.Is(de.Cause, domain.ErrInvalidTargetPlan):

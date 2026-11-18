@@ -223,6 +223,16 @@ var (
 	// result, found|not_found (§11.2).
 	PublicTenantResolve *prometheus.CounterVec
 
+	// CacheInvalidationFailed counts failed Valkey DEL operations by key
+	// family (keyType label). A sustained rate signals cache-eviction
+	// failures that could leave stale entries serving read paths.
+	CacheInvalidationFailed *prometheus.CounterVec
+
+	// CacheErrors counts failed Valkey operations (not misses) by op
+	// (get, mget, set, del). Distinct from cache misses — these are I/O
+	// or connection errors that degrade the advisory cache layer.
+	CacheErrors *prometheus.CounterVec
+
 	// CatalogCacheInvalidated counts DepartmentCatalogChanged and
 	// PlanCatalogChanged events that successfully cleared their respective
 	// catalog cache keys (om:departments or om:plans, primary + stale) via
@@ -436,6 +446,21 @@ type Recorder struct{}
 
 // IncRealmSyncFailed satisfies jobs.Metrics.
 func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
+
+// IncCacheInvalidationFailed records one failed cache DEL for keyType.
+func IncCacheInvalidationFailed(keyType string) {
+	if CacheInvalidationFailed != nil {
+		CacheInvalidationFailed.WithLabelValues(keyType).Inc()
+	}
+}
+
+// IncCacheError records one failed cache operation (op = get, mget, set,
+// del, etc.) that is not a cache miss.
+func IncCacheError(op string) {
+	if CacheErrors != nil {
+		CacheErrors.WithLabelValues(op).Inc()
+	}
+}
 
 // IncCatalogCacheInvalidated records one successful om:departments cache
 // clear by the catalog-orgm-q consumer. Nil-safe.
@@ -777,6 +802,14 @@ func registerServiceMetrics() {
 		"iam_org_membership_public_tenant_resolve_total",
 		"PUB-1 pre-login tenant/realm resolution lookups served, by result.",
 		"result"))
+	CacheInvalidationFailed = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_cache_invalidation_failed_total",
+		"Failed Valkey DEL operations by key family (keyType label). A sustained rate signals cache-eviction failures.",
+		"key_type"))
+	CacheErrors = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_cache_errors_total",
+		"Failed Valkey operations (not misses) by op (get, mget, set, del). Indicates I/O or connection errors.",
+		"op"))
 	CatalogCacheInvalidated = must(gincommon.NewCounter(nil,
 		"iam_org_membership_catalog_cache_invalidated_total",
 		"Catalog cache invalidations via catalog-orgm-q: DepartmentCatalogChanged (om:departments) and PlanCatalogChanged (om:plans) events that successfully cleared their primary+stale cache keys (Gap-12/CAT-GAP-004)."))

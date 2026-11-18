@@ -211,10 +211,11 @@ func (h *healthHandlers) healthz(c *gin.Context) {
 }
 
 // readyz checks Postgres, Valkey, the outbox runner, and SQS consumer
-// goroutines (OBS-1), and reports 503 if any of them is not ready.
+// goroutines (OBS-1), and reports 503 if any of them except Valkey is not
+// ready. Valkey only degrades the response body (CACHE-9).
 //
 // @Summary      Readiness probe
-// @Description  Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines. Returns 503 if any dependency is not ready.
+// @Description  Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines. Returns 503 if any required dependency is not ready; Valkey is advisory (CACHE-9) and a failing cache is reported as "cache":"degraded" with 200.
 // @Tags         infra
 // @Produce      json
 // @Success      200  {object}  map[string]interface{}
@@ -244,12 +245,12 @@ func (h *healthHandlers) readyz(c *gin.Context) {
 			checks["sys_database"] = "ok"
 		}
 	}
-	// Cache is advisory (CACHE-9) everywhere else, but /readyz still fails
-	// so the pod is removed from rotation while Valkey is down — otherwise
-	// every cache miss silently amplifies DB load.
+	// Cache is advisory (CACHE-2/CACHE-9): every read falls through to
+	// Postgres, so a Valkey outage is reported as "degraded" but does NOT
+	// fail readiness — failing it would pull every pod out of rotation at
+	// once while the API still answers from the database.
 	if err := h.cache.Health(ctx); err != nil {
-		checks["cache"] = "down"
-		healthy = false
+		checks["cache"] = "degraded"
 	} else {
 		checks["cache"] = "ok"
 	}
@@ -380,7 +381,10 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// checkout (RLS-6). Order: ProtectedMiddlewares (auth + context) →
 	// GUCBridge → RequireJSONContentType → handlers.
 	protected := append(
-		gincommon.ProtectedMiddlewares(cfg.GinConfig),
+		[]gin.HandlerFunc{RejectAmbiguousIdentityHeaders()},
+		gincommon.ProtectedMiddlewares(cfg.GinConfig)...,
+	)
+	protected = append(protected,
 		GUCBridgeMiddleware(),
 		RequireJSONContentType(),
 	)
@@ -400,7 +404,7 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// any query run — it never rebinds the tenant (that is the internal-route
 	// rule, IAPI-6). TestPublicTenantRoutes_AllRequirePathTenantMatch fails
 	// CI for a tenant-facing route registered outside this group.
-	tenants := v1.Group("/tenants/:id", RequirePathTenantMatch(), activeTenantGate, activeMemberGate)
+	tenants := v1.Group("/tenants/:id", RejectSystemPrincipal(), RequirePathTenantMatch(), activeTenantGate, activeMemberGate)
 	// Tenant — P-1, P-2
 	tenants.GET("", tenantH.Get)
 	tenants.PATCH("", tenantH.Patch)
@@ -455,7 +459,7 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// way I-8 does (404 member_not_found) and a suspended member with 403 —
 	// instead of the gate's extra uncached lookup.
 	if cfg.MeHandler != nil {
-		me := v1.Group("/me", activeTenantGate)
+		me := v1.Group("/me", RejectSystemPrincipal(), activeTenantGate)
 		me.GET("/session-context", cfg.MeHandler.SessionContext) // P-35
 	}
 
@@ -463,7 +467,7 @@ func registerAPIRoutes(r *gin.Engine, cfg RouterConfig) {
 	// middleware + handler re-check inside each operator handler). O-1/O-2/
 	// O-3 (departments) and O-5/O-6 (plans) moved to the Catalog / Admin
 	// Config Service (migration-runbook Phase 4, LLD §12 step 4).
-	op := v1.Group("/operator", RequireOperatorRole())
+	op := v1.Group("/operator", RejectSystemPrincipal(), RequireOperatorRole())
 	op.PATCH("/tenants/:id/feature-flags", operatorH.SetFeatureFlags) // O-4
 	op.POST("/tenants/:id/reassign-owner", operatorH.ReassignOwner)   // O-7
 

@@ -202,10 +202,46 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		return txErr
 	}
 
+	// Post-commit DELs run detached from the handler deadline: the commit has
+	// landed, so a ctx cancelled by a slow projection must not skip the
+	// eviction (same reasoning as invalidateMember, LLD rev 2.49).
+	evictCtx := context.WithoutCancel(ctx)
 	if gdprWipeRan {
-		c.evictAfterWipe(ctx, tenantID)
+		c.evictAfterWipe(evictCtx, tenantID)
+	} else {
+		c.evictAfterProjection(evictCtx, tenantID)
 	}
 	return nil
+}
+
+// evictAfterProjection deletes the tenant-level cache entries a lifecycle /
+// billing projection can change (plan, status, realm, seats, trial dates) —
+// LLD §6 post-commit DEL rule and §8.2 (DEL om:tenant after TenantConverted).
+// Without it P-1, I-9, I-14 and I-17 served the pre-event tenant for up to
+// the 600 s om:tenant TTL. Runs after commit; best-effort and advisory only
+// (CACHE-2/9). A deduplicated or recency-skipped event also lands here — the
+// extra DEL just costs one cache miss.
+func (c *MembershipEventConsumer) evictAfterProjection(ctx context.Context, tenantID uuid.UUID) {
+	if c.cache == nil {
+		return
+	}
+	if err := c.cache.Delete(ctx, projectionCacheKeys(tenantID)...); err != nil {
+		c.logger.Warn("lifecycle projection: cache invalidation failed (advisory-only, not fatal)",
+			"tenant_id", tenantID, "error", err)
+	}
+}
+
+// projectionCacheKeys are the tenant-row-derived keys a projection can stale:
+// the tenant record itself (plan/status/realm/licensed_seats/feature context),
+// its locale projection, and the seat-usage projection (licensed_seats).
+// Per-user om:memberships entries carry subscription_status too but are not
+// enumerable; they expire on their own TTL (CACHE-2/9, as for the wipe).
+func projectionCacheKeys(tenantID uuid.UUID) []string {
+	return []string{
+		fmt.Sprintf("om:tenant:%s", tenantID),
+		fmt.Sprintf("om:locale:%s", tenantID),
+		fmt.Sprintf("om:seat_usage:%s", tenantID),
+	}
 }
 
 // tenantGUC binds the RLS GUC to the target tenant so RLS lets the consumer

@@ -200,5 +200,5 @@ func TestDeptPatch_MissingIsActive_400(t *testing.T) {
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	h.Patch(c)
 
-	assertErrorCode(t, w, http.StatusBadRequest, "VALIDATION_ERROR")
+	assertErrorCode(t, w, http.StatusBadRequest, "NO_MUTABLE_FIELD") // LLD §17, GAP-25
 }

@@ -81,6 +81,12 @@ func (r *depInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInv
 	return nil, nil
 }
 func (r *depInviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (r *depInviteRepo) EraseRevokedPII(_ context.Context, _ time.Time, _ int) (int, error) {
+	return 0, nil
+}
+func (r *depInviteRepo) ListAll(_ context.Context, _ uuid.UUID) ([]domain.PendingInvitation, error) {
+	return nil, nil
+}
 
 var _ port.InvitationRepository = (*depInviteRepo)(nil)
 

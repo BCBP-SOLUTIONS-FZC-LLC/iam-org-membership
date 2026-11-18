@@ -44,7 +44,22 @@ func (r *TenantRoleRepository) ListByUsers(ctx context.Context, tenantID uuid.UU
 	if len(userIDs) == 0 {
 		return nil, nil
 	}
-	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = ANY($2) AND deleted_at IS NULL`, tenantID, userIDs)
+	// BUG-4: ids bound as text[] (uuidStrings) and cast — pgx cannot encode
+	// a []uuid.UUID in PgBouncer simple-protocol mode ("cannot find encode
+	// plan ... unknown type (OID 0)"), so P-4 answered 500 on every call.
+	return r.listWhere(ctx, `WHERE tenant_id = $1 AND user_id = ANY($2::uuid[]) AND deleted_at IS NULL`, tenantID, uuidStrings(userIDs))
+}
+
+// uuidStrings renders ids as strings for a `$n::uuid[]` parameter. pgx can
+// encode a []string in both the extended and the simple protocol; it cannot
+// encode []uuid.UUID when the server does not describe the parameter type
+// (simple protocol, PG_BOUNCER_MODE=true).
+func uuidStrings(ids []uuid.UUID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	return out
 }
 
 func (r *TenantRoleRepository) ListByRole(ctx context.Context, tenantID uuid.UUID, role domain.TenantRoleCode) ([]domain.TenantRole, error) {

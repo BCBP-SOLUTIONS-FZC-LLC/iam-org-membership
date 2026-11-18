@@ -652,7 +652,7 @@ func TestSetFeatureFlags_HappyPath_200(t *testing.T) {
 	h := NewOperatorHandler(operatorSvc)
 
 	tenantID := uuid.New()
-	body := `{"feature_flags":{},"record_version":0}`
+	body := `{"feature_flags":{},"record_version":1}`
 	c, w := buildCtx(http.MethodPatch, "/", body, operatorCtx())
 	setParams(c, "id", tenantID.String())
 	h.SetFeatureFlags(c)

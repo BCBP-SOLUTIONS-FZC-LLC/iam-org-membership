@@ -2,10 +2,17 @@ package port
 
 import (
 	"context"
+	"errors"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/google/uuid"
 )
+
+// ErrRealmConfigQueued is returned by PatchRealmConfig when the Realm
+// Provisioner accepted the change but has not applied it (applied=false,
+// queued for reconciliation). T-15: realm_sync_pending clears only once the
+// realm has actually applied the change.
+var ErrRealmConfigQueued = errors.New("realm config change queued, not yet applied")
 
 // WorkflowClient calls the Workflow Service for delegate-impact checks
 // (§8.8 removal-resolution gate). Phase 4 wires the real client; Phase 2
@@ -57,6 +64,9 @@ type RealmProvisionerClient interface {
 	// PatchRealmConfig applies realm-affecting settings (local_accounts_enabled,
 	// IdP/federation) via Keycloak Admin API. On non-200 the caller sets
 	// realm_sync_pending=true and returns 202 to the client per LLD §16 A58 / T-15.
+	// A 2xx answer with applied=false (the change is only queued at RP for
+	// reconciliation) returns ErrRealmConfigQueued: the change has not been
+	// applied yet, so realm_sync_pending must stay set (T-15).
 	PatchRealmConfig(ctx context.Context, tenantID uuid.UUID, patch RealmConfigPatch) error
 
 	// RevokeUserSessions is the AUTH-8 privilege-reduction call. Best-effort

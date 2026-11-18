@@ -179,16 +179,15 @@ func TestTenantService_Patch_T10MFA_901_AboveMax(t *testing.T) {
 // Feature:           P-2 · empty body {} (no fields) → 200 no-op (LLD P-2 not specified)
 // Note:              P-2 has no detailed LLD spec for empty body; treat as idempotent no-op.
 // Priority: P2 · Severity: Minor · Automation Status: Automated
-func TestTenantService_Patch_EmptyPatch_IsNoOp(t *testing.T) {
-	// Empty patch delegates to FindByID; behaviour depends on repo.
-	// No mutable fields → early return via FindByID (or nil repo → nil pointer handled by nil check).
-	// We just verify no panic and no mutable-field error.
-	stub := &domain.Tenant{ID: uuid.New()}
+func TestTenantService_Patch_EmptyPatch_NoMutableField(t *testing.T) {
+	// GAP-1, LLD §17: a PATCH body with no mutable field is 400
+	// no_mutable_field; nothing is read or written.
 	repo := &fakeTenantRepo{findByIDFn: func(_ context.Context, _ uuid.UUID) (*domain.Tenant, error) {
-		return stub, nil
+		t.Fatal("empty patch must not read the tenant")
+		return nil, nil
 	}}
 	svc := service.NewTenantService(repo, nil, &tsRP{})
 	ten, _, err := svc.Patch(context.Background(), uuid.New(), &domain.TenantPatch{})
-	require.NoError(t, err, "empty patch must be a no-op (not an error)")
-	assert.Equal(t, stub, ten)
+	assert.ErrorIs(t, err, domain.ErrNoMutableField)
+	assert.Nil(t, ten)
 }

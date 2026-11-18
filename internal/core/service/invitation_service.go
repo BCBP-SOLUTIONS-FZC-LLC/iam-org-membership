@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -122,6 +123,13 @@ func (s *InvitationService) List(ctx context.Context, tenantID uuid.UUID) ([]dom
 	return s.invites.List(ctx, tenantID)
 }
 
+// ListIncludingTerminal is P-30 with ?include_terminal=true (GAP-8, §5.4):
+// accepted, expired and revoked invitations are returned too, for an audit
+// view. Erased PII (SECURITY-8) is returned as stored.
+func (s *InvitationService) ListIncludingTerminal(ctx context.Context, tenantID uuid.UUID) ([]domain.PendingInvitation, error) {
+	return s.invites.ListAll(ctx, tenantID)
+}
+
 // Invite is P-6. Enforces SEAT-1 cap: active + pending ≤ licensed_seats.
 // Returns 409 seat_limit_reached at/above cap. Returns 409
 // invitation_already_exists on duplicate email.
@@ -162,7 +170,8 @@ func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req 
 	if req.FullName == "" {
 		return nil, domain.NewError(domain.ErrValidation, "full_name is required")
 	}
-	if len(req.FullName) > 512 {
+	// BUG-5: the DB CHECK uses length() which counts characters, not bytes.
+	if utf8.RuneCountInString(req.FullName) > 512 {
 		return nil, domain.NewError(domain.ErrValidation, "full_name must not exceed 512 characters")
 	}
 	for _, r := range req.InitialTenantRoles {
@@ -531,6 +540,22 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 			}
 		}
 
+		// PI-10 / §17 (GAP-24): on the plain-add branch an existing active or
+		// suspended membership is refused with 409 member_already_exists —
+		// how a webhook redelivery after acceptance, or a concurrent
+		// duplicate add, bounces. Race-free: the tenant row lock taken above
+		// serializes every I-3 for this tenant. A 'left' row is not found
+		// here and is reactivated by Insert (TM-1 re-add).
+		if pending == nil {
+			existing, ferr := s.memberships.FindByUserID(txCtx, tenantID, userID)
+			if ferr == nil && existing != nil {
+				return domain.NewError(domain.ErrMemberAlreadyExists, "user already has an active membership")
+			}
+			if ferr != nil && !errors.Is(ferr, domain.ErrMemberNotFound) {
+				return ferr
+			}
+		}
+
 		// SEAT-1 (CD-54): plain-add JIT path holds no prior seat reservation
 		// (no pending invitation was issued), so we must enforce the cap here
 		// under the tenant FOR UPDATE lock already held above. The invited path
@@ -670,18 +695,43 @@ func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	// SECURITY-8: best-effort PII erasure now that the invitation is terminal.
-	// Fail-open: a warning is logged but the caller still receives a success
-	// response so the revoke itself is not rolled back over a non-critical
-	// cleanup step.
-	if err := s.invites.ErasePII(ctx, tenantID, id); err != nil {
-		s.logger.WarnContext(ctx, "Revoke: ErasePII failed (best-effort, non-fatal)",
-			"tenant_id", tenantID, "invitation_id", id, "error", err.Error())
+	// GAP-17, PI-6: best-effort inline Realm-Provisioner DeleteUser after
+	// commit. On success the kc_cleanup_pending marker is cleared; on
+	// failure it stays and invitation-kc-cleanup retries (PI-9).
+	s.deleteInvitedUserInline(ctx, tenantID, inv)
+	// SECURITY-8: PII erasure for the now-terminal invitation. While the
+	// PI-11 re-invite cooldown is enabled the email must survive until the
+	// cooldown window (counted from created_at) closes — the reconciler
+	// erases revoked rows via EraseRevokedPII once the window passes.
+	// With cooldown disabled, erase immediately (best-effort, non-fatal).
+	if s.reinviteCooldown <= 0 {
+		if err := s.invites.ErasePII(ctx, tenantID, id); err != nil {
+			s.logger.WarnContext(ctx, "Revoke: ErasePII failed (best-effort, non-fatal)",
+				"tenant_id", tenantID, "invitation_id", id, "error", err.Error())
+		}
 	}
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID))
 	}
 	return inv, nil
+}
+
+// deleteInvitedUserInline attempts a best-effort Realm-Provisioner
+// DeleteUser after a revoke commit (PI-6/GAP-17). Errors are logged
+// and never returned — the invitation-kc-cleanup reconciler retries.
+func (s *InvitationService) deleteInvitedUserInline(ctx context.Context, tenantID uuid.UUID, inv *domain.PendingInvitation) {
+	if s.rp == nil || inv == nil || inv.KeycloakUserID == nil {
+		return
+	}
+	if err := s.rp.DeleteUser(ctx, tenantID, *inv.KeycloakUserID); err != nil {
+		s.logger.WarnContext(ctx, "Revoke: inline RP DeleteUser failed — invitation-kc-cleanup will retry (PI-9)",
+			"tenant_id", tenantID, "invitation_id", inv.ID, "error", err.Error())
+		return
+	}
+	if err := s.invites.ClearKCCleanupPendingByID(ctx, inv.ID); err != nil {
+		s.logger.WarnContext(ctx, "Revoke: clearing kc_cleanup_pending failed — invitation-kc-cleanup will clear it",
+			"tenant_id", tenantID, "invitation_id", inv.ID, "error", err.Error())
+	}
 }
 
 // runInTx runs fn in a transaction, or inline when no TxRunner is wired

@@ -54,10 +54,11 @@ func TestG2_ErrDepartmentRetired_MapsTo422(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 }
 
-func TestG2_ErrInvalidRole_MapsTo422(t *testing.T) {
+// LLD §17: invalid_role is 400 (OBS-2 / OBS-8 aligned the code with it).
+func TestG2_ErrInvalidRole_MapsTo400(t *testing.T) {
 	c, w := newTestContext(nil)
 	HandleError(c, domain.NewError(domain.ErrInvalidRole, "'member' cannot be persisted"))
-	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

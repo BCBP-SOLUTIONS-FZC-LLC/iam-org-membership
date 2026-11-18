@@ -144,7 +144,7 @@ func TestP11MW010_AllSentinelsMapToCorrectStatus(t *testing.T) {
 		{"dept_deactivated → 422", domain.ErrDepartmentDeactivated, http.StatusUnprocessableEntity, "DEPARTMENT_DEACTIVATED"},
 		{"invalid_replacement → 422", domain.ErrInvalidReplacement, http.StatusUnprocessableEntity, "INVALID_REPLACEMENT"},
 		{"invalid_owner_candidate → 422", domain.ErrInvalidOwnerCandidate, http.StatusUnprocessableEntity, "INVALID_OWNER_CANDIDATE"},
-		{"invalid_role → 422", domain.ErrInvalidRole, http.StatusUnprocessableEntity, "INVALID_ROLE"},
+		{"invalid_role → 400", domain.ErrInvalidRole, http.StatusBadRequest, "INVALID_ROLE"}, // LLD §17
 		{"assignee_ineligible → 422", domain.ErrAssigneeIneligible, http.StatusUnprocessableEntity, "ASSIGNEE_INELIGIBLE"},
 		{"field_immutable → 422", domain.ErrFieldImmutable, http.StatusUnprocessableEntity, "FIELD_IMMUTABLE"},
 		{"system_name_immutable → 422", domain.ErrSystemNameImmutable, http.StatusUnprocessableEntity, "SYSTEM_NAME_IMMUTABLE"},

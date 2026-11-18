@@ -139,7 +139,10 @@ func TestAddFromRegister_Rejoin_CreatesNewRow(t *testing.T) {
 // ── I3-IDEMPOTENT-01 ──────────────────────────────────────────────────
 
 // Test Case ID:      I3-IDEMPOTENT-01
-// Feature:           I-3 · same user added twice → idempotent (ON CONFLICT DO NOTHING)
+// Feature:           I-3 · same user added twice → second plain add is 409
+//
+//	member_already_exists (PI-10 / LLD §17, GAP-24); one row
+//
 // Priority: P1 · Severity: Major · Automation Status: Automated
 func TestAddFromRegister_Idempotent_SecondCallNoOp(t *testing.T) {
 	t.Parallel()
@@ -152,10 +155,11 @@ func TestAddFromRegister_Idempotent_SecondCallNoOp(t *testing.T) {
 	mem1, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
 	require.NoError(t, err)
 
-	// Second add — idempotent, returns existing row.
-	mem2, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
-	require.NoError(t, err)
-	assert.Equal(t, mem1.ID, mem2.ID, "second call returns existing membership row")
+	// Second add — PI-10: the plain-add branch bounces an existing member
+	// with 409 member_already_exists and changes nothing.
+	_, err = fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
+	require.ErrorIs(t, err, domain.ErrMemberAlreadyExists)
+	require.NotNil(t, mem1)
 
 	// Only one active row.
 	var count int

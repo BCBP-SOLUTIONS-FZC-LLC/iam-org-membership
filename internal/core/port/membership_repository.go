@@ -39,6 +39,14 @@ type MembershipRepository interface {
 	ListActiveUserIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
 }
 
+// LeftMembershipEraser is an optional capability of a MembershipRepository:
+// I-5 (identity deletion) uses it to set deleted_at on a membership that a
+// P-8 removal already marked status='left' (TM-5, §15.2.2). Idempotent; a
+// row that is not 'left' or already deleted is untouched.
+type LeftMembershipEraser interface {
+	MarkLeftMembershipDeleted(ctx context.Context, tenantID, userID uuid.UUID) error
+}
+
 // TenantRoleRepository owns elevated role grants on tenant_roles.
 type TenantRoleRepository interface {
 	// ListByUser returns all active elevated roles for a user.

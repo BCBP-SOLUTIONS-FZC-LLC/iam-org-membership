@@ -263,7 +263,8 @@ definitions:
     type: object
   http.InternalJITResponse:
     properties:
-      assigned_departments:
+      assigned_depts:
+        description: Departments assigned or level-changed by this call.
         items:
           format: uuid
           type: string
@@ -273,6 +274,13 @@ definitions:
         - tender_admin
         - tenant_admin
         items:
+          type: string
+        type: array
+      skipped_depts:
+        description: Mapped departments not assigned because they are not active for
+          the tenant.
+        items:
+          format: uuid
           type: string
         type: array
     type: object
@@ -412,6 +420,8 @@ definitions:
     type: object
   http.InvitationResponse:
     properties:
+      created_at:
+        type: string
       email:
         type: string
       expires_at:
@@ -424,7 +434,14 @@ definitions:
           carried for one release so downstream clients can migrate; will be
           removed once tooling ships the rev-1.51-compat build.
         type: string
+      initial_tenant_roles:
+        description: Tenant roles granted when the invitation is accepted.
+        items:
+          type: string
+        type: array
       invitation_id:
+        type: string
+      invited_by:
         type: string
       record_version:
         type: integer
@@ -638,6 +655,9 @@ definitions:
   http.RoleLabelPatchRequest:
     properties:
       display_name:
+        description: |-
+          New display label. A body without it is 400 no_mutable_field; an
+          empty one is 400 validation_error.
         type: string
       record_version:
         type: integer
@@ -1842,7 +1862,8 @@ paths:
   /readyz:
     get:
       description: Checks Postgres, Valkey, the outbox runner, and SQS consumer goroutines.
-        Returns 503 if any dependency is not ready.
+        Returns 503 if any required dependency is not ready; Valkey is advisory (CACHE-9)
+        and a failing cache is reported as "cache":"degraded" with 200.
       produces:
       - application/json
       responses:

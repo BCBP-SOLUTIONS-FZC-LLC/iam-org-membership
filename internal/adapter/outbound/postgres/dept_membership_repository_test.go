@@ -181,21 +181,25 @@ func TestDeptMembershipRepo_Assign_SameLevelReturnsExistingWithoutMutation(t *te
 	assert.Equal(t, 1, execCalls, "only the advisory lock exec — no soft-delete for a same-level call")
 }
 
-func TestDeptMembershipRepo_Assign_LevelChangeSoftDeletesThenInserts(t *testing.T) {
+// DM-3 (GAP-22): a level change is an UPDATE of the existing row, never a
+// soft-delete followed by an INSERT.
+func TestDeptMembershipRepo_Assign_LevelChangeUpdatesInPlace(t *testing.T) {
 	tenantID, userID, deptID := uuid.New(), uuid.New(), uuid.New()
 	queryRowCalls := 0
 	execCalls := 0
+	var sqls []string
 	tx := &fakeTx{
 		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
 			execCalls++
 			return pgconn.CommandTag{}, nil
 		},
-		queryRowFn: func(context.Context, string, ...any) pgx.Row {
+		queryRowFn: func(_ context.Context, sql string, _ ...any) pgx.Row {
 			queryRowCalls++
+			sqls = append(sqls, sql)
 			switch queryRowCalls {
 			case 1: // FOR UPDATE probe — existing row at a different level
 				return &fakeRow{values: dmRow(tenantID, userID, deptID, "preparator")}
-			default: // INSERT RETURNING new row
+			default: // UPDATE ... RETURNING the same row at the new level
 				return &fakeRow{values: dmRow(tenantID, userID, deptID, "approver")}
 			}
 		},
@@ -207,7 +211,10 @@ func TestDeptMembershipRepo_Assign_LevelChangeSoftDeletesThenInserts(t *testing.
 	require.NotNil(t, previous)
 	assert.Equal(t, domain.DeptPreparator, previous.RoleLevel)
 	assert.Equal(t, domain.DeptApprover, out.RoleLevel)
-	assert.Equal(t, 2, execCalls, "advisory lock + soft-delete of the old row")
+	assert.Equal(t, 1, execCalls, "only the advisory lock exec — no soft-delete")
+	require.Len(t, sqls, 2, "FOR UPDATE probe, then one UPDATE; no INSERT")
+	assert.Contains(t, sqls[1], "UPDATE dept_memberships SET role_level")
+	assert.NotContains(t, sqls[1], "deleted_at = now()")
 }
 
 func TestDeptMembershipRepo_Assign_AdvisoryLockErrorPassesThrough(t *testing.T) {
@@ -237,25 +244,25 @@ func TestDeptMembershipRepo_Assign_ForUpdateUnrecognizedErrorPassesThrough(t *te
 	assert.ErrorIs(t, err, probeErr)
 }
 
-func TestDeptMembershipRepo_Assign_SoftDeleteExecErrorPassesThrough(t *testing.T) {
+func TestDeptMembershipRepo_Assign_LevelUpdateErrorPassesThrough(t *testing.T) {
 	tenantID, userID, deptID := uuid.New(), uuid.New(), uuid.New()
-	deleteErr := errors.New("soft delete failed")
-	execCalls := 0
+	updateErr := errors.New("level update failed")
+	queryRowCalls := 0
 	tx := &fakeTx{
 		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-			execCalls++
-			if execCalls == 1 {
-				return pgconn.CommandTag{}, nil // advisory lock
-			}
-			return pgconn.CommandTag{}, deleteErr // soft delete
+			return pgconn.CommandTag{}, nil // advisory lock
 		},
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: dmRow(tenantID, userID, deptID, "preparator")}
+			queryRowCalls++
+			if queryRowCalls == 1 {
+				return &fakeRow{values: dmRow(tenantID, userID, deptID, "preparator")}
+			}
+			return &fakeRow{err: updateErr} // UPDATE ... RETURNING
 		},
 	}
 	_, _, err := NewDeptMembershipRepository(nil).
 		Assign(injectTx(context.Background(), tx), tenantID, userID, deptID, uuid.New(), domain.DeptApprover, uuid.New())
-	assert.ErrorIs(t, err, deleteErr)
+	assert.ErrorIs(t, err, updateErr)
 }
 
 func TestDeptMembershipRepo_Assign_InsertUnrecognizedErrorPassesThrough(t *testing.T) {

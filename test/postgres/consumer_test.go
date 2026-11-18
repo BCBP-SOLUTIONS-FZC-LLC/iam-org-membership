@@ -592,3 +592,54 @@ func TestConsumer_TrialReactivated_CapReachedIsNoop(t *testing.T) {
 	assert.Equal(t, "trial_expired", status, "TRIAL-5 cap already hit — no-op, status unchanged")
 	assert.Equal(t, 1, reactivationCount)
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// PI-11 × SECURITY-8: invitation-expiry erases a revoked invitation's PII
+// only once the re-invite cooldown can no longer match it (counted from
+// created_at). Revoke itself keeps the email so PI-11 can bound
+// invite→revoke→re-invite churn.
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestInvitationExpiry_ErasesRevokedPIIAfterCooldown(t *testing.T) {
+	t.Parallel()
+	jctx, _, rawPool := newJobContext(t, context.Background())
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "pi11-erase")
+	jctx.ReinviteCooldown = time.Hour
+
+	seed := func(email, status, createdAgo string) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		_, err := rawPool.Exec(ctx, `
+			INSERT INTO pending_invitations
+			  (id, tenant_id, email, full_name, invited_by, status, expires_at, created_at)
+			VALUES ($1, $2, $3, 'Invitee', gen_random_uuid(), $4::invitation_status,
+			        now() + interval '7 days', now() - $5::interval)`,
+			id, tenantID, email, status, createdAgo)
+		require.NoError(t, err)
+		return id
+	}
+	oldRevoked := seed("old-revoked@example.com", "revoked", "2 hours")
+	recentRevoked := seed("recent-revoked@example.com", "revoked", "10 minutes")
+	oldPending := seed("old-pending@example.com", "pending", "2 hours")
+
+	_, err := jobs.InvitationExpiry(ctx, jctx)
+	require.NoError(t, err)
+
+	pii := func(id uuid.UUID) (string, string) {
+		var email, name string
+		require.NoError(t, rawPool.QueryRow(ctx,
+			`SELECT email, full_name FROM pending_invitations WHERE id = $1`, id).Scan(&email, &name))
+		return email, name
+	}
+	email, name := pii(oldRevoked)
+	assert.Equal(t, "", email, "revoked + past the cooldown → email erased")
+	assert.Equal(t, "redacted", name)
+
+	email, _ = pii(recentRevoked)
+	assert.Equal(t, "recent-revoked@example.com", email,
+		"revoked within the cooldown → email kept so PI-11 can still refuse a re-invite")
+
+	email, _ = pii(oldPending)
+	assert.Equal(t, "old-pending@example.com", email, "a pending invitation is never erased")
+}
