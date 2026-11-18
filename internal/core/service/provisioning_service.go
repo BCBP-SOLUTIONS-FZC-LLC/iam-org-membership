@@ -418,7 +418,63 @@ func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID,
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-	mem, err := s.memberships.SetStatus(gucCtx, tenantID, userID, status, expectedVersion)
+	var mem *domain.TenantMembership
+	var err error
+	escalated := false
+	if status == domain.MembershipSuspended && s.txRunner != nil && s.roles != nil {
+		// DEC-2 / TM-12: Keycloak disabling the last active tenant_owner cannot
+		// be refused (the IdP already disabled the user), so complete and
+		// escalate exactly as I-5 does: lock the tenant row (BUG-6/TM-13, same
+		// lock order as I-5, P-7 and P-8), suspend, then recount active owners
+		// and set ownerless_since in the same tx.
+		err = s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+			escalated = false
+			if s.tenants != nil {
+				if lerr := s.tenants.LockByID(txCtx, tenantID); lerr != nil && !errors.Is(lerr, domain.ErrTenantNotFound) {
+					return lerr
+				}
+			}
+			// Escalate only on a real active→suspended transition of an owner.
+			wasActiveOwner := false
+			prev, ferr := s.memberships.FindByUserID(txCtx, tenantID, userID)
+			switch {
+			case ferr == nil && prev.Status == domain.MembershipActive:
+				trs, rerr := s.roles.ListByUser(txCtx, tenantID, userID)
+				if rerr != nil {
+					return rerr
+				}
+				for _, tr := range trs {
+					if tr.RoleCode == domain.RoleTenantOwner {
+						wasActiveOwner = true
+						break
+					}
+				}
+			case ferr != nil && !errors.Is(ferr, domain.ErrMemberNotFound):
+				return ferr
+			}
+			m, serr := s.memberships.SetStatus(txCtx, tenantID, userID, status, expectedVersion)
+			if serr != nil {
+				return serr
+			}
+			mem = m
+			if wasActiveOwner && s.tenants != nil {
+				ownerRemaining, cerr := s.roles.CountActiveOwnersActive(txCtx, tenantID)
+				if cerr != nil {
+					return cerr
+				}
+				if ownerRemaining == 0 {
+					flipped, merr := s.tenants.MarkOwnerlessIfUnset(txCtx, tenantID)
+					if merr != nil {
+						return merr
+					}
+					escalated = flipped
+				}
+			}
+			return nil
+		})
+	} else {
+		mem, err = s.memberships.SetStatus(gucCtx, tenantID, userID, status, expectedVersion)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +489,18 @@ func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID,
 			s.log.WarnContext(gucCtx, "SetMembershipStatus: cache eviction failed — I-8 may serve stale status until TTL expiry",
 				"tenant_id", tenantID, "user_id", userID, "error", err)
 		}
+	}
+	// Counted and logged after commit, like I-5: only when this call flipped
+	// ownerless_since.
+	if escalated {
+		if metrics.TenantOwnerlessEscalated != nil {
+			metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended").Inc()
+		}
+		s.log.ErrorContext(ctx, "tenant_ownerless_escalation",
+			"tenant_id", tenantID.String(),
+			"suspended_user_id", userID.String(),
+			"reason", "last_active_owner_suspended",
+		)
 	}
 	return mem, nil
 }

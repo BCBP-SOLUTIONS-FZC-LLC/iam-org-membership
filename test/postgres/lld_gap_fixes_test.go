@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -328,6 +329,84 @@ func TestBUG9_SuspendOwner_TwoActiveTwoSuspended_Succeeds(t *testing.T) {
 	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
 	require.NoError(t, err)
 	assert.Equal(t, "suspended", status)
+}
+
+// dec2SuspendViaI4 runs I-4 SetMembershipStatus(suspended) on the user's current record_version and returns the new status, whether ownerless_since is set, and the error.
+func dec2SuspendViaI4(t *testing.T, ctx context.Context, fx *testFixtures, tenantID, userID uuid.UUID) (string, bool, error) {
+	t.Helper()
+	var rv int64
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&rv))
+	_, err := fx.Provisioning.SetMembershipStatus(withTenant(ctx, tenantID), tenantID, userID, domain.MembershipSuspended, rv)
+	var status string
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT status::text FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&status))
+	var ownerless bool
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT ownerless_since IS NOT NULL FROM tenants WHERE id = $1`, tenantID).Scan(&ownerless))
+	return status, ownerless, err
+}
+
+// DEC-2, TM-12: I-4 suspending the last active owner succeeds, sets ownerless_since and counts one escalation.
+// Not parallel: it reads the shared escalation counter.
+func TestDEC2_I4SuspendLastActiveOwner_SetsOwnerless(t *testing.T) {
+	phase4TestMetricsInit()
+	require.NotNil(t, metrics.TenantOwnerlessEscalated)
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "dec2-last")
+	before := counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended"))
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err, "I-4 is never refused: the IdP already disabled the user")
+	assert.Equal(t, "suspended", status)
+	assert.True(t, ownerless, "TM-12: 0 active owners left → ownerless_since set")
+	after := counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended"))
+	assert.Equal(t, before+1, after, "one escalation counted")
+}
+
+// DEC-2, TM-12: owner A active + owner B suspended; I-4 suspends A → no active owner left → ownerless_since set.
+func TestDEC2_I4SuspendActiveOwner_OtherOwnerSuspended_SetsOwnerless(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "dec2-one-susp")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+	assert.True(t, ownerless, "the suspended owner B does not count")
+}
+
+// DEC-2: two active owners; I-4 suspends one → an active owner remains, ownerless_since stays NULL.
+func TestDEC2_I4SuspendOneOfTwoActiveOwners_NoOwnerless(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "dec2-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "active")
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+	assert.False(t, ownerless)
+}
+
+// DEC-2: I-4 suspends a non-owner member → no escalation, ownerless_since stays NULL.
+func TestDEC2_I4SuspendNonOwner_NoOwnerless(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "dec2-member")
+	userID := uuid.New()
+	_, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
+	require.NoError(t, err)
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, userID)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+	assert.False(t, ownerless)
 }
 
 // CD-54 (LLD §4.2 tenants, SEAT-1/SEAT-3): a P-8 removal frees the seat, so an I-3 plain add that was refused at the cap now succeeds.

@@ -81,6 +81,30 @@ func TestProvisioning_SetMembershipStatus_Success_InvalidatesMemberCaches(t *tes
 	assert.Contains(t, cache.deleteCalls, "om:members:"+tenantID.String()+":50")
 }
 
+// DEC-2 / TM-12: I-4 suspending the last active tenant_owner still succeeds and sets ownerless_since.
+func TestProvisioning_SetMembershipStatus_SuspendLastActiveOwner_MarksOwnerless(t *testing.T) {
+	mem := &ruMembershipRepo{
+		findByUserIDFn: func(context.Context, uuid.UUID, uuid.UUID) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{Status: domain.MembershipActive, RecordVersion: 1}, nil
+		},
+		setStatusFn: func(_ context.Context, tt, uu uuid.UUID, st domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{TenantID: tt, UserID: uu, Status: st, RecordVersion: ver + 1}, nil
+		},
+	}
+	roles := ownerRoleListRepo(t, nil, func(context.Context, uuid.UUID) (int, error) { return 0, nil })
+	markCalled := false
+	tenants := &invTenantRepo{markOwnerlessIfUnsetFn: func(context.Context, uuid.UUID) (bool, error) {
+		markCalled = true
+		return true, nil
+	}}
+	svc := buildDeleteMemberSvcFull(mem, roles, &ruDeptMemRepo{}, tenants, &arTxRunner{})
+
+	got, err := svc.SetMembershipStatus(context.Background(), uuid.New(), uuid.New(), domain.MembershipSuspended, 1)
+	require.NoError(t, err, "I-4 is never refused")
+	assert.Equal(t, domain.MembershipSuspended, got.Status)
+	assert.True(t, markCalled, "TM-12: 0 active owners after the suspend → MarkOwnerlessIfUnset")
+}
+
 // ── Constructor smoke — every ctor field set, no panic on nil deps ────
 
 func TestProvisioning_NewProvisioningService_ReturnsNonNil(t *testing.T) {
