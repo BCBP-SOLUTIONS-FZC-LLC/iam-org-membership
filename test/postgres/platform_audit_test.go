@@ -16,6 +16,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/audittest"
 	auditconfig "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/config"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
@@ -283,6 +284,47 @@ func TestAudit_InvitationExpirySweepEnqueuesPerInvitation(t *testing.T) {
 	_, err = jobs.InvitationExpiry(ctx, jctx)
 	require.NoError(t, err)
 	assert.Len(t, queuedAudit(t, fx, port.AuditEntryInvitationExpired), 2)
+}
+
+// TestAudit_InvitationExpirySweepOnPgBouncerModePool runs the sweep on a
+// PgBouncer-mode sysPool, as production does (SystemPoolConfig forces
+// PGBouncerMode). Its EnqueueBatch passes uuid arrays, which platform-audit
+// v0.1.0 could not encode on the simple protocol ("unable to encode
+// []uuid.UUID"), so on v0.1.0 every production sweep failed; v0.1.1 fixes
+// it. setupTestDB's sysPool is a direct connection and never showed it.
+func TestAudit_InvitationExpirySweepOnPgBouncerModePool(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	bouncerSys, err := newPoolWithRetry(ctx, pgcommon.Config{DSN: fx.rawPool.Config().ConnString(), PGBouncerMode: true})
+	require.NoError(t, err)
+	t.Cleanup(bouncerSys.Close)
+
+	tenant, owner := seedTenantWithOwner(t, ctx, fx, "audit-exp-bouncer")
+	var id uuid.UUID
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
+		INSERT INTO pending_invitations (id, tenant_id, email, full_name, invited_by, status, expires_at)
+		VALUES (gen_random_uuid(), $1, 'bouncer@x.com', 'X', $2, 'pending', now() + interval '1 day') RETURNING id`,
+		tenant, owner).Scan(&id))
+	_, err = fx.rawPool.Exec(ctx, `UPDATE pending_invitations SET expires_at = now() - interval '1 hour' WHERE id = $1`, id)
+	require.NoError(t, err)
+
+	jctx := &jobs.Context{
+		Invitations: pgadapter.NewInvitationRepository(bouncerSys),
+		SysTxRunner: pgadapter.NewTxRunner(bouncerSys, nil).WithAuditRecorder(auditrecorder.New(fx.auditEnq)),
+		Logger:      port.NewSlogStyleLogger(nil),
+		BatchLimit:  100,
+	}
+	res, err := jobs.InvitationExpiry(ctx, jctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Succeeded)
+	found := false
+	for _, q := range queuedAudit(t, fx, port.AuditEntryInvitationExpired) {
+		if q.Key == fmt.Sprintf("invitation.expired:%s:%s", tenant, id) {
+			found = true
+		}
+	}
+	assert.True(t, found, "the PgBouncer-mode sweep enqueued its invitation.expired entry")
 }
 
 func TestAudit_RunnerDeliversToAuditLog(t *testing.T) {
