@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-18 — platform-audit v0.1.1)
+
+- **The invitation-expiry CronJob failed on every production run.** It enqueues its `invitation.expired` entries with `EnqueueBatch` on the sysPool, which `SystemPoolConfig` always runs in PgBouncer mode; platform-audit v0.1.0 could not encode that call's uuid arrays on the simple protocol (`auditoutbox: enqueue batch: unable to encode []uuid.UUID`), so the sweep's transaction failed and no invitation expired. `platform-audit` and `cmd/audittypecheck` move to v0.1.1, which fixes it. The test harness's sysPool is a direct connection, which is why the suite never saw it: new `TestAudit_InvitationExpirySweepOnPgBouncerModePool` runs the sweep on a PgBouncer-mode pool (it fails on v0.1.0).
+
 ### Fixed (2026-11-17 — platform-audit adoption review)
 
 - **CI `push` job runs only for pushes to `main`/`master`.** It ran on every branch push and failed at "Verify image signature", whose Sigstore identity regex accepts only certificates for `refs/heads/(main|master)`; every feature-branch push run was red although its `pull_request` run passed.
