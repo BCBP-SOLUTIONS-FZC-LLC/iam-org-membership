@@ -177,9 +177,15 @@ func TestPatchMemberLifecycle_MalformedBody_400(t *testing.T) {
 // I4-H-01: full happy path → 200.
 func TestPatchMemberLifecycle_Success_200(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
-	mems := &mhMemRepo{setStatusFn: func(_ context.Context, tid, uid uuid.UUID, s domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
-		return &domain.TenantMembership{ID: uuid.New(), TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
-	}}
+	mems := &mhMemRepo{
+		// DEC-2: the I-4 suspend path reads the current row first; an active non-owner is a plain suspend.
+		findByUserFn: func(_ context.Context, tid, uid uuid.UUID) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{ID: uuid.New(), TenantID: tid, UserID: uid, Status: domain.MembershipActive, RecordVersion: 1}, nil
+		},
+		setStatusFn: func(_ context.Context, tid, uid uuid.UUID, s domain.MembershipStatus, ver int64) (*domain.TenantMembership, error) {
+			return &domain.TenantMembership{ID: uuid.New(), TenantID: tid, UserID: uid, Status: s, RecordVersion: ver + 1}, nil
+		},
+	}
 	svc := buildFullProvisioningSvc(&happyTenantRepo{}, mems)
 	h := &InternalHandler{provisioning: svc}
 
