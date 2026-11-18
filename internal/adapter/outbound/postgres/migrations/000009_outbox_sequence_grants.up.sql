@@ -1,4 +1,4 @@
--- 000008_outbox_sequence_grants — the runtime roles can draw from
+-- 000009_outbox_sequence_grants — the runtime roles can draw from
 -- platform-events' outbox_events_ordering_seq.
 --
 -- platform-events migration 010 (v2.2.x) added the sequence; every keyed
@@ -38,7 +38,7 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relname = 'outbox_events_ordering_seq' AND c.relkind = 'S';
 
     IF seq_owner IS NULL THEN
-        RAISE NOTICE '000008: outbox_events_ordering_seq does not exist — platform-events schema not applied yet; skipping sequence grant.';
+        RAISE NOTICE '000009: outbox_events_ordering_seq does not exist — platform-events schema not applied yet; skipping sequence grant.';
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'org_membership_app') THEN
@@ -50,7 +50,7 @@ BEGIN
                 GRANT USAGE, SELECT ON SEQUENCES TO org_membership_app;
         END IF;
     ELSE
-        RAISE NOTICE '000008: org_membership_app does not exist — nothing to grant.';
+        RAISE NOTICE '000009: org_membership_app does not exist — nothing to grant.';
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'org_membership_migrator') THEN

@@ -1,4 +1,4 @@
--- Reverses 000008 for exactly the roles it granted: those that do not own
+-- Reverses 000009 for exactly the roles it granted: those that do not own
 -- outbox_events_ordering_seq. An owner is never touched, so a rollback run
 -- by a superuser cannot strip the owner's own privileges. REVOKE removes
 -- only grants made by the current user, so grants from Terraform survive.

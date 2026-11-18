@@ -1,6 +1,6 @@
 //go:build integration
 
-// 000008_outbox_sequence_grants: the runtime roles can draw from
+// 000009_outbox_sequence_grants: the runtime roles can draw from
 // platform-events' outbox_events_ordering_seq when they do not own it.
 // Every keyed enqueue (outbox.EnqueueOrdered) calls nextval() on it, so
 // without the grant I-1 signup and every keyed event path answered 500
