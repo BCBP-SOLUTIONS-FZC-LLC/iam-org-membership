@@ -416,12 +416,21 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 			if _, ok := currentSet[code]; ok {
 				continue
 			}
+			// NEW-CONC-01 (EVT-10): Grant is INSERT … ON CONFLICT DO NOTHING
+			// and returns the existing row when a concurrent identical call
+			// inserted it first. Only a row carrying the ID this call asked
+			// for was inserted here, so only then is it reported as granted
+			// and a TenantRoleGranted enqueued — no event without its DB change.
+			newID := uuid.New()
 			tr, err := s.roles.Grant(txCtx, &domain.TenantRole{
-				TenantID: tenantID, UserID: userID,
+				ID: newID, TenantID: tenantID, UserID: userID,
 				TenantMembershipID: m.ID, RoleCode: code, GrantedBy: actorID,
 			})
 			if err != nil {
 				return err
+			}
+			if tr.ID != newID {
+				continue
 			}
 			granted = append(granted, *tr)
 			if pub != nil {

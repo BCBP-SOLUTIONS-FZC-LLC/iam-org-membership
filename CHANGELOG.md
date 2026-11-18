@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-19 — NEW-CONC-01: one TenantRoleGranted per real role insert)
+
+- **P-28 no longer emits a second TenantRoleGranted when two identical requests race** (event only when the role row is really inserted, EVT-10). `ReconcileRoles` gives each grant an explicit ID and treats a role as granted by this call only when `Grant` returns that ID; when `ON CONFLICT DO NOTHING` returned the row a concurrent call inserted, the role is neither reported as granted nor announced. HTTP status, body and error codes are unchanged.
+
 ### Fixed (2026-11-18 — BUG-9 follow-up: I-5 escalation counts only active owners)
 
 - **I-5 escalates to ownerless when only suspended owners remain.** When Keycloak deletes the last active `tenant_owner` and the tenant's other owners are all suspended, I-5 still completes (200, same events) and now also sets `ownerless_since`, increments `iam_org_membership_tenant_ownerless_escalated_total{reason="user_removed"}` and logs `tenant_ownerless_escalation` (TM-12 L885: "last active owner"). Before, a suspended owner's role row counted and nothing was escalated. A replayed `USER_DELETE` still does not escalate twice.
