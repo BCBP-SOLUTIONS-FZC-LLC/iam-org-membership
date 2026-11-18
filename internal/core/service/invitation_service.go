@@ -33,13 +33,12 @@ type InvitationService struct {
 	tenants            port.TenantRepository
 	rp                 port.RealmProvisionerClient
 	tokenService       port.TokenServiceClient // AUTH-9 defense-in-depth — optional, see WithTokenServiceClient
-	audit              port.AuditLogClient     // optional; nil disables AL-5 direct-write
 	cache              port.Cache
 	txRunner           port.TxRunner
 	logger             port.SlogStyleLogger
 	expiryDays         int
-	reinviteCooldown   time.Duration // PI-11; ≤ 0 only when constructed directly (envInt ignores ≤ 0, LLD §12)
-	maxPerHour         int           // PI-12; ≤ 0 only when constructed directly (envInt ignores ≤ 0, LLD §12)
+	reinviteCooldown   time.Duration // PI-11: 0 = disabled
+	maxPerHour         int           // PI-12: 0 = disabled
 	maxPerActorPerHour int           // SECURITY-5: 0 = disabled
 }
 
@@ -77,13 +76,6 @@ func (s *InvitationService) WithTokenServiceClient(c port.TokenServiceClient) *I
 	return s
 }
 
-// WithAuditLog attaches the AL-5 client for invitation.created, invitation.revoked
-// direct-write entries (D-6). Nil is safe — missing client silently skips the write.
-func (s *InvitationService) WithAuditLog(audit port.AuditLogClient) *InvitationService {
-	s.audit = audit
-	return s
-}
-
 // isServiceAccountOrDegrade calls Token Service's TS-5 lookup and, on
 // failure, degrades to false (allow the operation) rather than blocking the
 // whole Invite/AddFromRegister — AUTH-9 is defense-in-depth on top of the
@@ -107,9 +99,7 @@ func (s *InvitationService) isServiceAccountOrDegrade(ctx context.Context, tenan
 	return isServiceAccount
 }
 
-// WithReinviteCooldown sets the PI-11 per-email cooldown. A value ≤ 0 turns the
-// check off for direct callers/tests; production config never passes one
-// (envInt ignores ≤ 0, LLD §12 L3559).
+// WithReinviteCooldown sets the PI-11 per-email cooldown. 0 disables.
 func (s *InvitationService) WithReinviteCooldown(d time.Duration) *InvitationService {
 	s.reinviteCooldown = d
 	return s
@@ -151,10 +141,6 @@ func (s *InvitationService) Invite(ctx context.Context, tenantID uuid.UUID, req 
 		// retried transaction.
 		metrics.IncSeatLimitReached(s.planLabel(ctx, tenantID))
 	}
-	// AL-5 best-effort audit (invitation.created, D-6).
-	if err == nil && s.audit != nil {
-		s.auditInvitation(ctx, tenantID, inv.ID, actorID, "invitation.created", "create", "InvitationCreated")
-	}
 	return inv, err
 }
 
@@ -184,8 +170,7 @@ func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req 
 	if req.FullName == "" {
 		return nil, domain.NewError(domain.ErrValidation, "full_name is required")
 	}
-	// BUG-5: the limit is 512 characters (chk_full_name_length uses
-	// length(), which counts characters), not bytes.
+	// BUG-5: the DB CHECK uses length() which counts characters, not bytes.
 	if utf8.RuneCountInString(req.FullName) > 512 {
 		return nil, domain.NewError(domain.ErrValidation, "full_name must not exceed 512 characters")
 	}
@@ -389,7 +374,10 @@ func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req 
 			return ierr
 		}
 		created = row
-		return nil
+		// invitation.created (AL-5) commits with the row, after the SEAT-1
+		// re-check: a refused invite (the orphan branch above) is not audited
+		// as created.
+		return recordInvitation(txCtx, row, actorID, port.AuditEntryInvitationCreated, "create", "InvitationCreated", row.CreatedAt)
 	})
 	if err != nil {
 		// The KC user was created but no pending_invitations row exists to
@@ -567,6 +555,7 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 				return ferr
 			}
 		}
+
 		// SEAT-1 (CD-54): plain-add JIT path holds no prior seat reservation
 		// (no pending invitation was issued), so we must enforce the cap here
 		// under the tenant FOR UPDATE lock already held above. The invited path
@@ -594,8 +583,8 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 			}
 		}
 
-		// Insert, or re-add a removed user (a 'left' row is reactivated in
-		// place, TM-1), or find the existing row (uq_tm_active_user).
+		// Insert or return existing tenant_membership (PI-10 idempotency
+		// via uq_tm_active_user partial-unique).
 		out, ierr := s.memberships.Insert(txCtx, &domain.TenantMembership{
 			TenantID: tenantID, UserID: userID, Status: domain.MembershipActive,
 		})
@@ -677,11 +666,62 @@ func (s *InvitationService) AddFromRegister(ctx context.Context, tenantID, userI
 	return mem, nil
 }
 
-// deleteInvitedUserInline is PI-6's inline best-effort Keycloak-user delete
-// for a revoked invitation. Errors are logged, never returned.
+// Revoke is P-31. Sets status='revoked' and kc_cleanup_pending=true for the
+// invitation-kc-cleanup reconciler (PI-9). Both updates are optimistic-
+// locked (PI-8): SetStatus bumps record_version via TRG-1, and we pass the
+// new version to SetKCCleanupPending so a concurrent accept can't overwrite
+// the flag.
+func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, expectedVersion int64) (*domain.PendingInvitation, error) {
+	actorID := uuid.Nil
+	if rc, _ := requestctx.FromContext(ctx); rc != nil {
+		actorID = rc.UserID
+	}
+	// The status flip, the kc_cleanup_pending flag and the invitation.revoked
+	// audit entry (AL-5) commit together.
+	var inv *domain.PendingInvitation
+	err := s.runInTx(ctx, func(txCtx context.Context) error {
+		inv = nil
+		revoked, err := s.invites.SetStatus(txCtx, tenantID, id, domain.InviteRevoked, expectedVersion)
+		if err != nil {
+			return err
+		}
+		// Mark for KC cleanup — the invitation-kc-cleanup reconciler sweeps and calls RP DeleteUser.
+		if err := s.invites.SetKCCleanupPending(txCtx, tenantID, id, true, revoked.RecordVersion); err != nil {
+			return err
+		}
+		inv = revoked
+		return recordInvitation(txCtx, revoked, actorID, port.AuditEntryInvitationRevoked, "revoke", "InvitationRevoked", revoked.UpdatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// GAP-17, PI-6: best-effort inline Realm-Provisioner DeleteUser after
+	// commit. On success the kc_cleanup_pending marker is cleared; on
+	// failure it stays and invitation-kc-cleanup retries (PI-9).
+	s.deleteInvitedUserInline(ctx, tenantID, inv)
+	// SECURITY-8: PII erasure for the now-terminal invitation. While the
+	// PI-11 re-invite cooldown is enabled the email must survive until the
+	// cooldown window (counted from created_at) closes — the reconciler
+	// erases revoked rows via EraseRevokedPII once the window passes.
+	// With cooldown disabled, erase immediately (best-effort, non-fatal).
+	if s.reinviteCooldown <= 0 {
+		if err := s.invites.ErasePII(ctx, tenantID, id); err != nil {
+			s.logger.WarnContext(ctx, "Revoke: ErasePII failed (best-effort, non-fatal)",
+				"tenant_id", tenantID, "invitation_id", id, "error", err.Error())
+		}
+	}
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID))
+	}
+	return inv, nil
+}
+
+// deleteInvitedUserInline attempts a best-effort Realm-Provisioner
+// DeleteUser after a revoke commit (PI-6/GAP-17). Errors are logged
+// and never returned — the invitation-kc-cleanup reconciler retries.
 func (s *InvitationService) deleteInvitedUserInline(ctx context.Context, tenantID uuid.UUID, inv *domain.PendingInvitation) {
 	if s.rp == nil || inv == nil || inv.KeycloakUserID == nil {
-		return // nothing created at RP yet: the cleanup job clears the marker
+		return
 	}
 	if err := s.rp.DeleteUser(ctx, tenantID, *inv.KeycloakUserID); err != nil {
 		s.logger.WarnContext(ctx, "Revoke: inline RP DeleteUser failed — invitation-kc-cleanup will retry (PI-9)",
@@ -694,116 +734,49 @@ func (s *InvitationService) deleteInvitedUserInline(ctx context.Context, tenantI
 	}
 }
 
-// Revoke is P-31. Sets status='revoked' and kc_cleanup_pending=true for the
-// invitation-kc-cleanup reconciler (PI-9). Both updates are optimistic-
-// locked (PI-8): SetStatus bumps record_version via TRG-1, and we pass the
-// new version to SetKCCleanupPending so a concurrent accept can't overwrite
-// the flag.
-func (s *InvitationService) Revoke(ctx context.Context, tenantID, id uuid.UUID, expectedVersion int64) (*domain.PendingInvitation, error) {
-	// PI-6: the status flip and the durable kc_cleanup_pending marker (PI-9)
-	// commit together, so a crash between them cannot leave a revoked row
-	// whose Keycloak user nobody will delete.
-	var inv *domain.PendingInvitation
-	revoke := func(txCtx context.Context) error {
-		// Tenant row first — the same lock order as I-3 acceptance (tenant,
-		// then invitation), so a concurrent revoke and accept cannot deadlock.
-		if s.tenants != nil {
-			if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
-				return err
-			}
-		}
-		out, err := s.invites.SetStatus(txCtx, tenantID, id, domain.InviteRevoked, expectedVersion)
-		if err != nil {
-			return err
-		}
-		if err := s.invites.SetKCCleanupPending(txCtx, tenantID, id, true, out.RecordVersion); err != nil {
-			return err
-		}
-		inv = out
-		return nil
+// runInTx runs fn in a transaction, or inline when no TxRunner is wired
+// (unit tests): the writes then run without one and nothing is audited.
+func (s *InvitationService) runInTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if s.txRunner == nil {
+		return fn(ctx)
 	}
-	var err error
-	if s.txRunner != nil {
-		err = s.txRunner.RunInTx(ctx, revoke)
-	} else {
-		err = revoke(ctx)
-	}
-	if err != nil {
-		return nil, err
-	}
-	// GAP-17, PI-6: a best-effort compensating Realm-Provisioner DeleteUser is
-	// attempted inline, after commit. On success the marker is cleared; on
-	// failure it stays and the invitation-kc-cleanup job retries (PI-9). It
-	// never fails the revoke.
-	s.deleteInvitedUserInline(ctx, tenantID, inv)
-	// SECURITY-8: PII erasure for the now-terminal invitation. While the PI-11
-	// re-invite cooldown is enabled the email must survive until the cooldown
-	// window (counted from created_at) has passed — the cooldown looks the
-	// most recent row up by email, so erasing here would let an admin churn
-	// invite→revoke→re-invite unbounded, the exact abuse PI-11 exists to stop.
-	// The invitation-expiry reconciler erases those rows once the window
-	// closes (EraseRevokedPII). With the cooldown disabled, erase now (not
-	// reachable from configuration — §12 ignores ≤ 0; kept as a defensive default).
-	// Best-effort either way: a failure never rolls back the revoke.
-	if s.reinviteCooldown <= 0 {
-		if err := s.invites.ErasePII(ctx, tenantID, id); err != nil {
-			s.logger.WarnContext(ctx, "Revoke: ErasePII failed (best-effort, non-fatal)",
-				"tenant_id", tenantID, "invitation_id", id, "error", err.Error())
-		}
-	}
-	if s.cache != nil {
-		_ = s.cache.Delete(ctx, cacheKeySeatUsage(tenantID))
-	}
-	// AL-5 best-effort audit (invitation.revoked, D-6).
-	if s.audit != nil {
-		rc, _ := requestctx.FromContext(ctx)
-		actorID := uuid.Nil
-		if rc != nil {
-			actorID = rc.UserID
-		}
-		s.auditInvitation(ctx, tenantID, id, actorID, "invitation.revoked", "revoke", "InvitationRevoked")
-	}
-	return inv, nil
+	return s.txRunner.RunInTx(ctx, fn)
 }
 
-// auditInvitation posts an invitation lifecycle entry to AL-5 in a
-// detached goroutine (fail-open, 5s hard cap).
-func (s *InvitationService) auditInvitation(parent context.Context, tenantID, invitationID, actorID uuid.UUID, entryType, action, sourceEventType string) {
-	rc, _ := requestctx.FromContext(parent)
-	actor := port.AuditActor{Type: "iam_system"}
-	if actorID != uuid.Nil {
-		actor = port.AuditActor{Type: "user", ID: actorID.String()}
+// recordInvitation enqueues an invitation lifecycle audit entry (AL-5) on
+// the transaction in ctx. The entry carries ids only — never the invitee's
+// email or name. The key <type>:<tenant>:<invitation> identifies the
+// transition (each happens at most once per invitation). No recorder in ctx
+// (tests without one) skips it.
+func recordInvitation(ctx context.Context, inv *domain.PendingInvitation, actorID uuid.UUID, entryType, action, sourceEventType string, occurredAt time.Time) error {
+	rec, ok := port.AuditRecorderFromContext(ctx)
+	if !ok || inv == nil {
+		return nil
 	}
 	ipAddress, userAgent := "", ""
-	if rc != nil {
+	if rc, _ := requestctx.FromContext(ctx); rc != nil {
 		ipAddress = rc.ClientIP
 		userAgent = rc.UserAgent
 	}
-
-	idemKey := fmt.Sprintf("%s:%s:%s", entryType, tenantID, invitationID)
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.audit.WriteEntry(ctx, port.AuditWriteRequest{
-			IdempotencyKey: idemKey,
-			TenantID:       tenantID,
-			EntryType:      entryType,
-			Action:         action,
-			Actor:          actor,
-			Target: &port.AuditTarget{
-				Type: "invitation",
-				ID:   invitationID.String(),
-			},
-			OccurredAt:      time.Now().UTC(),
-			SourceService:   "iam-org-membership",
-			SourceEventType: sourceEventType,
-			IPAddress:       ipAddress,
-			UserAgent:       userAgent,
-		}); err != nil {
-			metrics.IncAuditDeliveryFailed(entryType) // fail-open — count for alerting
-		}
-	}()
+	if occurredAt.IsZero() {
+		// OccurredAt must come from the change (platform-audit LLD §5.3
+		// rule 2): the row's timestamp, which RETURNING / the re-read always
+		// sets. A zero value is a bug, so fail the transaction rather than
+		// key the entry on the call time.
+		return errors.New("audit: zero OccurredAt — the written row carried no timestamp")
+	}
+	return rec.Record(ctx, port.AuditEntry{
+		IdempotencyKey:  fmt.Sprintf("%s:%s:%s", entryType, inv.TenantID, inv.ID),
+		TenantID:        inv.TenantID,
+		EntryType:       entryType,
+		Action:          action,
+		Actor:           port.AuditActorFor(actorID),
+		Target:          &port.AuditTarget{Type: "invitation", ID: inv.ID.String()},
+		OccurredAt:      occurredAt,
+		SourceEventType: sourceEventType,
+		IPAddress:       ipAddress,
+		UserAgent:       userAgent,
+	})
 }
 
 type InvitationInput struct {

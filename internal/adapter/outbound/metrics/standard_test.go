@@ -13,6 +13,8 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2/pkg/gincommon"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgmetrics"
+
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/audit"
 )
 
 // TestStandard_LibrariesShareRegistryCollectors runs the production
@@ -42,6 +44,14 @@ func TestStandard_LibrariesShareRegistryCollectors(t *testing.T) {
 	pgWarnings, err := pgmetrics.InitWithIdentity(pgmetrics.IdentityFromLabels(identity), gincommon.MetricsRegisterer())
 	require.NoError(t, err)
 	assert.Empty(t, pgWarnings, "no platform-pgcommon metric may be disabled")
+
+	// platform-audit, last, as initLibraryMetrics registers it: its Tier 1
+	// collectors join the scrape metricslint checks.
+	auditWarnings, err := audit.InitMetrics(audit.MetricsIdentity{
+		Domain: identity["domain"], Service: identity["service"], Environment: identity["environment"],
+	}, gincommon.MetricsRegisterer())
+	require.NoError(t, err)
+	assert.Empty(t, auditWarnings, "no platform-audit metric may be disabled")
 
 	// platform-events counts every DLQ forward on the shared collector; the
 	// service counts the reject reason on its own Tier-3 counter.

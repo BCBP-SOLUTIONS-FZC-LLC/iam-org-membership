@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
@@ -28,7 +29,6 @@ type TenantService struct {
 	tenants   port.TenantRepository
 	cache     port.Cache
 	rp        port.RealmProvisionerClient
-	audit     port.AuditLogClient    // optional; nil disables AL-5 direct-write
 	plans     port.PlanCatalogReader // optional; used by plan-change-check (I-18)
 	idpReader port.RealmIDPReader    // optional; used by plan-change-check (I-18)
 	txRunner  port.TxRunner          // optional; when set, residency_mode changes publish TenantSettingChanged
@@ -36,13 +36,6 @@ type TenantService struct {
 
 func NewTenantService(tenants port.TenantRepository, cache port.Cache, rp port.RealmProvisionerClient) *TenantService {
 	return &TenantService{tenants: tenants, cache: cache, rp: rp}
-}
-
-// WithAuditLog attaches the AL-5 client used for config.tenant_setting.changed
-// entries (D-6). Nil is safe — missing client silently skips the write.
-func (s *TenantService) WithAuditLog(audit port.AuditLogClient) *TenantService {
-	s.audit = audit
-	return s
 }
 
 // WithPlanCatalog attaches the plan catalog reader used by plan-change-check
@@ -66,9 +59,10 @@ func (s *TenantService) WithIDPReader(idpReader port.RealmIDPReader) *TenantServ
 
 // WithTxRunner attaches the transaction runner used to publish
 // TenantSettingChanged onto iam.tenant.events atomically with the DB write
-// when residency_mode changes (CD-37). Nil is safe — the event is simply
-// not published if no runner is wired (graceful degradation in tests/dev
-// environments where the outbox is not active).
+// when residency_mode changes (CD-37), and to enqueue the
+// config.tenant_setting.changed audit entry (AL-5) with every P-2 update.
+// Nil is safe — the update then runs outside a transaction and neither the
+// event nor the audit entry is written (tests/dev without the outbox).
 func (s *TenantService) WithTxRunner(txRunner port.TxRunner) *TenantService {
 	s.txRunner = txRunner
 	return s
@@ -260,24 +254,36 @@ func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *do
 		}
 	}
 
-	// When residency_mode is changing and a TxRunner is wired, wrap the Update
-	// and the TenantSettingChanged event enqueue in a single transaction so the
-	// DB write and the outbox insert commit atomically (EVT-10, CD-37).
+	// With a TxRunner wired, the Update, the TenantSettingChanged event
+	// (residency_mode only, CD-37) and the config.tenant_setting.changed
+	// audit entry commit in one transaction (EVT-10, PA-INV-3).
 	var updated *domain.Tenant
-	if patch.ResidencyMode != nil && s.txRunner != nil {
-		oldMode := domain.ResidencyModeStandard
-		if preReadTenant != nil {
-			oldMode = preReadTenant.ResidencyMode
-		}
+	if s.txRunner != nil {
 		var txUpdated *domain.Tenant
 		if txErr := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+			txUpdated = nil
 			var updateErr error
 			txUpdated, updateErr = s.tenants.Update(txCtx, tenantID, patch)
 			if updateErr != nil {
 				return updateErr
 			}
-			return s.enqueueSettingChanged(txCtx, tenantID, "residency_mode",
-				string(oldMode), string(*patch.ResidencyMode))
+			if patch.ResidencyMode != nil {
+				oldMode := domain.ResidencyModeStandard
+				if preReadTenant != nil {
+					oldMode = preReadTenant.ResidencyMode
+				}
+				if err := s.enqueueSettingChanged(txCtx, tenantID, "residency_mode",
+					string(oldMode), string(*patch.ResidencyMode)); err != nil {
+					return err
+				}
+			}
+			// A PATCH that sets the current values succeeds without bumping
+			// record_version (TRG-3): nothing changed, and its key would be
+			// the previous change's. Not audited.
+			if txUpdated.RecordVersion == patch.RecordVersion {
+				return nil
+			}
+			return s.recordSettingChange(txCtx, txUpdated, patch, preReadTenant)
 		}); txErr != nil {
 			return nil, false, txErr
 		}
@@ -310,28 +316,25 @@ func (s *TenantService) Patch(ctx context.Context, tenantID uuid.UUID, patch *do
 		}
 	}
 
-	// AL-5 best-effort audit (config.tenant_setting.changed, D-6).
-	// Runs in a detached goroutine so an Audit Log outage never blocks P-2.
-	if s.audit != nil {
-		s.auditSettingChange(ctx, tenantID, patch, preReadTenant)
-	}
-
 	return updated, deferredSync, nil
 }
 
-// auditSettingChange posts a config.tenant_setting.changed entry to AL-5
-// in a detached goroutine (fail-open, 5s hard cap).
-// before is the pre-update tenant snapshot (may be nil if not pre-read).
-func (s *TenantService) auditSettingChange(parent context.Context, tenantID uuid.UUID, patch *domain.TenantPatch, before *domain.Tenant) {
-	// Capture actor from request context before spawning — parent ctx may
-	// be cancelled by the time the goroutine runs.
-	rc, _ := requestctx.FromContext(parent)
-	actor := port.AuditActor{Type: "iam_system"}
-	if rc != nil && rc.UserID != uuid.Nil {
-		actor = port.AuditActor{Type: "user", ID: rc.UserID.String()}
+// recordSettingChange enqueues the config.tenant_setting.changed audit entry
+// (AL-5) on the update's transaction. The key is the tenant and the
+// record_version the update produced, so a retried transaction or a replayed
+// delivery maps to the same entry and two real updates never collide.
+// before is the pre-update snapshot (nil when not pre-read). No recorder in
+// ctx (tests without one) skips it.
+func (s *TenantService) recordSettingChange(ctx context.Context, updated *domain.Tenant, patch *domain.TenantPatch, before *domain.Tenant) error {
+	rec, ok := port.AuditRecorderFromContext(ctx)
+	if !ok || updated == nil {
+		return nil
 	}
+	rc, _ := requestctx.FromContext(ctx)
+	actorID := uuid.Nil
 	ipAddress, userAgent := "", ""
 	if rc != nil {
+		actorID = rc.UserID
 		ipAddress = rc.ClientIP
 		userAgent = rc.UserAgent
 	}
@@ -358,31 +361,26 @@ func (s *TenantService) auditSettingChange(parent context.Context, tenantID uuid
 		changed["residency_mode"] = entry
 	}
 
-	// Stable idempotency key: scoped to tenant + actor + changed field set
-	// (millisecond timestamp keeps it unique per real patch but not per retry
-	// within the same millisecond — acceptable for a best-effort audit call).
-	idemKey := fmt.Sprintf("tenant-setting:%s:%s:%d", tenantID, actor.ID, time.Now().UnixMilli())
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.audit.WriteEntry(ctx, port.AuditWriteRequest{
-			IdempotencyKey:  idemKey,
-			TenantID:        tenantID,
-			EntryType:       "config.tenant_setting.changed",
-			Action:          "update",
-			Actor:           actor,
-			OccurredAt:      time.Now().UTC(),
-			SourceService:   "iam-org-membership",
-			SourceEventType: "TenantSettingChanged",
-			IPAddress:       ipAddress,
-			UserAgent:       userAgent,
-			Metadata:        changed,
-		}); err != nil {
-			// Fail-open: audit outage must not degrade P-2; count for alerting.
-			metrics.IncAuditDeliveryFailed("config.tenant_setting.changed")
-		}
-	}()
+	occurredAt := updated.UpdatedAt
+	if occurredAt.IsZero() {
+		// OccurredAt must come from the change (platform-audit LLD §5.3
+		// rule 2): the row's timestamp, which RETURNING / the re-read always
+		// sets. A zero value is a bug, so fail the transaction rather than
+		// key the entry on the call time.
+		return errors.New("audit: zero OccurredAt — the written row carried no timestamp")
+	}
+	return rec.Record(ctx, port.AuditEntry{
+		IdempotencyKey:  fmt.Sprintf("%s:%s:%d", port.AuditEntryTenantSettingChanged, updated.ID, updated.RecordVersion),
+		TenantID:        updated.ID,
+		EntryType:       port.AuditEntryTenantSettingChanged,
+		Action:          "update",
+		Actor:           port.AuditActorFor(actorID),
+		OccurredAt:      occurredAt,
+		SourceEventType: "TenantSettingChanged",
+		IPAddress:       ipAddress,
+		UserAgent:       userAgent,
+		Metadata:        changed,
+	})
 }
 
 // enqueueSettingChanged enqueues a TenantSettingChanged event into the

@@ -1,6 +1,6 @@
 graph LR
     main(["cmd/server"])
-    reconciler(["cmd/reconciler\n--job=<name> dispatcher (7 CronJobs)"])
+    reconciler(["cmd/reconciler\n--job=<name> dispatcher (8 CronJobs)"])
     jobs(["cmd/reconciler/jobs\n(reconciler_jobs)"])
     migrate(["cmd/migrate\n(Helm pre-install/pre-upgrade hook)"])
 
@@ -17,6 +17,7 @@ graph LR
     groupmappingclient(["adapter/outbound/groupmappingclient"])
     delegationcheck(["adapter/outbound/delegationcheck"])
     tokenservice(["adapter/outbound/tokenservice\n(AUTH-9/IB-3, fails OPEN)"])
+    auditrecorder(["adapter/outbound/auditrecorder\n(platform-audit outbox mode)"])
     httpx(["adapter/outbound/httpx\n(httptransport)"])
     metrics(["adapter/outbound/metrics\n(observability)"])
 
@@ -53,6 +54,7 @@ graph LR
     main        --> groupmappingclient
     main        --> delegationcheck
     main        --> tokenservice
+    main        --> auditrecorder
     main        --> metrics
     main        --> docs_swagger
     main        --> port
@@ -76,6 +78,7 @@ graph LR
     reconciler  --> postgres
     reconciler  --> eventbus
     reconciler  --> realmprovisioner
+    reconciler  --> auditrecorder
     reconciler  --> metrics
     reconciler  --> port
     jobs        --> port
@@ -159,6 +162,7 @@ graph LR
     groupmappingclient --> domain
     delegationcheck --> port
     tokenservice --> port
+    auditrecorder --> port
     workflow    --> httpx
     realmprovisioner --> httpx
     catalogadmin --> httpx

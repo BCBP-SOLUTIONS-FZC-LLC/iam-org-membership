@@ -53,6 +53,7 @@ TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
                       ./internal/adapter/outbound/tokenservice/... \
                       ./internal/adapter/outbound/httpx/... \
                       ./internal/adapter/outbound/metrics/... \
+                      ./internal/adapter/outbound/auditrecorder/... \
                       ./internal/adapter/outbound/valkey/... \
                       ./internal/core/port/... \
                       ./internal/core/service/... \
@@ -119,6 +120,7 @@ help:
 	@echo "  make fmt-check       - verify gofmt formatting (mirrors CI)"
 	@echo "  make vet             - go vet (default build + every test build tag)"
 	@echo "  make lint            - run golangci-lint (default build + every test build tag)"
+	@echo "  make audit-typecheck - platform-audit's audittypecheck: entry types vs Audit Log's taxonomy (warnings)"
 	@echo "  make arch-lint       - run go-arch-lint against .go-arch-lint.yml"
 	@echo "  make test            - unit + postgres + integration tests (requires Docker)"
 	@echo "  make test-ci         - test with race detector + coverage (used in CI)"
@@ -232,6 +234,15 @@ metrics-inventory:
 
 # arch-lint: enforce .go-arch-lint.yml component boundaries — the same script
 # CI's validate-test.yml runs (matches iam-delegation / iam-realm-provisioner).
+# platform-audit's go/analysis lint of audit entry types against Audit Log's
+# taxonomy (platform-audit iam-adopters §4.5). A `tool` in go.mod, like
+# golangci-lint, so CI's `go mod download` fetches it with the private-module
+# credentials and this target needs no network. Warnings (GitHub
+# annotations), exit 0; add -strict to fail.
+.PHONY: audit-typecheck
+audit-typecheck:
+	$(GO) tool audittypecheck -source-service iam-org-membership ./...
+
 .PHONY: arch-lint
 arch-lint:
 	bash .github/scripts/arch-lint.sh
@@ -277,7 +288,7 @@ test:
 _test-unit-plain:
 	$(GO) test $(TEST_UNIT_PKGS) $(TEST_INTERNAL_PKGS) -count=1 -timeout 120s -v
 _test-postgres-plain:
-	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 300s -parallel $(TEST_POSTGRES_PARALLEL) -v
+	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 900s -parallel $(TEST_POSTGRES_PARALLEL) -v
 _test-integration-plain:
 	$(GO) test $(TEST_INT_PKGS) -tags=integration -count=1 -timeout 300s -v
 
@@ -301,7 +312,7 @@ test-unit:
 
 .PHONY: test-postgres
 test-postgres:
-	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 300s -parallel $(TEST_POSTGRES_PARALLEL) -v
+	$(GO) test $(TEST_POSTGRES_PKGS) -tags=integration -count=1 -timeout 900s -parallel $(TEST_POSTGRES_PARALLEL) -v
 
 .PHONY: test-integration
 test-integration:

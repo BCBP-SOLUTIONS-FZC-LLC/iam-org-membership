@@ -27,7 +27,7 @@ import (
 	consumeradapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/consumer"
 	httpadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/http"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/inbound/sqspipeline"
-	auditlogclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditlog"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/auditrecorder"
 	catalogadminclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/catalogadmin"
 	delegationcheckclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/delegationcheck"
 	eventbusadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/eventbus"
@@ -45,6 +45,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/audit"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	eventcfg "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/config"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/events"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
@@ -60,7 +62,7 @@ var buildVersion = "dev"
 // requestTimeout is the hard per-request deadline (gincommon.Config.RequestTimeout).
 const requestTimeout = 30 * time.Second
 
-// initLibraryMetrics registers platform-events' and platform-pgcommon's
+// initLibraryMetrics registers platform-events', platform-pgcommon's and platform-audit's
 // platform_* metrics on gincommon's registerer with gincommon's identity
 // (call after ObservabilityMiddlewares and metrics.Register, before any
 // pgcommon.NewPool). A metric that cannot be registered is disabled by the
@@ -80,6 +82,15 @@ func initLibraryMetrics(log port.Logger) {
 	}
 	if err != nil {
 		panic(fmt.Sprintf("init platform-pgcommon metrics: %v", err))
+	}
+	auditWarnings, err := audit.InitMetrics(audit.MetricsIdentity{
+		Domain: identity["domain"], Service: identity["service"], Environment: identity["environment"],
+	}, gincommon.MetricsRegisterer())
+	for _, w := range auditWarnings {
+		log.Warn("platform-audit metric disabled", map[string]interface{}{"metric": w.Metric, "error": w.Error()})
+	}
+	if err != nil {
+		panic(fmt.Sprintf("init platform-audit metrics: %v", err))
 	}
 }
 
@@ -353,6 +364,13 @@ func main() {
 	// (EVT-10, CONS-1..4).
 	txRunner := pgadapter.NewTxRunner(pool, outboxPublisher)
 
+	// ── 6b. Audit outbox (platform-audit) ───────────────────────────────
+	// P-2/P-6/P-31 enqueue their AL-5 entries into pending_audit_entries on
+	// the business transaction (txRunner injects the recorder, like the
+	// event publisher); the runner below delivers them to iam-audit-log.
+	auditRunner, auditRecorder := buildAudit(ctx, pool, sysPool, sysDSN != dsn, log)
+	txRunner.WithAuditRecorder(auditRecorder)
+
 	// Two-topic RoutingPublisher — wraps SNS publishers per topic, each
 	// carrying its own Glue-backed wire-format codec when that topic's
 	// registry env var is set; falls back to NoopCodec (plain JSON, dev/test
@@ -405,6 +423,13 @@ func main() {
 			log.Error("outbox runner stopped", map[string]interface{}{"error": err.Error()})
 		}
 	}()
+	if auditRunner != nil {
+		go func() {
+			if err := auditRunner.Start(ctx); err != nil && !errors.Is(err, auditoutbox.ErrRunnerStopped) {
+				log.Error("audit runner stopped", map[string]interface{}{"error": err.Error()})
+			}
+		}()
+	}
 
 	// catalogAdminClient/catalogReader: departments/plans read paths go
 	// through catalog-admin-config's CAT-I1/CAT-I2 + a local cache.
@@ -593,7 +618,6 @@ func main() {
 	// the operation, since the primary guarantee is structural (composite
 	// FK bar, TR-8/DM-4).
 	tokenServiceClient := tokenserviceclient.New(log)
-	auditLogClient := auditlogclient.New(log)
 
 	// I-16 (§16 RP-C3): bound against sysPool (BYPASSRLS), NOT pool — RP's
 	// subscription-lapse sweep needs every tenant past grace, cross-tenant,
@@ -612,7 +636,6 @@ func main() {
 		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool)).
 		WithWorkflow(wfClient) // I-5 delegate-impact gate (§8.8 WFI-1)
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
-		WithAuditLog(auditLogClient).
 		WithPlanCatalog(catalogReader).
 		WithIDPReader(rpClient).
 		WithTxRunner(txRunner)
@@ -629,8 +652,7 @@ func main() {
 		WithReinviteCooldown(time.Duration(reinviteCooldownMin) * time.Minute).
 		WithMaxInvitesPerHour(inviteMaxPerHour).
 		WithMaxInvitesPerActorPerHour(inviteMaxPerActorPerHour).
-		WithTokenServiceClient(tokenServiceClient).
-		WithAuditLog(auditLogClient)
+		WithTokenServiceClient(tokenServiceClient)
 	operatorSvc := service.NewOperatorService(tenantRepo, tenantRoleRepo, membershipRepo, cache, txRunner)
 	subscriptionLapseSvc := service.NewSubscriptionLapseService(sysTenantRepo, subscriptionGraceDays)
 	// PUB-1 (LLD §5.4/§8.11): sysTenantRepo, NOT tenantRepo — the route is
@@ -719,6 +741,14 @@ func main() {
 		// OBS-1: per-queue consumer liveness checks. Built from sqsConsumers
 		// after the consumer goroutines are launched above — each heartbeat
 		// starts alive and MarkDead() is deferred inside the goroutine.
+		// The audit runner is in liveness, never readiness: an Audit Log
+		// outage only grows the backlog (platform-audit §11.6).
+		Liveness: func() []httpadapter.Pinger {
+			if auditRunner == nil {
+				return nil
+			}
+			return []httpadapter.Pinger{pingerFunc(func(context.Context) error { return auditRunner.Alive() })}
+		}(),
 		Consumers: func() []httpadapter.Pinger {
 			out := make([]httpadapter.Pinger, len(sqsConsumers))
 			for i, wc := range sqsConsumers {
@@ -779,7 +809,10 @@ func main() {
 	//      SQS consumer's Stop (each ≤ SQS_DRAIN_TIMEOUT, 15s in Helm) — both
 	//      stop new work and drain what is in flight;
 	//   2. outbox.Stop (≤ OUTBOX_DRAIN_TIMEOUT, 30s) — publishes committed
-	//      events, after the consumers so none can enqueue past the drain;
+	//      events, after the consumers so none can enqueue past the drain —
+	//      in parallel with the audit runner's Stop (≤ auditStopTimeout,
+	//      10s: the row in flight finishes within AUDIT_LOG_TIMEOUT, claimed
+	//      rows are released for the next pod);
 	//   3. cancelBackground — exporters stop;
 	//   4. pool drains on their own budget (poolDrainTimeout, 10s).
 	// max(30, 15) + 30 + 10 = 70s, leaving a 5s buffer.
@@ -806,9 +839,22 @@ func main() {
 		}()
 	}
 	drain.Wait()
+	var runners sync.WaitGroup
+	if auditRunner != nil {
+		runners.Add(1)
+		go func() {
+			defer runners.Done()
+			auditCtx, cancelAudit := context.WithTimeout(context.Background(), auditStopTimeout)
+			defer cancelAudit()
+			if err := auditRunner.Stop(auditCtx); err != nil {
+				log.Error("audit runner stop error", map[string]interface{}{"error": err.Error()})
+			}
+		}()
+	}
 	if err := outboxRunner.Stop(); err != nil {
 		log.Error("outbox runner drain error", map[string]interface{}{"error": err.Error()})
 	}
+	runners.Wait()
 	// RELIABILITY-6: cancelBackground AFTER outboxRunner.Stop() so the exporter
 	// goroutines that tick on the background context complete their in-flight
 	// Postgres queries cleanly before we cancel. Cancelling first caused those
@@ -858,6 +904,7 @@ func runMigrationsAtStartup() bool {
 const (
 	httpDrainTimeout = 30 * time.Second
 	poolDrainTimeout = 10 * time.Second
+	auditStopTimeout = 10 * time.Second // runs alongside the outbox drain
 )
 
 // pingerFunc adapts a plain func to httpadapter.Pinger so /readyz's three
@@ -953,13 +1000,13 @@ func validateRequiredEnv(appEnv string) {
 		// alert fires. devOK because local/dev commonly runs single-role
 		// Postgres with no separate migrator role.
 		{"SYSTEM_DATABASE_URL", true, false, "BYPASSRLS org_membership_migrator DSN; without it cross-tenant queries silently RLS-filter to zero rows with no alert"},
-		// AUDIT_LOG_BASE_URL is fail-open (the client logs a WARN and
-		// skips all AL-5 writes when unset), but unset in staging means
-		// audit records never reach iam-audit-log, which is wrong for
-		// compliance testing. devOK=true: local dev rarely runs
+		// AUDIT_LOG_BASE_URL unset disables delivery: audit entries still
+		// queue in pending_audit_entries (platform-audit) and the backlog
+		// gauges and PlatformAuditDeliveryDisabled report them, but nothing
+		// reaches iam-audit-log. devOK=true: local dev rarely runs
 		// iam-audit-log. stagingWarn=true so a staging misconfiguration
 		// surfaces in stderr without blocking the deploy.
-		{"AUDIT_LOG_BASE_URL", true, true, "iam-audit-log AL-5 base URL; unset skips audit writes silently — compliance records missing in staging/prod"},
+		{"AUDIT_LOG_BASE_URL", true, true, "iam-audit-log AL-5 base URL; unset disables audit delivery — entries queue in pending_audit_entries and never reach Audit Log"},
 	}
 	var missing []string
 	for _, r := range reqs {
@@ -1025,3 +1072,41 @@ func validateRequiredEnv(appEnv string) {
 // noopPublisher usage below keeps encoding/json + noopPublisher usage
 // referenced in main so imports don't drift under -tags=integration builds.
 var _ = json.RawMessage(nil)
+
+// buildAudit wires platform-audit's outbox mode: the Enqueuer behind the
+// recorder that txRunner injects (app pool, RLS-scoped), and the delivery
+// Runner on the BYPASSRLS sysPool, which must see every tenant's rows.
+//
+// It panics on a malformed AUDIT_* value and when the app role cannot
+// INSERT into pending_audit_entries: Enqueue swallows that permission error
+// so the business write commits, so without the check every entry would be
+// lost. When SYSTEM_DATABASE_URL is unset (local single-role setups), the
+// sysPool is RLS-scoped, the runner cannot drain across tenants and is not
+// started: entries queue, and a WARN says why. The runner is nil then.
+func buildAudit(ctx context.Context, appPool, sysPool *pgcommon.Pool, haveSysPool bool, log port.Logger) (*auditoutbox.Runner, port.AuditRecorder) {
+	cfg, err := auditrecorder.LoadConfig()
+	if err != nil {
+		panic(fmt.Sprintf("audit config: %v", err))
+	}
+	if err := auditoutbox.CheckEnqueueAccess(ctx, appPool); err != nil {
+		panic(fmt.Sprintf("audit enqueue access check: %v", err))
+	}
+	enq, err := auditoutbox.NewEnqueuer(cfg.EnqueueConfig(log))
+	if err != nil {
+		panic(fmt.Sprintf("audit enqueuer: %v", err))
+	}
+	recorder := auditrecorder.New(enq)
+	if !haveSysPool {
+		log.Warn("SYSTEM_DATABASE_URL not set — audit delivery runner not started; audit entries queue in pending_audit_entries", nil)
+		return nil, recorder
+	}
+	client, err := cfg.NewClient(log) // nil when AUDIT_LOG_BASE_URL is empty: delivery disabled
+	if err != nil {
+		panic(fmt.Sprintf("audit client: %v", err))
+	}
+	runner, err := auditoutbox.NewRunner(cfg.RunnerConfig(sysPool, client, enq, log))
+	if err != nil {
+		panic(fmt.Sprintf("audit runner: %v", err))
+	}
+	return runner, recorder
+}

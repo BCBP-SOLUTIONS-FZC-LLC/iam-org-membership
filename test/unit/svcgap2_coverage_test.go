@@ -213,11 +213,7 @@ func (r *svcgap2FullInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.Pe
 func (r *svcgap2FullInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error {
 	return nil
 }
-func (r *svcgap2FullInviteRepo) ExpireOverdue(context.Context, int) (int, error) { return 0, nil }
-func (r *svcgap2FullInviteRepo) EraseRevokedPII(context.Context, time.Time, int) (int, error) {
-	return 0, nil
-}
-func (r *svcgap2FullInviteRepo) ListAll(context.Context, uuid.UUID) ([]domain.PendingInvitation, error) {
+func (r *svcgap2FullInviteRepo) ExpireOverdue(context.Context, int) ([]domain.ExpiredInvitation, error) {
 	return nil, nil
 }
 func (r *svcgap2FullInviteRepo) MostRecentCreatedAt(ctx context.Context, tid uuid.UUID, email string) (time.Time, error) {
@@ -236,6 +232,12 @@ func (r *svcgap2FullInviteRepo) CountCreatedInWindowByActor(_ context.Context, _
 	return 0, nil // actor rate limit not triggered by default
 }
 func (r *svcgap2FullInviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (r *svcgap2FullInviteRepo) EraseRevokedPII(_ context.Context, _ time.Time, _ int) (int, error) {
+	return 0, nil
+}
+func (r *svcgap2FullInviteRepo) ListAll(_ context.Context, _ uuid.UUID) ([]domain.PendingInvitation, error) {
+	return nil, nil
+}
 
 var _ port.InvitationRepository = (*svcgap2FullInviteRepo)(nil)
 

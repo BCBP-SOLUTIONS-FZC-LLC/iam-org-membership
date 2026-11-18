@@ -16,6 +16,7 @@ import (
 
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/test/dbseed"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/pkg/auditoutbox"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2/pkg/outbox"
 	pgmigrate "github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/migrate"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2/pkg/pgcommon"
@@ -118,6 +119,7 @@ func setupTestDBWithAppConfig(t testing.TB, adjustApp func(*pgcommon.Config)) (*
 	// Phase 4 service-integration tests query outbox_events directly to
 	// verify event emission.
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
+	require.NoError(t, auditoutbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 
 	// Apply migrations as superuser (needs CREATE EXTENSION, CREATE TYPE, etc).
 	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))
@@ -232,6 +234,7 @@ func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
 		"dept_memberships", "dept_role_labels",
 		"pending_invitations",
 		"pending_tenant_events", // EVT-18 parked events (migration 000004)
+		"pending_audit_entries", // platform-audit outbox (library schema; RLS in 000008)
 	}
 	rows, err := rawPool.Query(ctx, `
 		SELECT c.relname

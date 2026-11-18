@@ -3,6 +3,7 @@ module github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership
 go 1.26.11
 
 require (
+	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit v0.1.2
 	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2 v2.3.0
 	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2 v2.6.0
 	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2 v2.0.2
@@ -50,6 +51,7 @@ require (
 	github.com/Antonboom/nilnil v1.1.1 // indirect
 	github.com/Antonboom/testifylint v1.6.4 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
+	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/cmd/audittypecheck v0.1.2 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/ClickHouse/clickhouse-go-linter v1.2.0 // indirect
 	github.com/Djarvur/go-err113 v0.1.1 // indirect
@@ -345,6 +347,7 @@ require (
 )
 
 tool (
+	github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit/cmd/audittypecheck
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 	github.com/swaggo/swag/cmd/swag
 )

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
@@ -52,6 +54,98 @@ var featureFlagAllowlist = map[string]struct{}{
 	"sso_enabled":           {},
 	"custom_branding":       {},
 	"require_mfa_all_users": {},
+}
+
+// recordFeatureFlagChange enqueues the config.tenant_setting.changed audit
+// entry for O-4 on its transaction. It re-reads the row inside the tx for the
+// record_version and updated_at the update produced: the key is
+// <type>:<tenant>:<record_version>, shared with P-2 so the two paths can
+// never collide, and OccurredAt is the row's updated_at. A replace that
+// changes nothing does not bump record_version (TRG-3) and is not audited.
+// Metadata carries only the flags that were added, removed or changed, with
+// their old and new values (scalars from the allow-list; no personal data).
+// No recorder in ctx (tests without one) skips it.
+func (s *OperatorService) recordFeatureFlagChange(ctx context.Context, tenantID uuid.UUID, oldFlags, newFlags map[string]any, expectedVersion int64) error {
+	rec, ok := port.AuditRecorderFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	changes := featureFlagChanges(oldFlags, newFlags)
+	if len(changes) == 0 {
+		return nil
+	}
+	row, err := s.tenants.FindByID(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if row.RecordVersion == expectedVersion {
+		return nil
+	}
+	actorID := uuid.Nil
+	var ipAddr, ua string
+	if rc, ok := requestctx.FromContext(ctx); ok && rc != nil {
+		actorID, ipAddr, ua = rc.UserID, rc.ClientIP, rc.UserAgent
+	}
+	occurredAt := row.UpdatedAt
+	if occurredAt.IsZero() {
+		// OccurredAt must come from the change (platform-audit LLD §5.3
+		// rule 2): the row's timestamp, which RETURNING / the re-read always
+		// sets. A zero value is a bug, so fail the transaction rather than
+		// key the entry on the call time.
+		return errors.New("audit: zero OccurredAt — the written row carried no timestamp")
+	}
+	return rec.Record(ctx, port.AuditEntry{
+		IdempotencyKey:  fmt.Sprintf("%s:%s:%d", port.AuditEntryTenantSettingChanged, tenantID, row.RecordVersion),
+		TenantID:        tenantID,
+		EntryType:       port.AuditEntryTenantSettingChanged,
+		Action:          "update",
+		Actor:           port.AuditActorFor(actorID),
+		OccurredAt:      occurredAt,
+		SourceEventType: "TenantSettingChanged",
+		IPAddress:       ipAddr,
+		UserAgent:       ua,
+		Metadata:        map[string]any{"feature_flags": changes},
+	})
+}
+
+// featureFlagChanges returns, per flag that was added, removed or changed,
+// {"change": created|removed|enabled|disabled|modified, "old": …, "new": …}.
+// enabled/disabled apply to boolean flags turned on or off.
+func featureFlagChanges(oldFlags, newFlags map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, nv := range newFlags {
+		ov, had := oldFlags[k]
+		switch {
+		case !had:
+			out[k] = map[string]any{"change": "created", "new": nv}
+		case !reflect.DeepEqual(normalizeFlag(ov), normalizeFlag(nv)):
+			change := "modified"
+			if nb, ok := nv.(bool); ok {
+				if _, wasBool := ov.(bool); wasBool {
+					change = map[bool]string{true: "enabled", false: "disabled"}[nb]
+				}
+			}
+			out[k] = map[string]any{"change": change, "old": ov, "new": nv}
+		}
+	}
+	for k, ov := range oldFlags {
+		if _, ok := newFlags[k]; !ok {
+			out[k] = map[string]any{"change": "removed", "old": ov}
+		}
+	}
+	return out
+}
+
+// normalizeFlag maps integer kinds to float64 so a stored JSON number and a
+// request int compare equal.
+func normalizeFlag(v any) any {
+	switch n := v.(type) {
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	}
+	return v
 }
 
 func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUID, flags map[string]any, expectedVersion int64) (*domain.Tenant, error) {
@@ -110,6 +204,11 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 		if err := s.tenants.SetFeatureFlags(txCtx, tenantID, flagsJSON, expectedVersion); err != nil {
 			return err
 		}
+		// O-4 is audited (AL-5 config.tenant_setting.changed): feature flags
+		// are tenant configuration that changes application behaviour.
+		if err := s.recordFeatureFlagChange(txCtx, tenantID, current.FeatureFlags, flags, expectedVersion); err != nil {
+			return err
+		}
 		pub, ok := port.EventPublisherFromContext(txCtx)
 		if !ok {
 			return nil
@@ -159,16 +258,6 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerUserID uuid.UUID, actorID uuid.UUID) (*domain.TenantRole, error) {
 	t, err := s.tenants.FindByID(ctx, tenantID)
 	if err != nil {
-		// OBS-11, LLD §5.4 O-7 step 1 / §17: an offboarded tenant is
-		// soft-deleted (deleted_at set with status='offboarded'), so FindByID
-		// does not see it. Look again including deleted rows: offboarded →
-		// 409 tenant_offboarded; 404 only for a tenant that does not exist.
-		if errors.Is(err, domain.ErrTenantNotFound) {
-			if gone, gerr := s.tenants.FindByIDIncludingDeleted(ctx, tenantID); gerr == nil && gone != nil &&
-				(gone.Status == domain.StatusOffboarded || gone.DeletedAt != nil) {
-				return nil, domain.NewError(domain.ErrTenantOffboarded, "tenant is offboarded")
-			}
-		}
 		return nil, err
 	}
 	if t.Status == domain.StatusOffboarded {
