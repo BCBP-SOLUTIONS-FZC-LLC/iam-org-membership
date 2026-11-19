@@ -322,12 +322,15 @@ spec:
           # is replayed by I-1 as soon as the row exists, so one still parked
           # after 10 minutes means a signup that never completed or a replay
           # that keeps failing (parked-events-replay CronJob).
+          # notify_billing: "true" routes this to Billing on-call too (SRE-6) —
+          # stale parked events directly block Billing's tenant provisioning flow.
           expr: |
             max(iam_org_membership_parked_tenant_events_stale) > 0
           for: 15m
           labels:
             severity: warning
             team: platform
+            notify_billing: "true"
           annotations:
             summary: tenant events parked for a tenant that does not exist yet
             description: >-

@@ -107,8 +107,12 @@ type TenantRepository interface {
 	// for EVT-14. Missing / soft-deleted row returns (nil, nil).
 	LockForProjection(ctx context.Context, id uuid.UUID) (*TenantProjectionLock, error)
 
-	// SetLastEventAt is the EVT-14 watermark write after a projection runs.
+	// SetLastEventAt is the EVT-14 watermark write for lifecycle events.
 	SetLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error
+	// SetSeatsLastEventAt is the EVT-14 watermark write for TenantSeatsChanged
+	// (BL-OQ-2: separate from SetLastEventAt so seat changes cannot block
+	// lifecycle event processing).
+	SetSeatsLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error
 
 	// ApplyLifecyclePatch applies one consumer projection UPDATE. rows is
 	// RowsAffected — TrialReactivated and TenantReactivated branch on it.
@@ -125,9 +129,10 @@ type TenantRepository interface {
 
 // TenantProjectionLock is the EVT-14 snapshot under FOR UPDATE.
 type TenantProjectionLock struct {
-	Status      domain.SubscriptionStatus
-	Plan        domain.TenantPlan
-	LastEventAt *time.Time
+	Status           domain.SubscriptionStatus
+	Plan             domain.TenantPlan
+	LastEventAt      *time.Time // high-water for lifecycle events
+	SeatsLastEventAt *time.Time // high-water for TenantSeatsChanged (BL-OQ-2)
 }
 
 // TenantLifecycleOp selects which projection UPDATE ApplyLifecyclePatch runs.
@@ -201,6 +206,9 @@ func (TenantRepositoryNoop) LockForProjection(context.Context, uuid.UUID) (*Tena
 	return nil, nil
 }
 func (TenantRepositoryNoop) SetLastEventAt(context.Context, uuid.UUID, time.Time) error { return nil }
+func (TenantRepositoryNoop) SetSeatsLastEventAt(context.Context, uuid.UUID, time.Time) error {
+	return nil
+}
 func (TenantRepositoryNoop) ApplyLifecyclePatch(context.Context, uuid.UUID, TenantLifecyclePatch) (int64, error) {
 	return 0, nil
 }

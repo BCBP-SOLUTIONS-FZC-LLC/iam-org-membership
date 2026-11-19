@@ -335,7 +335,7 @@ func TestTenantRepo_ApplyLifecyclePatch_DelegatesToExecLifecyclePatch(t *testing
 func TestTenantRepo_LockForProjection_HappyPath(t *testing.T) {
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil)}}
+			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil), (*time.Time)(nil)}}
 		},
 	}
 	got, err := NewTenantRepository(nil).
@@ -483,6 +483,18 @@ func TestTenantRepo_SetLastEventAt_ExecErrorPassesThrough(t *testing.T) {
 	}
 	err := NewTenantRepository(nil).
 		SetLastEventAt(injectTx(context.Background(), tx), uuid.New(), time.Now())
+	assert.ErrorIs(t, err, execErr)
+}
+
+func TestTenantRepo_SetSeatsLastEventAt_ExecErrorPassesThrough(t *testing.T) {
+	execErr := errors.New("exec failed")
+	tx := &fakeTx{
+		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
+			return pgconn.CommandTag{}, execErr
+		},
+	}
+	err := NewTenantRepository(nil).
+		SetSeatsLastEventAt(injectTx(context.Background(), tx), uuid.New(), time.Now())
 	assert.ErrorIs(t, err, execErr)
 }
 

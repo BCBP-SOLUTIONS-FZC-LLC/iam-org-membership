@@ -254,6 +254,50 @@ func TestConsumerEVT14_EqualTimeSkipped(t *testing.T) {
 	assert.Equal(t, "trial", status, "EVT-14: equal-time event MUST NOT project (defensive tie-break)")
 }
 
+// TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle — BL-OQ-2 regression.
+//
+// Scenario: TenantSeatsChanged (T1) arrives before TenantConverted (T0 < T1).
+// Before the fix, TenantSeatsChanged bumped last_event_at to T1, causing
+// TenantConverted (timestamp T0) to be skipped by the EVT-14 guard.
+// After the fix, TenantSeatsChanged only bumps seats_last_event_at; lifecycle
+// events use last_event_at, so TenantConverted at T0 is not blocked.
+func TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "evt14-seats-bloquz2")
+
+	outbox := &captureOutbox{}
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, outbox), pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+	t0 := time.Now().UTC().Add(-30 * time.Second)
+	t1 := t0.Add(5 * time.Second) // t1 > t0
+
+	// Step 1: TenantSeatsChanged at T1 — should bump seats_last_event_at only.
+	seatsEnv := mkEnvelope(t, "TenantSeatsChanged", tenantA, t1, map[string]int{"licensed_seats": 20})
+	require.NoError(t, c.Handle(ctx, seatsEnv))
+
+	var seats int
+	var lastEventAt, seatsLastEventAt *time.Time
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT licensed_seats, last_event_at, seats_last_event_at FROM tenants WHERE id = $1`, tenantA).
+		Scan(&seats, &lastEventAt, &seatsLastEventAt))
+	assert.Equal(t, 20, seats, "seats must apply")
+	assert.Nil(t, lastEventAt, "BL-OQ-2: TenantSeatsChanged must NOT bump last_event_at")
+	require.NotNil(t, seatsLastEventAt, "BL-OQ-2: TenantSeatsChanged must bump seats_last_event_at")
+
+	// Step 2: TenantConverted at T0 (earlier than T1). With the old code this
+	// would be skipped because T0 < T1 == last_event_at. With the fix it must
+	// apply because last_event_at is still NULL.
+	convertedEnv := mkEnvelope(t, "TenantConverted", tenantA, t0, map[string]string{})
+	require.NoError(t, c.Handle(ctx, convertedEnv))
+
+	var status string
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status FROM tenants WHERE id = $1`, tenantA).Scan(&status))
+	assert.Equal(t, "active", status, "BL-OQ-2: TenantConverted must NOT be blocked by an earlier TenantSeatsChanged")
+}
+
 // ── EVT-16: tenant-state relay ───────────────────────────────────────────
 
 // TestConsumerEVT16_StatusChangeEnqueuesRelay — a TenantSuspended that flips
