@@ -757,7 +757,8 @@ erDiagram
         timestamptz subscription_started_at "required for paid statuses (T-5)"
         timestamptz cancelled_at "biconditional with status, CASE'd by suspension_source (T-11/T-16)"
         suspension_source suspension_source "ENUM billing_lapse-operator, non-NULL iff status=suspended (T-16)"
-        timestamptz last_event_at "EVT-14 recency high-water mark"
+        timestamptz last_event_at "EVT-14 recency high-water mark (lifecycle events)"
+        timestamptz seats_last_event_at "EVT-14 recency high-water for TenantSeatsChanged — independent of last_event_at (BL-OQ-2)"
         text realm_id "unique WHERE realm_type=dedicated (T-6)"
         realm_type realm_type "ENUM shared-dedicated, explicit not derived (T-6)"
         text keycloak_shard "RP-owned projection, O&M never selects (T-12)"
@@ -1171,7 +1172,7 @@ if tag.RowsAffected() == 0 {
 **SEAT-1 — transactional seat-cap enforcement.** `Invite`/`AddMember` (I-3) count `active + pending` against `licensed_seats` under the same `SELECT ... FOR UPDATE` on `tenants`, inside the same transaction as the insert — a pre-flight-only check would leave a race window where two concurrent invites both pass the check and both commit, overshooting the cap.
 
 **Idempotency (IDEMP-1..4, EVT-14/15/16).**
-- **EVT-14** — a `SELECT ... FOR UPDATE` on the `tenants` row compares the incoming event's `time` against `tenants.last_event_at`; a stale (out-of-order-redelivered) event is skipped but still recorded in `processed_events` (last-writer-wins, §16 A33).
+- **EVT-14** — a `SELECT ... FOR UPDATE` on the `tenants` row compares the incoming event's `time` against a per-event-class watermark: lifecycle events use `tenants.last_event_at`; `TenantSeatsChanged` uses `tenants.seats_last_event_at` (BL-OQ-2 — separate column so a seat-change cannot advance the lifecycle watermark and block a subsequent `TenantConverted`). A stale event is skipped but still recorded in `processed_events` (last-writer-wins, §16 A33). Tie rule: `time ==` → skip.
 - **EVT-15** — an event whose `time` is more than `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` (300 s) in the future is sent straight to the DLQ (`internal/adapter/inbound/sqspipeline/dlq.go`, `DLQReason=future_time_clamp`), not recorded in `processed_events` at all — a poison-pill / clock-skew guard, not a normal dedup path. Straight, not via retries: the clamp is re-evaluated per delivery, so retrying could let a skewed event through once wall-clock caught up.
 - **EVT-17** — before `Handle`, every inbound payload (already Glue-decoded by `events.GlueDecodeCodec`) is validated against the **embedded** consumed schema for its type (`internal/adapter/inbound/sqspipeline/inbound_schema.go`, no Glue call); a violation never reaches the projection and goes straight to the DLQ (`DLQReason=schema_violation`, `IAMConsumedEventSchemaViolation` pages). Unknown types pass through to `ackUnknown`.
 - **EVT-16** — when a consumed event changes `tenants.status`/`plan`, the consumer re-emits `TenantStateChanged` on `iam.membership.events` in the **same transaction**, so Workflow can subscribe to one topic instead of directly watching `iam.tenant.events`/`billing.events`.
@@ -1224,7 +1225,7 @@ if tag.RowsAffected() == 0 {
 | Seat cap is enforced transactionally, not just pre-flight (SEAT-1) | Same `FOR UPDATE` row lock backs the seat count and the insert |
 | Optimistic lock version is monotonic and DB-owned (TRG-1) | `touch_row()` trigger increments `record_version`; the client never sets it directly |
 | Bus-event consumption is exactly-once at this consumer (IDEMP-2) | `processed_events` PK `(event_id, consumer)` |
-| Stale/out-of-order lifecycle events never regress state (EVT-14) | `SELECT ... FOR UPDATE` + `last_event_at` comparison before any status/plan change |
+| Stale/out-of-order lifecycle events never regress state (EVT-14) | `SELECT ... FOR UPDATE` + `last_event_at` (lifecycle) or `seats_last_event_at` (`TenantSeatsChanged`, BL-OQ-2) comparison before any status/plan/seats change |
 | Clock-skewed future events never poison state (EVT-15) | `time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS` → DLQ, never recorded |
 | `app_tenant_id()`/`rls_check_tenant()` fail closed | `NULL` on any error (missing/malformed GUC) rather than open |
 | `org_membership_app` never holds `BYPASSRLS` (RLS-4) | Migration's final `DO $$` block strips it if ever found set |

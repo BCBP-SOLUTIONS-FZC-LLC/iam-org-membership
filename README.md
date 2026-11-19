@@ -69,7 +69,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | P-24 | `POST /tenants/:id/departments` | Activate a global-catalog department for this tenant |
 | P-25 | `PATCH /tenants/:id/departments/:dept_id` | Deactivate/reactivate the tenant's department activation |
 | P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve a blocked removal — `replace_delegate` or `stop_workflows` |
-| P-27 | `GET /tenants/:id/seat-usage` | Active-user count, `licensed_seats`, `over_cap` |
+| P-27 | `GET /tenants/:id/seat-usage` | Active-user count, `licensed_seats`, `pending_invitations` |
 | P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement reconcile of tenant-level roles (`422 last_owner_removal` guard) |
 | P-30 | `GET /tenants/:id/invitations` | List outstanding pending invitations |
 | P-31 | `DELETE /tenants/:id/invitations/:invitation_id` | Revoke a still-pending invitation |
@@ -177,7 +177,7 @@ iam-org-membership/
 │       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged / PlanCatalogChanged — cache invalidation, CACHE-11); dedup.go (processOnce/ackUnknown over port.Inbox)
 │       │   └── sqspipeline/           # Inbound pipeline every queue runs: NewConsumer/EnvForQueue (consumer.go), RequireDLQ + routeRejectsToDLQ (dlq.go), consumed-schema Validator + Handler (inbound_schema.go)
 │       └── outbound/
-│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cd50_pending_tenant_events, 000005_cr4_trial_signup_ledger, 000006_cr4_trial_ledger_hardening, 000007_migrator_grants, 000008_audit_outbox)
+│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cd50_pending_tenant_events, 000005_cr4_trial_signup_ledger, 000006_cr4_trial_ledger_hardening, 000007_migrator_grants, 000008_audit_outbox, 000009_outbox_sequence_grants, 000010_seats_last_event_at)
 │           ├── valkey/                # Cache adapter (go-redis/v9) — advisory only
 │           ├── eventbus/              # RoutingPublisher (two topics) + outbox runner + embedded event schemas
 │           ├── workflow/               # Workflow Service HTTP client (§8.8 delegate-impact)
@@ -699,7 +699,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Migration safety
 
-Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), `000004_cd50_pending_tenant_events` (CD-50 parked-events table), `000005_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate), `000006_cr4_trial_ledger_hardening` (CR-4 grants, `tenant_id` claim column, hash-format CHECK) `000007_migrator_grants` (MIG-10) and `000008_audit_outbox` (RLS + grants on platform-audit's `pending_audit_entries`; fails if the table is missing). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema`, then platform-audit's (`pending_audit_entries`, tracked in `platform_audit_schema_migrations`) by `auditoutbox.ApplySchema`, before them.
+Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), `000004_cd50_pending_tenant_events` (CD-50 parked-events table), `000005_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate), `000006_cr4_trial_ledger_hardening` (CR-4 grants, `tenant_id` claim column, hash-format CHECK) `000007_migrator_grants` (MIG-10), `000008_audit_outbox` (RLS + grants on platform-audit's `pending_audit_entries`; fails if the table is missing), `000009_outbox_sequence_grants` (sequence grants for the audit outbox), and `000010_seats_last_event_at` (separate EVT-14 recency watermark for `TenantSeatsChanged`, BL-OQ-2). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema`, then platform-audit's (`pending_audit_entries`, tracked in `platform_audit_schema_migrations`) by `auditoutbox.ApplySchema`, before them.
 
 ---
 

@@ -8,8 +8,9 @@
 // (§16 A33, A40, A61):
 //
 //   - EVT-14 recency guard — under the tenants row lock, compare
-//     event.time against tenants.last_event_at. If event.time <=
-//     last_event_at, skip the state change but still record
+//     event.time against tenants.last_event_at (lifecycle events) or
+//     tenants.seats_last_event_at (TenantSeatsChanged only, BL-OQ-2).
+//     If event.time <= watermark, skip the state change but still record
 //     processed_events (stale/reordered).
 //   - EVT-15 future-time clamp — if event.time > now() + skew, reject to
 //     DLQ; do NOT record processed_events (poison-pill guard).
@@ -307,7 +308,16 @@ func (c *MembershipEventConsumer) evictAfterWipe(ctx context.Context, tenantID u
 // the transaction commits.
 func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], locked *port.TenantProjectionLock, trialDurationDays int) (gdprWipeRan bool, err error) {
 	// ── EVT-14 recency guard ─────────────────────────────────────────
-	if locked.LastEventAt != nil && !env.Timestamp.After(*locked.LastEventAt) {
+	// TenantSeatsChanged uses seats_last_event_at so that a seat-change
+	// event cannot advance the lifecycle watermark and cause a subsequent
+	// lifecycle event (e.g. TenantConverted) with an earlier timestamp to
+	// be skipped (BL-OQ-2). Tie rule: time == watermark → skip (defensive).
+	isSeatsEvent := env.Type == "TenantSeatsChanged"
+	guardAt := locked.LastEventAt
+	if isSeatsEvent {
+		guardAt = locked.SeatsLastEventAt
+	}
+	if guardAt != nil && !env.Timestamp.After(*guardAt) {
 		if metrics.LifecycleEventSkipped != nil {
 			metrics.LifecycleEventSkipped.WithLabelValues(env.Type).Inc()
 		}
@@ -329,9 +339,15 @@ func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.U
 		return false, err
 	}
 
-	// Bump last_event_at only when projection actually ran.
-	if err := c.tenants.SetLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
-		return false, err
+	// Bump the appropriate watermark only when projection actually ran.
+	if isSeatsEvent {
+		if err := c.tenants.SetSeatsLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
+			return false, err
+		}
+	} else {
+		if err := c.tenants.SetLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
+			return false, err
+		}
 	}
 
 	// SLO-3: record the lag between event.time and apply time so
