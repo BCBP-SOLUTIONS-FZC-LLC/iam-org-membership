@@ -11,6 +11,7 @@ iam-org-membership/
 │   │   ├── main.go                     # HTTP composition root, pool + middleware wiring, 3 SQS consumers, outbox runner, graceful shutdown; runMigrationsAtStartup() (RUN_MIGRATIONS)
 │   │   ├── wiring.go                   # buildTopicPublisher / buildTopicCodec (one SNS publisher + Glue codec per topic)
 │   │   ├── exporters.go                # runBusinessExporters — the 5 metric-exporter goroutines over pgadapter.GaugeRepository
+│   │   ├── auditadmin.go               # `audit-admin` operator tool (parked/waiting pending_audit_entries rows; sysPool DSN; dispatched first in main)
 │   │   ├── consumer_heartbeat.go       # per-queue ConsumerHeartbeat health check
 │   │   ├── identity.go                 # APP_ENV/ENVIRONMENT resolution
 │   │   └── swagger_info.go

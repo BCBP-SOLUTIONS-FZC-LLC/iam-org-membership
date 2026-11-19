@@ -15,8 +15,9 @@
 # a governed label set, PA-D32), so Alertmanager must route
 # alertname=~"PlatformAudit.*", service="iam-org-membership" to the
 # iam-org-membership on-call. Owner of parked rows (PlatformAuditEntriesParked): the
-# iam-org-membership on-call; dispose with auditoutbox.Requeue/Discard/Resolve
-# (platform-audit docs/guides/operators.md).
+# iam-org-membership on-call; inspect and dispose with the server binary's
+# `audit-admin` tool (docs/observability/runbooks.md, Parked and waiting
+# audit rows).
 #
 # platform-audit — reference Prometheus rules for services using the library
 # (LLD §11.4). Load alongside the service's own rules.

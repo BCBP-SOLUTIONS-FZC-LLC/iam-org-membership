@@ -39,8 +39,10 @@ TEST_POSTGRES_PARALLEL ?= 4
 # tagged test files were never vetted or linted.
 ALL_TEST_TAGS := integration,e2e,helm
 
-# White-box (package-internal) tests included in unit runs.
-TEST_INTERNAL_PKGS := ./internal/adapter/inbound/http/... \
+# White-box (package-internal) tests included in unit runs (cmd/server:
+# composition-root helpers and the audit-admin operator tool's flag checks).
+TEST_INTERNAL_PKGS := ./cmd/server/... \
+                      ./internal/adapter/inbound/http/... \
                       ./internal/adapter/inbound/consumer/... \
                       ./internal/adapter/inbound/sqspipeline/... \
                       ./internal/adapter/outbound/eventbus/... \

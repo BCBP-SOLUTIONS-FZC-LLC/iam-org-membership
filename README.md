@@ -237,7 +237,7 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 | `platform-gincommon/v2` | v2.6.0 | HTTP middleware, Zap logging, OTel tracing, Prometheus metrics, the Platform Observability Registry and `metricslint` |
 | `platform-events/v2` | v2.3.0 | Transactional outbox (ordered enqueue), SNS publisher, SQS consumer with DLQ forwarding, inbox (`processed_events` dedup), Glue decode codec |
 | `platform-pgcommon/v2` | v2.0.2 | pgx/v5 pool, RLS GUC injection, per-transaction statement/lock timeouts, migrations, SQLSTATE error helpers |
-| `platform-audit` | v0.1.0 | Audit Log (AL-5) writes in outbox mode: `auditoutbox.Enqueuer` (entries in `pending_audit_entries`, same tx as the change) + `auditoutbox.Runner` (at-least-once delivery), `platform_audit_*` metrics |
+| `platform-audit` | v0.1.2 | Audit Log (AL-5) writes in outbox mode: `auditoutbox.Enqueuer` (entries in `pending_audit_entries`, same tx as the change) + `auditoutbox.Runner` (at-least-once delivery), `platform_audit_*` metrics; its audited operator helpers back `audit-admin` |
 
 ---
 
@@ -656,6 +656,25 @@ The full generated inventory is [`docs/observability/metric-registry.md`](docs/o
 
 Alert rules live in `deploy/monitoring/app-alerts.yml` (28), `slo-rules.yml` (5), `schema-registry-alerts.yml` (4), `platform-audit-rules.yml` (13, vendored from platform-audit v0.1.0 — re-vendor on every upgrade) and the Helm `deploy/helm/templates/prometheusrule.yaml` (25). Alerts built on a still-`proposed` registry metric carry `metric_status: proposed` — among them `IAMOrgMembershipOutboxOrderingBlocked`, `OutboxBacklog`, `DLQBacklog`, `DBPoolSaturated`, `DBAcquireErrors` and `DBRetriesExhausted`. Dashboards (`deploy/monitoring/dashboards/`): `business-health`, `data-integrity`, `i8-latency`, `platform-audit`. Per-alert runbooks: [`docs/observability/runbooks.md`](docs/observability/runbooks.md); renamed/removed metric names: [`docs/observability/migration.md`](docs/observability/migration.md).
 
+### Audit delivery operations
+
+Rows platform-audit's runner parks (`failed`) or keeps waiting (`skew`, `not_admitted`) in `pending_audit_entries` are handled with the server binary's operator tool, run in a pod:
+
+```bash
+/iam-org-membership audit-admin list            # parked rows, with their tenant
+/iam-org-membership audit-admin list-waiting    # rows waiting on skew / not_admitted
+/iam-org-membership audit-admin requeue -id <row-id> -operator <your-user-uuid> -reason "<why>"
+/iam-org-membership audit-admin discard|resolve [-waiting] -id <row-id> -operator … -reason …
+```
+
+It connects with `SYSTEM_DATABASE_URL` (the BYPASSRLS role the audit runner uses, which sees every tenant's rows; it refuses to run without it) and reads the server's `AUDIT_*` variables. Every change needs `-operator`, `-reason` (1..512 bytes, **no personal data**: the `config.audit_delivery.*` entry it writes is never redacted) and a selector, and is itself audited. Procedure: [runbook](docs/observability/runbooks.md#parked-and-waiting-audit-rows-platformauditentriesparked-platformauditunknownentrytype-platformauditnotadmitted).
+
+Go-live checklist (per environment):
+- [ ] **Audit Log admission** applied and verified (`Client.Probe` returns `ProbeAdmitted`; LLD §19.3a).
+- [ ] **`SYSTEM_DATABASE_URL` set** to `org_membership_migrator`, so the runner starts and `audit-admin` can see every tenant's rows.
+- [ ] **Alerts routed:** the chart's platform-audit `PrometheusRule` is loaded and Alertmanager routes `alertname=~"PlatformAudit.*", service="iam-org-membership"` to the on-call.
+- [ ] **Parked rows have an owner:** the iam-org-membership on-call, with `audit-admin`.
+
 ### Tracing and logs
 
 `gincommon.InitTracingWithConfig` (service name, build version, `domain="iam"` and the resolved environment passed explicitly, so traces and metrics carry the same identity), exporting to `OTEL_EXPORTER_OTLP_ENDPOINT` (sampler, baggage and log settings in the config table above), plus a `db.query` span per query via `pgcommon.Config.Tracer`. Structured Zap logs never carry a credential, password seed, or secret — only identifiers (`tenant_id`, `user_id`, `event_type`, `idempotency`-adjacent keys where relevant).
@@ -668,7 +687,7 @@ Alert rules live in `deploy/monitoring/app-alerts.yml` (28), `slo-rules.yml` (5)
 
 | Binary | Path in image | Purpose |
 |---|---|---|
-| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + platform-audit outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter) |
+| `iam-org-membership` | `/iam-org-membership` | HTTP server (`cmd/server`) — the image's `ENTRYPOINT`. Serves all four route prefixes, runs the outbox runner + platform-audit outbox runner + 3 SQS consumers + 5 metric-exporter goroutines (4 gauges + `iam_rls_violations_total` counter). `/iam-org-membership audit-admin …` is the operator tool for parked/waiting audit rows (runs and exits; never starts the service) |
 | `reconciler` | `/reconciler` | One-shot reconciler (`cmd/reconciler`), dispatched via `--job=<name>` by the 8 K8s CronJobs; pushes each run's metrics to `PROMETHEUS_PUSHGATEWAY_URL`, grouped by `cronjob` |
 | `migrate` | `/migrate` | One-shot schema migration (`cmd/migrate` → `postgres.MigrateSchema`: platform-events' `outbox.ApplySchema`, then the domain migrations); exits 0 on success or "already up to date", 1 on failure, with operator hints for a dirty migration or a version missing from the build |
 

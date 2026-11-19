@@ -95,6 +95,16 @@ func initLibraryMetrics(log port.Logger) {
 }
 
 func main() {
+	// `iam-org-membership audit-admin …`: the operator tool for parked and
+	// waiting audit entries (auditadmin.go). It runs before anything else
+	// (no env validation, logger, metrics or pools) and never starts the
+	// service.
+	if len(os.Args) > 1 && os.Args[1] == "audit-admin" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := runAuditAdmin(ctx, os.Args[2:], os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 	appEnv := resolveAppEnv()
 	if !isDevLikeAppEnv(appEnv) {
 		gin.SetMode(gin.ReleaseMode)
