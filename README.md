@@ -4,7 +4,7 @@ The Org & Membership (Core) Service — the **organizational/business system of 
 
 **Repository:** `github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`
 **Module:** Go 1.26.11 · private module · deployed as three binaries from one image (`cmd/server`, `cmd/reconciler`, `cmd/migrate`)
-**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.51** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
+**Design:** Refines the IAM HLD (`IAM HLD v1.41`, §5.6); LLD **v2.54** (`docs/lld/iam-lld-org-membership-service.md`) — where LLD and HLD disagree, HLD is authoritative. This repo is post-decomposition: departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service (ADR-0007 + ADR-0008) — this repo is what's left after all four extractions.
 
 ---
 
@@ -86,7 +86,7 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | I-2 | `PATCH /tenants/:id` | Realm Provisioner | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` |
 | I-3 | `POST /tenants/:id/members` | Event Consumer | Add membership from Keycloak `REGISTER` — also the invitation-acceptance path |
 | I-4 | `PATCH /tenants/:id/members/:user_id` | Event Consumer | Update membership status from a Keycloak lifecycle event |
-| I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — delegate-impact gated |
+| I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — not delegate-impact gated, never refused (DEC-1, TM-12) |
 | I-8 | `GET /users/:id/memberships` | **AuthZ Enrichment (hot path)** | Full membership context for header injection — four-table join |
 | I-9 | `GET /tenants/:id/locale` | LLM Service | Tenant default locale for prompt assembly |
 | I-10 | `POST /tenants/:id/dept-memberships` | Event Consumer | SAML group assertion → dept memberships + additive tenant-role grants |
@@ -177,7 +177,7 @@ iam-org-membership/
 │       │   ├── consumer/              # 3 SQS consumers: tenant-orgm-q, billing-orgm-q (EVT-14/15/16 guards), catalog-orgm-q (DepartmentCatalogChanged / PlanCatalogChanged — cache invalidation, CACHE-11); dedup.go (processOnce/ackUnknown over port.Inbox)
 │       │   └── sqspipeline/           # Inbound pipeline every queue runs: NewConsumer/EnvForQueue (consumer.go), RequireDLQ + routeRejectsToDLQ (dlq.go), consumed-schema Validator + Handler (inbound_schema.go)
 │       └── outbound/
-│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cd50_pending_tenant_events, 000005_cr4_trial_signup_ledger, 000006_cr4_trial_ledger_hardening, 000007_migrator_grants, 000008_audit_outbox)
+│           ├── postgres/              # Repository impls (incl. InboxRepository, ReconcilerStore, GaugeRepository, TrialSignupLedgerRepository), MigrateSchema + migrations/ (000000_initial_schema, 000001_check_constraints, 000002_pub1_pending_invitations_email_idx, 000003_cd37_residency_mode, 000004_cd50_pending_tenant_events, 000005_cr4_trial_signup_ledger, 000006_cr4_trial_ledger_hardening, 000007_migrator_grants, 000008_audit_outbox, 000009_outbox_sequence_grants)
 │           ├── valkey/                # Cache adapter (go-redis/v9) — advisory only
 │           ├── eventbus/              # RoutingPublisher (two topics) + outbox runner + embedded event schemas
 │           ├── workflow/               # Workflow Service HTTP client (§8.8 delegate-impact)
@@ -193,7 +193,7 @@ iam-org-membership/
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.51 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.54 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   ├── architecture/                  # Standalone Mermaid diagrams
 │   ├── observability/                 # Observability standard implementation, generated metric-registry.md, migration.md, runbooks.md
@@ -699,7 +699,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Migration safety
 
-Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), `000004_cd50_pending_tenant_events` (CD-50 parked-events table), `000005_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate), `000006_cr4_trial_ledger_hardening` (CR-4 grants, `tenant_id` claim column, hash-format CHECK) `000007_migrator_grants` (MIG-10) and `000008_audit_outbox` (RLS + grants on platform-audit's `pending_audit_entries`; fails if the table is missing). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema`, then platform-audit's (`pending_audit_entries`, tracked in `platform_audit_schema_migrations`) by `auditoutbox.ApplySchema`, before them.
+Since this service has never been deployed, the decomposition history (ADR-0007/ADR-0008) was squashed into one consolidated `000000_initial_schema` migration rather than carried forward as dead schema history. Later changes are additive migrations on top of it (`internal/adapter/outbound/postgres/migrations/`): `000001_check_constraints` (length CHECKs), `000002_pub1_pending_invitations_email_idx` (PUB-1 email lookup index), `000003_cd37_residency_mode` (`tenants.residency_mode`), `000004_cd50_pending_tenant_events` (CD-50 parked-events table), `000005_cr4_trial_signup_ledger` (CR-4 cross-tenant `trial_signup_ledger` table for the Signup BFF trial-eligibility gate), `000006_cr4_trial_ledger_hardening` (CR-4 grants, `tenant_id` claim column, hash-format CHECK) `000007_migrator_grants` (MIG-10), `000008_audit_outbox` (RLS + grants on platform-audit's `pending_audit_entries`; fails if the table is missing) and `000009_outbox_sequence_grants` (MIG-11: `USAGE, SELECT` on `outbox_events_ordering_seq`). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema`, then platform-audit's (`pending_audit_entries`, tracked in `platform_audit_schema_migrations`) by `auditoutbox.ApplySchema`, before them.
 
 ---
 
@@ -747,7 +747,7 @@ docker build -t iam-org-membership:local --secret id=go_private_token,src=<(echo
 | Endpoint | Returns | Checks |
 |---|---|---|
 | `GET /healthz` | `200 {"status":"ok"}` / `503` | Liveness — `503` only when a registered background loop (the platform-audit delivery runner, `RouterConfig.Liveness`) is stalled; never inspects a dependency. The audit runner is not in `/readyz` |
-| `GET /readyz` | `200`/`503` | App Postgres pool, sys (BYPASSRLS) Postgres pool, Valkey, outbox runner, and SQS consumer goroutines (OBS-1), each via its own `Health(ctx)` |
+| `GET /readyz` | `200`/`503` | App Postgres pool, sys (BYPASSRLS) Postgres pool, Valkey, outbox runner, and SQS consumer goroutines (OBS-1), each via its own `Health(ctx)`. Valkey is advisory (CACHE-9): a failing cache is reported as `"cache":"degraded"` and does not turn the probe `503` |
 
 ### Minimum required environment variables
 
@@ -787,7 +787,7 @@ Reads (I-8 hot path, list endpoints, I-15) have **no** synchronous cross-service
 | Invitation KC cleanup reconciler | Realm Provisioner | `outbound/realmprovisioner/` | fail-open | Retry next cron cycle; `kc_cleanup_pending` stays set |
 | `local_accounts_enabled` change (P-2) | Realm Provisioner | `outbound/realmprovisioner/` | fail-open + durable reconcile | Commits; `realm_sync_pending`, reconciler converges |
 | Session revoke on suspend/remove (AUTH-8) | Realm Provisioner | `outbound/realmprovisioner/` | fail-open (best-effort) | Cutoff falls back to access-token TTL + 300 s cache TTL |
-| User removal / dept demotion·removal (P-8/I-5/P-10/P-11) | Workflow Service | `outbound/workflow/` | fail-closed | `503 workflow_service_unavailable`, no change committed |
+| User removal / dept demotion·removal (P-8/P-10/P-11; I-5 makes no Workflow call, DEC-1) | Workflow Service | `outbound/workflow/` | fail-closed | `503 workflow_service_unavailable`, no change committed |
 | Suspension advisory (P-7) | Workflow Service | `outbound/workflow/` | fail-open | Suspend commits; advisory call omitted |
 | I-1 plan lookup + dept seeding (ProvisioningService.TrialSignup) | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` on cold-cache + failure — calls happen BEFORE the Postgres tx opens (§8.1). bff-signup retries handle this correctly. |
 | Any P-6/P-24/P-10 catalog validation | Catalog / Admin Config Service | `outbound/catalogadmin/` | **fail-closed** | `503 catalog_unavailable` — the one dependency deliberately not fail-open |
@@ -883,7 +883,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.51 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.54 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/observability/`](docs/observability/README.md) | Observability standard implementation: identity, tiers, CI enforcement, SLOs; generated [metric inventory](docs/observability/metric-registry.md); [renamed metrics](docs/observability/migration.md); [alert runbooks](docs/observability/runbooks.md) |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 | [`docs/runbook-outbox-dead-letter.md`](docs/runbook-outbox-dead-letter.md) | Inspecting and reprocessing `outbox_dead_letters` |

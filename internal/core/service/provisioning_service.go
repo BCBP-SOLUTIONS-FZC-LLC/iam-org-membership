@@ -37,17 +37,6 @@ type ProvisioningService struct {
 	// trialLedger is the CR-4 append-only cross-tenant ledger (trial_signup_ledger).
 	// Optional: nil disables both the eligibility check and the atomic write in I-1.
 	trialLedger port.TrialSignupLedgerRepository
-	// workflow backs I-5's delegate-impact pre-check (§8.8, WFI-1/WFI-8) —
-	// see WithWorkflow. Optional: nil skips the gate.
-	workflow port.WorkflowClient
-}
-
-// WithWorkflow wires the Workflow Service client for I-5's delegate-impact
-// gate (LLD I-5 row, §8.8 WFI-1): the Keycloak-deletion path is gated the
-// same way as the admin P-8 removal.
-func (s *ProvisioningService) WithWorkflow(wf port.WorkflowClient) *ProvisioningService {
-	s.workflow = wf
-	return s
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -429,7 +418,63 @@ func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID,
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-	mem, err := s.memberships.SetStatus(gucCtx, tenantID, userID, status, expectedVersion)
+	var mem *domain.TenantMembership
+	var err error
+	escalated := false
+	if status == domain.MembershipSuspended && s.txRunner != nil && s.roles != nil {
+		// DEC-2 / TM-12: Keycloak disabling the last active tenant_owner cannot
+		// be refused (the IdP already disabled the user), so complete and
+		// escalate exactly as I-5 does: lock the tenant row (BUG-6/TM-13, same
+		// lock order as I-5, P-7 and P-8), suspend, then recount active owners
+		// and set ownerless_since in the same tx.
+		err = s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
+			escalated = false
+			if s.tenants != nil {
+				if lerr := s.tenants.LockByID(txCtx, tenantID); lerr != nil && !errors.Is(lerr, domain.ErrTenantNotFound) {
+					return lerr
+				}
+			}
+			// Escalate only on a real active→suspended transition of an owner.
+			wasActiveOwner := false
+			prev, ferr := s.memberships.FindByUserID(txCtx, tenantID, userID)
+			switch {
+			case ferr == nil && prev.Status == domain.MembershipActive:
+				trs, rerr := s.roles.ListByUser(txCtx, tenantID, userID)
+				if rerr != nil {
+					return rerr
+				}
+				for _, tr := range trs {
+					if tr.RoleCode == domain.RoleTenantOwner {
+						wasActiveOwner = true
+						break
+					}
+				}
+			case ferr != nil && !errors.Is(ferr, domain.ErrMemberNotFound):
+				return ferr
+			}
+			m, serr := s.memberships.SetStatus(txCtx, tenantID, userID, status, expectedVersion)
+			if serr != nil {
+				return serr
+			}
+			mem = m
+			if wasActiveOwner && s.tenants != nil {
+				ownerRemaining, cerr := s.roles.CountActiveOwnersActive(txCtx, tenantID)
+				if cerr != nil {
+					return cerr
+				}
+				if ownerRemaining == 0 {
+					flipped, merr := s.tenants.MarkOwnerlessIfUnset(txCtx, tenantID)
+					if merr != nil {
+						return merr
+					}
+					escalated = flipped
+				}
+			}
+			return nil
+		})
+	} else {
+		mem, err = s.memberships.SetStatus(gucCtx, tenantID, userID, status, expectedVersion)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -445,40 +490,19 @@ func (s *ProvisioningService) SetMembershipStatus(ctx context.Context, tenantID,
 				"tenant_id", tenantID, "user_id", userID, "error", err)
 		}
 	}
-	return mem, nil
-}
-
-// deleteMemberGate is I-5's delegate-impact pre-check (LLD I-5 row, §8.8
-// WFI-1/WFI-3/WFI-8), run outside any transaction before state changes:
-// active workflows depending on the user → 409 workflow_resolution_required;
-// a Workflow failure → 503 workflow_service_unavailable (never fail-open).
-// A member that is already gone skips the gate so Keycloak webhook retries
-// stay idempotent no-ops (TM-12).
-func (s *ProvisioningService) deleteMemberGate(ctx context.Context, tenantID, userID uuid.UUID) error {
-	if s.workflow == nil {
-		return nil
-	}
-	if _, err := s.memberships.FindByUserID(ctx, tenantID, userID); err != nil {
-		if errors.Is(err, domain.ErrMemberNotFound) {
-			return nil
+	// Counted and logged after commit, like I-5: only when this call flipped
+	// ownerless_since.
+	if escalated {
+		if metrics.TenantOwnerlessEscalated != nil {
+			metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended").Inc()
 		}
-		return err
+		s.log.ErrorContext(ctx, "tenant_ownerless_escalation",
+			"tenant_id", tenantID.String(),
+			"suspended_user_id", userID.String(),
+			"reason", "last_active_owner_suspended",
+		)
 	}
-	impact, err := s.workflow.GetDelegateImpact(ctx, tenantID, userID, nil)
-	if err != nil {
-		return domain.NewError(domain.ErrWorkflowServiceUnavailable, "workflow service unavailable")
-	}
-	if impact.ActiveWorkflows > 0 {
-		metrics.IncDelegateRemovalBlocked(metrics.DelegateBlockScopeTenantRemoval)
-		return domain.NewError(domain.ErrWorkflowResolutionRequired, "active workflows depend on this delegate").
-			WithDetails(map[string]any{
-				"active_workflows": impact.ActiveWorkflows,
-				"delegate_user_id": userID,
-				"workflow_ids":     impact.WorkflowIDs,
-				"allowed_actions":  []string{string(RemovalReplaceDelegate), string(RemovalStopWorkflows)},
-			})
-	}
-	return nil
+	return mem, nil
 }
 
 // DeleteMember is I-5: full cascade on Keycloak USER_DELETE. Soft-deletes
@@ -493,10 +517,6 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 	g.UserID = "iam-system"
 	g.TenantID = tenantID.String()
 	gucCtx := pgcommon.WithGUCSet(ctx, g)
-
-	if err := s.deleteMemberGate(gucCtx, tenantID, userID); err != nil {
-		return err
-	}
 
 	escalated := false
 	err := s.txRunner.RunInTx(gucCtx, func(txCtx context.Context) error {
@@ -613,8 +633,10 @@ func (s *ProvisioningService) DeleteMember(ctx context.Context, tenantID, userID
 		// ownerless_since. LLD §11.4 / TM-12 line 3807: fire an event-time
 		// counter + ERROR log so on-call is paged the moment escalation
 		// triggers, without waiting for the periodic ownerless-scanner gauge.
+		// BUG-9: count only owners whose membership is active; a suspended
+		// owner left behind does not stop the escalation.
 		if wasOwner {
-			ownerRemaining, err := s.roles.CountActiveOwners(txCtx, tenantID)
+			ownerRemaining, err := s.roles.CountActiveOwnersActive(txCtx, tenantID)
 			if err != nil {
 				return err
 			}

@@ -185,6 +185,9 @@ func (r *raceOwnerRoleRepo) CountActiveOwners(ctx context.Context, tenantID uuid
 	}
 	return 1, nil // inner authoritative recheck: a race dropped it to 1
 }
+func (r *raceOwnerRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 
 func TestReconcileRoles_InnerRecheckRace_BlocksLastOwner(t *testing.T) {
 	mem := &domain.TenantMembership{ID: uuid.New()}

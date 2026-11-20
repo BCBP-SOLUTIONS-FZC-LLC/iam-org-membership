@@ -182,6 +182,9 @@ func (r *arRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCod
 	return nil, nil
 }
 func (r *arRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (r *arRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *arRoleRepo) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	r.grantCalled = true
 	if r.grantFn != nil {

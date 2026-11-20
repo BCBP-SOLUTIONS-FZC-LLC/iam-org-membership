@@ -8,10 +8,10 @@
 #   4 SNS topics     — iam-membership-events, iam-tenant-events, billing-events,
 #                      iam-catalog-events (Catalog's; stands in for its Terraform)
 #   3 inbound SQS    — tenant-orgm-q, billing-orgm-q, catalog-orgm-q (+ DLQs, maxReceiveCount=5)
-#   8 fan-out SQS    — §7.3.2 consumer queues on the two O&M topics (+ DLQs)
+#   10 fan-out SQS   — §7.3.2 consumer queues on the two O&M topics (+ DLQs)
 #   SNS→SQS subs     — with filter policies on the `EventType` attribute
 #   2 Glue registries — iam-membership-events, iam-tenant-events
-#   15 Glue schemas  — every event this service produces (domain.IsProducedEvent),
+#   13 Glue schemas  — every event this service produces (domain.IsProducedEvent),
 #                      registered from the same JSON Schema Draft-07 files
 #                      eventbus.GlueCodec ships, so GLUE_REGISTRY_MEMBERSHIP_NAME
 #                      / GLUE_REGISTRY_TENANT_NAME can be set in .env and the
@@ -187,7 +187,7 @@ subscribe_queue iam-membership-events membership-realm-q \
 # now live on iam-delegation's own topic (iam.delegation.events), not here.
 create_queue_with_dlq membership-notification-q
 subscribe_queue iam-membership-events membership-notification-q \
-  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked","TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
+  '{"EventType": ["DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantRoleGranted","TenantRoleRevoked"]}'
 
 # Workflow Service — override + membership + tenant-state relay, plus
 # MembershipRevoked (removed user's templates/assignments) and
@@ -198,11 +198,6 @@ subscribe_queue iam-membership-events membership-notification-q \
 create_queue_with_dlq membership-workflow-q
 subscribe_queue iam-membership-events membership-workflow-q \
   '{"EventType": ["TenderAssigneeOverridden","DepartmentMembershipGranted","DepartmentMembershipRevoked","DepartmentMembershipLevelChanged","TenantStateChanged","MembershipRevoked","TenantMembershipsPurged"]}'
-
-# Billing Service — narrow filter, seat-overage only (§16 A59, SEAT-3/5).
-create_queue_with_dlq membership-billing-q
-subscribe_queue iam-membership-events membership-billing-q \
-  '{"EventType": ["TenantSeatOverageStarted","TenantSeatOverageResolved"]}'
 
 # Delegation Service cascade queue (Gap OM-2 fix, Option A) —
 # iam-delegation consumes MembershipRevoked and TenantMembershipsPurged to
@@ -249,8 +244,6 @@ register_schema iam-membership-events mfa_reset.json                           M
 register_schema iam-membership-events tenant_memberships_purged.json           TenantMembershipsPurged
 register_schema iam-membership-events tenant_role_granted.json                 TenantRoleGranted
 register_schema iam-membership-events tenant_role_revoked.json                 TenantRoleRevoked
-register_schema iam-membership-events tenant_seat_overage_resolved.json        TenantSeatOverageResolved
-register_schema iam-membership-events tenant_seat_overage_started.json         TenantSeatOverageStarted
 register_schema iam-membership-events tenant_state_changed.json                TenantStateChanged
 register_schema iam-membership-events tender_assignee_overridden.json          TenderAssigneeOverridden
 
@@ -272,6 +265,6 @@ schema_count=$(( \
 
 echo "Floci init complete."
 echo "  SNS topics:        ${topic_count} (expected 4)"
-echo "  SQS queues+DLQs:   ${queue_count} (expected 22 = 11 pairs)"
-echo "  SNS subscriptions: ${sub_count} (expected 11)"
-echo "  Glue schemas:      ${schema_count} (expected 14 across 2 registries)"
+echo "  SQS queues+DLQs:   ${queue_count} (expected 24 = 12 pairs)"
+echo "  SNS subscriptions: ${sub_count} (expected 12)"
+echo "  Glue schemas:      ${schema_count} (expected 13 across 2 registries)"

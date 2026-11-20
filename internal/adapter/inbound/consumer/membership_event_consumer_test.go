@@ -202,16 +202,37 @@ func TestApplyProjection_TrialReactivated_ExecErrorPropagates(t *testing.T) {
 	assert.ErrorIs(t, err, execErr)
 }
 
-func TestApplyProjection_TenantSuspended_SetsStatusAndCancelledAt(t *testing.T) {
-	// No "source" field — defaults to billing_lapse (T-16), matching the
-	// pre-RP-14 behavior this test originally covered.
+// BUG-14: a missing or empty "source" is no longer defaulted to billing_lapse.
+// The handler returns an error, applies nothing and keeps the previous status.
+func TestApplyProjection_TenantSuspended_MissingOrEmptySource_Rejected(t *testing.T) {
+	for name, payload := range map[string]any{
+		"missing": struct{}{},
+		"empty":   map[string]any{"source": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, tenants := newConsumer()
+			st, plan, err := applyOn(c,
+				mkEnv("TenantSuspended", payload),
+				domain.StatusActive, domain.TenantPlan("pro"))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `unknown source ""`)
+			assert.Equal(t, domain.StatusActive, st, "previous status is kept")
+			assert.Equal(t, domain.TenantPlan("pro"), plan)
+			assert.Empty(t, tenants.patches, "no lifecycle UPDATE runs")
+		})
+	}
+}
+
+// BUG-14: an unrecognised source value is an error, never mis-classified.
+func TestApplyProjection_TenantSuspended_UnknownSource_Rejected(t *testing.T) {
 	c, tenants := newConsumer()
 	st, _, err := applyOn(c,
-		mkEnv("TenantSuspended", struct{}{}),
+		mkEnv("TenantSuspended", map[string]any{"source": "foo"}),
 		domain.StatusActive, domain.TenantPlan("pro"))
-	require.NoError(t, err)
-	assert.Equal(t, domain.StatusSuspended, st)
-	assert.Equal(t, port.LifecycleSuspendBillingLapse, lastPatch(t, tenants).Op)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown source "foo"`)
+	assert.Equal(t, domain.StatusActive, st, "previous status is kept")
+	assert.Empty(t, tenants.patches, "no lifecycle UPDATE runs")
 }
 
 func TestApplyProjection_TenantSuspended_ExplicitBillingLapse_SetsCancelledAt(t *testing.T) {

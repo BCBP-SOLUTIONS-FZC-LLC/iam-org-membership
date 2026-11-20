@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -236,13 +237,24 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 				if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 					return err
 				}
-				owners, err := s.roles.CountActiveOwners(txCtx, tenantID)
-				if err != nil {
-					return err
+				// BUG-9: re-suspending an owner who is already suspended does
+				// not change the active-owner count, so TM-8 does not apply;
+				// it is the same repo call as a non-owner suspend. Any other
+				// state (active, or not found) keeps the guard.
+				cur, ferr := s.memberships.FindByUserID(txCtx, tenantID, userID)
+				if ferr != nil && !errors.Is(ferr, domain.ErrMemberNotFound) {
+					return ferr
 				}
-				if owners <= 1 {
-					return domain.NewError(domain.ErrLastOwnerRemoval,
-						"cannot suspend the last tenant_owner")
+				alreadySuspended := ferr == nil && cur != nil && cur.Status == domain.MembershipSuspended
+				if !alreadySuspended {
+					owners, err := s.roles.CountActiveOwnersActive(txCtx, tenantID)
+					if err != nil {
+						return err
+					}
+					if owners <= 1 {
+						return domain.NewError(domain.ErrLastOwnerRemoval,
+							"cannot suspend the last tenant_owner")
+					}
 				}
 				m, txErr = s.memberships.SetStatus(txCtx, tenantID, userID, status, expectedVersion)
 				return txErr
@@ -363,12 +375,8 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 	if _, hadOwner := currentSet[domain.RoleTenantOwner]; hadOwner {
 		if _, keepsOwner := desiredSet[domain.RoleTenantOwner]; !keepsOwner {
 			strippingOwner = true
-			ownerCount, err := s.roles.CountActiveOwners(ctx, tenantID)
-			if err != nil {
+			if err := s.lastOwnerGuard(ctx, tenantID, m.Status); err != nil {
 				return nil, nil, err
-			}
-			if ownerCount <= 1 {
-				return nil, nil, domain.NewError(domain.ErrLastOwnerRemoval, "cannot remove the last tenant_owner")
 			}
 		}
 	}
@@ -388,12 +396,14 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 			if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 				return err
 			}
-			owners, err := s.roles.CountActiveOwners(txCtx, tenantID)
+			// BUG-9: re-read the target under the lock; its status may have
+			// changed since the read outside the tx.
+			cur, err := s.memberships.FindByUserID(txCtx, tenantID, userID)
 			if err != nil {
 				return err
 			}
-			if owners <= 1 {
-				return domain.NewError(domain.ErrLastOwnerRemoval, "cannot remove the last tenant_owner")
+			if err := s.lastOwnerGuard(txCtx, tenantID, cur.Status); err != nil {
+				return err
 			}
 		}
 		pub, _ := port.EventPublisherFromContext(txCtx)
@@ -406,12 +416,21 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 			if _, ok := currentSet[code]; ok {
 				continue
 			}
+			// NEW-CONC-01 (EVT-10): Grant is INSERT … ON CONFLICT DO NOTHING
+			// and returns the existing row when a concurrent identical call
+			// inserted it first. Only a row carrying the ID this call asked
+			// for was inserted here, so only then is it reported as granted
+			// and a TenantRoleGranted enqueued — no event without its DB change.
+			newID := uuid.New()
 			tr, err := s.roles.Grant(txCtx, &domain.TenantRole{
-				TenantID: tenantID, UserID: userID,
+				ID: newID, TenantID: tenantID, UserID: userID,
 				TenantMembershipID: m.ID, RoleCode: code, GrantedBy: actorID,
 			})
 			if err != nil {
 				return err
+			}
+			if tr.ID != newID {
+				continue
 			}
 			granted = append(granted, *tr)
 			if pub != nil {
@@ -468,6 +487,34 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 		_ = s.rp.RevokeUserSessions(ctx, tenantID, userID)
 	}
 	return granted, revoked, nil
+}
+
+// lastOwnerGuard is the TM-8 actor-path refusal (LLD L881) used by P-8 and
+// P-28 when the target holds tenant_owner and is about to lose it. It
+// returns 422 last_owner_removal when no other owner role row would remain
+// (the rule before BUG-9, kept as is), or when the target is an ACTIVE owner
+// and no other ACTIVE owner would remain (TM-8's definition of an owner: a
+// suspended owner does not count). A suspended target does not lower the
+// active-owner count, so only the first rule applies to it.
+func (s *MembershipService) lastOwnerGuard(ctx context.Context, tenantID uuid.UUID, targetStatus domain.MembershipStatus) error {
+	owners, err := s.roles.CountActiveOwners(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if owners <= 1 {
+		return domain.NewError(domain.ErrLastOwnerRemoval, "cannot remove the last tenant_owner")
+	}
+	if targetStatus != domain.MembershipActive {
+		return nil
+	}
+	active, err := s.roles.CountActiveOwnersActive(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if active <= 1 {
+		return domain.NewError(domain.ErrLastOwnerRemoval, "cannot remove the last tenant_owner")
+	}
+	return nil
 }
 
 // RemovalAction is the P-26 request body's action field.
@@ -540,12 +587,8 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		}
 		// Step 3 — TM-8 actor-path last-owner refusal (§8.8, LLD 1178).
 		if wasOwner {
-			owners, err := s.roles.CountActiveOwners(txCtx, tenantID)
-			if err != nil {
+			if err := s.lastOwnerGuard(txCtx, tenantID, mem.Status); err != nil {
 				return err
-			}
-			if owners <= 1 {
-				return domain.NewError(domain.ErrLastOwnerRemoval, "cannot remove the last tenant_owner")
 			}
 		}
 

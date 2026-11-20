@@ -345,16 +345,14 @@ func (r *miscInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) e
 func (r *miscInviteRepo) ExpireOverdue(context.Context, int) ([]domain.ExpiredInvitation, error) {
 	return nil, nil
 }
+func (r *miscInviteRepo) EraseRevokedPII(context.Context, time.Time, int) (int, error) { return 0, nil }
+func (r *miscInviteRepo) ListAll(context.Context, uuid.UUID) ([]domain.PendingInvitation, error) {
+	return nil, nil
+}
 func (r *miscInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
 	return nil, nil
 }
 func (r *miscInviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
-func (r *miscInviteRepo) EraseRevokedPII(_ context.Context, _ time.Time, _ int) (int, error) {
-	return 0, nil
-}
-func (r *miscInviteRepo) ListAll(_ context.Context, _ uuid.UUID) ([]domain.PendingInvitation, error) {
-	return nil, nil
-}
 
 var _ port.InvitationRepository = (*miscInviteRepo)(nil)
 

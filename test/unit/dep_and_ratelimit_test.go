@@ -76,17 +76,15 @@ func (r *depInviteRepo) CountCreatedInWindowByActor(_ context.Context, _ uuid.UU
 func (r *depInviteRepo) ExpireOverdue(context.Context, int) ([]domain.ExpiredInvitation, error) {
 	return nil, nil
 }
+func (r *depInviteRepo) EraseRevokedPII(context.Context, time.Time, int) (int, error) { return 0, nil }
+func (r *depInviteRepo) ListAll(context.Context, uuid.UUID) ([]domain.PendingInvitation, error) {
+	return nil, nil
+}
 func (r *depInviteRepo) ClearKCCleanupPendingByID(context.Context, uuid.UUID) error { return nil }
 func (r *depInviteRepo) LockByID(context.Context, uuid.UUID) (*domain.PendingInvitation, error) {
 	return nil, nil
 }
 func (r *depInviteRepo) ErasePII(context.Context, uuid.UUID, uuid.UUID) error { return nil }
-func (r *depInviteRepo) EraseRevokedPII(_ context.Context, _ time.Time, _ int) (int, error) {
-	return 0, nil
-}
-func (r *depInviteRepo) ListAll(_ context.Context, _ uuid.UUID) ([]domain.PendingInvitation, error) {
-	return nil, nil
-}
 
 var _ port.InvitationRepository = (*depInviteRepo)(nil)
 

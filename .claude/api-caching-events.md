@@ -74,7 +74,7 @@
 | I-2 | `PATCH /tenants/:id` | internal (tenant-orgm-q consumer, via `TenantRealmReady` event) | Set `realm_id`, `realm_type='dedicated'`, `keycloak_shard` (all together) after dedicated realm provisioning. Response: `{tenant_id, realm_id, realm_type, record_version}` — `record_version` is the incremented post-update version (Gap 3 fix: DTO now matches wire). |
 | I-3 | `POST /tenants/:id/members` | Event Consumer | Add membership from Keycloak `REGISTER` — **also invitation-acceptance path** (§8.10, PI-4): flips matching pending row to `accepted`, applies queued roles/depts |
 | I-4 | `PATCH /tenants/:id/members/:user_id` | Event Consumer | Update status from Keycloak lifecycle |
-| I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — **delegate-impact gated** (§8.8, WFI-1); sets `ownerless_since` if last owner (TM-12/T-13) |
+| I-5 | `DELETE /tenants/:id/members/:user_id` | Event Consumer | Soft-delete on Keycloak `USER_DELETE` — **not** delegate-impact gated (DEC-1, TM-12); sets `ownerless_since` if last owner (TM-12/T-13) |
 | I-6/I-7 | *retired (§16 A26)* | — | Quota moved to Usage & Metering |
 | **I-8** | `GET /users/:id/memberships` | **AuthZ Enrichment (hot path)** | Full membership context for header injection |
 | I-9 | `GET /tenants/:id/locale` | LLM Service | Tenant default locale for prompt assembly |
@@ -145,7 +145,7 @@ AWS ElastiCache Valkey via `go-redis/v9`. **Advisory only** — Postgres is sour
 |---|---|---|---|
 | `om:memberships:{tenant}:{user}` | JSON of full I-8 response + `plan_gen` (not returned) | 300 s ±30 s jitter (CACHE-4) | any membership/role/dept write for this user; §8.9 user-deletion cascade; a `PlanCatalogChanged` for the tenant's plan, by generation mismatch (CACHE-11) |
 | `om:plans:gen:{plan}` | Event id of the plan's last `PlanCatalogChanged` — read in the same `MGET` as `om:memberships`; an entry stamped with another value is a miss (CACHE-11, LLD rev 2.39) | 24 h | Set by `CatalogConsumer`; never deleted |
-| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); I-2; every committed `tenant-orgm-q`/`billing-orgm-q` projection (post-commit, with `om:locale` + `om:seat_usage`, LLD rev 2.51) |
+| `om:tenant:{tenant}` | JSON tenant (plan, locale, flags) | 600 s | `PATCH /tenants/:id` (P-2); I-2; every committed `tenant-orgm-q`/`billing-orgm-q` projection (post-commit, with `om:locale` + `om:seat_usage`, LLD rev 2.53) |
 | `om:members:{tenant}:{limit}` | P-4 page-1 only (cursorless), `limit=50` only (CACHE-10) | 120 s | any membership add/remove/update for tenant (CACHE-7) |
 | `om:dept_members:{tenant}:{dept}` | JSON dept member list | 120 s | any dept_memberships write for tenant+dept |
 | `om:locale:{tenant}` | BCP-47 string | 600 s | P-2 with locale change |
@@ -221,7 +221,7 @@ Every event is enqueued to `outbox_events` in the business transaction (`eventbu
 | `DepartmentMembershipLevelChanged` | Level changed | `user_id`, `tenant_id`, `department_id`, `previous_level`, `new_level`, `actor_id` |
 | `TenantRoleGranted` | Elevated tenant role granted (init, P-28, or JIT GTRM-4). **One event per role_code**, not bulk | `user_id`, `tenant_id`, `role_code`, `actor_id` |
 | `TenantRoleRevoked` (§16 A14) | Elevated tenant role revoked (P-28 or removal cascade TR-9). One event per revoked role | `user_id`, `tenant_id`, `role_code`, `actor_id` |
-| `MembershipRevoked` (§15.2.2) | User removed from tenant — emitted unconditionally by `MembershipService.RemoveUser` (P-8/I-5) and `ProvisioningService.DeleteMember`'s underlying path. **Consolidated in this pass**: a second, separate `TenantMembershipRemoved` event previously existed for the Tender-ACL Service alone — that's gone. This one shared event is now consumed by **both** the Delegation Service's cascade queue (ends the departed user's delegation rows) and the Tender-ACL Service's cascade queue (soft-deletes the departed user's ACL overlays) | `tenant_id`, `user_id`, `actor_id` |
+| `MembershipRevoked` (§15.2.2) | User removed from tenant — emitted unconditionally by `MembershipService.RemoveUser` (P-8) and by `ProvisioningService.DeleteMember` (I-5). **Consolidated in this pass**: a second, separate `TenantMembershipRemoved` event previously existed for the Tender-ACL Service alone — that's gone. This one shared event is now consumed by **both** the Delegation Service's cascade queue (ends the departed user's delegation rows) and the Tender-ACL Service's cascade queue (soft-deletes the departed user's ACL overlays) | `tenant_id`, `user_id`, `actor_id` |
 | `TenderAssigneeOverridden` | I-13 validate-and-emit — Workflow Service call | `tender_id`, `tenant_id`, `user_id`, `actor_id` |
 | `MFAReset` (§16 OQ-8/F6) | P-34 — emitted after `RealmProvisionerClient.ResetMFA` (RP-9) succeeds; sole audit record for the reset (O&M persists no MFA state itself); consumed only by `membership-audit-q`'s catch-all filter | `tenant_id`, `user_id`, `actor_id` |
 | `TenantStateChanged` (§16 A61) | Post-EVT-14 status/plan change | `tenant_id`, `status`, `previous_status`, `plan`, `previous_plan`, `changed_at`, `cause` |

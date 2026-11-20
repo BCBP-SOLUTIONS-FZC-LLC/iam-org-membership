@@ -223,22 +223,23 @@ var (
 	// result, found|not_found (§11.2).
 	PublicTenantResolve *prometheus.CounterVec
 
-	// CacheInvalidationFailed counts failed Valkey DEL operations by key
-	// family (keyType label). A sustained rate signals cache-eviction
-	// failures that could leave stale entries serving read paths.
-	CacheInvalidationFailed *prometheus.CounterVec
-
-	// CacheErrors counts failed Valkey operations (not misses) by op
-	// (get, mget, set, del). Distinct from cache misses — these are I/O
-	// or connection errors that degrade the advisory cache layer.
-	CacheErrors *prometheus.CounterVec
-
 	// CatalogCacheInvalidated counts DepartmentCatalogChanged and
 	// PlanCatalogChanged events that successfully cleared their respective
 	// catalog cache keys (om:departments or om:plans, primary + stale) via
 	// the catalog-orgm-q consumer (Gap-12 / CAT-GAP-004 fix). Provides a
 	// Prometheus signal for the cache-propagation path.
 	CatalogCacheInvalidated prometheus.Counter
+
+	// CacheInvalidationFailed counts failed Valkey DELs by key family
+	// (key_type = tenant, memberships, members, ...). The DEL is never
+	// retried, so every increment is an entry that may be served stale
+	// until its TTL (CACHE-2/CACHE-9).
+	CacheInvalidationFailed *prometheus.CounterVec
+
+	// CacheErrors counts failed Valkey operations (not misses) by op
+	// (get, mget, set, setnx, del). Every one degrades to a Postgres read
+	// or a skipped write; a sustained nonzero rate means the cache is down.
+	CacheErrors *prometheus.CounterVec
 
 	// PlanChangeCheckTotal counts I-18 plan-change pre-check outcomes
 	// (CD-20) by result: allowed, blocked, or error (RP unavailable).
@@ -447,7 +448,16 @@ type Recorder struct{}
 // IncRealmSyncFailed satisfies jobs.Metrics.
 func (Recorder) IncRealmSyncFailed(stage string) { IncRealmSyncFailed(stage) }
 
+// IncCatalogCacheInvalidated records one successful om:departments cache
+// clear by the catalog-orgm-q consumer. Nil-safe.
+func IncCatalogCacheInvalidated() {
+	if CatalogCacheInvalidated != nil {
+		CatalogCacheInvalidated.Inc()
+	}
+}
+
 // IncCacheInvalidationFailed records one failed cache DEL for keyType.
+// Nil-safe.
 func IncCacheInvalidationFailed(keyType string) {
 	if CacheInvalidationFailed != nil {
 		CacheInvalidationFailed.WithLabelValues(keyType).Inc()
@@ -455,18 +465,10 @@ func IncCacheInvalidationFailed(keyType string) {
 }
 
 // IncCacheError records one failed cache operation (op = get, mget, set,
-// del, etc.) that is not a cache miss.
+// setnx or del). Nil-safe.
 func IncCacheError(op string) {
 	if CacheErrors != nil {
 		CacheErrors.WithLabelValues(op).Inc()
-	}
-}
-
-// IncCatalogCacheInvalidated records one successful om:departments cache
-// clear by the catalog-orgm-q consumer. Nil-safe.
-func IncCatalogCacheInvalidated() {
-	if CatalogCacheInvalidated != nil {
-		CatalogCacheInvalidated.Inc()
 	}
 }
 
@@ -802,17 +804,17 @@ func registerServiceMetrics() {
 		"iam_org_membership_public_tenant_resolve_total",
 		"PUB-1 pre-login tenant/realm resolution lookups served, by result.",
 		"result"))
-	CacheInvalidationFailed = must(gincommon.NewCounterVec(nil,
-		"iam_org_membership_cache_invalidation_failed_total",
-		"Failed Valkey DEL operations by key family (keyType label). A sustained rate signals cache-eviction failures.",
-		"key_type"))
-	CacheErrors = must(gincommon.NewCounterVec(nil,
-		"iam_org_membership_cache_errors_total",
-		"Failed Valkey operations (not misses) by op (get, mget, set, del). Indicates I/O or connection errors.",
-		"op"))
 	CatalogCacheInvalidated = must(gincommon.NewCounter(nil,
 		"iam_org_membership_catalog_cache_invalidated_total",
 		"Catalog cache invalidations via catalog-orgm-q: DepartmentCatalogChanged (om:departments) and PlanCatalogChanged (om:plans) events that successfully cleared their primary+stale cache keys (Gap-12/CAT-GAP-004)."))
+	CacheInvalidationFailed = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_cache_invalidation_failed_total",
+		"Valkey cache invalidations (DEL) that failed, by key_type. Never retried: each increment is an entry that may be served stale until its TTL (CACHE-2/CACHE-9).",
+		"key_type"))
+	CacheErrors = must(gincommon.NewCounterVec(nil,
+		"iam_org_membership_cache_errors_total",
+		"Failed Valkey operations (not misses) by op: get, mget, set, setnx, del. Advisory cache (CACHE-9): each degrades to a Postgres read or a skipped write.",
+		"op"))
 	PlanChangeCheckTotal = must(gincommon.NewCounterVec(nil,
 		"iam_org_membership_plan_change_check_total",
 		"I-18 plan-change pre-check (CD-20) outcomes by result: allowed (no SSO blocker), blocked (sso_idp_configured), error (RP unavailable — maps to 503).",
@@ -918,5 +920,14 @@ func prewarm() {
 		"department_not_active", "not_in_department", "level_insufficient",
 	} {
 		AssigneeEligibilityCheck.WithLabelValues(r)
+	}
+	for _, kt := range []string{
+		"tenant", "locale", "members", "memberships", "roles", "grm", "gdm", "gtrm",
+		"dept_members", "seat_usage", "departments", "plans", "other",
+	} {
+		CacheInvalidationFailed.WithLabelValues(kt)
+	}
+	for _, op := range []string{"get", "mget", "set", "setnx", "del"} {
+		CacheErrors.WithLabelValues(op)
 	}
 }

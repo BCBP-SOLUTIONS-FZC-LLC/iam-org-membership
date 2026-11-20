@@ -14,8 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// expiryRepo implements only ExpireOverdue; the embedded nil interface
-// panics on any other call.
+// expiryRepo implements only ExpireOverdue and EraseRevokedPII (the job's
+// SECURITY-8 step after the sweep); the embedded nil interface panics on any
+// other call.
 type expiryRepo struct {
 	port.InvitationRepository
 	rows []domain.ExpiredInvitation
@@ -27,6 +28,8 @@ func (r *expiryRepo) ExpireOverdue(ctx context.Context, _ int) ([]domain.Expired
 	r.ctx = ctx
 	return r.rows, r.err
 }
+
+func (r *expiryRepo) EraseRevokedPII(context.Context, time.Time, int) (int, error) { return 0, nil }
 
 type batchRecorder struct {
 	batches [][]port.AuditEntry

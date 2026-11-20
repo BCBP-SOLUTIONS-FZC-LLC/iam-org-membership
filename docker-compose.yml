@@ -42,7 +42,7 @@ services:
       AWS_SECRET_ACCESS_KEY: test
       AWS_ENDPOINT_URL: http://floci:4566
       # Glue Schema Registry (LLD §7.3.1, SCHEMA-7) — one registry per SNS
-      # topic. Floci provisions both registries + all 14 schemas on start via
+      # topic. Floci provisions both registries + all 13 produced schemas on start via
       # scripts/init-floci.sh, so the real GlueCodec wire format runs locally
       # instead of falling back to NoopCodec (Floci includes Glue Schema
       # Registry in its free tier, unlike LocalStack Community which gated
@@ -141,7 +141,7 @@ services:
     # replacement. Unlike LocalStack Community, Glue Schema Registry ships in
     # the free tier, so this single service covers SNS + SQS + Glue with no
     # Pro tier / auth token needed — scripts/init-floci.sh provisions both
-    # Glue registries and all 14 schemas alongside the SNS/SQS topology.
+    # Glue registries and all 13 produced schemas alongside the SNS/SQS topology.
     image: floci/floci:2.1.0-compat
     ports:
       # Host 4567 → container 4566. 4566 is claimed by iam-user-profile2's
@@ -158,8 +158,8 @@ services:
       # every per-queue attribute (message counts included) silently comes
       # back empty.
       FLOCI_HOSTNAME: floci
-      # init-floci.sh makes ~50 sequential aws CLI round-trips (3 topics, 20
-      # queues, 10 subscriptions, 2 registries, 14 schemas); floci's default
+      # init-floci.sh makes dozens of sequential aws CLI round-trips (4 topics,
+      # 26 queues incl. DLQs, 13 subscriptions, 2 registries, 13 schemas); floci's default
       # 30s ready-hook timeout is right at that edge on a busy host and was
       # observed to trip it. Give real headroom.
       FLOCI_INIT_HOOKS_TIMEOUT_SECONDS: "90"
@@ -173,8 +173,8 @@ services:
       # (a topic created in ap-south-1 is invisible to an unscoped/us-east-1
       # call), so --region must be explicit here.
       #
-      # Checks for the LAST resource init-floci.sh creates (the TrialStarted
-      # Glue schema), not just SNS reachability — SNS topics exist ~10s into
+      # Checks for one of the LAST resources init-floci.sh creates (the TrialStarted
+      # Glue schema; only TenantSettingChanged is registered after it), not just SNS reachability — SNS topics exist ~10s into
       # the script while Glue registration is still running, so a shallow
       # `sns list-topics` check would report "healthy" (and unblock `app`'s
       # depends_on) before GLUE_REGISTRY_*_NAME's schemas actually exist,
