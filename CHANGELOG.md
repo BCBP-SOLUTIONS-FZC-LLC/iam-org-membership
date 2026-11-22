@@ -6,6 +6,13 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-19 — Billing open items BL-OQ-2, D-3, D-4, SRE-6, LLD rev 2.53)
+
+- **BL-OQ-2 (blocking): split EVT-14 watermark for `TenantSeatsChanged`.** `TenantSeatsChanged` now uses a separate `tenants.seats_last_event_at` column (migration `000010_seats_last_event_at`) for its EVT-14 recency guard instead of the shared `last_event_at`. A seat-change event can no longer advance the lifecycle watermark and cause a subsequent `TenantConverted` (or any other lifecycle event with an earlier timestamp) to be silently skipped. New port method `SetSeatsLastEventAt`; consumer `project()` routes by event type. Tie rule confirmed: `time ==` → skip. Regression test `TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle` added.
+- **D-3: stale CD-19 TODO removed from LLD I-18 auth description.** `RequireInternalCaller()` replaces the stale `CD-19 TODO: admit billing namespace` note; Billing (commercial-system) was admitted in rev 2.24.
+- **D-4: `over_cap` removed from LLD I-11/P-27 seat-usage response.** The field was retired in CD-54 (rev 2.49) and was never in the actual code (`SeatUsage` domain struct has three fields: `active_users`, `pending_invitations`, `licensed_seats`). LLD JSON example and prose updated.
+- **SRE-6: `IAMParkedTenantEventsStale` alert now routes to Billing on-call.** `notify_billing: "true"` label added to both `deploy/monitoring/app-alerts.yml` and `deploy/helm/templates/prometheusrule.yaml`.
+
 ### Added (2026-11-18 — `audit-admin` operator tool, LLD rev 2.52)
 
 - **`iam-org-membership audit-admin`** (`cmd/server/auditadmin.go`): the operator tool for `pending_audit_entries` rows platform-audit's runner parked (`failed`) or keeps waiting (`skew`, `not_admitted`), ported from Catalog Admin's and Group Mapping's. Commands `list` (with each row's tenant), `list-waiting`, `requeue`, `discard`, `resolve` (`-waiting` for waiting rows on the last two) over the library's audited helpers; `-operator`, `-reason` (1..512 bytes, no personal data) and a selector are required for changes, each of which writes its own `config.audit_delivery.*` entry. Exit codes 0 / 1 (operation failed) / 2 (usage). `main` dispatches it before anything else, so it needs none of the server's other environment.
@@ -210,7 +217,7 @@ This service has never been deployed to any environment — there is no released
 - **`ListSubscriptionLapses` (I-16) SQL capped at `LIMIT 1000` rows per poll:** without a cap,
   a large billing backlog could cause I-16 to return an unbounded result set, exhausting memory
   in the Billing Service caller. The cap is applied in the repository query; Billing's existing
-  pagination loop absorbs any continuation naturally. Added a unit test asserting the cap.
+  pagination loop absorbs any continuation naturally. Added a unit test assertin g the cap.
 
 ### Changed (2026-11-04 — metrics reclassification, dependency updates)
 
