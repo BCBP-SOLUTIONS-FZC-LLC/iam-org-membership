@@ -317,8 +317,9 @@ func TestReassignOwner_EmitsTenantRoleGranted(t *testing.T) {
 // active tenant_owner is removed.
 // ─────────────────────────────────────────────────────────────────────────
 
+// Not parallel: it asserts an exact +1 on the shared escalation counter,
+// which parallel tests that remove last owners (e.g. LLDFix_BUG6) also raise.
 func TestTM12Escalation_IncrementsCounter(t *testing.T) {
-	t.Parallel()
 	// Register metrics once per test process. Register() is idempotent
 	// (sync.Once) but we still gate so a parallel-package helper stays cheap.
 	phase4TestMetricsInit()

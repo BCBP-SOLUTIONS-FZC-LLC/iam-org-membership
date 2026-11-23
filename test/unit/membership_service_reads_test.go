@@ -50,6 +50,9 @@ func (f *fakeRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleC
 func (f *fakeRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
+func (f *fakeRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return f.CountActiveOwners(ctx, tenantID)
+}
 func (f *fakeRoleRepo) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil
 }

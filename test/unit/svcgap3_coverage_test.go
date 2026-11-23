@@ -243,6 +243,9 @@ func (r *sg3FullRoleRepo) CountActiveOwners(ctx context.Context, tid uuid.UUID) 
 	}
 	return 2, nil // safe default: multiple owners
 }
+func (r *sg3FullRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *sg3FullRoleRepo) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	if r.grantFn != nil {
 		return r.grantFn(ctx, tr)

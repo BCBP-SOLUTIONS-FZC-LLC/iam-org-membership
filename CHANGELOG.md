@@ -6,14 +6,40 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
-### Fixed (2026-11-19 — Billing open items BL-OQ-2, D-3, D-4, SRE-6, LLD rev 2.53)
+### Fixed (2026-11-19 — Billing open items BL-OQ-2, D-3, D-4, SRE-6, LLD rev 2.57)
 
 - **BL-OQ-2 (blocking): split EVT-14 watermark for `TenantSeatsChanged`.** `TenantSeatsChanged` now uses a separate `tenants.seats_last_event_at` column (migration `000010_seats_last_event_at`) for its EVT-14 recency guard instead of the shared `last_event_at`. A seat-change event can no longer advance the lifecycle watermark and cause a subsequent `TenantConverted` (or any other lifecycle event with an earlier timestamp) to be silently skipped. New port method `SetSeatsLastEventAt`; consumer `project()` routes by event type. Tie rule confirmed: `time ==` → skip. Regression test `TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle` added.
 - **D-3: stale CD-19 TODO removed from LLD I-18 auth description.** `RequireInternalCaller()` replaces the stale `CD-19 TODO: admit billing namespace` note; Billing (commercial-system) was admitted in rev 2.24.
 - **D-4: `over_cap` removed from LLD I-11/P-27 seat-usage response.** The field was retired in CD-54 (rev 2.49) and was never in the actual code (`SeatUsage` domain struct has three fields: `active_users`, `pending_invitations`, `licensed_seats`). LLD JSON example and prose updated.
 - **SRE-6: `IAMParkedTenantEventsStale` alert now routes to Billing on-call.** `notify_billing: "true"` label added to both `deploy/monitoring/app-alerts.yml` and `deploy/helm/templates/prometheusrule.yaml`.
 
-### Added (2026-11-18 — `audit-admin` operator tool, LLD rev 2.52)
+### Fixed (2026-11-19 — BUG-18: consumed PlanCatalogChanged accepts an unknown or missing plan code)
+
+- **The consumed PlanCatalogChanged schema accepts an unknown or missing plan code (LLD: bump every plan) instead of sending the event to the DLQ (BUG-18).** `internal/adapter/outbound/eventbus/schemas/plan_catalog_changed.json` and the `PlanCatalogChangedPayload` in `api/asyncapi.yaml`: `code` stays a string but loses its `starter|pro|enterprise` enum and is no longer required (`change_type` and `feature_set` stay required). The catalog consumer's existing fallback then retires the cached I-8 projections of every plan. This consumer copy is now deliberately looser than Catalog's producer schema; consumed-only, never registered in Glue.
+
+### Fixed (2026-11-19 — NEW-CONC-01: one TenantRoleGranted per real role insert)
+
+- **P-28 no longer emits a second TenantRoleGranted when two identical requests race** (event only when the role row is really inserted, EVT-10). `ReconcileRoles` gives each grant an explicit ID and treats a role as granted by this call only when `Grant` returns that ID; when `ON CONFLICT DO NOTHING` returned the row a concurrent call inserted, the role is neither reported as granted nor announced. HTTP status, body and error codes are unchanged.
+
+### Fixed (2026-11-18 — BUG-9 follow-up: I-5 escalation counts only active owners)
+
+- **I-5 escalates to ownerless when only suspended owners remain.** When Keycloak deletes the last active `tenant_owner` and the tenant's other owners are all suspended, I-5 still completes (200, same events) and now also sets `ownerless_since`, increments `iam_org_membership_tenant_ownerless_escalated_total{reason="user_removed"}` and logs `tenant_ownerless_escalation` (TM-12 L885: "last active owner"). Before, a suspended owner's role row counted and nothing was escalated. A replayed `USER_DELETE` still does not escalate twice.
+
+### Fixed (2026-11-18 — BUG-9 follow-up: P-8, P-28 and P-7 owner guards count only active owners)
+
+- **P-8 and P-28 refuse removing or demoting the last active owner.** Removing (P-8) or stripping `tenant_owner` from (P-28) an active owner whose only other owners are suspended now returns `422 LAST_OWNER_REMOVAL` (TM-8 L881: a suspended owner is not an active owner); before, it succeeded and left the tenant with no active owner. Removing or demoting a suspended owner while another owner is active still succeeds, and the existing refusal when no other owner row remains is unchanged. P-28 re-reads the target's membership status under the tenant-row lock.
+- **P-7 no longer refuses re-suspending an owner who is already suspended.** Since BUG-9 (ef1b685) this returned `422 LAST_OWNER_REMOVAL` when one active owner remained, although the active-owner count does not change; it now returns what the same call returns for a non-owner. Suspending an active owner whose only other owners are suspended is still refused.
+- `port.TenantRoleRepository`: the `CountActiveOwners` comment now says it counts owner role rows only (suspended owners included); `CountActiveOwnersActive` is TM-8's definition.
+
+### Fixed (2026-11-18 — retest decisions DEC-1, DEC-2, BUG-9, BUG-14, BUG-19)
+
+- **I-5 is not gated by the Workflow delegate-impact check (DEC-1, d40335b).** A Keycloak `USER_DELETE` always completes the removal cascade (TM-12): I-5 no longer returns `409 workflow_resolution_required` or `503 workflow_service_unavailable` and makes no Workflow call.
+- **The P-7 suspend guard counts only active owners (BUG-9, ef1b685).** Suspending the last active `tenant_owner` returns `422 LAST_OWNER_REMOVAL` even when suspended owners exist, and two owners suspending each other at the same moment can no longer both succeed.
+- **I-4 suspending the last active owner escalates (DEC-2, a4bf5c3).** The suspend is completed (I-4 is never refused); `ownerless_since` is set in the same transaction, `iam_org_membership_tenant_ownerless_escalated_total{reason="user_suspended"}` is incremented and `tenant_ownerless_escalation` is logged with reason `last_active_owner_suspended`.
+- **`TenantSuspended` requires `source` (BUG-14, 66bc2e2).** A missing, empty or unknown `source` is refused (`schema_violation`, straight to `tenant-orgm-q-dlq`) instead of defaulting to `billing_lapse`.
+- **I-8 lists each department once (BUG-19, 193e332).** A user with several elevated roles no longer gets every department repeated per role; departments are ordered by `department_id`.
+
+### Added (2026-11-18 — `audit-admin` operator tool, LLD rev 2.56)
 
 - **`iam-org-membership audit-admin`** (`cmd/server/auditadmin.go`): the operator tool for `pending_audit_entries` rows platform-audit's runner parked (`failed`) or keeps waiting (`skew`, `not_admitted`), ported from Catalog Admin's and Group Mapping's. Commands `list` (with each row's tenant), `list-waiting`, `requeue`, `discard`, `resolve` (`-waiting` for waiting rows on the last two) over the library's audited helpers; `-operator`, `-reason` (1..512 bytes, no personal data) and a selector are required for changes, each of which writes its own `config.audit_delivery.*` entry. Exit codes 0 / 1 (operation failed) / 2 (usage). `main` dispatches it before anything else, so it needs none of the server's other environment.
 - **Pool:** the audit runner's — `SYSTEM_DATABASE_URL` through `SystemPoolConfig` (BYPASSRLS, PgBouncer mode), one connection, pool name `audit_admin`. Without `SYSTEM_DATABASE_URL` (or set to the app DSN) the tool refuses to run: the app role's row security would hide every row. The Enqueuer is built from the server's `auditrecorder.LoadConfig`; no metrics are registered and no runner is started.
@@ -77,12 +103,24 @@ This service has never been deployed to any environment — there is no released
   - **Removed:** `internal/adapter/outbound/auditlog` (AL-5 HTTP client), `port.AuditLogClient`/`AuditWriteRequest`, `WithAuditLog` on `TenantService`/`InvitationService`, the detached audit goroutines, `AUDIT_LOG_TIMEOUT_MS`, metric `iam_org_membership_audit_delivery_failed_total` (Tier-3 counters 24 → 23), alert `IAMAuditDeliveryFailed` and its runbook.
   - **Build:** `.go-arch-lint.yml` component `auditlog` → `auditrecorder`; Makefile `TEST_INTERNAL_PKGS` gains `auditrecorder`.
 
+### Fixed (2026-11-16 — QA workbook gaps)
+
+- **Valkey is advisory, not a hard dependency:** a Valkey outage no longer fails `/readyz` and requests continue without the cache. `/readyz` answers 503 only when the pool, outbox or consumers are not ready.
+- **Outbox sequence grant (migration 000009, `000009_outbox_sequence_grants`; numbered 000008 before main's `000008_audit_outbox` was merged):** the app role is granted the outbox sequence so event writes no longer fail on a permission error.
+- **Re-invite cooldown survives a revoke:** a revoked invitation keeps its email while the `INVITE_REINVITE_COOLDOWN_MINUTES` cooldown (default 60) can still match it; the invitation-expiry CronJob, which now reads the same setting, erases that PII on its next run after the cooldown has passed.
+- **Local floci setup:** `tenant-orgm-q` is filtered to the events O&M consumes (it no longer receives its own `TenantCreated`/`TrialStarted`), `membership-authz-q` also receives `MembershipRevoked`, and a `tenant-realm-q` queue is added for `TrialStarted`.
+- **Other QA workbook gap fixes:** the remaining non-seat-overage gap fixes from the O&M test report, with their tests.
+
 ### Fixed (2026-11-16 — documentation consistency, docs-consistency-reviewer agent)
 
 - **New `.claude/agents/docs-consistency-reviewer.md`** (Read, Grep, Glob), modelled on iam-audit-log's: checks the docs a diff touches, or should have touched, against the code and each other, and flags what `swag-check`, `metrics-lint`, `helm-access-check` and `changelog-check` would reject. Listed in `.claude/CLAUDE.md`.
 - **Stated facts aligned with the code** across README, ARCHITECTURE, CONTRIBUTING, VERSIONING, the LLD, `.claude/*.md`, `docs/architecture/`, `docs/observability/runbooks.md` and `deploy/iam/README.md`: LLD rev 2.49; Go 1.26.11; `platform-gincommon/v2` v2.6.0, `platform-events/v2` v2.3.0, `platform-pgcommon/v2` v2.0.2 (LLD §3.1 still showed v1.5.0/v2.0.0); 5 exporter goroutines (4 gauges + `iam_rls_violations_total`) and 8 CronJobs (no `seat_overage_active` / `seat-overage-reconcile` left as live); 10 domain tables plus `rls_violation_log`; migrations `000000`–`000007`; `record_version` on 7 of 10 tables (not `processed_events`, `pending_tenant_events`, `trial_signup_ledger`); `iam.tenant.events` carries 3 events; 28 schemas (13 produced, 15 consumed); 28 counters / 3 histograms / 4 gauges; OTEL trace export can be turned off (`OTEL_EXPORTER_OTLP_ENDPOINT=none` or `OTEL_TRACES_EXPORTER=none`). `.claude/database-schema.md` no longer says the `overage_since` column and `idx_tenants_seat_overage` were dropped: both remain in `000000_initial_schema`, unused.
 - **Diagrams in sync**: every `docs/architecture/mermaid/*.mmd` now matches its inline copy in ARCHITECTURE.md. The data-model diagram regains `overage_since` and `pending_tenant_events` and gains `trial_signup_ledger`.
 - Comment-only Go changes: `domain.IsProducedEvent` (13 events, was 12) and `cmd/reconciler/main.go` (8 CronJobs, was 7).
+
+### Fixed (2026-11-15 — BUG-10, database connection failure)
+
+- **A database connection that cannot be opened now answers `503 DB_UNAVAILABLE`, not `500 INTERNAL_ERROR` (BUG-10, LLD §17):** `IsDBUnavailable` (`postgres/db.go`) also recognises `*pgconn.ConnectError` (refused / unreachable, no SQLSTATE), also when wrapped with `%w` or joined, so every route maps it like SQLSTATE class 08 (seen live on I-13 and CR-4); other errors keep their status.
 
 ### Removed (2026-11-13 — CD-54 seat-overage retirement, LLD rev 2.49)
 

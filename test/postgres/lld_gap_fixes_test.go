@@ -1,10 +1,13 @@
 //go:build integration
 
-// Real-database tests for the code-vs-LLD fixes of 2026-11-11 (LLD rev 2.52):
-// BUG-3 / BUG-4 in PgBouncer (simple-protocol) mode, GAP-16 removal keeps
-// the row as 'left' and a re-add reactivates it, GAP-22 level change in
-// place, GAP-24 concurrent duplicate I-3, BUG-6 concurrent last-owner
-// removals, GAP-18 / GAP-7 seat-overage re-evaluation.
+// Real-database tests for the code-vs-LLD fixes of 2026-11-11 (LLD rev 2.54)
+// and the fixes that followed: BUG-3 / BUG-4 in PgBouncer (simple-protocol)
+// mode, GAP-16 removal keeps the row as 'left' and a re-add reactivates it,
+// GAP-24 concurrent duplicate I-3, GAP-22 level change in place, BUG-6
+// concurrent last-owner removals, BUG-9 the P-7 suspend last-owner guard
+// counts only active owners, DEC-2 I-4 suspending the last active owner sets
+// ownerless_since, CD-54 seats (a removal frees a seat; an I-3 plain add at
+// the cap is refused), and I-5 after P-8 / on an offboarded tenant.
 package postgres_test
 
 import (
@@ -15,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -249,53 +253,217 @@ func TestLLDFix_BUG6_ConcurrentLastOwnersRemoved_OwnerlessSet(t *testing.T) {
 	}
 }
 
-// GAP-18, SEAT-5: a member removal that brings usage back under the cap
-// clears overage_since and writes TenantSeatOverageResolved.
-// GAP-18 / CD-54: removing a member frees a seat so the next I-3 plain-add
-// (or P-6 invite) can succeed. overage_since is not managed by the service
-// post-CD-54 (prepaid model; IAM-4 prevents seat counts from going below
-// current usage at the Billing layer).
-func TestLLDFix_GAP18_RemovalResolvesOverage(t *testing.T) {
+// bug9AddOwner inserts one more tenant_owner whose membership has the given status.
+func bug9AddOwner(t *testing.T, ctx context.Context, fx *testFixtures, tenantID uuid.UUID, status string) {
+	t.Helper()
+	userID := uuid.New()
+	var memID uuid.UUID
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
+		INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, $3::membership_status) RETURNING id`,
+		tenantID, userID, status).Scan(&memID))
+	_, err := fx.rawPool.Exec(ctx, `
+		INSERT INTO tenant_roles (tenant_id, user_id, tenant_membership_id, role_code, granted_by)
+		VALUES ($1, $2, $3, 'tenant_owner', $2)`, tenantID, userID, memID)
+	require.NoError(t, err)
+}
+
+// bug9SuspendOwner runs P-7 SetStatus(suspended) on the user's current record_version and returns the status after the call and the error.
+func bug9SuspendOwner(t *testing.T, ctx context.Context, fx *testFixtures, tenantID, userID uuid.UUID) (string, error) {
+	t.Helper()
+	var rv int64
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&rv))
+	_, err := fx.Membership.SetStatus(withTenant(ctx, tenantID), tenantID, userID, domain.MembershipSuspended, rv)
+	var status string
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT status::text FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&status))
+	return status, err
+}
+
+// BUG-9, TM-8: the only active owner cannot be suspended (no other owners at all).
+func TestBUG9_SuspendOwner_OneActive_Refused(t *testing.T) {
 	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
-	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "gap18-remove")
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-one")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval, "TM-8: last active owner")
+	assert.Equal(t, "active", status, "the refused suspend changes nothing")
+}
+
+// BUG-9, TM-8 (the regression case): 1 active + 2 suspended owners; suspended owners do not count, so the active one cannot be suspended.
+func TestBUG9_SuspendOwner_OneActiveTwoSuspended_Refused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-one-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval, "TM-8: A is the last ACTIVE owner")
+	assert.Equal(t, "active", status, "the refused suspend changes nothing")
+}
+
+// BUG-9, TM-8: with 2 active owners, suspending one succeeds.
+func TestBUG9_SuspendOwner_TwoActive_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "active")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+}
+
+// BUG-9, TM-8: with 2 active + 2 suspended owners, suspending an active one succeeds.
+func TestBUG9_SuspendOwner_TwoActiveTwoSuspended_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9-two-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "active")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+}
+
+// dec2SuspendViaI4 runs I-4 SetMembershipStatus(suspended) on the user's current record_version and returns the new status, whether ownerless_since is set, and the error.
+func dec2SuspendViaI4(t *testing.T, ctx context.Context, fx *testFixtures, tenantID, userID uuid.UUID) (string, bool, error) {
+	t.Helper()
+	var rv int64
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&rv))
+	_, err := fx.Provisioning.SetMembershipStatus(withTenant(ctx, tenantID), tenantID, userID, domain.MembershipSuspended, rv)
+	var status string
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT status::text FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&status))
+	var ownerless bool
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT ownerless_since IS NOT NULL FROM tenants WHERE id = $1`, tenantID).Scan(&ownerless))
+	return status, ownerless, err
+}
+
+// DEC-2, TM-12: I-4 suspending the last active owner succeeds, sets ownerless_since and counts one escalation.
+// Not parallel: it reads the shared escalation counter.
+func TestDEC2_I4SuspendLastActiveOwner_SetsOwnerless(t *testing.T) {
+	phase4TestMetricsInit()
+	require.NotNil(t, metrics.TenantOwnerlessEscalated)
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "dec2-last")
+	before := counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended"))
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err, "I-4 is never refused: the IdP already disabled the user")
+	assert.Equal(t, "suspended", status)
+	assert.True(t, ownerless, "TM-12: 0 active owners left → ownerless_since set")
+	after := counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_suspended"))
+	assert.Equal(t, before+1, after, "one escalation counted")
+}
+
+// DEC-2, TM-12: owner A active + owner B suspended; I-4 suspends A → no active owner left → ownerless_since set.
+func TestDEC2_I4SuspendActiveOwner_OtherOwnerSuspended_SetsOwnerless(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "dec2-one-susp")
+	bug9AddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+	assert.True(t, ownerless, "the suspended owner B does not count")
+}
+
+// DEC-2: two active owners; I-4 suspends one → an active owner remains, ownerless_since stays NULL.
+func TestDEC2_I4SuspendOneOfTwoActiveOwners_NoOwnerless(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "dec2-two")
+	bug9AddOwner(t, ctx, fx, tenantID, "active")
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, ownerA)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+	assert.False(t, ownerless)
+}
+
+// DEC-2: I-4 suspends a non-owner member → no escalation, ownerless_since stays NULL.
+func TestDEC2_I4SuspendNonOwner_NoOwnerless(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "dec2-member")
+	userID := uuid.New()
+	_, err := fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
+	require.NoError(t, err)
+
+	status, ownerless, err := dec2SuspendViaI4(t, ctx, fx, tenantID, userID)
+	require.NoError(t, err)
+	assert.Equal(t, "suspended", status)
+	assert.False(t, ownerless)
+}
+
+// CD-54 (LLD §4.2 tenants, SEAT-1/SEAT-3): a P-8 removal frees the seat, so an I-3 plain add that was refused at the cap now succeeds.
+func TestCD54_RemovalFreesSeat_ThenI3AddAtCapSucceeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerID := seedTenantWithOwner(t, ctx, fx, "cd54-remove")
 	userID := uuid.New()
 	sys := withSystemAndTenant(ctx, tenantID)
 	_, err := fx.Invitation.AddFromRegister(sys, tenantID, userID, uuid.Nil, "")
 	require.NoError(t, err)
-	// 2 active / 2 licensed — exactly at cap; a third add is blocked.
+	// 2 active members of 2 licensed seats: exactly at the cap.
 	_, err = fx.rawPool.Exec(ctx, `UPDATE tenants SET licensed_seats = 2 WHERE id = $1`, tenantID)
 	require.NoError(t, err)
-	_, err = fx.Invitation.AddFromRegister(sys, tenantID, uuid.New(), uuid.Nil, "")
-	assert.ErrorIs(t, err, domain.ErrSeatLimitReached, "at cap → third add blocked")
 
-	// Remove userID — 1 active / 2 licensed, one seat now free.
+	newUserID := uuid.New()
+	_, err = fx.Invitation.AddFromRegister(sys, tenantID, newUserID, uuid.Nil, "")
+	require.ErrorIs(t, err, domain.ErrSeatLimitReached, "SEAT-1: at the cap the I-3 plain add is refused")
+
 	require.NoError(t, fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, userID, ownerID))
 
-	// A new add now succeeds: removal resolved the blocked seat.
-	newID := uuid.New()
-	mem, addErr := fx.Invitation.AddFromRegister(sys, tenantID, newID, uuid.Nil, "")
-	require.NoError(t, addErr, "removal freed a seat; next plain-add succeeds")
+	mem, err := fx.Invitation.AddFromRegister(sys, tenantID, newUserID, uuid.Nil, "")
+	require.NoError(t, err, "the removed member no longer counts, so the seat is free")
 	assert.Equal(t, domain.MembershipActive, mem.Status)
+	rows := membershipRows(t, ctx, fx, tenantID, newUserID)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "active", rows[0].status)
+	var active int
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT count(*) FROM tenant_memberships WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL`, tenantID).Scan(&active))
+	assert.Equal(t, 2, active, "usage is back to 2 of 2 seats")
 }
 
-// SEAT-5 / CD-54: I-3 plain-add path now enforces SEAT-1; an add that would
-// put the tenant at or over its licensed_seats is rejected with
-// ErrSeatLimitReached. Before CD-54, I-3 was not seat-capped and would
-// instead set overage_since + emit TenantSeatOverageStarted.
-func TestLLDFix_SEAT5_I3PlainAddOverCapStartsOverage(t *testing.T) {
+// CD-54 (LLD §4.2 tenants, SEAT-1/SEAT-3): an I-3 plain add on a tenant at exactly its seats is refused; no row, no outbox event.
+func TestCD54_I3PlainAddAtCap_RefusedNoRow(t *testing.T) {
 	t.Parallel()
 	fx := buildTestFixtures(t)
 	ctx := context.Background()
-	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "seat5-i3-add")
-	// 1 active (the owner) at exactly the seat cap.
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "cd54-i3-cap")
+	// 1 active (the owner) of 1 licensed seat: exactly at the cap.
 	_, err := fx.rawPool.Exec(ctx, `UPDATE tenants SET licensed_seats = 1 WHERE id = $1`, tenantID)
 	require.NoError(t, err)
+	var outboxBefore int
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE tenant_id = $1`, tenantID).Scan(&outboxBefore))
 
 	userID := uuid.New()
 	_, err = fx.Invitation.AddFromRegister(withSystemAndTenant(ctx, tenantID), tenantID, userID, uuid.Nil, "")
-	assert.ErrorIs(t, err, domain.ErrSeatLimitReached, "I-3 plain-add at cap is blocked by SEAT-1 (CD-54)")
+	require.ErrorIs(t, err, domain.ErrSeatLimitReached, "SEAT-1: I-3 plain add at the cap is refused")
+
+	assert.Empty(t, membershipRows(t, ctx, fx, tenantID, userID), "no tenant_memberships row for the refused user")
+	var outboxAfter int
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE tenant_id = $1`, tenantID).Scan(&outboxAfter))
+	assert.Equal(t, outboxBefore, outboxAfter, "no outbox row is written for a refused add")
 }
 
 // §15.2.2 / TM-5: an I-5 identity deletion after a P-8 removal stamps
@@ -330,4 +498,142 @@ func TestLLDFix_I5_OffboardedTenant_NoOp(t *testing.T) {
 	_, err := fx.rawPool.Exec(ctx, `UPDATE tenants SET deleted_at = now() WHERE id = $1`, tenantID)
 	require.NoError(t, err)
 	assert.NoError(t, fx.Provisioning.DeleteMember(withTenant(ctx, tenantID), tenantID, ownerID))
+}
+
+// bug9fAddOwner inserts one more tenant_owner whose membership has the given status and returns its user id.
+func bug9fAddOwner(t *testing.T, ctx context.Context, fx *testFixtures, tenantID uuid.UUID, status string) uuid.UUID {
+	t.Helper()
+	userID := uuid.New()
+	var memID uuid.UUID
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
+		INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, $3::membership_status) RETURNING id`,
+		tenantID, userID, status).Scan(&memID))
+	_, err := fx.rawPool.Exec(ctx, `
+		INSERT INTO tenant_roles (tenant_id, user_id, tenant_membership_id, role_code, granted_by)
+		VALUES ($1, $2, $3, 'tenant_owner', $2)`, tenantID, userID, memID)
+	require.NoError(t, err)
+	return userID
+}
+
+// bug9fState returns the user's membership status and whether the user still holds a live tenant_owner row.
+func bug9fState(t *testing.T, ctx context.Context, fx *testFixtures, tenantID, userID uuid.UUID) (string, bool) {
+	t.Helper()
+	var status string
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT status::text FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID).Scan(&status))
+	var owner bool
+	require.NoError(t, fx.rawPool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM tenant_roles WHERE tenant_id = $1 AND user_id = $2
+		               AND role_code = 'tenant_owner' AND deleted_at IS NULL)`, tenantID, userID).Scan(&owner))
+	return status, owner
+}
+
+// BUG-9 follow-up, TM-8 L881: P-8 removing active owner A while the only other owner is suspended is refused.
+func TestBUG9_RemoveActiveOwner_OtherSuspended_Refused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p8-a")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	err := fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, ownerA, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval, "A is the last ACTIVE owner")
+	status, owner := bug9fState(t, ctx, fx, tenantID, ownerA)
+	assert.Equal(t, "active", status, "A still active")
+	assert.True(t, owner, "A's tenant_owner row kept")
+}
+
+// BUG-9 follow-up: P-8 removing the suspended owner B while A is active succeeds.
+func TestBUG9_RemoveSuspendedOwner_OtherActive_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p8-b")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	require.NoError(t, fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, ownerB, ownerA))
+	status, owner := bug9fState(t, ctx, fx, tenantID, ownerB)
+	assert.Equal(t, "left", status)
+	assert.False(t, owner)
+}
+
+// BUG-9 follow-up, TM-8 L881: P-28 stripping tenant_owner from active A while the only other owner is suspended is refused.
+func TestBUG9_ReconcileStripActiveOwner_OtherSuspended_Refused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p28-a")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	_, _, err := fx.Membership.ReconcileRoles(withSystemAndTenant(ctx, tenantID), tenantID, ownerA,
+		[]domain.TenantRoleCode{}, ownerA)
+	assert.ErrorIs(t, err, domain.ErrLastOwnerRemoval)
+	_, owner := bug9fState(t, ctx, fx, tenantID, ownerA)
+	assert.True(t, owner, "A keeps tenant_owner")
+}
+
+// BUG-9 follow-up: P-28 stripping tenant_owner from the suspended owner B while A is active succeeds.
+func TestBUG9_ReconcileStripSuspendedOwner_OtherActive_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-p28-b")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	_, revoked, err := fx.Membership.ReconcileRoles(withSystemAndTenant(ctx, tenantID), tenantID, ownerB,
+		[]domain.TenantRoleCode{}, ownerA)
+	require.NoError(t, err)
+	require.Len(t, revoked, 1)
+	_, owner := bug9fState(t, ctx, fx, tenantID, ownerB)
+	assert.False(t, owner)
+}
+
+// BUG-9 follow-up: P-7 suspending owner B who is already suspended, while A is the only active owner, is not refused.
+func TestBUG9_ResuspendSuspendedOwner_NotRefused(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, _ := seedTenantWithOwner(t, ctx, fx, "bug9f-p7")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	status, err := bug9SuspendOwner(t, ctx, fx, tenantID, ownerB)
+	require.NoError(t, err, "the active-owner count does not change")
+	assert.Equal(t, "suspended", status)
+}
+
+// BUG-9 follow-up control: two active owners plus a suspended third; P-8 removing one active owner succeeds.
+func TestBUG9_RemoveOneOfTwoActiveOwners_ThirdSuspended_Succeeds(t *testing.T) {
+	t.Parallel()
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-ctl")
+	ownerB := bug9fAddOwner(t, ctx, fx, tenantID, "active")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+
+	require.NoError(t, fx.Membership.RemoveUser(withTenant(ctx, tenantID), tenantID, ownerB, ownerA))
+	status, _ := bug9fState(t, ctx, fx, tenantID, ownerA)
+	assert.Equal(t, "active", status)
+}
+
+// BUG-9 follow-up, TM-12 L885: I-5 deleting active owner A while only the suspended owner B remains completes and sets ownerless_since.
+// Not parallel: it reads the shared escalation counter.
+func TestBUG9_I5_DeleteActiveOwner_OnlySuspendedRemains_SetsOwnerless(t *testing.T) {
+	phase4TestMetricsInit()
+	require.NotNil(t, metrics.TenantOwnerlessEscalated)
+	fx := buildTestFixtures(t)
+	ctx := context.Background()
+	tenantID, ownerA := seedTenantWithOwner(t, ctx, fx, "bug9f-i5")
+	bug9fAddOwner(t, ctx, fx, tenantID, "suspended")
+	before := counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed"))
+
+	require.NoError(t, fx.Provisioning.DeleteMember(withTenant(ctx, tenantID), tenantID, ownerA), "TM-12: never refused")
+	var ownerless bool
+	require.NoError(t, fx.rawPool.QueryRow(ctx,
+		`SELECT ownerless_since IS NOT NULL FROM tenants WHERE id = $1`, tenantID).Scan(&ownerless))
+	assert.True(t, ownerless, "the suspended owner B does not count")
+	assert.Equal(t, before+1, counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed")))
+
+	// Replay of the same USER_DELETE: success, no second escalation.
+	require.NoError(t, fx.Provisioning.DeleteMember(withTenant(ctx, tenantID), tenantID, ownerA))
+	assert.Equal(t, before+1, counterValue(metrics.TenantOwnerlessEscalated.WithLabelValues("user_removed")), "no double count")
 }

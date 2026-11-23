@@ -69,6 +69,9 @@ func (noOwnerRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleC
 	return nil, nil
 }
 func (noOwnerRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 2, nil }
+func (r noOwnerRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (noOwnerRoleRepo) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil
 }
@@ -93,6 +96,12 @@ func (f *fakeMembershipRepo) List(ctx context.Context, tenantID uuid.UUID, curso
 	return nil, errors.New("not used")
 }
 func (f *fakeMembershipRepo) FindByUserID(ctx context.Context, tenantID, userID uuid.UUID) (*domain.TenantMembership, error) {
+	if f.findByUserIDFn == nil {
+		// BUG-9 follow-up: P-7's owner suspend now reads the target under the
+		// lock; tests that do not set this get "not found", which keeps the
+		// last-owner guard exactly as before.
+		return nil, domain.NewError(domain.ErrMemberNotFound, "member not found")
+	}
 	return f.findByUserIDFn(ctx, tenantID, userID)
 }
 func (f *fakeMembershipRepo) Insert(ctx context.Context, tm *domain.TenantMembership) (*domain.TenantMembership, error) {
@@ -296,6 +305,9 @@ func (r *ownerRoleRepo) CountActiveOwners(ctx context.Context, tid uuid.UUID) (i
 		return r.countFn(ctx, tid)
 	}
 	return 1, nil
+}
+func (r *ownerRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
 }
 func (r *ownerRoleRepo) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil

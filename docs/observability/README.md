@@ -111,7 +111,7 @@ Recording rules and burn-rate alerts in `deploy/monitoring/slo-rules.yml`:
 | SLO-1 I-8 hot-path latency | `iam:i8_latency_sli:ratio_rate_{5m,1h}`: share of `/api/v1/internal/users/:id/memberships` requests at or under `le="0.025"` in `platform_http_request_duration_seconds` (the registry's `request_duration` buckets have no 0.030 boundary, so the 30 ms target is measured conservatively) | 99% | `IAMSLO1_I8LatencyFastBurn` (14.4×, page), `IAMSLO1_I8LatencySlowBurn` (6×, ticket) |
 | SLO-1b I-8 cache-hit share | `iam:i8_latency_hit_sli:ratio_rate_{5m,1h}`: share at or under `le="0.015"` (the 15 ms cache-hit target) | ≥ 90% | `IAMSLO1b_CacheHitRateLow` |
 | SLO-2 write-path availability | `iam:write_error_rate:ratio_rate_5m`: `status_class="5xx"` share of `POST\|PUT\|PATCH\|DELETE` in `platform_http_requests_total` (4xx are intentional) | 99.9% | `IAMSLO2_WriteErrorRateFastBurn` |
-| SLO-3 projection freshness and convergence | `iam_org_membership_lifecycle_event_lag_seconds`; `iam:reconciler_markers:sum` = ownerless + realm-sync-pending + seat-overage + stale-invitation gauges | lag < 30s; markers ≤ 5 | `IAMSLO3_ReconcilerMarkersElevated` |
+| SLO-3 projection freshness and convergence | `iam_org_membership_lifecycle_event_lag_seconds`; `iam:reconciler_markers:sum` = ownerless + realm-sync-pending + stale-invitation gauges | lag < 30s; markers ≤ 5 | `IAMSLO3_ReconcilerMarkersElevated` |
 
 Every SLI keeps `domain`, `service` and `environment`.
 

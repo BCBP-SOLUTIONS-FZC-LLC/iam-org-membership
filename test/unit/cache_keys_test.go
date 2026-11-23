@@ -216,6 +216,9 @@ func (r *ckTenantRoleRepo) ListByRole(_ context.Context, _ uuid.UUID, _ domain.T
 func (r *ckTenantRoleRepo) CountActiveOwners(_ context.Context, _ uuid.UUID) (int, error) {
 	return 0, nil
 }
+func (r *ckTenantRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *ckTenantRoleRepo) Grant(_ context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	return tr, nil
 }

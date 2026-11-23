@@ -142,9 +142,11 @@ func TestValidateConsumed_TenantRealmReady_MatchesRealmProvisionerShape(t *testi
 }
 
 // TestValidateConsumed_PlanCatalogChanged_MatchesCatalogShape pins the
-// consumed schema to iam-catalog-admin's registered PlanCatalogChanged
-// ("code", not "plan_code"). Before LLD rev 2.39 the extract required
-// plan_code, so every real event would have been rejected to the DLQ.
+// consumed schema to iam-catalog-admin's PlanCatalogChanged shape ("code",
+// not "plan_code"). Before LLD rev 2.39 the extract required plan_code, so
+// every real event would have been rejected to the DLQ. BUG-18: an unknown
+// code is accepted and reaches the handler, which bumps every plan (LLD
+// §7.1 PlanCatalogChanged: "a missing or unknown code bumps every plan").
 func TestValidateConsumed_PlanCatalogChanged_MatchesCatalogShape(t *testing.T) {
 	catalogPayload := `{"code":"enterprise","change_type":"updated","feature_set":{"dedicated_workflow_queue":true}}`
 	inner := &recordingHandler{}
@@ -152,17 +154,19 @@ func TestValidateConsumed_PlanCatalogChanged_MatchesCatalogShape(t *testing.T) {
 	require.NoError(t, h(context.Background(), envelopeOf("PlanCatalogChanged", catalogPayload)))
 	assert.Equal(t, 1, inner.calls)
 
-	for name, payload := range map[string]string{
-		"stale plan_code shape": `{"plan_code":"enterprise","feature_set":{}}`,
-		"unknown code":          `{"code":"platinum","change_type":"updated","feature_set":{}}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			inner := &recordingHandler{}
-			h := validateConsumed(inner.handle, realValidator(t), nil)
-			assert.ErrorIs(t, h(context.Background(), envelopeOf("PlanCatalogChanged", payload)), errSchemaViolation)
-			assert.Zero(t, inner.calls)
-		})
-	}
+	t.Run("unknown code", func(t *testing.T) {
+		inner := &recordingHandler{}
+		h := validateConsumed(inner.handle, realValidator(t), nil)
+		require.NoError(t, h(context.Background(), envelopeOf("PlanCatalogChanged", `{"code":"platinum","change_type":"updated","feature_set":{}}`)))
+		assert.Equal(t, 1, inner.calls, "BUG-18: reaches the handler, which bumps every plan")
+	})
+
+	t.Run("stale plan_code shape", func(t *testing.T) {
+		inner := &recordingHandler{}
+		h := validateConsumed(inner.handle, realValidator(t), nil)
+		assert.ErrorIs(t, h(context.Background(), envelopeOf("PlanCatalogChanged", `{"plan_code":"enterprise","feature_set":{}}`)), errSchemaViolation)
+		assert.Zero(t, inner.calls)
+	})
 }
 
 // TenantIdentityProvisioned's consumed schema is embedded and enforced: a

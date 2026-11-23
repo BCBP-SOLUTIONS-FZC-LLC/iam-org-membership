@@ -557,18 +557,26 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		// T-16 (new, resolves RP-11): source distinguishes the normal Billing-
 		// driven cancelled→suspended lapse from an RP-14 operator-sourced
 		// administrative suspension that can land directly on active/trial.
-		// Confirmed by RP (LLD §16 OQ-7): the field is always present, but we
-		// still default to billing_lapse if it's ever absent — a defensive
-		// fallback, never relied upon in practice.
+		// Confirmed by RP (LLD §16 OQ-7): the field is always present, and the
+		// consumed schema requires it (enum billing_lapse|operator). Any other
+		// value, including empty, is refused here too (BUG-14): nothing is
+		// applied and the error leaves processed_events unrecorded, so the
+		// event is retried and then dead-lettered, never mis-classified.
 		var payload struct {
 			Source string `json:"source"`
 		}
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return prevStatus, prevPlan, err
 		}
-		op := port.LifecycleSuspendBillingLapse
-		if domain.SuspensionSource(payload.Source) == domain.SuspensionSourceOperator {
+		var op port.TenantLifecycleOp
+		switch domain.SuspensionSource(payload.Source) {
+		case domain.SuspensionSourceBillingLapse:
+			op = port.LifecycleSuspendBillingLapse
+		case domain.SuspensionSourceOperator:
 			op = port.LifecycleSuspendOperator
+		default:
+			return prevStatus, prevPlan, fmt.Errorf("TenantSuspended: unknown source %q (want %q or %q)",
+				payload.Source, domain.SuspensionSourceBillingLapse, domain.SuspensionSourceOperator)
 		}
 		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{Op: op})
 		return domain.StatusSuspended, prevPlan, err

@@ -42,6 +42,9 @@ func (r *extRoleRepo) CountActiveOwners(ctx context.Context, t uuid.UUID) (int, 
 	}
 	return 2, nil // default: 2 owners so TM-8 doesn't block
 }
+func (r *extRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *extRoleRepo) Grant(ctx context.Context, tr *domain.TenantRole) (*domain.TenantRole, error) {
 	if r.grantFn != nil {
 		return r.grantFn(ctx, tr)

@@ -211,6 +211,9 @@ func (f *mhRoleRepo) ListByRole(context.Context, uuid.UUID, domain.TenantRoleCod
 func (f *mhRoleRepo) CountActiveOwners(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
+func (f *mhRoleRepo) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return f.CountActiveOwners(ctx, tenantID)
+}
 func (f *mhRoleRepo) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil
 }

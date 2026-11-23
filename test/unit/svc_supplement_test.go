@@ -200,6 +200,9 @@ func (r *ssRoleRepoDM) ListByRole(context.Context, uuid.UUID, domain.TenantRoleC
 	return nil, nil
 }
 func (r *ssRoleRepoDM) CountActiveOwners(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (r *ssRoleRepoDM) CountActiveOwnersActive(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	return r.CountActiveOwners(ctx, tenantID)
+}
 func (r *ssRoleRepoDM) Grant(context.Context, *domain.TenantRole) (*domain.TenantRole, error) {
 	return nil, nil
 }

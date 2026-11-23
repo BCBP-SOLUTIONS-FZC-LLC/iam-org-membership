@@ -258,6 +258,16 @@ func (s *OperatorService) SetFeatureFlags(ctx context.Context, tenantID uuid.UUI
 func (s *OperatorService) ReassignOwner(ctx context.Context, tenantID, newOwnerUserID uuid.UUID, actorID uuid.UUID) (*domain.TenantRole, error) {
 	t, err := s.tenants.FindByID(ctx, tenantID)
 	if err != nil {
+		// OBS-11, LLD §5.4 O-7 step 1 / §17: an offboarded tenant is
+		// soft-deleted (deleted_at set with status='offboarded'), so FindByID
+		// does not see it. Look again including deleted rows: offboarded →
+		// 409 tenant_offboarded; 404 only for a tenant that does not exist.
+		if errors.Is(err, domain.ErrTenantNotFound) {
+			if gone, gerr := s.tenants.FindByIDIncludingDeleted(ctx, tenantID); gerr == nil && gone != nil &&
+				(gone.Status == domain.StatusOffboarded || gone.DeletedAt != nil) {
+				return nil, domain.NewError(domain.ErrTenantOffboarded, "tenant is offboarded")
+			}
+		}
 		return nil, err
 	}
 	if t.Status == domain.StatusOffboarded {

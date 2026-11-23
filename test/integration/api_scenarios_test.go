@@ -115,7 +115,7 @@ func TestAPIScenarios_I3_AddMember(t *testing.T) {
 
 	t.Run("I3-IDP-01 re-add same active member → 409 member_already_exists (PI-10)", func(t *testing.T) {
 		// PI-10 / LLD §17: the plain-add branch bounces an existing active
-		// member with 409 member_already_exists (GAP-24, LLD rev 2.52).
+		// member with 409 member_already_exists (GAP-24, LLD rev 2.54).
 		body := toJSON(map[string]any{
 			"user_id": tt.MemberID, "email": "member@test.com", "full_name": "Test Member",
 		})
@@ -233,7 +233,7 @@ func TestAPIScenarios_I4_PatchMemberLifecycle(t *testing.T) {
 	})
 
 	t.Run("I4-HP-03 set status left → 400 (removal goes through I-5 / P-8)", func(t *testing.T) {
-		// LLD rev 2.52: I-4 carries Keycloak enable/disable only; a bare flip
+		// LLD rev 2.54: I-4 carries Keycloak enable/disable only; a bare flip
 		// to 'left' would skip the role cascade (TM-9 / TR-9).
 		body := toJSON(map[string]any{"status": "left", "record_version": memberRV})
 		resp := e.do(t, http.MethodPatch,
@@ -551,7 +551,7 @@ func TestAPIScenarios_GT_GetTenant(t *testing.T) {
 	})
 
 	t.Run("GT-VAL-01 iam-system on a tenant-facing route → 403 (AUTH-5)", func(t *testing.T) {
-		// AUTH-5 (BUG-7, LLD rev 2.52): the system principal is refused on
+		// AUTH-5 (BUG-7, LLD rev 2.54): the system principal is refused on
 		// /api/v1/tenants/* before any path parsing, so this request (which
 		// used iam-system to reach the handler's 400 for "not-a-uuid") is 403.
 		resp := e.do(t, http.MethodGet, "/api/v1/tenants/not-a-uuid",
