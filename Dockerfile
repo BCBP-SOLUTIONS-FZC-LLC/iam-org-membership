@@ -43,7 +43,7 @@ RUN CGO_ENABLED=0 GOOS=linux \
 
 # Debian bookworm's current CA bundle for the runtime image. The pinned
 # distroless static-debian12 image (still the latest upstream, checked
-# 2026-10-21) ships ca-certificates 20250419~deb12u1; deb12u2 (DLA-4845-1)
+# 2026-11-22) ships ca-certificates 20250419~deb12u1; deb12u2 (DLA-4845-1)
 # removes two distrusted roots, Comodo "AAA Certificate Services" and
 # "emSign ECC Root CA - G3", and the Go binaries trust exactly this file for
 # every outbound TLS connection. The Alpine builder's bundle is no substitute:

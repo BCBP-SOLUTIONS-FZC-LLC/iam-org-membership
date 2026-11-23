@@ -344,6 +344,7 @@ groups:
         labels:
           severity: ticket
           service: iam-org-membership
+          notify_billing: "true"
         annotations:
           summary: "Tenant events parked for a tenant that does not exist yet (EVT-18)"
           description: |

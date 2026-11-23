@@ -64,6 +64,7 @@ func TestTenantRepositoryNoop_AllMethods(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.NoError(t, n.SetLastEventAt(ctx, id, time.Time{}))
+	assert.NoError(t, n.SetSeatsLastEventAt(ctx, id, time.Time{}))
 
 	rows, err := n.ApplyLifecyclePatch(ctx, id, TenantLifecyclePatch{})
 	assert.Equal(t, int64(0), rows)

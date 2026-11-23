@@ -37,7 +37,7 @@ func TestTrialLedger_MigrationGrantsAppRole(t *testing.T) {
 	require.NoError(t, err)
 
 	runner := &pgmigrate.Runner{FS: loadMigrationDir(t), DSN: fx.rawPool.Config().ConnConfig.ConnString()}
-	require.NoError(t, runner.Down(ctx, 4)) // 000009, 000008, 000007, then 000006
+	require.NoError(t, runner.Down(ctx, 5)) // 000010, 000009, 000008, 000007, then 000006
 	require.NoError(t, runner.Up(ctx))
 
 	for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {

@@ -409,11 +409,11 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 	var lock *port.TenantProjectionLock
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		var status, plan string
-		var lastEventAt *time.Time
+		var lastEventAt, seatsLastEventAt *time.Time
 		err := tx.QueryRow(ctx, `
-			SELECT status, plan, last_event_at
+			SELECT status, plan, last_event_at, seats_last_event_at
 			FROM tenants WHERE id = $1 AND deleted_at IS NULL
-			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt)
+			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt, &seatsLastEventAt)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
@@ -421,9 +421,10 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 			return err
 		}
 		lock = &port.TenantProjectionLock{
-			Status:      domain.SubscriptionStatus(status),
-			Plan:        domain.TenantPlan(plan),
-			LastEventAt: lastEventAt,
+			Status:           domain.SubscriptionStatus(status),
+			Plan:             domain.TenantPlan(plan),
+			LastEventAt:      lastEventAt,
+			SeatsLastEventAt: seatsLastEventAt,
 		}
 		return nil
 	})
@@ -433,6 +434,13 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 func (r *TenantRepository) SetLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE tenants SET last_event_at = $2 WHERE id = $1`, id, t)
+		return err
+	})
+}
+
+func (r *TenantRepository) SetSeatsLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE tenants SET seats_last_event_at = $2 WHERE id = $1`, id, t)
 		return err
 	})
 }

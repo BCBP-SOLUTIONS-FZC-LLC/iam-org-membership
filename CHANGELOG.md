@@ -6,6 +6,13 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-19 — Billing open items BL-OQ-2, D-3, D-4, SRE-6, LLD rev 2.57)
+
+- **BL-OQ-2 (blocking): split EVT-14 watermark for `TenantSeatsChanged`.** `TenantSeatsChanged` now uses a separate `tenants.seats_last_event_at` column (migration `000010_seats_last_event_at`) for its EVT-14 recency guard instead of the shared `last_event_at`. A seat-change event can no longer advance the lifecycle watermark and cause a subsequent `TenantConverted` (or any other lifecycle event with an earlier timestamp) to be silently skipped. New port method `SetSeatsLastEventAt`; consumer `project()` routes by event type. Tie rule confirmed: `time ==` → skip. Regression test `TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle` added.
+- **D-3: stale CD-19 TODO removed from LLD I-18 auth description.** `RequireInternalCaller()` replaces the stale `CD-19 TODO: admit billing namespace` note; Billing (commercial-system) was admitted in rev 2.24.
+- **D-4: `over_cap` removed from LLD I-11/P-27 seat-usage response.** The field was retired in CD-54 (rev 2.49) and was never in the actual code (`SeatUsage` domain struct has three fields: `active_users`, `pending_invitations`, `licensed_seats`). LLD JSON example and prose updated.
+- **SRE-6: `IAMParkedTenantEventsStale` alert now routes to Billing on-call.** `notify_billing: "true"` label added to both `deploy/monitoring/app-alerts.yml` and `deploy/helm/templates/prometheusrule.yaml`.
+
 ### Fixed (2026-11-19 — BUG-18: consumed PlanCatalogChanged accepts an unknown or missing plan code)
 
 - **The consumed PlanCatalogChanged schema accepts an unknown or missing plan code (LLD: bump every plan) instead of sending the event to the DLQ (BUG-18).** `internal/adapter/outbound/eventbus/schemas/plan_catalog_changed.json` and the `PlanCatalogChangedPayload` in `api/asyncapi.yaml`: `code` stays a string but loses its `starter|pro|enterprise` enum and is no longer required (`change_type` and `feature_set` stay required). The catalog consumer's existing fallback then retires the cached I-8 projections of every plan. This consumer copy is now deliberately looser than Catalog's producer schema; consumed-only, never registered in Glue.
@@ -248,7 +255,7 @@ This service has never been deployed to any environment — there is no released
 - **`ListSubscriptionLapses` (I-16) SQL capped at `LIMIT 1000` rows per poll:** without a cap,
   a large billing backlog could cause I-16 to return an unbounded result set, exhausting memory
   in the Billing Service caller. The cap is applied in the repository query; Billing's existing
-  pagination loop absorbs any continuation naturally. Added a unit test asserting the cap.
+  pagination loop absorbs any continuation naturally. Added a unit test assertin g the cap.
 
 ### Changed (2026-11-04 — metrics reclassification, dependency updates)
 
