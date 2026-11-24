@@ -638,6 +638,70 @@ func TestConsumer_TrialReactivated_CapReachedIsNoop(t *testing.T) {
 	assert.Equal(t, 1, reactivationCount)
 }
 
+// RP-14: an RP-4 conversion revert deletes the dedicated realm and emits
+// TrialReactivated. The projection must move the tenant back to the shared
+// trial realm, or PUB-1 keeps sending its users to the deleted realm.
+func TestConsumer_TrialReactivated_AfterRevert_ResetsRealmForPUB1(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, sysPool := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "rp14-revert")
+
+	// The state TenantConverted + TenantRealmReady leave behind.
+	_, err := rawPool.Exec(ctx, `
+		UPDATE tenants SET status = 'active', subscription_started_at = now(),
+		                   realm_id = 'tenant-rp14-revert', realm_type = 'dedicated', keycloak_shard = 'shard-3'
+		WHERE id = $1`, tenantID)
+	require.NoError(t, err)
+
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+		pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), struct{}{})))
+
+	var status, realmID, realmType, shard string
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, realm_id, realm_type, keycloak_shard FROM tenants WHERE id = $1`, tenantID,
+	).Scan(&status, &realmID, &realmType, &shard))
+	assert.Equal(t, "trial", status)
+	assert.Equal(t, domain.SharedTrialRealmID, realmID)
+	assert.Equal(t, string(domain.RealmShared), realmType)
+	assert.Equal(t, domain.SharedTrialKeycloakShard, shard)
+
+	// PUB-1 runs on the BYPASSRLS sysPool (no tenant GUC on an anonymous route).
+	res, err := pgadapter.NewTenantRepository(sysPool).ResolveByIdentifier(ctx, "rp14-revert")
+	require.NoError(t, err)
+	require.True(t, res.Found)
+	assert.Equal(t, domain.SharedTrialRealmID, res.Realm, "PUB-1 must name the shared trial realm after a revert")
+	assert.Equal(t, domain.RealmShared, res.RealmType)
+}
+
+// RP-14: the realm reset does not depend on the TRIAL-5 cap. A tenant that
+// used its one trial reactivation, then converted and was reverted, is still
+// in the shared realm on RP's side, so PUB-1 must follow.
+func TestConsumer_TrialReactivated_CapReached_StillResetsRealm(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "rp14-capped")
+
+	_, err := rawPool.Exec(ctx, `
+		UPDATE tenants SET status = 'active', subscription_started_at = now(), trial_reactivation_count = 1,
+		                   realm_id = 'tenant-rp14-capped', realm_type = 'dedicated'
+		WHERE id = $1`, tenantID)
+	require.NoError(t, err)
+
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+		pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), struct{}{})))
+
+	var realmID, realmType string
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT realm_id, realm_type FROM tenants WHERE id = $1`, tenantID,
+	).Scan(&realmID, &realmType))
+	assert.Equal(t, domain.SharedTrialRealmID, realmID)
+	assert.Equal(t, string(domain.RealmShared), realmType)
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // PI-11 × SECURITY-8: invitation-expiry erases a revoked invitation's PII
 // only once the re-invite cooldown can no longer match it (counted from

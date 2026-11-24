@@ -540,6 +540,22 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		// trial_duration_days is resolved from the Catalog Service before this tx opened
 		// (Handle's pre-tx peek) — the `plans` table moved out of this service's own
 		// database under ADR-0007, so it can no longer be read via a local subquery.
+		//
+		// RP-14: RP emits TrialReactivated both for an in-grace trial
+		// reactivation (RP-10) and for a conversion revert (RP-4). Either way
+		// the tenant's users are now in the shared trial realm, and RP-4 has
+		// deleted the dedicated one. Point the tenant (and so PUB-1) back at
+		// the shared realm first, regardless of the TRIAL-5 cap below, so a
+		// reverted workspace never resolves to a realm that no longer exists.
+		// For RP-10 the tenant is already there and this changes nothing.
+		if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+			Op:            port.LifecycleSetRealm,
+			RealmID:       domain.SharedTrialRealmID,
+			RealmType:     string(domain.RealmShared),
+			KeycloakShard: domain.SharedTrialKeycloakShard,
+		}); err != nil {
+			return prevStatus, prevPlan, err
+		}
 		rows, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:                port.LifecycleTrialReactivate,
 			TrialDurationDays: trialDurationDays,

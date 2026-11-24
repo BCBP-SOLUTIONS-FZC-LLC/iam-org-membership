@@ -378,6 +378,8 @@ Within 15-d grace, `trial_expired` reactivatable **once** via signed link. RP va
 
 Layered one-time guarantee: (a) single-use token (RP redeems), (b) counter check + T-14 CHECK, (c) `processed_events` dedup.
 
+**Conversion revert (RP-4, RP-14, LLD rev 2.60).** RP emits `TrialReactivated` after a revert too, once it has moved the users back to the shared trial realm and deleted the dedicated one. Before the steps above, the same transaction resets `realm_id='trial'`, `realm_type='shared'`, `keycloak_shard='shard-0'`, whatever the T-14 cap, so PUB-1 never names the deleted realm. For an in-grace RP-10 reactivation this changes nothing.
+
 ### 15.5 Tenant Offboarding (Paid)
 
 Billing owns status transitions; O&M and RP react. Sequence `cancelled → suspended → offboarded`:

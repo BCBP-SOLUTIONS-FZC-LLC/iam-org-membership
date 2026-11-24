@@ -166,8 +166,11 @@ func TestApplyProjection_TrialReactivated_ZeroRowsAffectedIsNoop(t *testing.T) {
 	// TRIAL-5 cap: reactivation_count < 1 gate. When the row is capped
 	// (rows == 0), the projection must return prev state unchanged.
 	tenants := &recordingTenants{
-		applyFn: func(context.Context, uuid.UUID, port.TenantLifecyclePatch) (int64, error) {
-			return 0, nil
+		applyFn: func(_ context.Context, _ uuid.UUID, p port.TenantLifecyclePatch) (int64, error) {
+			if p.Op == port.LifecycleTrialReactivate {
+				return 0, nil
+			}
+			return 1, nil
 		},
 	}
 	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil)
@@ -177,22 +180,56 @@ func TestApplyProjection_TrialReactivated_ZeroRowsAffectedIsNoop(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.StatusTrialExpired, st, "cap hit → no state change")
 	assert.Equal(t, domain.TenantPlan("starter"), pl)
+	require.Len(t, tenants.patches, 2)
+	assert.Equal(t, port.LifecycleSetRealm, tenants.patches[0].Op,
+		"RP-14: the realm reset runs even when the TRIAL-5 cap makes the reactivation a no-op")
 }
 
+// RP-14: TrialReactivated (RP-10 or an RP-4 revert) moves the tenant back to
+// the shared trial realm before reactivating the trial, so PUB-1 never names
+// the dedicated realm RP-4 deleted.
 func TestApplyProjection_TrialReactivated_RowsAffectedFlipsStatus(t *testing.T) {
-	c, _ := newConsumer()
+	c, tenants := newConsumer()
+	st, _, err := applyOn(c,
+		mkEnv("TrialReactivated", struct{}{}),
+		domain.StatusActive, domain.TenantPlan("starter"))
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusTrial, st)
+	require.Len(t, tenants.patches, 2)
+	assert.Equal(t, port.TenantLifecyclePatch{
+		Op:            port.LifecycleSetRealm,
+		RealmID:       domain.SharedTrialRealmID,
+		RealmType:     string(domain.RealmShared),
+		KeycloakShard: domain.SharedTrialKeycloakShard,
+	}, tenants.patches[0])
+	assert.Equal(t, port.LifecycleTrialReactivate, tenants.patches[1].Op)
+	assert.Equal(t, 30, tenants.patches[1].TrialDurationDays)
+}
+
+func TestApplyProjection_TrialReactivated_RealmResetErrorPropagates(t *testing.T) {
+	execErr := errors.New("db down")
+	tenants := &recordingTenants{
+		applyFn: func(context.Context, uuid.UUID, port.TenantLifecyclePatch) (int64, error) {
+			return 0, execErr
+		},
+	}
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil)
 	st, _, err := applyOn(c,
 		mkEnv("TrialReactivated", struct{}{}),
 		domain.StatusTrialExpired, domain.TenantPlan("starter"))
-	require.NoError(t, err)
-	assert.Equal(t, domain.StatusTrial, st)
+	assert.ErrorIs(t, err, execErr)
+	assert.Equal(t, domain.StatusTrialExpired, st)
+	assert.Len(t, tenants.patches, 1, "the reactivation is not attempted after the realm reset fails")
 }
 
 func TestApplyProjection_TrialReactivated_ExecErrorPropagates(t *testing.T) {
 	execErr := errors.New("db down")
 	tenants := &recordingTenants{
-		applyFn: func(context.Context, uuid.UUID, port.TenantLifecyclePatch) (int64, error) {
-			return 0, execErr
+		applyFn: func(_ context.Context, _ uuid.UUID, p port.TenantLifecyclePatch) (int64, error) {
+			if p.Op == port.LifecycleTrialReactivate {
+				return 0, execErr
+			}
+			return 1, nil
 		},
 	}
 	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil)
