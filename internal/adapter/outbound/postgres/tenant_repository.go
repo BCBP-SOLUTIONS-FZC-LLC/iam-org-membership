@@ -514,6 +514,15 @@ func execLifecyclePatch(ctx context.Context, tx pgx.Tx, id uuid.UUID, patch port
 		tag, err = tx.Exec(ctx, `
 			UPDATE tenants SET status = 'trial', cancelled_at = NULL, suspension_source = NULL
 			WHERE id = $1 AND subscription_started_at IS NULL`, id)
+	case port.LifecycleRevertConversion:
+		tag, err = tx.Exec(ctx, `
+			UPDATE tenants
+			SET status = 'trial',
+			    trial_ends_at = now() + make_interval(days => $2),
+			    subscription_started_at = NULL,
+			    cancelled_at = NULL,
+			    suspension_source = NULL
+			WHERE id = $1`, id, patch.TrialDurationDays)
 	case port.LifecycleSetLicensedSeats:
 		tag, err = tx.Exec(ctx, `UPDATE tenants SET licensed_seats = $2 WHERE id = $1`, id, patch.LicensedSeats)
 	default:

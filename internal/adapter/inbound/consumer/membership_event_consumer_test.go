@@ -222,6 +222,69 @@ func TestApplyProjection_TrialReactivated_RealmResetErrorPropagates(t *testing.T
 	assert.Len(t, tenants.patches, 1, "the reactivation is not attempted after the realm reset fails")
 }
 
+// An RP-4 revert (reason=conversion_revert) is not a TRIAL-5 reactivation:
+// realm reset, then LifecycleRevertConversion — never the capped
+// LifecycleTrialReactivate — so it lands on trial even when the cap is used.
+func TestApplyProjection_TrialReactivated_ConversionRevert(t *testing.T) {
+	c, tenants := newConsumer()
+	st, pl, err := applyOn(c,
+		mkEnv("TrialReactivated", map[string]string{"reason": "conversion_revert", "new_trial_ends_at": "2026-12-25T00:00:00Z"}),
+		domain.StatusActive, domain.TenantPlan("growth"))
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusTrial, st)
+	assert.Equal(t, domain.TenantPlan("growth"), pl, "plan is not changed by the revert")
+	require.Len(t, tenants.patches, 2)
+	assert.Equal(t, port.LifecycleSetRealm, tenants.patches[0].Op)
+	assert.Equal(t, port.TenantLifecyclePatch{Op: port.LifecycleRevertConversion, TrialDurationDays: 30}, tenants.patches[1])
+}
+
+func TestApplyProjection_TrialReactivated_ConversionRevertErrorPropagates(t *testing.T) {
+	execErr := errors.New("db down")
+	tenants := &recordingTenants{
+		applyFn: func(_ context.Context, _ uuid.UUID, p port.TenantLifecyclePatch) (int64, error) {
+			if p.Op == port.LifecycleRevertConversion {
+				return 0, execErr
+			}
+			return 1, nil
+		},
+	}
+	c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil)
+	st, _, err := applyOn(c,
+		mkEnv("TrialReactivated", map[string]string{"reason": "conversion_revert"}),
+		domain.StatusActive, domain.TenantPlan("starter"))
+	assert.ErrorIs(t, err, execErr)
+	assert.Equal(t, domain.StatusActive, st)
+}
+
+// A missing reason (RP before the field), an explicit trial_reactivation and
+// an unknown value all take the capped trial-reactivation path.
+func TestApplyProjection_TrialReactivated_NonRevertReasonsUseTrialReactivate(t *testing.T) {
+	for name, payload := range map[string]any{
+		"missing":            struct{}{},
+		"trial_reactivation": map[string]string{"reason": "trial_reactivation"},
+		"unknown":            map[string]string{"reason": "something_new"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, tenants := newConsumer()
+			st, _, err := applyOn(c, mkEnv("TrialReactivated", payload), domain.StatusTrialExpired, domain.TenantPlan("starter"))
+			require.NoError(t, err)
+			assert.Equal(t, domain.StatusTrial, st)
+			require.Len(t, tenants.patches, 2)
+			assert.Equal(t, port.LifecycleTrialReactivate, tenants.patches[1].Op)
+		})
+	}
+}
+
+func TestApplyProjection_TrialReactivated_MalformedPayloadRejected(t *testing.T) {
+	c, tenants := newConsumer()
+	env := mkEnv("TrialReactivated", nil)
+	env.Payload = json.RawMessage(`{"reason": 42}`)
+	st, _, err := applyOn(c, env, domain.StatusActive, domain.TenantPlan("starter"))
+	require.Error(t, err)
+	assert.Equal(t, domain.StatusActive, st)
+	assert.Len(t, tenants.patches, 1, "only the realm reset ran; the tx rolls it back")
+}
+
 func TestApplyProjection_TrialReactivated_ExecErrorPropagates(t *testing.T) {
 	execErr := errors.New("db down")
 	tenants := &recordingTenants{

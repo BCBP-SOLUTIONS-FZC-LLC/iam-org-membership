@@ -556,6 +556,36 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		}); err != nil {
 			return prevStatus, prevPlan, err
 		}
+		// RP adds an optional "reason" telling an RP-4 conversion revert
+		// apart from an RP-10 trial reactivation. Missing or unknown means a
+		// trial reactivation: that is what every TrialReactivated meant
+		// before the field existed, and the TRIAL-5 cap keeps it safe.
+		var payload struct {
+			Reason domain.TrialReactivatedReason `json:"reason"`
+		}
+		if len(env.Payload) > 0 {
+			if err := json.Unmarshal(env.Payload, &payload); err != nil {
+				return prevStatus, prevPlan, err
+			}
+		}
+		switch payload.Reason {
+		case domain.TrialReactivationReasonConversionRevert:
+			// Not a second free trial: no TRIAL-5 cap, and the conversion
+			// is undone (subscription_started_at cleared), so the tenant no
+			// longer reads as converted (OM-4) and a later TenantReactivated
+			// derives trial, not active.
+			if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
+				Op:                port.LifecycleRevertConversion,
+				TrialDurationDays: trialDurationDays,
+			}); err != nil {
+				return prevStatus, prevPlan, err
+			}
+			return domain.StatusTrial, prevPlan, nil
+		case "", domain.TrialReactivationReasonTrial:
+		default:
+			c.logger.Warn("TrialReactivated: unknown reason, treated as a trial reactivation",
+				"tenant_id", tenantID, "event_id", env.ID, "reason", payload.Reason)
+		}
 		rows, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:                port.LifecycleTrialReactivate,
 			TrialDurationDays: trialDurationDays,

@@ -3,5 +3,9 @@
   "title": "TrialReactivatedPayload",
   "type": "object",
   "additionalProperties": true,
-  "properties": {}
+  "properties": {
+    "reason": {
+      "type": "string"
+    }
+  }
 }

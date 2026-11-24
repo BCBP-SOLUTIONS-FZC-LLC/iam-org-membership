@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed (2026-11-25 — `TrialReactivated.reason`: a conversion revert undoes the conversion, LLD rev 2.61)
+
+- **An RP-4 revert now returns the tenant to a real trial.** The consumer reads an optional `reason` on `TrialReactivated`. With `conversion_revert`, after the realm reset, the tenant goes to `trial` with a fresh trial window and `subscription_started_at` cleared, and the one-time trial-reactivation cap (TRIAL-5) is neither checked nor used up. Before, a reverted tenant that had already reactivated once stayed `active`, still looked converted to the web shell (OM-4), and a later `TenantReactivated` would have made it `active`. A missing reason (what Realm Provisioner sends today), `trial_reactivation` or an unknown value keeps the previous capped behaviour. `plan` is not changed. The consumed `TrialReactivatedPayload` schema gains an optional `reason` string. No migration.
+
 ### Fixed (2026-11-25 — RP-14: PUB-1 after a conversion revert, LLD rev 2.60)
 
 - **A reverted workspace resolves to the shared trial realm again.** Realm Provisioner's RP-4 revert deletes the dedicated realm and emits `TrialReactivated`, but the projection left `realm_id`/`realm_type` on the dedicated realm, so PUB-1 sent the workspace's users, and RP-4's welcome links, to a realm that no longer existed. The `TrialReactivated` projection now resets `realm_id`, `realm_type` and `keycloak_shard` to the shared trial realm (`trial`, `shared`, `shard-0`) in the same transaction, before the trial reactivation and regardless of the TRIAL-5 cap. An in-grace RP-10 reactivation is already on the shared realm, so nothing changes for it. No schema, event or route change.

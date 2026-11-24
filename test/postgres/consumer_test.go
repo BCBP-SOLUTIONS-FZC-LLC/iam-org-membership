@@ -675,6 +675,46 @@ func TestConsumer_TrialReactivated_AfterRevert_ResetsRealmForPUB1(t *testing.T) 
 	assert.Equal(t, domain.RealmShared, res.RealmType)
 }
 
+// An RP-4 revert carrying reason=conversion_revert undoes the conversion:
+// trial with a fresh window, subscription_started_at cleared, and the TRIAL-5
+// counter untouched — even when the tenant already used its one reactivation.
+func TestConsumer_TrialReactivated_ConversionRevert_UndoesConversion(t *testing.T) {
+	t.Parallel()
+	for name, count := range map[string]int{"cap-unused": 0, "cap-used": 1} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			appPool, rawPool, _ := setupTestDB(t)
+			ctx := context.Background()
+			tenantID := seedTenant(t, ctx, rawPool, "revert-"+name)
+			_, err := rawPool.Exec(ctx, `
+				UPDATE tenants SET status = 'active', subscription_started_at = now(), trial_reactivation_count = $2,
+				                   realm_id = 'tenant-revert', realm_type = 'dedicated'
+				WHERE id = $1`, tenantID, count)
+			require.NoError(t, err)
+
+			c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+				pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
+			env := mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(),
+				map[string]string{"reason": "conversion_revert"})
+			require.NoError(t, c.Handle(ctx, env))
+
+			var status, realmID string
+			var gotCount int
+			var subStarted *time.Time
+			var trialEndsAt time.Time
+			require.NoError(t, rawPool.QueryRow(ctx, `
+				SELECT status, realm_id, trial_reactivation_count, subscription_started_at, trial_ends_at
+				FROM tenants WHERE id = $1`, tenantID,
+			).Scan(&status, &realmID, &gotCount, &subStarted, &trialEndsAt))
+			assert.Equal(t, "trial", status)
+			assert.Equal(t, domain.SharedTrialRealmID, realmID)
+			assert.Equal(t, count, gotCount, "a revert is not a TRIAL-5 reactivation")
+			assert.Nil(t, subStarted, "the conversion is undone")
+			assert.WithinDuration(t, time.Now().UTC().Add(14*24*time.Hour), trialEndsAt, 2*time.Minute)
+		})
+	}
+}
+
 // RP-14: the realm reset does not depend on the TRIAL-5 cap. A tenant that
 // used its one trial reactivation, then converted and was reverted, is still
 // in the shared realm on RP's side, so PUB-1 must follow.

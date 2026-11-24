@@ -380,6 +380,8 @@ Layered one-time guarantee: (a) single-use token (RP redeems), (b) counter check
 
 **Conversion revert (RP-4, RP-14, LLD rev 2.60).** RP emits `TrialReactivated` after a revert too, once it has moved the users back to the shared trial realm and deleted the dedicated one. Before the steps above, the same transaction resets `realm_id='trial'`, `realm_type='shared'`, `keycloak_shard='shard-0'`, whatever the T-14 cap, so PUB-1 never names the deleted realm. For an in-grace RP-10 reactivation this changes nothing.
 
+**`reason` (LLD rev 2.61).** With `reason='conversion_revert'` the steps above are replaced by `LifecycleRevertConversion`: `status='trial'`, fresh `trial_ends_at`, `subscription_started_at` cleared, `trial_reactivation_count` neither checked nor incremented (a revert is not a TRIAL-5 reactivation). A missing, `trial_reactivation` or unknown reason keeps steps 1–3 under the cap.
+
 ### 15.5 Tenant Offboarding (Paid)
 
 Billing owns status transitions; O&M and RP react. Sequence `cancelled → suspended → offboarded`:
