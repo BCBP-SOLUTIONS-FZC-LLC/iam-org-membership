@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed (2026-11-24 — migration squash: 000001–000010 consolidated into 000000)
+
+- **Pre-deployment migration squash.** Migrations `000001`–`000010` were consolidated into the base `000000_initial_schema` before first deployment (no live data existed in any environment). The end-state database schema is identical. What was folded in: `chk_full_name_length`/`chk_display_name_length` constraints (000001), `idx_pi_email_pending` index (000002), `tenants.residency_mode` (000003), `pending_tenant_events` table + RLS (000004), `trial_signup_ledger` table + grants (000005+000006, superseded length check dropped), `org_membership_migrator` DML grants / MIG-10 (000007), `pending_audit_entries` RLS + grants (000008), `outbox_events_ordering_seq` grants / MIG-11 (000009), `tenants.seats_last_event_at` / BL-OQ-2 (000010). `trial_signup_ledger_test.go` `runner.Down(ctx, 5)` updated to `runner.Down(ctx, 1)`; stale migration-number comments updated across test files, `migrate.go`, `ARCHITECTURE.md`, `README.md`, `LLD`, and `data-model.mmd`.
+
 ### Changed (2026-11-24 — web-shell IAM-screens asks OM-1, OM-2, OM-6, OM-7, LLD rev 2.58)
 
 - **OM-1: new `403 MEMBER_SUSPENDED` for a suspended caller.** P-35 (`GET /api/v1/me/session-context`) returned `403 INSUFFICIENT_ROLE` and every `/api/v1/tenants/:id/*` route returned the generic `403 FORBIDDEN` for a member whose membership is suspended; both now return `403 MEMBER_SUSPENDED`, so the frontend can show "access paused". Other non-active rows are unchanged (`INSUFFICIENT_ROLE` on P-35, `FORBIDDEN` on the gate), as is `404 MEMBER_NOT_FOUND` for no membership on P-35.
