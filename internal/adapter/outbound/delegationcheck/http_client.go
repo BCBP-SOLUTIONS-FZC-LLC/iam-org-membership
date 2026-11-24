@@ -101,7 +101,7 @@ type deptDelegateResponse struct {
 	Found        bool       `json:"found"`
 	DelegationID *uuid.UUID `json:"delegation_id,omitempty"`
 	DelegatorID  *uuid.UUID `json:"delegator_id,omitempty"`
-	DelegateID   *uuid.UUID `json:"delegate_id,omitempty"`
+	DelegateID   *uuid.UUID `json:"delegate_user_id,omitempty"`
 }
 
 func (c *HTTPClient) DeptDelegate(ctx context.Context, tenantID, userID, deptID uuid.UUID) (*uuid.UUID, error) {
