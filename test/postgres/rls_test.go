@@ -130,8 +130,8 @@ func setupTestDBWithAppConfig(t testing.TB, adjustApp func(*pgcommon.Config)) (*
 		`GRANT CONNECT ON DATABASE org_membership TO org_membership_app`,
 		`GRANT USAGE ON SCHEMA public TO org_membership_app`,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO org_membership_app`,
-		// No blanket sequence grant: the migrations must grant every sequence
-		// the app role draws from (000009 — outbox_events_ordering_seq). A
+		// No blanket sequence grant: the migration must grant every sequence
+		// the app role draws from (000000 — outbox_events_ordering_seq). A
 		// blanket grant here hid that gap from every keyed-enqueue test.
 		`GRANT EXECUTE ON FUNCTION app_tenant_id()                    TO org_membership_app`,
 		`GRANT EXECUTE ON FUNCTION log_rls_violation(text, uuid, text) TO org_membership_app`,
@@ -233,8 +233,8 @@ func TestRLS_Case1_EveryTenantScopedTableEnabled(t *testing.T) {
 		"tenants", "tenant_departments", "tenant_memberships", "tenant_roles",
 		"dept_memberships", "dept_role_labels",
 		"pending_invitations",
-		"pending_tenant_events", // EVT-18 parked events (migration 000004)
-		"pending_audit_entries", // platform-audit outbox (library schema; RLS in 000008)
+		"pending_tenant_events", // EVT-18 parked events (000000)
+		"pending_audit_entries", // platform-audit outbox (library schema; RLS in 000000)
 	}
 	rows, err := rawPool.Query(ctx, `
 		SELECT c.relname

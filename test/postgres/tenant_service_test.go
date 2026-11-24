@@ -227,7 +227,7 @@ func TestP7Tenant014_RealmSyncHappy(t *testing.T) {
 	tenantID := seedTenant(t, ctx, fx.rawPool, "tenant-014")
 	tctx := withSystemAndTenant(ctx, tenantID)
 
-	// Seed defaults local_accounts_enabled=true (per migration 000001).
+	// Seed defaults local_accounts_enabled=true (per 000000 initial schema).
 	enabled := false
 	_, deferredSync, err := fx.Tenant.Patch(tctx, tenantID, &domain.TenantPatch{LocalAccountsEnabled: &enabled, RecordVersion: 1})
 	require.NoError(t, err)

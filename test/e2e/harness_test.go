@@ -221,8 +221,7 @@ func setupE2EDB(t *testing.T, ctx context.Context) (*pgcommon.Pool, *dbseed.Pool
 	require.NoError(t, err)
 
 	// outbox.ApplySchema must run first so platform-events creates
-	// outbox_events (jsonb payload) before domain migration 000010
-	// converts it to TEXT.
+	// outbox_events before domain migration 000000 grants on it.
 	require.NoError(t, outbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 	require.NoError(t, auditoutbox.ApplySchema(ctx, &pgmigrate.Runner{DSN: superDSN}))
 	require.NoError(t, pgadapter.RunMigrations(ctx, superDSN))

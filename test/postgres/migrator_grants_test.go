@@ -1,8 +1,9 @@
 //go:build integration
 
-// 000007_migrator_grants: the sysPool role, org_membership_migrator, can use
-// the tables when another role ran the migrations. The rest of this suite
-// binds the sysPool to the postgres superuser, which hides a missing grant.
+// migrator_grants (consolidated into 000000): the sysPool role,
+// org_membership_migrator, can use the tables when another role ran the
+// migrations. The rest of this suite binds the sysPool to the postgres
+// superuser, which hides a missing grant.
 package postgres_test
 
 import (
@@ -61,5 +62,5 @@ func TestMigratorGrants_SysPoolRoleNotOwner(t *testing.T) {
 	_, err = rawPool.Exec(ctx, `CREATE TABLE public.grants_probe (id int)`)
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `INSERT INTO public.grants_probe VALUES (1)`)
-	require.NoError(t, err, "default privileges cover tables created after 000007")
+	require.NoError(t, err, "default privileges cover tables created after 000000")
 }
