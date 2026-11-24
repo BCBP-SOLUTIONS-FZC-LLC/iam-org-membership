@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with the **Org & Membership (Core) Service** (`iam-org-membership`), a Go microservice in the IAM subsystem (Tender Management SaaS platform). Refines **IAM HLD v1.41 §5.6**; LLD v2.58 ("Org & Membership (Core) Service — Low-Level Design"), owner database `org_membership` on shared RDS PostgreSQL. Where LLD and HLD disagree, HLD is authoritative.
+This file provides guidance to Claude Code when working with the **Org & Membership (Core) Service** (`iam-org-membership`), a Go microservice in the IAM subsystem (Tender Management SaaS platform). Refines **IAM HLD v1.41 §5.6**; LLD v2.59 ("Org & Membership (Core) Service — Low-Level Design"), owner database `org_membership` on shared RDS PostgreSQL. Where LLD and HLD disagree, HLD is authoritative.
 
 This repo is the end-state of a completed **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to **Catalog / Admin Config Service** (`iam-catalog-admin`), SAML group→dept/role mapping moved to **Group Mapping / JIT Config Service** (`iam-group-mapping`), tender ACL overlays moved to **Tender ACL Service** (`iam-tender-acl`), and delegation grants + OOO coordination moved to **Delegation Service** (`iam-delegation`). This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
