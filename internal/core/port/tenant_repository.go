@@ -172,7 +172,10 @@ type TenantLifecyclePatch struct {
 	Plan              domain.TenantPlan
 	Status            domain.SubscriptionStatus
 	TrialDurationDays int
-	LicensedSeats     int
+	// TrialEndsAt, when set, is the authoritative new trial end (the
+	// event's new_trial_ends_at, rev 2.63); TrialDurationDays is then unused.
+	TrialEndsAt   *time.Time
+	LicensedSeats int
 }
 
 // TenantRepositoryNoop is a compile-time stub for tests that only override

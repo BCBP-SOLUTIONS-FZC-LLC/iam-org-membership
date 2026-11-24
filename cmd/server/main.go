@@ -464,17 +464,22 @@ func main() {
 	// start before the HTTP services below are built, so this is its own
 	// ProvisioningService over the same pool (TrialSignup needs no Realm
 	// Provisioner client, hence nil).
+	// SHARED_TRIAL_REALM: the shared trial realm's name, which must equal
+	// Realm Provisioner's setting (LLD rev 2.64). Both the I-1 producer paths
+	// and the TrialReactivated consumer use it.
+	sharedTrialRealm := domain.SharedTrialRealm(os.Getenv("SHARED_TRIAL_REALM"))
 	backstopProvisioning := service.NewProvisioningService(
 		pgadapter.NewTenantRepository(pool), pgadapter.NewMembershipRepository(pool),
 		pgadapter.NewTenantRoleRepository(pool), pgadapter.NewDeptMembershipRepository(pool),
 		pgadapter.NewDeptRoleLabelRepository(pool), pgadapter.NewTenantDepartmentRepository(pool),
 		catalogReader, catalogReader, txRunner, cache, nil,
-	).WithLogger(log)
+	).WithLogger(log).WithSharedTrialRealm(sharedTrialRealm)
 	// EVT-18 (CD-50): an event for a tenant with no row yet is parked and
 	// replayed by I-1 once the tenant exists — on both I-1 paths, the
 	// backstop above and the HTTP handler's provisioningSvc below.
 	parkedEvents := pgadapter.NewParkedTenantEventRepository(pool)
 	membershipConsumer := consumeradapter.NewMembershipEventConsumer(inbox, pgadapter.NewTenantRepository(pool), catalogReader, cache, skew, log).
+		WithSharedTrialRealm(sharedTrialRealm).
 		WithTenantProvisioner(backstopProvisioning).
 		WithParkedEvents(parkedEvents, txRunner)
 	backstopProvisioning.WithParkedEvents(parkedEvents, membershipConsumer)
@@ -642,6 +647,7 @@ func main() {
 
 	authzSvc := service.NewAuthZService(authzRepo, catalogReader, catalogReader, cache)
 	provisioningSvc := service.NewProvisioningService(tenantRepo, membershipRepo, tenantRoleRepo, deptMemRepo, deptRoleLabelRepo, tenantDeptRepo, catalogReader, catalogReader, txRunner, cache, rpClient).WithLogger(log).
+		WithSharedTrialRealm(sharedTrialRealm).
 		WithParkedEvents(parkedEvents, membershipConsumer).
 		WithTrialLedger(pgadapter.NewTrialSignupLedgerRepository(pool))
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).

@@ -193,7 +193,7 @@ iam-org-membership/
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.62 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.64 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   ├── architecture/                  # Standalone Mermaid diagrams
 │   ├── observability/                 # Observability standard implementation, generated metric-registry.md, migration.md, runbooks.md
@@ -611,6 +611,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `AUDIT_LOG_BASE_URL` / `AUDIT_LOG_TIMEOUT` / `AUDIT_SOURCE_SERVICE` / `AUDIT_CALLER_DOMAIN` | — / `5s` / `iam-org-membership` / `iam` | platform-audit outbox mode. AL-5 entries for `config.tenant_setting.changed` (P-2, O-4), `invitation.created`/`invitation.revoked` (P-6/P-31) and `invitation.expired` (invitation-expiry CronJob) are written to `pending_audit_entries` in the business transaction and delivered at-least-once by the audit runner on the sysPool; an Audit Log outage never fails a request — entries queue. Unset `AUDIT_LOG_BASE_URL` disables delivery (entries still queue; `PlatformAuditDeliveryDisabled`). `AUDIT_LOG_TIMEOUT` is a Go duration (replaces `AUDIT_LOG_TIMEOUT_MS`); other `AUDIT_*` keep platform-audit's defaults |
 | `INVITATION_EXPIRY_DAYS` | `7` | Must equal Keycloak's invite action-token lifespan |
 | `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's cancellation-to-suspension threshold — this service owns the math so RP's sweep never keeps a second copy of the rule. Also sets P-1/P-35 `read_only_until` (`cancelled_at + SUBSCRIPTION_GRACE_DAYS`) |
+| `SHARED_TRIAL_REALM` | `trial` | Name of the shared Keycloak trial realm: I-1 records it for new trial tenants and `TrialReactivated` resets a tenant to it after a revert, so PUB-1 names it. Must equal Realm Provisioner's `SHARED_TRIAL_REALM`. Empty means `trial` (LLD rev 2.64) |
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300` | EVT-15 future-time clamp |
 | `INVITE_REINVITE_COOLDOWN_MINUTES` / `INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR` | `15` / `60` / `10` | PI-11/PI-12 invite throttles (per email / per tenant / per inviting actor, SECURITY-5) |
 | `DOCS_ENABLED` / `DOCS_AUTH_TOKEN` | `false` / — | Swagger UI gating outside dev |
@@ -883,7 +884,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.62 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.64 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/observability/`](docs/observability/README.md) | Observability standard implementation: identity, tiers, CI enforcement, SLOs; generated [metric inventory](docs/observability/metric-registry.md); [renamed metrics](docs/observability/migration.md); [alert runbooks](docs/observability/runbooks.md) |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 | [`docs/runbook-outbox-dead-letter.md`](docs/runbook-outbox-dead-letter.md) | Inspecting and reprocessing `outbox_dead_letters` |

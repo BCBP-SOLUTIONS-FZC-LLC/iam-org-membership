@@ -4,6 +4,9 @@
   "type": "object",
   "additionalProperties": true,
   "properties": {
+    "new_trial_ends_at": {
+      "type": "string"
+    },
     "reason": {
       "type": "string"
     }

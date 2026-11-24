@@ -21,6 +21,7 @@ import (
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/metrics"
 	pgadapter "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/postgres"
 	realmprovisionerclient "github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/adapter/outbound/realmprovisioner"
+	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
 
 	"go.opentelemetry.io/otel/trace"
@@ -339,6 +340,7 @@ func run() int {
 	// fails here and stays parked for I-1's replay or a later fix — the
 	// stale gauge surfaces it.
 	parkedReplayer := consumeradapter.NewMembershipEventConsumer(nil, pgadapter.NewTenantRepository(pool), nil, nil, 0, rawLog).
+		WithSharedTrialRealm(domain.SharedTrialRealm(os.Getenv("SHARED_TRIAL_REALM"))).
 		WithParkedEvents(pgadapter.NewParkedTenantEventRepository(pool), pgadapter.NewTxRunner(pool, outboxPublisher))
 	jctx := &jobs.Context{
 		TxRunner:                 pgadapter.NewTxRunner(pool, outboxPublisher),

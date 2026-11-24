@@ -37,6 +37,16 @@ type ProvisioningService struct {
 	// trialLedger is the CR-4 append-only cross-tenant ledger (trial_signup_ledger).
 	// Optional: nil disables both the eligibility check and the atomic write in I-1.
 	trialLedger port.TrialSignupLedgerRepository
+	// sharedTrialRealm is SHARED_TRIAL_REALM — see WithSharedTrialRealm.
+	sharedTrialRealm string
+}
+
+// WithSharedTrialRealm sets the shared trial realm name I-1 records for a new
+// trial tenant (SHARED_TRIAL_REALM, which must equal Realm Provisioner's).
+// Empty means domain.DefaultSharedTrialRealm.
+func (s *ProvisioningService) WithSharedTrialRealm(name string) *ProvisioningService {
+	s.sharedTrialRealm = name
+	return s
 }
 
 // WithLogger injects the shared gincommon Zap logger so this service's
@@ -245,7 +255,7 @@ func (s *ProvisioningService) TrialSignup(ctx context.Context, req TrialSignupIn
 			Plan:                 req.Plan,
 			Status:               domain.StatusTrial,
 			TrialEndsAt:          &trialEnds,
-			RealmID:              domain.SharedTrialRealmID,
+			RealmID:              domain.SharedTrialRealm(s.sharedTrialRealm),
 			RealmType:            domain.RealmShared,
 			KeycloakShard:        domain.SharedTrialKeycloakShard,
 			MFAFreshnessSeconds:  300,

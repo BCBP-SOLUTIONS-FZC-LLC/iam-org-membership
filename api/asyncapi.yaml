@@ -4051,12 +4051,20 @@ components:
       type: object
       additionalProperties: true
       description: |
-        Only the optional reason is read. The new trial_ends_at is
-        computed server-side from the Catalog Service's
-        trial_duration_days for the tenant's current plan, not taken from
-        the payload. Whatever the reason, the tenant is first reset to the
-        shared trial realm (RP-14, O&M LLD rev 2.60).
+        reason and new_trial_ends_at are read. Whatever the reason, the
+        tenant is first reset to the shared trial realm (RP-14, O&M LLD
+        rev 2.60).
       properties:
+        new_trial_ends_at:
+          type: string
+          description: |
+            Authoritative new trial end (O&M LLD rev 2.63): the date Realm
+            Provisioner's trial-expiry sweep enforces. When present and a
+            valid RFC 3339 instant, it is stored as trial_ends_at as is.
+            Only when absent or malformed does this service fall back to
+            now() + the Catalog Service's trial_duration_days for the
+            tenant's current plan. Deliberately no format constraint, so a
+            malformed value falls back instead of being dead-lettered.
         reason:
           type: string
           description: |

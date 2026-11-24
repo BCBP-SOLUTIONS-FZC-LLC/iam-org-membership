@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,13 +44,25 @@ const (
 	RealmDedicated RealmType = "dedicated"
 )
 
-// The shared trial realm every trial tenant lives in (I-1, §8.1), and the
-// shard it is on. A tenant returns to it after an RP-4 conversion revert
-// (TrialReactivated, RP-14).
-const (
-	SharedTrialRealmID       = "trial"
-	SharedTrialKeycloakShard = "shard-0"
-)
+// DefaultSharedTrialRealm is the name of the shared Keycloak realm every
+// trial tenant lives in (I-1, §8.1) when SHARED_TRIAL_REALM is unset. A
+// tenant returns to it after an RP-4 conversion revert (TrialReactivated,
+// RP-14). The name must match Realm Provisioner's SHARED_TRIAL_REALM, so it is
+// configured, not hard-coded (LLD rev 2.64).
+const DefaultSharedTrialRealm = "trial"
+
+// SharedTrialKeycloakShard is the shard of the shared trial realm. It stays a
+// constant: there is no shared configuration for shard selection.
+const SharedTrialKeycloakShard = "shard-0"
+
+// SharedTrialRealm resolves the configured shared trial realm name:
+// configured, trimmed, or DefaultSharedTrialRealm when empty.
+func SharedTrialRealm(configured string) string {
+	if v := strings.TrimSpace(configured); v != "" {
+		return v
+	}
+	return DefaultSharedTrialRealm
+}
 
 // TrialReactivatedReason is the optional "reason" on Realm Provisioner's
 // TrialReactivated payload: which RP flow sent it. Missing means a normal
