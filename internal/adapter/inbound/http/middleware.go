@@ -300,14 +300,16 @@ func RequireActiveMembership(memberships port.MembershipRepository) gin.HandlerF
 			c.Next()
 			return
 		}
+		if m.Status == domain.MembershipSuspended {
+			// AUTH-1 + web-shell OM-1: a distinct code so the UI can show
+			// "access paused" rather than a generic permissions error.
+			HandleError(c, domain.NewError(domain.ErrMemberSuspended, "suspended members cannot access tenant APIs"))
+			return
+		}
 		if m.Status != domain.MembershipActive {
 			// AUTH-1: only active members access tenant APIs.
 			// Left members retain a non-deleted row but are no longer active.
-			msg := "member is not an active member of this tenant"
-			if m.Status == domain.MembershipSuspended {
-				msg = "suspended members cannot access tenant APIs"
-			}
-			gincommon.AbortWithProblem(c, problem.NewForbiddenError(msg))
+			gincommon.AbortWithProblem(c, problem.NewForbiddenError("member is not an active member of this tenant"))
 			return
 		}
 		c.Next()
@@ -475,6 +477,7 @@ func domainErrorToProblem(de *domain.DomainError) *problem.Error {
 		errors.Is(de.Cause, domain.ErrTenantTrialExpired),
 		errors.Is(de.Cause, domain.ErrTenantSuspended),
 		errors.Is(de.Cause, domain.ErrTenantReadOnly),
+		errors.Is(de.Cause, domain.ErrMemberSuspended),
 		errors.Is(de.Cause, domain.ErrServiceAccountNotGrantable):
 		return problem.NewForbiddenError(msg).WithCode(code)
 	case errors.Is(de.Cause, domain.ErrTenantNotFound),

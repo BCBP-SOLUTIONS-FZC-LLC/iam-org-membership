@@ -183,6 +183,11 @@ func (s *InvitationService) invite(ctx context.Context, tenantID uuid.UUID, req 
 				WithDetails(map[string]any{"code": "invalid_role"})
 		}
 	}
+	// HLD §6.4 / web-shell OM-6: inviting someone straight into
+	// tenant_owner or tenant_admin is a grant, so it is owner-only too.
+	if err := requireOwnerForAdminRoles(ctx, req.InitialTenantRoles); err != nil {
+		return nil, err
+	}
 
 	// Existing pending for same email?
 	existing, err := s.invites.FindPendingByEmail(ctx, tenantID, req.Email)

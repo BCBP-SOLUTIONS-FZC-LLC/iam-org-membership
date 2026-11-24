@@ -136,14 +136,15 @@ func TestSessionContext_NoMembership_404Problem(t *testing.T) {
 }
 
 func TestSessionContext_SuspendedMember_403Problem(t *testing.T) {
-	reader := &fakeSessionContextReader{err: domain.NewError(domain.ErrInsufficientRole, "suspended members cannot access tenant APIs")}
+	reader := &fakeSessionContextReader{err: domain.NewError(domain.ErrMemberSuspended, "suspended members cannot access tenant APIs")}
 	w := httptest.NewRecorder()
 	meRouter(reader, domain.StatusActive).Handler().ServeHTTP(w, meRequest(sessionContextPath, uuid.New(), uuid.New()))
 
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Equal(t, "INSUFFICIENT_ROLE", body["errorCode"])
+	assert.Equal(t, "MEMBER_SUSPENDED", body["errorCode"])
+	assert.Empty(t, w.Header().Get("Retry-After"), "final answer: no Retry-After (web-shell OM-1)")
 }
 
 // RequireActiveTenant guards /me like every tenant-facing route (TRIAL-4):

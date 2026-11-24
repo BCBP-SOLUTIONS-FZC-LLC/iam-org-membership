@@ -130,6 +130,8 @@ HTTP adapter: `adapter/outbound/workflow/http_client.go`, `httpx.NewClient(timeo
 
 ```
 DELETE /tenants/:id/members/:user_id (P-8) OR /internal/tenants/:id/members/:user_id (I-5)
+  → P-8 only: target ∋ tenant_owner/tenant_admin and caller ∌ tenant_owner → 403 insufficient_role
+      (rev 2.58, HLD §6.4; re-checked under the TM-13 lock)
   → WorkflowClient.GetDelegateImpact(tenant, user, delegation_id=nil)
       5xx/timeout → 503 workflow_service_unavailable (no DB write, WFI-8)
       active_workflows > 0 → 409 workflow_resolution_required
@@ -167,6 +169,8 @@ Same gate, now backed by the Delegation Service's dept-delegate lookup instead o
 
 ### 8.8.5 Suspension Advisory (§16 C3, WFI-13, fail-open)
 
+P-7 suspend or reactivate of a member holding `tenant_owner`/`tenant_admin` requires a `tenant_owner` caller (`403 insufficient_role`, rev 2.58, HLD §6.4); a non-owner caller's check is re-run under the TM-13 tenant lock, which P-28 also takes when changing an admin role.
+
 P-7 suspend calls `GetDelegateImpact` **best-effort**:
 - Suspend **still commits** regardless of Workflow response (fail-open — never blocks a security-relevant suspend).
 - Response includes `delegate_impact.active_workflows` (or `checked:false` if RP 5xx).
@@ -179,6 +183,7 @@ P-7 suspend calls `GetDelegateImpact` **best-effort**:
 
 ```
 Admin → POST /tenants/:id/members {email, full_name, initial_tenant_roles, initial_dept_mappings} (P-6)
+  Owner gate: initial_tenant_roles ∋ tenant_owner/tenant_admin and caller ∌ tenant_owner → 403 insufficient_role (rev 2.58, HLD §6.4)
   Pre-flight:
     active member for this email? → 409 member_already_exists
     pending invite for this email? → 409 invitation_already_exists (PI-1)

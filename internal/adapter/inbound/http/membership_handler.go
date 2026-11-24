@@ -134,7 +134,7 @@ func (h *MembershipHandler) Get(c *gin.Context) {
 // Patch is P-7 — status change (suspend/reactivate). tenant_admin/owner only.
 //
 // @Summary      P-7 — Suspend/reactivate member (status only)
-// @Description  AUTH-2. On suspend: AUTH-8 best-effort RP RevokeUserSessions (fail-open). Applies optimistic locking (CONC-4).
+// @Description  AUTH-2; suspending or reactivating a member who holds tenant_owner or tenant_admin requires tenant_owner (HLD §6.4) — 403 insufficient_role otherwise. On suspend: AUTH-8 best-effort RP RevokeUserSessions (fail-open). Applies optimistic locking (CONC-4).
 // @Tags         members
 // @Accept       json
 // @Produce      json
@@ -203,7 +203,7 @@ func (h *MembershipHandler) Patch(c *gin.Context) {
 // TM-8 last-owner guard.
 //
 // @Summary      P-28 — Full-replacement multi-role reconcile
-// @Description  AUTH-2. §16 A14: one TenantRoleGranted/TenantRoleRevoked event per role delta. TM-8 last-owner guard → 422 last_owner_removal. `member` is barred (TR-7) — returns 400 invalid_role.
+// @Description  AUTH-2. §16 A14: one TenantRoleGranted/TenantRoleRevoked event per role delta. TM-8 last-owner guard → 422 last_owner_removal. `member` is barred (TR-7) — returns 400 invalid_role. Granting or revoking tenant_owner or tenant_admin requires the caller to be tenant_owner (HLD §6.4) — 403 insufficient_role otherwise; a tenant_admin may change tender_admin only.
 // @Tags         members
 // @Accept       json
 // @Produce      json
@@ -308,7 +308,7 @@ func (h *MembershipHandler) SeatUsage(c *gin.Context) {
 // the user is delegate on active workflows.
 //
 // @Summary      P-8 — Remove tenant member
-// @Description  Gated by delegate-impact pre-check (§8.8, WFI-1). Returns 409 workflow_resolution_required with active_workflows/workflow_ids/allowed_actions if the user is a delegate. TM-8 last-owner refusal returns 422 last_owner_removal. AUTH-8 best-effort session revoke.
+// @Description  AUTH-2; removing a member who holds tenant_owner or tenant_admin requires tenant_owner (HLD §6.4) — 403 insufficient_role, checked before the delegate-impact call. Gated by delegate-impact pre-check (§8.8, WFI-1). Returns 409 workflow_resolution_required with active_workflows/workflow_ids/allowed_actions if the user is a delegate. TM-8 last-owner refusal returns 422 last_owner_removal. AUTH-8 best-effort session revoke.
 // @Tags         members
 // @Param        id       path  string  true  "Tenant UUID"   format(uuid)
 // @Param        user_id  path  string  true  "User UUID"     format(uuid)
@@ -347,7 +347,7 @@ func (h *MembershipHandler) Remove(c *gin.Context) {
 // (RP-9). Fail-closed: an RP outage surfaces as 503, never a silent no-op.
 //
 // @Summary      P-34 — Reset a member's MFA
-// @Description  Clears the target user's TOTP/WebAuthn credentials via the Realm Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.
+// @Description  AUTH-2; resetting the MFA of a member who holds tenant_owner or tenant_admin requires tenant_owner (HLD §6.4) — 403 insufficient_role. Clears the target user's TOTP/WebAuthn credentials via the Realm Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.
 // @Tags         members
 // @Param        id       path  string  true  "Tenant UUID"   format(uuid)
 // @Param        user_id  path  string  true  "User UUID"     format(uuid)
@@ -388,7 +388,7 @@ func (h *MembershipHandler) ResetMFA(c *gin.Context) {
 // delegation appeared and the caller resubmits (WFI-6 race-safety).
 //
 // @Summary      P-26 — Resolve blocked user removal
-// @Description  Reassigns or cancels workflows the target user is delegate on so P-8 can proceed (§8.8.3, WFI-6).
+// @Description  AUTH-2; for a target who holds tenant_owner or tenant_admin, tenant_owner only (HLD §6.4) — 403 insufficient_role before any Workflow call. Reassigns or cancels workflows the target user is delegate on so P-8 can proceed (§8.8.3, WFI-6).
 // @Tags         resolution
 // @Accept       json
 // @Param        id       path  string                       true  "Tenant UUID"   format(uuid)

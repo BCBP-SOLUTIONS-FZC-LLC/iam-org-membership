@@ -28,10 +28,13 @@ type TenantResponse struct {
 	DefaultLocale         string                    `json:"default_locale"`
 	LicensedSeats         int                       `json:"licensed_seats"`
 	OwnerlessSince        *time.Time                `json:"ownerless_since,omitempty"`
-	ResidencyMode         domain.ResidencyMode      `json:"residency_mode"` // CD-37
-	FeatureFlags          map[string]any            `json:"feature_flags"`
-	RecordVersion         int64                     `json:"record_version"`
-	UpdatedAt             time.Time                 `json:"updated_at"`
+	// ReadOnlyUntil is set only on P-1 for a cancelled tenant: when its
+	// read-only grace ends (cancelled_at + SUBSCRIPTION_GRACE_DAYS).
+	ReadOnlyUntil *time.Time           `json:"read_only_until,omitempty"`
+	ResidencyMode domain.ResidencyMode `json:"residency_mode"` // CD-37
+	FeatureFlags  map[string]any       `json:"feature_flags"`
+	RecordVersion int64                `json:"record_version"`
+	UpdatedAt     time.Time            `json:"updated_at"`
 }
 
 func TenantToResponse(t *domain.Tenant) TenantResponse {
@@ -448,6 +451,10 @@ type SessionContextResponse struct {
 	Locale              string                     `json:"locale" example:"en"`
 	// Slug is the caller's tenant workspace slug, for /t/<slug>/ routing.
 	Slug string `json:"slug" example:"acme"`
+	// ReadOnlyUntil is when a cancelled tenant's read-only grace ends
+	// (cancelled_at + SUBSCRIPTION_GRACE_DAYS). Omitted unless read_only, and
+	// may briefly be omitted while read_only is true as caches converge.
+	ReadOnlyUntil *time.Time `json:"read_only_until,omitempty" format:"date-time"`
 }
 
 // SessionContextDepartment is one x-departments entry ("<id>:<level>") as

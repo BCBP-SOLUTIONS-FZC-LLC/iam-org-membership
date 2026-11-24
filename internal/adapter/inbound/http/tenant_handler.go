@@ -25,12 +25,12 @@ func NewTenantHandler(svc *service.TenantService) *TenantHandler {
 // request returns 404 (0 rows via policy) not 403.
 //
 // @Summary      P-1 — Read tenant
-// @Description  AUTH-1: any active member of the target tenant.
+// @Description  AUTH-1: any active member of the target tenant. Sent with Cache-Control: no-store. read_only_until (cancelled tenants only) is when the read-only grace ends: cancelled_at + SUBSCRIPTION_GRACE_DAYS. 403 tenant_trial_expired / tenant_suspended / member_suspended; 404 tenant_not_found for an offboarded tenant.
 // @Tags         tenant
 // @Produce      json
 // @Param        id   path      string          true  "Tenant UUID"  format(uuid)
 // @Success      200  {object}  TenantResponse
-// @Failure      403  {object}  ProblemResponse  "AUTH-1..8 gate failed"
+// @Failure      403  {object}  ProblemResponse  "AUTH-1..8 gate failed; tenant_trial_expired, tenant_suspended, member_suspended"
 // @Failure      404  {object}  ProblemResponse  "Row not visible (RLS returns 0 rows OR row absent)"
 // @Security     UserID
 // @Security     TenantID
@@ -59,7 +59,10 @@ func (h *TenantHandler) Get(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, TenantToResponse(t))
+	resp := TenantToResponse(t)
+	resp.ReadOnlyUntil = h.svc.ReadOnlyUntil(t)
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, resp)
 }
 
 // Patch is P-2: tenant_owner only.

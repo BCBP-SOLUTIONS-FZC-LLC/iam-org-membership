@@ -283,7 +283,7 @@ curl -sS -w "\nHTTP %{http_code}\n" \
 curl -sS -w "\nHTTP %{http_code}\n" -X POST \
   -H "x-user-id: $ALICE" \
   -H "x-tenant-id: $TENANT_A" \
-  -H "x-tenant-roles: tenant_admin" \
+  -H "x-tenant-roles: tenant_owner" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "new.user@acme.com",
@@ -302,6 +302,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X POST \
 ```
 **Events emitted:** on `iam.membership.events` — none on success (seat overage events retired, CD-54)
 **Errors:**
+- `403 insufficient_role` — `initial_tenant_roles` contains `tenant_owner`/`tenant_admin` and the caller is not `tenant_owner` (rev 2.58)
 - `409 seat_limit_reached` — SEAT-1 cap (payload carries `licensed_seats`)
 - `409 invitation_already_exists` — active pending row for same email
 - `429 reinvite_too_soon` — PI-11 (payload `retry_after_seconds`)
@@ -330,7 +331,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X PATCH \
 ```
 **Response:** `200 OK`
 **Events emitted:** none directly. On suspend, O&M best-effort-calls RP `RevokeUserSessions` (AUTH-8 fail-open). RP itself may emit events.
-**Errors:** `409` optimistic lock, `403`
+**Errors:** `409` optimistic lock, `403` (`403 insufficient_role` when suspending or reactivating a `tenant_owner`/`tenant_admin` and the caller is not `tenant_owner`, rev 2.58)
 
 ### DELETE /api/v1/tenants/{id}/members/{user_id} — P-8: Remove member
 
@@ -348,6 +349,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X DELETE \
 - **`MembershipRevoked`** — one event, consumed by Delegation Service and Tender-ACL Service for their own async cascades (post-decomposition, Core owns neither table any more) and by AuthZ Enrichment for `om:memberships` cache eviction
 **Errors:**
 - `409 workflow_resolution_required` — sync WorkflowClient.GetDelegateImpact returned >0 active workflows. Resolve via P-26 below.
+- `403 insufficient_role` — the target holds `tenant_owner`/`tenant_admin` and the caller is not `tenant_owner` (rev 2.58)
 - `422 last_owner_removal` — TM-8 (payload carries `owners_remaining: 1`)
 
 ### GET /api/v1/tenants/{id}/seat-usage — P-27: Seat usage projection
@@ -385,6 +387,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X PUT \
 - **`TenantRoleRevoked`** — one per newly-revoked role
 - (no events if the desired set equals the current set)
 **Errors:**
+- `403 insufficient_role` — the request grants or revokes `tenant_owner`/`tenant_admin` and the caller is not `tenant_owner` (rev 2.58)
 - `422 last_owner_removal` — TM-8 last owner cannot be stripped
 - `400 invalid_role` — `member` is barred (TR-7 — never persisted)
 
@@ -415,7 +418,7 @@ curl -sS -w "\nHTTP %{http_code}\n" -X POST \
 **Events emitted:** on `iam.membership.events`
 - **`DelegationEnded`** — with `ended_reason: replaced` (Path A) or `ended_reason: workflow_stopped` (Path B)
 - (workflow-stop events themselves are emitted by the Workflow service, not O&M)
-**Errors:** `422 invalid_replacement` — replacement user isn't an active member (WFI-5)
+**Errors:** `422 invalid_replacement` — replacement user isn't an active member (WFI-5); `403 insufficient_role` — the target holds `tenant_owner`/`tenant_admin` and the caller is not `tenant_owner` (rev 2.58)
 
 ---
 

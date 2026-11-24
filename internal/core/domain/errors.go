@@ -54,9 +54,14 @@ var (
 	// middleware as defense-in-depth for the upstream Keycloak session
 	// disable — if RP's session-revoke fails or a long-lived JWT slips
 	// through, the service still refuses API access on these states.
-	ErrTenantTrialExpired         = errors.New("tenant_trial_expired")
-	ErrTenantSuspended            = errors.New("tenant_suspended")
-	ErrTenantReadOnly             = errors.New("tenant_read_only")
+	ErrTenantTrialExpired = errors.New("tenant_trial_expired")
+	ErrTenantSuspended    = errors.New("tenant_suspended")
+	ErrTenantReadOnly     = errors.New("tenant_read_only")
+	// ErrMemberSuspended is the caller-facing 403 for a member whose
+	// tenant_memberships.status is suspended — distinct from
+	// insufficient_role so the UI can show "access paused" (web-shell
+	// OM-1). Returned by P-35 and RequireActiveMembership.
+	ErrMemberSuspended            = errors.New("member_suspended")
 	ErrDepartmentAlreadyActivated = errors.New("department_already_activated")
 	ErrRoleAlreadyGranted         = errors.New("role_already_granted")
 	ErrMemberNotActive            = errors.New("member_not_active")

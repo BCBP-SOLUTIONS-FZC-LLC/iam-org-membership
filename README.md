@@ -53,14 +53,14 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 
 | # | Method & Path | Purpose |
 |---|---|---|
-| P-1 | `GET /tenants/:id` | Tenant details (name, plan, locale, `mfa_freshness_seconds`) |
+| P-1 | `GET /tenants/:id` | Tenant details (name, plan, locale, `mfa_freshness_seconds`; `read_only_until` for a cancelled tenant). Sent with `Cache-Control: no-store` |
 | P-2 | `PATCH /tenants/:id` | Update name, locale, `local_accounts_enabled`, `mfa_freshness_seconds` |
 | P-3 | `GET /tenants/:id/departments` | List active departments for tenant |
 | P-4 | `GET /tenants/:id/members` | List tenant members, cursor-paginated. Roles and dept memberships hydrated in two batch queries (`WHERE user_id = ANY($2)`) — 3 total queries per page regardless of page size (was N+1 before rev 2.20) |
 | P-5 | `GET /tenants/:id/members/:user_id` | Single member record |
-| P-6 | `POST /tenants/:id/members` | **Invite** — two-step invite→accept, seat-cap gated (`409 seat_limit_reached`) |
-| P-7 | `PATCH /tenants/:id/members/:user_id` | Suspend/reactivate a membership (`status` only) |
-| P-8 | `DELETE /tenants/:id/members/:user_id` | Remove user — gated by the delegate-impact pre-check |
+| P-6 | `POST /tenants/:id/members` | **Invite** — two-step invite→accept, seat-cap gated (`409 seat_limit_reached`); granting `tenant_owner`/`tenant_admin` via `initial_tenant_roles` is `tenant_owner`-only (`403 INSUFFICIENT_ROLE`) |
+| P-7 | `PATCH /tenants/:id/members/:user_id` | Suspend/reactivate a membership (`status` only); suspending or reactivating a `tenant_owner`/`tenant_admin` is `tenant_owner`-only |
+| P-8 | `DELETE /tenants/:id/members/:user_id` | Remove user — gated by the delegate-impact pre-check; removing a `tenant_owner`/`tenant_admin` is `tenant_owner`-only |
 | P-9 | `GET /tenants/:id/departments/:dept_id/members` | List dept members at each role level |
 | P-10 | `PUT /tenants/:id/departments/:dept_id/members/:user_id` | Assign to department at role level (a level decrease is delegate-impact gated) |
 | P-11 | `DELETE /tenants/:id/departments/:dept_id/members/:user_id` | Remove from department (delegate-impact gated) |
@@ -68,17 +68,17 @@ This is enforced structurally: `internal/core/service` depends only on `internal
 | P-13 | `PATCH /tenants/:id/roles/:role_code` | Update a role's display label |
 | P-24 | `POST /tenants/:id/departments` | Activate a global-catalog department for this tenant |
 | P-25 | `PATCH /tenants/:id/departments/:dept_id` | Deactivate/reactivate the tenant's department activation |
-| P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve a blocked removal — `replace_delegate` or `stop_workflows` |
+| P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve a blocked removal — `replace_delegate` or `stop_workflows`; `tenant_owner`-only when the target holds `tenant_owner`/`tenant_admin` |
 | P-27 | `GET /tenants/:id/seat-usage` | Active-user count, `licensed_seats`, `pending_invitations` |
-| P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement reconcile of tenant-level roles (`422 last_owner_removal` guard) |
+| P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement reconcile of tenant-level roles (`422 last_owner_removal` guard); granting/revoking `tenant_owner`/`tenant_admin` is `tenant_owner`-only (`403 INSUFFICIENT_ROLE`) |
 | P-30 | `GET /tenants/:id/invitations` | List outstanding pending invitations |
 | P-31 | `DELETE /tenants/:id/invitations/:invitation_id` | Revoke a still-pending invitation |
-| P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA via Realm Provisioner — **fail-closed** |
-| P-35 | `GET /me/session-context` | The signed-in user's own tenant context for the frontend: `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags`, `read_only` (the values AuthZ Enrichment injects as headers), plus `mfa_freshness_seconds`, `locale`, `slug` (rev 2.45). No parameters — the caller is `x-tenant-id`/`x-user-id`. Reads the I-8 projection + `om:tenant` caches; `404` with no membership, `403` for a suspended member |
+| P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA via Realm Provisioner — **fail-closed**; `tenant_owner`-only when the target holds `tenant_owner`/`tenant_admin` |
+| P-35 | `GET /me/session-context` | The signed-in user's own tenant context for the frontend: `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags`, `read_only` (the values AuthZ Enrichment injects as headers), plus `mfa_freshness_seconds`, `locale`, `slug` (rev 2.45), `read_only_until` (cancelled tenants only, rev 2.58). No parameters — the caller is `x-tenant-id`/`x-user-id`. Reads the I-8 projection + `om:tenant` caches; `404` with no membership, `403 MEMBER_SUSPENDED` for a suspended member |
 
 *Retired, never reused:* P-14/15/16/17/29 (group-mapping admin CRUD → Group Mapping Service), P-18/19/20/32/33 (delegation → Delegation Service), P-21/22/23 (tender ACL → Tender ACL Service).
 
-### Internal routes (18) — `/api/v1/internal/*`, mesh-mTLS + NetworkPolicy only
+### Internal routes (17) — `/api/v1/internal/*`, mesh-mTLS + NetworkPolicy only
 
 | # | Method & Path | Caller | Purpose |
 |---|---|---|---|
@@ -193,7 +193,7 @@ iam-org-membership/
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.54 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.58 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   ├── architecture/                  # Standalone Mermaid diagrams
 │   ├── observability/                 # Observability standard implementation, generated metric-registry.md, migration.md, runbooks.md
@@ -610,7 +610,7 @@ docker compose exec postgres psql -U org_membership_app -d org_membership -c \
 | `TOKEN_SERVICE_BASE_URL` / `TOKEN_SERVICE_TIMEOUT_MS` | — / `1000` | AUTH-9/IB-3 service-account-not-grantable check (P-6/I-3 invite/register, P-10/P-28 role-grant) — fails open, degrading to allow (structural composite-FK bar, TR-8/DM-4, is the primary guarantee) |
 | `AUDIT_LOG_BASE_URL` / `AUDIT_LOG_TIMEOUT` / `AUDIT_SOURCE_SERVICE` / `AUDIT_CALLER_DOMAIN` | — / `5s` / `iam-org-membership` / `iam` | platform-audit outbox mode. AL-5 entries for `config.tenant_setting.changed` (P-2, O-4), `invitation.created`/`invitation.revoked` (P-6/P-31) and `invitation.expired` (invitation-expiry CronJob) are written to `pending_audit_entries` in the business transaction and delivered at-least-once by the audit runner on the sysPool; an Audit Log outage never fails a request — entries queue. Unset `AUDIT_LOG_BASE_URL` disables delivery (entries still queue; `PlatformAuditDeliveryDisabled`). `AUDIT_LOG_TIMEOUT` is a Go duration (replaces `AUDIT_LOG_TIMEOUT_MS`); other `AUDIT_*` keep platform-audit's defaults |
 | `INVITATION_EXPIRY_DAYS` | `7` | Must equal Keycloak's invite action-token lifespan |
-| `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's cancellation-to-suspension threshold — this service owns the math so RP's sweep never keeps a second copy of the rule |
+| `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's cancellation-to-suspension threshold — this service owns the math so RP's sweep never keeps a second copy of the rule. Also sets P-1/P-35 `read_only_until` (`cancelled_at + SUBSCRIPTION_GRACE_DAYS`) |
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300` | EVT-15 future-time clamp |
 | `INVITE_REINVITE_COOLDOWN_MINUTES` / `INVITE_MAX_PER_TENANT_PER_HOUR` / `INVITE_MAX_PER_ACTOR_PER_HOUR` | `15` / `60` / `10` | PI-11/PI-12 invite throttles (per email / per tenant / per inviting actor, SECURITY-5) |
 | `DOCS_ENABLED` / `DOCS_AUTH_TOKEN` | `false` / — | Swagger UI gating outside dev |
@@ -883,7 +883,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.54 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.58 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/observability/`](docs/observability/README.md) | Observability standard implementation: identity, tiers, CI enforcement, SLOs; generated [metric inventory](docs/observability/metric-registry.md); [renamed metrics](docs/observability/migration.md); [alert runbooks](docs/observability/runbooks.md) |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 | [`docs/runbook-outbox-dead-letter.md`](docs/runbook-outbox-dead-letter.md) | Inspecting and reprocessing `outbox_dead_letters` |

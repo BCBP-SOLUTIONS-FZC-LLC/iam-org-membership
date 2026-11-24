@@ -120,3 +120,27 @@ type TenantPatch struct {
 
 	RecordVersion int64
 }
+
+// DefaultSubscriptionGraceDays is the read-only grace window after
+// cancellation (SUBSCRIPTION_GRACE_DAYS, CD-23): Core suspends a cancelled
+// tenant at cancelled_at + this many days (T-11).
+const DefaultSubscriptionGraceDays = 30
+
+// ReadOnlyUntil returns when a cancelled tenant's read-only grace ends and
+// Core suspends it (cancelled_at + graceDays, T-11). It is nil in every
+// other state, and when cancelled_at is unexpectedly unset. graceDays <= 0
+// means DefaultSubscriptionGraceDays. Web-shell OM-2: the UI shows this
+// date and must not compute it client-side.
+func (t *Tenant) ReadOnlyUntil(graceDays int) *time.Time {
+	if t == nil || t.Status != StatusCancelled || t.CancelledAt == nil {
+		return nil
+	}
+	if graceDays <= 0 {
+		graceDays = DefaultSubscriptionGraceDays
+	}
+	// UTC first: I-16 compares cancelled_at against now() - N days as an
+	// absolute instant, so whole days must not shift across a DST change in
+	// the pod's local zone.
+	until := t.CancelledAt.UTC().AddDate(0, 0, graceDays)
+	return &until
+}

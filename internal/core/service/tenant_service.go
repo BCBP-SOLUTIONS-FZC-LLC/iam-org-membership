@@ -32,6 +32,21 @@ type TenantService struct {
 	plans     port.PlanCatalogReader // optional; used by plan-change-check (I-18)
 	idpReader port.RealmIDPReader    // optional; used by plan-change-check (I-18)
 	txRunner  port.TxRunner          // optional; when set, residency_mode changes publish TenantSettingChanged
+	graceDays int                    // SUBSCRIPTION_GRACE_DAYS; 0 → domain.DefaultSubscriptionGraceDays
+}
+
+// WithSubscriptionGraceDays sets the read-only grace window used for
+// read_only_until (P-1, web-shell OM-2). It must be the same value the
+// I-16 subscription-lapse read uses (SUBSCRIPTION_GRACE_DAYS, CD-23).
+func (s *TenantService) WithSubscriptionGraceDays(days int) *TenantService {
+	s.graceDays = days
+	return s
+}
+
+// ReadOnlyUntil is t's read-only grace end (cancelled tenants only), under
+// this service's configured grace window.
+func (s *TenantService) ReadOnlyUntil(t *domain.Tenant) *time.Time {
+	return t.ReadOnlyUntil(s.graceDays)
 }
 
 func NewTenantService(tenants port.TenantRepository, cache port.Cache, rp port.RealmProvisionerClient) *TenantService {

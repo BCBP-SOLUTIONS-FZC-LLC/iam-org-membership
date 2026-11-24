@@ -27,7 +27,7 @@
 **AUTH-1..AUTH-8:**
 - **AUTH-1** — Tenant-level reads require **active** membership in target tenant.
 - **API-2 guard** — every `/api/v1/tenants/:id/*` route sits in one `/tenants/:id` group behind `RequirePathTenantMatch` (`path_tenant.go`): a path tenant ≠ `x-tenant-id` → `403 INSUFFICIENT_ROLE` before the activity gates or any query. Never rebinds (header authoritative; contrast IAPI-6). Handlers keep their own check. CI guard `TestPublicTenantRoutes_AllRequirePathTenantMatch` — register new tenant-facing routes on the `tenants` group.
-- **AUTH-2** — Tenant-admin mutations (add/remove/change roles/group mappings/dept activation) require `tenant_admin` OR `tenant_owner`.
+- **AUTH-2** — Tenant-admin mutations (add/remove users, change roles, dept activation) require `tenant_admin` OR `tenant_owner`. Exception (rev 2.58, HLD §6.4): granting/revoking `tenant_owner` or `tenant_admin` (P-28, P-6 `initial_tenant_roles`), and suspending/reactivating (P-7), removing (P-8), resolving removal for (P-26) or resetting MFA of (P-34) a member who holds either, requires `tenant_owner` — `403 insufficient_role`.
 - **AUTH-3** — *Retired* — tender-ACL management authz moved to the Tender ACL Service (`iam-tender-acl`, ADR-0007 Wave 3) along with the ACL endpoints themselves (P-21/22/23, I-12).
 - **AUTH-4** — *Retired* — delegation create/cancel authz moved to the standalone Delegation Service (`iam-delegation`, ADR-0008) along with the delegation endpoints themselves (P-18/19/20/32/33).
 - **AUTH-5** — System principal (`iam-system`, `…00a1`) accepted only on `/api/v1/internal/*`.
@@ -42,14 +42,14 @@
 
 | # | Method & Path | Purpose | AuthZ | Cache |
 |---|---|---|---|---|
-| P-1 | `GET /tenants/:id` | Tenant details (name, plan, locale, mfa_freshness) | same-tenant member | yes |
+| P-1 | `GET /tenants/:id` | Tenant details (name, plan, locale, mfa_freshness; `read_only_until` for a cancelled tenant, rev 2.58); `Cache-Control: no-store` | same-tenant member | yes |
 | P-2 | `PATCH /tenants/:id` | Update name/locale/local_accounts_enabled/mfa_freshness_seconds | tenant_owner | invalidates |
 | P-3 | `GET /tenants/:id/departments` | List active depts | member | yes |
 | P-4 | `GET /tenants/:id/members` | List members (cursor-paginated, §16 A4) | member | yes (page 1, limit=50 only — CACHE-10) |
 | P-5 | `GET /tenants/:id/members/:user_id` | Single member | member | yes |
-| P-6 | `POST /tenants/:id/members` | **Invite** (two-step invite→accept, §16 A11); stages `pending_invitations` + RP CreateInvitedUser (`required_actions` computed from `initial_tenant_roles`/`initial_dept_mappings` — `CONFIGURE_TOTP` added for tenant_admin/owner or Approver-level grants, F5 resolved); returns 202; seat-cap gated (SEAT-1) — `409 seat_limit_reached` at/above cap | tenant_admin/owner | invalidates seat-usage |
-| P-7 | `PATCH /tenants/:id/members/:user_id` | Suspend/reactivate (status only; roles → P-28) | tenant_admin/owner | invalidates |
-| P-8 | `DELETE /tenants/:id/members/:user_id` | Remove user — **delegate-impact gated** (§8.8); `409 workflow_resolution_required` if delegate on active workflows | tenant_admin/owner | invalidates |
+| P-6 | `POST /tenants/:id/members` | **Invite** (two-step invite→accept, §16 A11); stages `pending_invitations` + RP CreateInvitedUser (`required_actions` computed from `initial_tenant_roles`/`initial_dept_mappings` — `CONFIGURE_TOTP` added for tenant_admin/owner or Approver-level grants, F5 resolved); returns 202; seat-cap gated (SEAT-1) — `409 seat_limit_reached` at/above cap | tenant_admin/owner; `initial_tenant_roles` with `tenant_owner`/`tenant_admin` is owner-only (`403 insufficient_role`, rev 2.58) | invalidates seat-usage |
+| P-7 | `PATCH /tenants/:id/members/:user_id` | Suspend/reactivate (status only; roles → P-28) | tenant_admin/owner; suspending or reactivating a `tenant_owner`/`tenant_admin` is owner-only (rev 2.58) | invalidates |
+| P-8 | `DELETE /tenants/:id/members/:user_id` | Remove user — **delegate-impact gated** (§8.8); `409 workflow_resolution_required` if delegate on active workflows | tenant_admin/owner; removing a `tenant_owner`/`tenant_admin` is owner-only (rev 2.58) | invalidates |
 | P-9 | `GET /tenants/:id/departments/:dept_id/members` | Dept members by level | member | yes |
 | P-10 | `PUT /tenants/:id/departments/:dept_id/members/:user_id` | Assign to dept at level. **Decrease is dept-scope delegate-impact gated** (§8.8.4) | tenant_admin/owner | invalidates |
 | P-11 | `DELETE /tenants/:id/departments/:dept_id/members/:user_id` | Dept remove — dept-scope delegate-impact gated (§8.8.4) | tenant_admin/owner | invalidates |
@@ -59,12 +59,12 @@
 | P-18/P-19/P-20/P-32/P-33 | *retired* | — | List/create/cancel/extend/reassign delegation moved to the standalone Delegation Service (`iam-delegation`, ADR-0008) — DLG-1..5, along with the `delegations` table itself and `tenants.delegation_max_duration_days`/`delegation_review_window_days` — see `database-schema.md`. IDs never reused. |
 | P-21/P-22/P-23 | *retired* | — | List/grant/revoke tender ACL moved to the Tender ACL Service (`iam-tender-acl`, ADR-0007 Wave 3) — TAC-1/2/3, along with `tender_acl_entries` (+ `tender_acl_level` ENUM) — see `database-schema.md`. IDs never reused. |
 | P-24/P-25 | `POST`/`PATCH /tenants/:id/departments[/:dept_id]` | Activate/deactivate/reactivate tenant department | tenant_admin/owner | invalidates |
-| P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve blocked removal/demotion — `replace_delegate` or `stop_workflows` (§8.8.3/§8.8.4) | tenant_admin/owner | invalidates |
+| P-26 | `POST /tenants/:id/users/:user_id/removal-resolution` | Resolve blocked removal/demotion — `replace_delegate` or `stop_workflows` (§8.8.3/§8.8.4) | tenant_admin/owner; owner-only when the target holds `tenant_owner`/`tenant_admin` (rev 2.58) | invalidates |
 | P-27 | `GET /tenants/:id/seat-usage` | `{active_users, pending_invitations, licensed_seats}` | tenant_admin/owner | yes (30 s TTL) |
-| P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement multi-role reconcile; `422 last_owner_removal` guard (TM-8) | tenant_admin/owner | invalidates |
+| P-28 | `PUT /tenants/:id/members/:user_id/roles` | Full-replacement multi-role reconcile; `422 last_owner_removal` guard (TM-8) | tenant_admin/owner; a `tenant_owner`/`tenant_admin` delta is owner-only (`403 insufficient_role`, HLD §6.4, rev 2.58) | invalidates |
 | P-30/P-31 | `GET`/`DELETE /tenants/:id/invitations[/:invitation_id]` | List/revoke pending invitations (P-31 sets `kc_cleanup_pending`, PI-6) | tenant_admin/owner | no/invalidates seat-usage |
-| P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | **NEW (§16 OQ-8/F6)** — reset a member's MFA via Realm Provisioner (RP-9); `422 member_not_active`, `503 realm_provisioner_unavailable` (fail-closed, no reconciler). Emits `MFAReset` | tenant_admin/owner | no |
-| P-35 | `GET /me/session-context` | **NEW (LLD rev 2.43, frontend FE-Q4)** — the caller's own `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags` (+ `read_only` when read-only, as AuthZ Enrichment's header), `read_only`, `mfa_freshness_seconds`, `locale`, `slug` (rev 2.45). No parameters (caller = `x-tenant-id`/`x-user-id`); `/me` group with `RequireActiveTenant` only. Composes the I-8 projection (`om:memberships`) and `om:tenant` — no new query. `404 member_not_found` with no membership, `403` for a suspended member (`SessionContextService`, `me_handler.go`) |
+| P-34 | `POST /tenants/:id/members/:user_id/reset-mfa` | **NEW (§16 OQ-8/F6)** — reset a member's MFA via Realm Provisioner (RP-9); `422 member_not_active`, `503 realm_provisioner_unavailable` (fail-closed, no reconciler). Emits `MFAReset` | tenant_admin/owner; owner-only when the target holds `tenant_owner`/`tenant_admin` (rev 2.58) | no |
+| P-35 | `GET /me/session-context` | **NEW (LLD rev 2.43, frontend FE-Q4)** — the caller's own `tenant_id`, `roles`, `departments` [`{id, level}`], `plan`, `feature_flags` (+ `read_only` when read-only, as AuthZ Enrichment's header), `read_only`, `mfa_freshness_seconds`, `locale`, `slug` (rev 2.45), `read_only_until` (cancelled tenants only, `cancelled_at + SUBSCRIPTION_GRACE_DAYS`, rev 2.58). No parameters (caller = `x-tenant-id`/`x-user-id`); `/me` group with `RequireActiveTenant` only. Composes the I-8 projection (`om:memberships`) and `om:tenant` — no new query. `404 member_not_found` with no membership, `403 member_suspended` for a suspended member (rev 2.58; `SessionContextService`, `me_handler.go`) |
 
 ### Internal routes (`/api/v1/internal/*`)
 
@@ -127,7 +127,7 @@ Per `gincommon.ErrorResponse` `{code, message, request_id, trace_id, details}`. 
 | 400 | Validation | `invalid_uuid`, `invalid_locale`, `invalid_slug`, `invalid_role_level`, `invalid_role` (incl. `member`, TR-7), `invalid_limit`, `invalid_cursor`, `invalid_identifier` (PUB-1 — empty or > 254 chars), `unknown_feature_flag` (O-4 allow-list), `invalid_feature_value` (non-scalar, PLAN-6(d)), `invalid_mfa_freshness_seconds` (T-10) |
 | 400 | `invalid_request_context` (gincommon's ContextMiddleware rejected the identity context; added by `NormalizeAuthErrors`) |
 | 401 | `missing_identity_headers`, `ambiguous_identity_headers` (an identity header sent more than once) |
-| 403 | `insufficient_role`, `cannot_remove_owner`, `service_account_not_grantable` (AUTH-9 — P-6/I-3 invite/register, P-10/P-28 role-grant target resolves to a service-account principal) |
+| 403 | `insufficient_role`, `member_suspended` (caller's membership suspended — `RequireActiveMembership` + P-35, rev 2.58), `cannot_remove_owner`, `service_account_not_grantable` (AUTH-9 — P-6/I-3 invite/register, P-10/P-28 role-grant target resolves to a service-account principal) |
 | 404 | `tenant_not_found`, `member_not_found`, `department_not_found`, `invitation_not_found` (revoke on non-pending) |
 | 409 | Conflict/optimistic-lock/race | `slug_already_taken`, `member_already_exists`, `dept_membership_already_exists`, `optimistic_lock_conflict` (echoes current `record_version`), **`workflow_resolution_required`** (§8.8/§8.8.4 — body has `active_workflows`, `workflow_ids`, `allowed_actions: [replace_delegate, stop_workflows]`, WFI-3), **`seat_limit_reached`** (SEAT-1 — body has `licensed_seats`, `active_users`, `pending_invitations`), `invitation_already_exists` (PI-1), `tenant_offboarded` (O-7 on terminal), `conflict` with `details.code = "concurrent_update"` (a deadlock/serialization failure that outlived pgcommon's retries — safe to retry) |
 | 499 | Client closed the request | Recorded when the caller disconnected before a response (no body is read) |

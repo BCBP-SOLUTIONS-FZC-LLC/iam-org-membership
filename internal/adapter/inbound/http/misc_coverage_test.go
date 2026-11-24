@@ -77,7 +77,7 @@ func TestListDepts_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
+	assertErrorCode(t, w, http.StatusForbidden, "MEMBER_SUSPENDED")
 }
 
 // ── P9-AUTH-06: suspended caller on ListDeptMembers → 403 ────────────────────
@@ -89,7 +89,7 @@ func TestListDeptMembers_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "dept_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
+	assertErrorCode(t, w, http.StatusForbidden, "MEMBER_SUSPENDED")
 }
 
 // ── P30-AUTH-08: suspended caller on ListInvitations → 403 ───────────────────
@@ -101,7 +101,7 @@ func TestListInvitations_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
+	assertErrorCode(t, w, http.StatusForbidden, "MEMBER_SUSPENDED")
 }
 
 // ── P5-AUTH-06: suspended caller on GetMember → 403 ──────────────────────────
@@ -113,7 +113,7 @@ func TestGetMember_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String(), "user_id", uuid.New().String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
+	assertErrorCode(t, w, http.StatusForbidden, "MEMBER_SUSPENDED")
 }
 
 // ── P5-AUTH-07: left caller on GetMember → 403 ───────────────────────────────
@@ -137,7 +137,7 @@ func TestListRoleLabels_SuspendedCaller_403(t *testing.T) {
 	c, w := buildCtx(http.MethodGet, "/", "", suspendedCtx(tenantID))
 	setParams(c, "id", tenantID.String())
 	mw(c)
-	assertErrorCode(t, w, http.StatusForbidden, "FORBIDDEN")
+	assertErrorCode(t, w, http.StatusForbidden, "MEMBER_SUSPENDED")
 }
 
 // ── I5-VAL-01: DeleteMember internal — invalid tenant UUID → 400 ─────────────

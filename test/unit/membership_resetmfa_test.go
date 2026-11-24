@@ -147,6 +147,7 @@ func TestMembership_ResetUserMFA_RequestContextIPAndUAPropagateToEvent(t *testin
 
 	ctx := requestctx.WithContext(context.Background(), &requestctx.RequestContext{
 		ClientIP: "203.0.113.90", UserAgent: "resetmfa-test-agent",
+		Roles: []string{"tenant_owner"}, // owner caller: no privileged-target lookup (rev 2.58)
 	})
 	err := svc.ResetUserMFA(ctx, tenantID, userID, actorID)
 	require.NoError(t, err)

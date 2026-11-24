@@ -24,14 +24,14 @@
 |---|---|
 | Read tenant details | Any authenticated tenant member |
 | Update tenant name/locale/local_accounts_enabled/mfa_freshness_seconds | `tenant_owner` |
-| Invite user (P-6) / list-revoke pending invitations (P-30/P-31) | `tenant_admin`, `tenant_owner` |
-| Remove (P-8), suspend/reactivate (P-7) | `tenant_admin`, `tenant_owner` |
-| Grant/revoke tenant-level role (P-28) | `tenant_admin`, `tenant_owner`; last-owner protected (TM-8) |
+| Invite user (P-6) / list-revoke pending invitations (P-30/P-31) | `tenant_admin`, `tenant_owner`; P-6 `initial_tenant_roles` with `tenant_owner`/`tenant_admin` requires `tenant_owner` (rev 2.58) |
+| Remove (P-8), suspend/reactivate (P-7) | `tenant_admin`, `tenant_owner`; removing, suspending or reactivating a `tenant_owner`/`tenant_admin` requires `tenant_owner` (rev 2.58) |
+| Grant/revoke tenant-level role (P-28) | `tenant_admin`, `tenant_owner`; a `tenant_owner`/`tenant_admin` delta requires `tenant_owner` (AUTH-2 exception, rev 2.58); last-owner protected (TM-8) |
 | Assign user to dept (P-10/P-11) | `tenant_admin`, `tenant_owner` |
 | Membership-existence check (I-15) | Internal service only (NetworkPolicy) — Tender ACL Service, Delegation Service |
 | Provision tenant (I-1) | Internal service only (NetworkPolicy) |
 | Activate/deactivate tenant dept (P-24/P-25) | `tenant_admin`, `tenant_owner` |
-| Resolve blocked removal/demotion (P-26) | `tenant_admin`, `tenant_owner` (WFI-4) |
+| Resolve blocked removal/demotion (P-26) | `tenant_admin`, `tenant_owner` (WFI-4); `tenant_owner` only when the target holds `tenant_owner`/`tenant_admin` (rev 2.58) |
 | View seat usage (P-27/I-11) | `tenant_admin`, `tenant_owner`; Billing internally |
 | Change `licensed_seats` | Billing only via `TenantSeatsChanged` — no O&M endpoint (SEAT-4) |
 | Set/clear `feature_flags` overrides (O-4) | `platform_operator` only (T-9/OP-6) |
@@ -198,7 +198,7 @@ Table below is verified against the current `.env-example`, `deploy/helm/values.
 | `INVITE_REINVITE_COOLDOWN_MINUTES` | `15` | Per-email cooldown (PI-11); default 60 in code. A value ≤ 0 is ignored (the default applies); the cooldown cannot be disabled (LLD §12) |
 | `INVITE_MAX_PER_TENANT_PER_HOUR` | `60` | Per-tenant hourly ceiling (PI-12); default 200 in code. A value ≤ 0 is ignored (the default applies) (LLD §12) |
 | `INVITE_MAX_PER_ACTOR_PER_HOUR` | `10` | Per-actor hourly ceiling (SECURITY-5) so one admin cannot exhaust the tenant ceiling; a value ≤ 0 is ignored (the default 10 applies). In `.env-example`, not in Helm values (code default applies) |
-| `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's (§16 OQ-9/RP-C3) cancellation-to-suspension threshold — `ListSubscriptionLapses` filters `cancelled_at` against this. O&M owns the value so RP's sweep isn't a second, driftable copy of the same rule. In `.env-example`, not in Helm values (code default applies) |
+| `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's (§16 OQ-9/RP-C3) cancellation-to-suspension threshold — `ListSubscriptionLapses` filters `cancelled_at` against this. O&M owns the value so RP's sweep isn't a second, driftable copy of the same rule. Also sets P-1/P-35 `read_only_until` (`cancelled_at + SUBSCRIPTION_GRACE_DAYS`, rev 2.58). Set in Helm `values.yaml` (`env.SUBSCRIPTION_GRACE_DAYS`, CD-23 — must equal RP `CANCELLED_GRACE_DAYS`) and `.env-example` |
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300` | EVT-15 future-time clamp threshold |
 | `OUTBOX_POLL_INTERVAL` | `500ms` | Go duration string, not a bare ms integer |
 | `OUTBOX_BATCH_SIZE` | `50` | Publish batch size |

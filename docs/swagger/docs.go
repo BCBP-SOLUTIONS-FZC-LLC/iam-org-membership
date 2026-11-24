@@ -1259,7 +1259,7 @@ const docTemplate = `{
         },
         "/me/session-context": {
             "get": {
-                "description": "The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source), the tenant locale and the tenant's workspace slug (for /t/\u003cslug\u003e/ routing). No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 for a suspended member and for a trial_expired/suspended tenant (RequireActiveTenant).",
+                "description": "The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source), the tenant locale and the tenant's workspace slug (for /t/\u003cslug\u003e/ routing). No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 member_suspended for a suspended member, 403 tenant_trial_expired / tenant_suspended for such a tenant (RequireActiveTenant, checked first). read_only_until (cancelled tenants only): when the read-only grace ends. Never sends Retry-After.",
                 "produces": [
                     "application/json"
                 ],
@@ -1281,7 +1281,7 @@ const docTemplate = `{
                         }
                     },
                     "403": {
-                        "description": "Suspended member, or tenant trial_expired/suspended",
+                        "description": "member_suspended, tenant_trial_expired or tenant_suspended",
                         "schema": {
                             "$ref": "#/definitions/http.ProblemResponse"
                         }
@@ -1531,7 +1531,7 @@ const docTemplate = `{
         },
         "/tenants/{id}": {
             "get": {
-                "description": "AUTH-1: any active member of the target tenant.",
+                "description": "AUTH-1: any active member of the target tenant. Sent with Cache-Control: no-store. read_only_until (cancelled tenants only) is when the read-only grace ends: cancelled_at + SUBSCRIPTION_GRACE_DAYS. 403 tenant_trial_expired / tenant_suspended / member_suspended; 404 tenant_not_found for an offboarded tenant.",
                 "produces": [
                     "application/json"
                 ],
@@ -1557,7 +1557,7 @@ const docTemplate = `{
                         }
                     },
                     "403": {
-                        "description": "AUTH-1..8 gate failed",
+                        "description": "AUTH-1..8 gate failed; tenant_trial_expired, tenant_suspended, member_suspended",
                         "schema": {
                             "$ref": "#/definitions/http.ProblemResponse"
                         }
@@ -2281,7 +2281,7 @@ const docTemplate = `{
                 ]
             },
             "post": {
-                "description": "AUTH-2 tenant_admin/owner. SEAT-1 transactional cap: ` + "`" + `active + pending \u003c= licensed_seats` + "`" + `. Two-step invite→accept. Returns 409 seat_limit_reached at/above cap; 409 invitation_already_exists on duplicate; 429 reinvite_too_soon (PI-11) or invite_rate_limited (PI-12).",
+                "description": "AUTH-2 tenant_admin/owner; initial_tenant_roles containing tenant_owner or tenant_admin requires tenant_owner (HLD §6.4, 403 insufficient_role). SEAT-1 transactional cap: ` + "`" + `active + pending \u003c= licensed_seats` + "`" + `. Two-step invite→accept. Returns 409 seat_limit_reached at/above cap; 409 invitation_already_exists on duplicate; 429 reinvite_too_soon (PI-11) or invite_rate_limited (PI-12).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2417,7 +2417,7 @@ const docTemplate = `{
                 ]
             },
             "delete": {
-                "description": "Gated by delegate-impact pre-check (§8.8, WFI-1). Returns 409 workflow_resolution_required with active_workflows/workflow_ids/allowed_actions if the user is a delegate. TM-8 last-owner refusal returns 422 last_owner_removal. AUTH-8 best-effort session revoke.",
+                "description": "AUTH-2; removing a member who holds tenant_owner or tenant_admin requires tenant_owner (HLD §6.4) — 403 insufficient_role, checked before the delegate-impact call. Gated by delegate-impact pre-check (§8.8, WFI-1). Returns 409 workflow_resolution_required with active_workflows/workflow_ids/allowed_actions if the user is a delegate. TM-8 last-owner refusal returns 422 last_owner_removal. AUTH-8 best-effort session revoke.",
                 "tags": [
                     "members"
                 ],
@@ -2470,7 +2470,7 @@ const docTemplate = `{
                 ]
             },
             "patch": {
-                "description": "AUTH-2. On suspend: AUTH-8 best-effort RP RevokeUserSessions (fail-open). Applies optimistic locking (CONC-4).",
+                "description": "AUTH-2; suspending or reactivating a member who holds tenant_owner or tenant_admin requires tenant_owner (HLD §6.4) — 403 insufficient_role otherwise. On suspend: AUTH-8 best-effort RP RevokeUserSessions (fail-open). Applies optimistic locking (CONC-4).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2549,7 +2549,7 @@ const docTemplate = `{
         },
         "/tenants/{id}/members/{user_id}/reset-mfa": {
             "post": {
-                "description": "Clears the target user's TOTP/WebAuthn credentials via the Realm Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.",
+                "description": "AUTH-2; resetting the MFA of a member who holds tenant_owner or tenant_admin requires tenant_owner (HLD §6.4) — 403 insufficient_role. Clears the target user's TOTP/WebAuthn credentials via the Realm Provisioner (RP-9); their next login forces re-enrollment. Fail-closed on RP outage (§16 OQ-8). Emits MFAReset for the Audit Log consumer.",
                 "tags": [
                     "members"
                 ],
@@ -2610,7 +2610,7 @@ const docTemplate = `{
         },
         "/tenants/{id}/members/{user_id}/roles": {
             "put": {
-                "description": "AUTH-2. §16 A14: one TenantRoleGranted/TenantRoleRevoked event per role delta. TM-8 last-owner guard → 422 last_owner_removal. ` + "`" + `member` + "`" + ` is barred (TR-7) — returns 400 invalid_role.",
+                "description": "AUTH-2. §16 A14: one TenantRoleGranted/TenantRoleRevoked event per role delta. TM-8 last-owner guard → 422 last_owner_removal. ` + "`" + `member` + "`" + ` is barred (TR-7) — returns 400 invalid_role. Granting or revoking tenant_owner or tenant_admin requires the caller to be tenant_owner (HLD §6.4) — 403 insufficient_role otherwise; a tenant_admin may change tender_admin only.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2872,7 +2872,7 @@ const docTemplate = `{
         },
         "/tenants/{id}/users/{user_id}/removal-resolution": {
             "post": {
-                "description": "Reassigns or cancels workflows the target user is delegate on so P-8 can proceed (§8.8.3, WFI-6).",
+                "description": "AUTH-2; for a target who holds tenant_owner or tenant_admin, tenant_owner only (HLD §6.4) — 403 insufficient_role before any Workflow call. Reassigns or cancels workflows the target user is delegate on so P-8 can proceed (§8.8.3, WFI-6).",
                 "consumes": [
                     "application/json"
                 ],
@@ -3969,6 +3969,11 @@ const docTemplate = `{
                     "type": "boolean",
                     "example": false
                 },
+                "read_only_until": {
+                    "description": "ReadOnlyUntil is when a cancelled tenant's read-only grace ends\n(cancelled_at + SUBSCRIPTION_GRACE_DAYS). Omitted unless read_only, and\nmay briefly be omitted while read_only is true as caches converge.",
+                    "type": "string",
+                    "format": "date-time"
+                },
                 "roles": {
                     "type": "array",
                     "items": {
@@ -4111,6 +4116,10 @@ const docTemplate = `{
                 },
                 "plan": {
                     "$ref": "#/definitions/domain.TenantPlan"
+                },
+                "read_only_until": {
+                    "description": "ReadOnlyUntil is set only on P-1 for a cancelled tenant: when its\nread-only grace ends (cancelled_at + SUBSCRIPTION_GRACE_DAYS).",
+                    "type": "string"
                 },
                 "realm_id": {
                     "type": "string"

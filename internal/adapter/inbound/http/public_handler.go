@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -47,7 +48,7 @@ func NewPublicHandler(resolver TenantResolver) *PublicHandler {
 // @Router       /public/tenants/resolve [get]
 func (h *PublicHandler) ResolveTenant(c *gin.Context) {
 	identifier := strings.TrimSpace(c.Query("identifier"))
-	if identifier == "" || len(identifier) > maxIdentifierLen {
+	if identifier == "" || utf8.RuneCountInString(identifier) > maxIdentifierLen {
 		HandleError(c, domain.NewError(domain.ErrValidation, "identifier is required (max 254 characters)").
 			WithDetails(map[string]any{"code": "invalid_identifier"}))
 		return

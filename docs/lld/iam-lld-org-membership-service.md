@@ -18,6 +18,7 @@
 
 | Rev | Date | Change |
 |---|---|---|
+| 2.58 | 2026-11-24 | **Web-shell IAM-screens asks (OM-1, OM-2, OM-6, OM-7).** (1) **OM-1:** new `403 member_suspended` for a caller whose membership is suspended — P-35 (was `insufficient_role`) and `RequireActiveMembership` on every `/tenants/:id/*` route (was the generic `403 FORBIDDEN`). A non-active, non-suspended row keeps `insufficient_role` on P-35 and `FORBIDDEN` on the gate; no row keeps `404 member_not_found` on P-35. (2) **OM-2:** P-1 sends `Cache-Control: no-store`, and P-1 and P-35 return `read_only_until` (RFC 3339) for a `cancelled` tenant — `cancelled_at + SUBSCRIPTION_GRACE_DAYS` (CD-23, T-11), when Core suspends the tenant; omitted in every other state. Computed server-side from the same setting I-16 uses (`TenantService`/`SessionContextService.WithSubscriptionGraceDays`). No schema change. (3) **OM-6 (HLD §6.4):** granting or revoking `tenant_owner` or `tenant_admin` is `tenant_owner`-only — P-28 refuses the delta and P-6 refuses `initial_tenant_roles` containing either role with `403 insufficient_role` when the caller is not `tenant_owner`; a `tenant_admin` may still reconcile `tender_admin`. AUTH-2 amended. (4) **OM-7:** PUB-1's 254 limit counts Unicode code points, not bytes. (5) **HLD §6.4 extended to membership lifecycle (TL decision 2026-11-24):** when the target currently holds `tenant_owner` or `tenant_admin`, P-7 **suspend and reactivate**, P-8 **remove**, P-26 **removal resolution** (including one that unblocks a P-10/P-11 department demotion) and P-34 **MFA reset** require `tenant_owner` — `403 insufficient_role` otherwise — so a privileged member cannot be stripped, frozen, unfrozen or have MFA wiped by a non-owner. P-7 with a non-owner caller re-reads the target's roles under the TM-13 tenant lock, and P-28 now takes the same lock whenever it changes `tenant_owner`/`tenant_admin`, so the check serialises with a concurrent grant; P-8 checks before the delegate-impact call and again under the lock. TM-8 still applies. (6) `read_only_until` is computed in UTC (`cancelled_at.UTC() + N days`), matching I-16's absolute-instant comparison across DST. |
 | 2.57 | 2026-11-19 | **BL-OQ-2, D-3, D-4, SRE-6 — Billing open-items closure.** (1) **BL-OQ-2 (blocking):** `TenantSeatsChanged` now uses a separate EVT-14 recency watermark (`seats_last_event_at timestamptz`) instead of the shared `last_event_at`, so a seat-change event cannot advance the lifecycle watermark and cause a subsequent `TenantConverted` (or any other lifecycle event) to be skipped. Migration `000010_seats_last_event_at` adds the column. New port method `SetSeatsLastEventAt`; consumer `project()` routes by event type. Tie rule confirmed: `time ==` → skip. Regression test `TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle` added. (2) **D-3:** I-18 auth description updated — `RequireInternalCaller()` replaces the stale `CD-19 TODO: admit billing namespace` note; Billing (commercial-system) was admitted in rev 2.24. (3) **D-4:** `over_cap` removed from the I-11/P-27 seat-usage response description and JSON example; the field was retired in CD-54 (rev 2.49) and was never in the actual code (`SeatUsage` domain struct). (4) **SRE-6:** `notify_billing: "true"` label added to `IAMParkedTenantEventsStale` in `app-alerts.yml` and `prometheusrule.yaml` so Billing on-call is paged alongside IAM. |
 | 2.56 | 2026-11-18 | **Operator tool for parked and waiting audit rows.** `iam-org-membership audit-admin` (`cmd/server/auditadmin.go`, dispatched before anything else in `main`; it never starts the service) wraps platform-audit's audited operator helpers: `list` (parked `failed` rows), `list-waiting` (rows waiting on `skew`/`not_admitted`), `requeue`, `discard` and `resolve` (`-waiting` for waiting rows on the last two). Writes need `-operator` (user UUID), `-reason` (1..512 bytes, no personal data: the `config.audit_delivery.*` entry is never redacted) and a selector; each writes its own audit entry in the same transaction. It connects with `SYSTEM_DATABASE_URL` (the runner's BYPASSRLS pool, `SystemPoolConfig`, PgBouncer mode, one connection) and refuses to run when it is unset or equals the app DSN, since the app role would see no rows; it builds the Enqueuer from the server's `auditrecorder.LoadConfig`. §15.8 and §20.7 name it instead of the library's Go helpers. |
 | 2.55 | 2026-11-19 | **Documentation aligned with the code after the 18-Nov retest (no behaviour change; needs LLD owner review).** (1) **DEC-1:** I-5 is not gated by the delegate-impact pre-check (`ProvisioningService.DeleteMember` makes no Workflow call) — I-5 row, the Core delegation-touchpoint paragraph, §8.8 text, WFI-1, the `409 workflow_resolution_required` row, the latency, interface and dependency-matrix rows. (2) **DEC-2:** I-4 suspending the last active owner is completed and escalated like I-5 — TM-12, T-13, `iam_org_membership_tenant_ownerless_escalated_total` reason `user_suspended`. (3) **BUG-14:** `TenantSuspended.source` is required; no `billing_lapse` default — T-16, §7.1, OQ-7. (4) **I-8:** a `left` membership is not returned (§5.4 example comment, as rev 2.54 item 2). (5) **P-4:** not cached — the CACHE-10 page-1 read side was never built (endpoint table, §20). (6) **O-4:** evicts `om:tenant` and every active member's `om:memberships` after commit and emits `TenantSettingChanged` on `iam.tenant.events` (EVT-11) — §5.4 O-4 effect (LLD owner to confirm: eviction wording and DEC-3 direction). (7) **Notes:** a schema-invalid `TenantIdentityProvisioned` is rejected as `schema_violation` before `provisioning_rejected` can apply; `ackUnknown` records the event in `processed_events`; after offboarding an I-8 projection can still be served from `om:memberships` until its TTL (§15.5). |
@@ -1422,7 +1423,7 @@ The four extractions (ADR-0007 `01-hld-delta-decomposition.md`; ADR-0008 `02-hld
 | # | Invariant |
 |---|-----------|
 | AUTH-1 | Tenant-level **read** operations (membership/department listings, tenant details) require an **active** `tenant_membership` in the **target** tenant. A `suspended`/`left` membership grants no read access (M-1/TM-9), and cross-tenant reads are impossible under RLS (RLS-2/RLS-3). |
-| AUTH-2 | Tenant-**administrative** mutations (add/remove users, change roles, department activation) require `tenant_admin` **or** `tenant_owner`. |
+| AUTH-2 | Tenant-**administrative** mutations (add/remove users, change roles, department activation) require `tenant_admin` **or** `tenant_owner`. **Exception (rev 2.58, HLD §6.4):** granting or revoking `tenant_owner` or `tenant_admin` — via P-28, or `initial_tenant_roles` on P-6 — requires `tenant_owner`, and so does suspending or reactivating (P-7), removing (P-8), resolving a blocked removal or demotion for (P-26), or resetting the MFA of (P-34) a member who currently holds either role; otherwise `403 insufficient_role`. |
 | AUTH-5 | The reserved **system principal** (`iam-system`, `…00a1`) is accepted **only** on `/api/v1/internal/*` routes; it is rejected on tenant-facing and operator routes and never widens access (RLS-5). |
 | AUTH-6 | All `/api/v1/operator/*` routes require the `platform_operator` role, enforced at the **handler layer** (`rc.Roles`) **before any database interaction** — no operator request reaches the DB without the check passing. The DB role stays `org_membership_app`; there is no DB-level privilege escalation for operators. |
 | AUTH-8 | **Privilege reduction triggers an active-session revocation, backstopped by a documented TTL bound (§16 A46).** A P-7 suspend, a P-8 tenant removal, or a P-28 reconcile that revokes an elevated role **commits its O&M state change first** (that change is authoritative and immediate for O&M's own authz: I-8 filters on active membership / current grants, and the `om:memberships` key is evicted post-commit), then makes a **best-effort, fail-open** call to the Realm Provisioner to revoke the user's Keycloak sessions + tokens for the tenant realm (`RevokeUserSessions`, §18.3), so a still-live token can't outlast the change. It is deliberately **not** a hard synchronous dependency (a security freeze must never be blockable behind an RP outage — same posture as the suspend delegate-impact check, WFI-13): on RP `5xx`/timeout the change still stands, `iam_auth_session_revoke_failed_total` is incremented (§11.2), and the **guaranteed** cutoff falls back to the TTL bound — **≤ the Keycloak access-token lifetime + the 300 s `om:memberships` cache TTL** — after which no downstream can still see the stale privilege. The active revocation is a **latency optimization** over that floor, not a new correctness dependency; the floor is the same eventual-consistency bound the platform already lives with, now stated explicitly. Keycloak **hard-deletion** (the I-5 user-delete path) already kills sessions at the identity layer (§15.2.2 "all active sessions expire"), so that path needs no extra call. (Durably-reconciled revocation — a `realm_sync_pending`-style marker — is a possible future tightening if the threat model needs sub-TTL *guaranteed* cutoff; deferred, since the TTL floor already bounds exposure.) |
@@ -1437,14 +1438,14 @@ The four extractions (ADR-0007 `01-hld-delta-decomposition.md`; ADR-0008 `02-hld
 
 | # | Method & path | Purpose | AuthZ | Cached |
 |---|---|---|---|---|
-| P-1 | `GET /api/v1/tenants/:id` | Tenant details (name, plan, locale, `mfa_freshness_seconds`) | same-tenant member | yes |
+| P-1 | `GET /api/v1/tenants/:id` | Tenant details (name, plan, locale, `mfa_freshness_seconds`; `read_only_until` for a cancelled tenant, rev 2.58). `Cache-Control: no-store` | same-tenant member | yes |
 | P-2 | `PATCH /api/v1/tenants/:id` | Update tenant name, locale, local_accounts_enabled, `mfa_freshness_seconds` (§16 A20) | tenant_owner | invalidates |
 | P-3 | `GET /api/v1/tenants/:id/departments` | List active departments for tenant | same-tenant member | yes |
 | P-4 | `GET /api/v1/tenants/:id/members` | List tenant members (name, role, status) — **cursor-paginated** (§5.4 P-4, §16 A4) | same-tenant member | no — the CACHE-10 page-1 cache was never built; `om:members:{tenant}:50` is invalidation-only |
 | P-5 | `GET /api/v1/tenants/:id/members/:user_id` | Single member record | same-tenant member | yes |
 | P-6 | `POST /api/v1/tenants/:id/members` | **Invite** a user (two-step invite→accept, §16 A11): stages a `pending_invitations` row + Realm-Provisioner user creation, returns `202`; membership is created on acceptance (I-3, §8.10). **Gated by the seat hard cap** over active **+ pending** (§4.2 SEAT-1, §16 A10/A11); `409 seat_limit_reached` at/above `licensed_seats` | tenant_admin/owner | invalidates seat-usage |
-| P-7 | `PATCH /api/v1/tenants/:id/members/:user_id` | Suspend/reactivate a membership (`status` only — role grants moved to P-28, §16 A14) | tenant_admin/owner | invalidates |
-| P-8 | `DELETE /api/v1/tenants/:id/members/:user_id` | Remove user from tenant (soft) — **gated by the delegate-impact pre-check** (§8.8, §16 C2); `409 workflow_resolution_required` if the user is delegate on active workflows | tenant_admin/owner | invalidates |
+| P-7 | `PATCH /api/v1/tenants/:id/members/:user_id` | Suspend/reactivate a membership (`status` only — role grants moved to P-28, §16 A14) | tenant_admin/owner; suspending or reactivating a `tenant_owner`/`tenant_admin` is owner-only (rev 2.58) | invalidates |
+| P-8 | `DELETE /api/v1/tenants/:id/members/:user_id` | Remove user from tenant (soft) — **gated by the delegate-impact pre-check** (§8.8, §16 C2); `409 workflow_resolution_required` if the user is delegate on active workflows | tenant_admin/owner; removing a `tenant_owner`/`tenant_admin` is owner-only (rev 2.58) | invalidates |
 | P-9 | `GET /api/v1/tenants/:id/departments/:dept_id/members` | List dept members at each role level | same-tenant member | yes |
 | P-10 | `PUT /api/v1/tenants/:id/departments/:dept_id/members/:user_id` | Assign user to department at role level. **A `role_level` decrease is gated by the department-scoped delegate-impact check** (§8.8.4, WFI-9/WFI-12); promotions are never gated | tenant_admin/owner | invalidates |
 | P-11 | `DELETE /api/v1/tenants/:id/departments/:dept_id/members/:user_id` | Remove user from department — **gated by the department-scoped delegate-impact check** (§8.8.4); `409 workflow_resolution_required` if the user is delegate on a `scope='department'` delegation for this department with active workflows | tenant_admin/owner | invalidates |
@@ -1452,13 +1453,13 @@ The four extractions (ADR-0007 `01-hld-delta-decomposition.md`; ADR-0008 `02-hld
 | P-13 | `PATCH /api/v1/tenants/:id/roles/:role_code` | Update the role's `display_name` (presentation label — the only mutable field, DRL-1; operates on `dept_role_labels`) | tenant_admin/owner | invalidates |
 | P-24 | `POST /api/v1/tenants/:id/departments` | Activate a global-catalog department for this tenant (creates the `tenant_departments` row, `is_active=true`) | tenant_admin/owner | invalidates |
 | P-25 | `PATCH /api/v1/tenants/:id/departments/:dept_id` | Deactivate (`is_active=false`) or reactivate (`is_active=true`) the tenant's department activation | tenant_admin/owner | invalidates |
-| P-26 | `POST /api/v1/tenants/:id/users/:user_id/removal-resolution` | Resolve a blocked removal, demotion, or department removal — `replace_delegate` or `stop_workflows` (§8.8.3/§8.8.4) | tenant_admin/owner | invalidates |
+| P-26 | `POST /api/v1/tenants/:id/users/:user_id/removal-resolution` | Resolve a blocked removal, demotion, or department removal — `replace_delegate` or `stop_workflows` (§8.8.3/§8.8.4) | tenant_admin/owner; owner-only when the target holds `tenant_owner`/`tenant_admin` (rev 2.58) | invalidates |
 | P-27 | `GET /api/v1/tenants/:id/seat-usage` | Active-user count, `licensed_seats` (§5.4, §16 A10) | tenant_admin/owner | yes (short TTL) |
-| P-28 | `PUT /api/v1/tenants/:id/members/:user_id/roles` | Full-replacement reconcile of a user's tenant-level roles — supports multiple simultaneous roles (§5.4, §16 A14); `422 last_owner_removal` if it would leave zero active `tenant_owner`s | tenant_admin/owner | invalidates |
+| P-28 | `PUT /api/v1/tenants/:id/members/:user_id/roles` | Full-replacement reconcile of a user's tenant-level roles — supports multiple simultaneous roles (§5.4, §16 A14); `422 last_owner_removal` if it would leave zero active `tenant_owner`s | tenant_admin/owner; a delta in `tenant_owner`/`tenant_admin` is owner-only (AUTH-2, rev 2.58) | invalidates |
 | P-30 | `GET /api/v1/tenants/:id/invitations` | List outstanding (pending) invitations for the tenant — complements `seat-usage`'s `pending_invitations` count (§5.4, §16 A11); `?include_terminal=true` for an audit view | tenant_admin/owner | no (small, fast-changing set) |
 | P-31 | `DELETE /api/v1/tenants/:id/invitations/:invitation_id` | Revoke a still-pending invitation — frees the seat and deletes the not-yet-activated Keycloak user (§5.4, PI-6, §16 A11); `404 invitation_not_found` if already terminal | tenant_admin/owner | invalidates seat-usage |
-| P-34 | `POST /api/v1/tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA — clears TOTP/WebAuthn credentials via the Realm Provisioner (RP-9), forcing re-enrollment on next login (§16 OQ-8/F6). **Fail-closed**: an RP outage returns `503 realm_provisioner_unavailable`, never a silent no-op. Emits `MFAReset` (§7.3) for the Audit Log consumer | tenant_admin/owner | no |
-| P-35 | `GET /api/v1/me/session-context` | The signed-in user's own tenant context — `roles`, `departments`, `plan`, `feature_flags`, `read_only` exactly as AuthZ Enrichment injects them, plus `mfa_freshness_seconds` and `locale` — for the frontend SDK (§5.4, rev 2.43). No parameters: the caller is `x-tenant-id`/`x-user-id` | any active member (self only, by construction) | yes — reads `om:memberships` (I-8) + `om:tenant`; no key of its own |
+| P-34 | `POST /api/v1/tenants/:id/members/:user_id/reset-mfa` | Reset a member's MFA — clears TOTP/WebAuthn credentials via the Realm Provisioner (RP-9), forcing re-enrollment on next login (§16 OQ-8/F6). **Fail-closed**: an RP outage returns `503 realm_provisioner_unavailable`, never a silent no-op. Emits `MFAReset` (§7.3) for the Audit Log consumer | tenant_admin/owner; owner-only when the target holds `tenant_owner`/`tenant_admin` (rev 2.58) | no |
+| P-35 | `GET /api/v1/me/session-context` | The signed-in user's own tenant context — `roles`, `departments`, `plan`, `feature_flags`, `read_only` exactly as AuthZ Enrichment injects them, plus `mfa_freshness_seconds`, `locale`, `slug` (rev 2.45) and `read_only_until` (cancelled tenants only, rev 2.58) — for the frontend SDK (§5.4, rev 2.43). No parameters: the caller is `x-tenant-id`/`x-user-id` | any active member (self only, by construction) | yes — reads `om:memberships` (I-8) + `om:tenant`; no key of its own |
 
 *Removed from Public (extracted): **P-14/P-15/P-16/P-17/P-29** group-mappings → `iam-group-mapping`; **P-18/P-19/P-20/P-32/P-33** delegations → `iam-delegation`; **P-21/P-22/P-23** tender ACL → `iam-tender-acl`.*
 
@@ -1608,7 +1609,7 @@ This is the **sole** resolution path for the TM-12 last-owner-deletion escalatio
 
 #### (P-6) `POST /api/v1/tenants/:id/members` — invite (two-step invite→accept, §16 A11; seat-cap §16 A10)
 
-**Auth:** `tenant_admin` or `tenant_owner` (AUTH-2).
+**Auth:** `tenant_admin` or `tenant_owner` (AUTH-2); `initial_tenant_roles` containing `tenant_owner` or `tenant_admin` requires `tenant_owner` — else `403 insufficient_role`, checked before any lookup or RP call (rev 2.58, HLD §6.4).
 
 **What this endpoint does now (§16 A11).** P-6 no longer adds a user **directly** to `tenant_memberships`. Per HLD §8.2.2, it **stages an invitation**: it creates a `pending_invitations` row, asks the Realm Provisioner to create the invited Keycloak user (which sends the invitation email), and returns — the real membership is materialised later, on acceptance, via the Event Consumer's I-3 call (§8.10, PI-4). The URL and auth are unchanged; the response changes from `201 Created {membership}` to `202 Accepted {invitation}`, since no membership exists yet. (This is coordinated with the admin-UI caller — see the §19 rollout note.)
 
@@ -1617,6 +1618,7 @@ This is the **sole** resolution path for the TM-12 last-owner-deletion escalatio
 **Handler sequence** (external call first, then transact — the same call-then-transact discipline as `port.WorkflowClient`/`port.RealmProvisionerClient`, CONS-2/WFI-7):
 
 ```text
+0. Owner gate (rev 2.58): initial_tenant_roles ∋ tenant_owner/tenant_admin and caller ∌ tenant_owner → 403 insufficient_role (no RP call).
 1. Pre-flight (no lock): reject 409 member_already_exists if an active tenant_memberships row already
    exists for this email's user; reject 409 invitation_already_exists if a pending invitation already
    exists for (tenant_id, email) (PI-1, uq_pi_pending).
@@ -1671,7 +1673,7 @@ This is the **sole** resolution path for the TM-12 last-owner-deletion escalatio
 
 The lost-race path keeps the Keycloak user and the O&M invitation consistent by **durably recording** the orphan (a committed `revoked` row with `kc_cleanup_pending=true`) rather than rolling back and losing the reference — the `invitation-kc-cleanup` reconciler (PI-9/§13.1) then guarantees the RP `DeleteUser` eventually lands even if the inline attempt or the pod fails, the same durable-reconciliation posture as the `local_accounts_enabled`/`realm_sync_pending` mechanism (§4.2, §16 A34/F2). A half-provisioned Keycloak account is thus never left behind, even under partial failure. The `FOR UPDATE` lock serialises concurrent invites so two can't both read an under-cap count and both commit past the cap (SEAT-1). *(This durable-commit behavior requires genuine concurrency to exercise — the cheap outside-the-tx preflight check alone rejects an already-exhausted cap before any Keycloak user is even created, so it never reaches this branch; see `TestInvite_SeatCapLostRace_CommitsDurableCleanupRow`, which drives two real concurrent `Invite` calls to prove the loser's row survives.)*
 
-**Response codes:** `202 Accepted {invitation_id, email, status: "pending", expires_at}` (invitation staged) · `409 member_already_exists` (already an active member) · `409 invitation_already_exists` (a pending invite for this email already exists, PI-1) · `429 reinvite_too_soon` (per-email cooldown, PI-11 — body includes `retry_after_seconds`) · `429 invite_rate_limited` (per-tenant hourly cap, PI-12 — body includes `retry_after_seconds`) · `409 seat_limit_reached` (SEAT-1) — the `seat_limit_reached` body includes `licensed_seats`, `active_users`, and `pending_invitations` (same field names as the P-27/I-11 seat-usage response below, deliberately — a UI rendering "10 of 10 seats used, purchase more" can reuse the exact fields it already knows from `GET .../seat-usage`, no translation) so the admin UI can render that message without a second round-trip. `503 realm_provisioner_unavailable` if the step-2 Keycloak-user creation 5xx'd/timed out (no invitation row written, retryable). Both `429`s are raised in pre-flight (step 1a) **before** any Realm Provisioner call, so a throttled invite creates no Keycloak user and sends no email (§16 A41).
+**Response codes:** `202 Accepted {invitation_id, email, status: "pending", expires_at}` (invitation staged) · `403 insufficient_role` (caller not `tenant_owner` and `initial_tenant_roles` includes `tenant_owner`/`tenant_admin`, rev 2.58) · `409 member_already_exists` (already an active member) · `409 invitation_already_exists` (a pending invite for this email already exists, PI-1) · `429 reinvite_too_soon` (per-email cooldown, PI-11 — body includes `retry_after_seconds`) · `429 invite_rate_limited` (per-tenant hourly cap, PI-12 — body includes `retry_after_seconds`) · `409 seat_limit_reached` (SEAT-1) — the `seat_limit_reached` body includes `licensed_seats`, `active_users`, and `pending_invitations` (same field names as the P-27/I-11 seat-usage response below, deliberately — a UI rendering "10 of 10 seats used, purchase more" can reuse the exact fields it already knows from `GET .../seat-usage`, no translation) so the admin UI can render that message without a second round-trip. `503 realm_provisioner_unavailable` if the step-2 Keycloak-user creation 5xx'd/timed out (no invitation row written, retryable). Both `429`s are raised in pre-flight (step 1a) **before** any Realm Provisioner call, so a throttled invite creates no Keycloak user and sends no email (§16 A41).
 
 #### (P-27 / I-11) `GET /api/v1/tenants/:id/seat-usage` and its internal mirror (§16 A10)
 
@@ -1738,7 +1740,7 @@ then: compensating Realm Provisioner DELETE /api/v1/internal/tenants/:id/users/:
 
 #### (P-34) `POST /api/v1/tenants/:id/members/:user_id/reset-mfa` — MFA reset (§16 OQ-8/F6)
 
-**Auth:** `tenant_admin` / `tenant_owner` (AUTH-2), enforced at the HTTP layer (`requireTenantAdmin`) — the service method does not re-check it, the same split P-8/P-28 use.
+**Auth:** `tenant_admin` / `tenant_owner` (AUTH-2), enforced at the HTTP layer (`requireTenantAdmin`). **Rev 2.58:** resetting the MFA of a member who holds `tenant_owner` or `tenant_admin` requires `tenant_owner` — the service checks this before calling RP (`403 insufficient_role`, AUTH-2 exception, HLD §6.4).
 
 RP confirmed (against their own HLD §8.2.6) that RP-9 is genuinely O&M-initiated: a tenant-admin user-management action, same class as invite (P-6) and remove (P-8). The confirmed flow is: admin action → O&M authorizes + audits → `RealmProvisionerClient.ResetMFA` (RP-9) → RP removes the user's TOTP/WebAuthn credentials → next login forces re-enrollment.
 
@@ -1771,7 +1773,8 @@ RunInTx:
 ```text
 proj  = AuthZService.GetMembership(x-tenant-id, x-user-id)   -- I-8, om:memberships cache-through (§6.2)
           -- no row → 404 member_not_found (I-8's own answer)
-if proj.status != 'active': 403 INSUFFICIENT_ROLE              -- AUTH-1; I-8 returns a suspended row, P-35 does not
+if proj.status == 'suspended': 403 MEMBER_SUSPENDED            -- AUTH-1 (rev 2.58, OM-1); I-8 returns a suspended row, P-35 does not
+if proj.status != 'active': 403 INSUFFICIENT_ROLE              -- any other non-active row
 t     = TenantService.Get(x-tenant-id)                         -- om:tenant cache-through (I-9/I-14's source)
 return {
   tenant_id, roles: proj.roles,                                -- includes derived "member" first (TR-7)
@@ -1781,7 +1784,8 @@ return {
   read_only: proj.read_only,
   mfa_freshness_seconds: t.mfa_freshness_seconds,              -- I-14: what AuthZ Enrichment's step-up gate acts on
   locale: t.default_locale,                                    -- I-9
-  slug: t.slug                                                 -- rev 2.45: /t/<slug>/ routing (T-1, immutable)
+  slug: t.slug,                                                -- rev 2.45: /t/<slug>/ routing (T-1, immutable)
+  read_only_until: t.cancelled_at + SUBSCRIPTION_GRACE_DAYS     -- rev 2.58: cancelled tenants only, omitted otherwise
 }
 ```
 
@@ -1794,7 +1798,7 @@ return {
 | UI capability | Routes | Roles |
 |---|---|---|
 | View the member list and a member (read) | P-4 `GET /members`, P-5 `GET /members/:user_id`, P-9 `GET /departments/:dept_id/members`, P-12 `GET /roles` | any active member (AUTH-1) |
-| Manage members: invite, list/revoke invitations, suspend/reactivate, remove, grant/revoke tenant roles, assign departments, reset MFA, resolve a blocked removal, seat usage | P-6, P-30/P-31, P-7, P-8, P-28, P-10/P-11, P-34, P-26, P-27 | `tenant_admin` **or** `tenant_owner` (AUTH-2) |
+| Manage members: invite, list/revoke invitations, suspend/reactivate, remove, grant/revoke tenant roles, assign departments, reset MFA, resolve a blocked removal, seat usage | P-6, P-30/P-31, P-7, P-8, P-28, P-10/P-11, P-34, P-26, P-27 | `tenant_admin` **or** `tenant_owner` (AUTH-2); granting/revoking `tenant_owner`/`tenant_admin` (P-28, P-6 `initial_tenant_roles`) is `tenant_owner` only (rev 2.58) |
 
 `tender_admin` gives no member-management right. `tenant_owner` must be in any map that grants member management: it is the role the signup owner holds (§8.1), often without `tenant_admin`.
 
@@ -1814,7 +1818,7 @@ return {
 }
 ```
 
-Lists are `[]`, never `null`. **Response codes:** `200` · `401` (missing/malformed identity headers) · `403 INSUFFICIENT_ROLE` (suspended member) · `403 TENANT_TRIAL_EXPIRED`/`TENANT_SUSPENDED` · `404 MEMBER_NOT_FOUND`/`TENANT_NOT_FOUND` · `503 db_unavailable`. No cache key of its own, nothing to invalidate.
+Lists are `[]`, never `null`. **Response codes:** `200` · `401` (missing/malformed identity headers) · `403 MEMBER_SUSPENDED` (suspended member, rev 2.58) · `403 INSUFFICIENT_ROLE` (any other non-active row) · `403 TENANT_TRIAL_EXPIRED`/`TENANT_SUSPENDED` (tenant gate runs first) · `404 MEMBER_NOT_FOUND`/`TENANT_NOT_FOUND` · `503 db_unavailable`. No cache key of its own, nothing to invalidate.
 
 #### (I-3) `POST /api/v1/internal/tenants/:id/members` — membership add / **invitation acceptance** (§16 A11, extended)
 
@@ -1844,7 +1848,7 @@ Post-commit, invalidate `om:memberships:{tenant}:{user}`, `om:members:{tenant}:5
 
 #### (P-28) `PUT /api/v1/tenants/:id/members/:user_id/roles` — multi-role reconcile (§16 A14)
 
-**Auth:** `tenant_admin` or `tenant_owner` (AUTH-2).
+**Auth:** `tenant_admin` or `tenant_owner` (AUTH-2); a delta that grants or revokes `tenant_owner` or `tenant_admin` requires `tenant_owner` — else `403 insufficient_role`, checked before the TM-8 pre-check (rev 2.58, HLD §6.4).
 
 Resolves the gap left by removing role changes from P-7: `top_role` was a single column, so "change the role" was a single-value `PATCH`. Now that a user may hold **multiple** simultaneous tenant-level roles (`tenant_roles`, TR-1), a single-role `PATCH` can't express "add `tender_admin` while keeping `tenant_admin`." P-28 follows a **full-replacement reconcile** shape rather than inventing a new grant/revoke pair of endpoints: simpler for clients (one call states the desired end state) and consistent with the full-replacement convention this LLD uses elsewhere (e.g. O-4's feature-flags override). *(The group→role mapping reconciles that formerly shared this shape — P-15/P-17/P-29 — have moved to `iam-group-mapping`; P-28 is now the sole full-replacement reconcile in Core's public surface.)*
 
@@ -1878,7 +1882,7 @@ Resolves the gap left by removing role changes from P-7: `top_role` was a single
 
 **Note (§16 A29):** `roles` is the set of **elevated** roles only (`tenant_owner`/`tenant_admin`/`tender_admin`). `member` is derived from the active membership (TR-7), so it is **never** included in the request or the response and is rejected on input (`400 invalid_role`). An **empty** `roles: []` is now valid — it means "revoke all elevated roles, leaving the user a plain member" (the membership itself is the `member` grant; there is no roleless dead end). This reverses the pre-1.10 rule that rejected `roles: []`.
 
-**Response codes:** `200 OK` · `400 invalid_role` (unknown `role_code`, **or `member`** — derived, not assignable, TR-7) · `404` (no active membership for `user_id`) · `422 last_owner_removal` (TM-8 — the request would revoke the tenant's last active `tenant_owner`; rejected with no partial effect, the whole reconcile is one transaction) · `409 optimistic_lock_conflict` is **not** applicable here in the usual single-row sense — each affected `tenant_roles` row is a separate grant/revoke, so concurrent P-28 calls for the same user race at the partial-unique-index level (`uq_tenant_roles_active`) rather than via `record_version`; a losing concurrent `INSERT` for the same `role_code` returns `409 role_already_granted` and the client should re-fetch and retry. **The distinct cross-row race — two concurrent reconciles/removals each dropping a *different* owner and both passing the last-owner check — is prevented by the TM-13 tenant-row `FOR UPDATE` (step 0 above), not by `record_version`; the second operation blocks, re-reads the reduced owner set, and is refused `422 last_owner_removal` (§16 A44).**
+**Response codes:** `200 OK` · `400 invalid_role` (unknown `role_code`, **or `member`** — derived, not assignable, TR-7) · `403 insufficient_role` (caller not `tenant_owner` and the request grants/revokes `tenant_owner`/`tenant_admin`, rev 2.58) · `404` (no active membership for `user_id`) · `422 last_owner_removal` (TM-8 — the request would revoke the tenant's last active `tenant_owner`; rejected with no partial effect, the whole reconcile is one transaction) · `409 optimistic_lock_conflict` is **not** applicable here in the usual single-row sense — each affected `tenant_roles` row is a separate grant/revoke, so concurrent P-28 calls for the same user race at the partial-unique-index level (`uq_tenant_roles_active`) rather than via `record_version`; a losing concurrent `INSERT` for the same `role_code` returns `409 role_already_granted` and the client should re-fetch and retry. **The distinct cross-row race — two concurrent reconciles/removals each dropping a *different* owner and both passing the last-owner check — is prevented by the TM-13 tenant-row `FOR UPDATE` (step 0 above), not by `record_version`; the second operation blocks, re-reads the reduced owner set, and is refused `422 last_owner_removal` (§16 A44).**
 
 **P-28 invariants:**
 
@@ -2135,7 +2139,7 @@ Every tenant with `status = 'cancelled'` and `cancelled_at <= now() - SUBSCRIPTI
 GET /api/v1/public/tenants/resolve?identifier=<email-or-slug>
 ```
 
-No headers of any kind are required or read. `identifier` is a company slug or the email of a still-pending invitation (§16 OQ-11: an already-active member's email is not resolvable, since this service stores no email for active members). It is validated only for shape (trimmed, 1–254 characters; not existence — a no-match is a normal `200`, per PUBRES-2).
+No headers of any kind are required or read. `identifier` is a company slug or the email of a still-pending invitation (§16 OQ-11: an already-active member's email is not resolvable, since this service stores no email for active members). It is validated only for shape (trimmed, 1–254 characters, counted as Unicode code points — rev 2.58; not existence — a no-match is a normal `200`, per PUBRES-2).
 
 **Lookup (rev 2.14).** One SQL statement over `tenants` (slug = identifier, `deleted_at IS NULL`) `UNION ALL` `pending_invitations ⋈ tenants` (email = identifier as `citext`, `status = 'pending'`, `expires_at > now()`, tenant not deleted). A slug match wins over an email match, and the most recent invitation wins among several. `realm` is `tenants.realm_id`, `strategy` is `tenants.realm_type`, and `tenant_id` is returned only when `realm_type = 'shared'`. Indexes: `uq_tenants_slug` and `idx_pi_email_pending` (migration `000002`). Runs on the BYPASSRLS `sysPool`: the route never binds `app.tenant_id`, so the RLS-scoped app pool would fail closed and silently return no rows.
 
@@ -2967,6 +2971,8 @@ type DelegationCheckClient interface {
 
 #### 8.8.2 `DELETE` pre-check — blocked path
 
+**Owner gate first (rev 2.58).** Before the delegate-impact call, P-8 refuses with `403 insufficient_role` when the target holds `tenant_owner` or `tenant_admin` and the caller is not `tenant_owner` (AUTH-2 exception, HLD §6.4); it re-checks under the TM-13 lock against the role rows it is about to revoke.
+
 ```mermaid
 sequenceDiagram
     participant Admin
@@ -2997,7 +3003,7 @@ The pre-check applies to the tenant-facing removal (P-8, `tenant_admin`/`owner`-
 
 #### 8.8.3 Resolution endpoint — `POST /api/v1/tenants/:id/users/:user_id/removal-resolution` (P-26)
 
-**Auth:** `tenant_admin` or `tenant_owner` (AUTH-2 already covers "tenant admin actions"; no new AUTH invariant needed).
+**Auth:** `tenant_admin` or `tenant_owner` (AUTH-2 already covers "tenant admin actions"; no new AUTH invariant needed). **Rev 2.58:** when the target holds `tenant_owner` or `tenant_admin`, `tenant_owner` only — `403 insufficient_role` before any Workflow call (AUTH-2 exception, HLD §6.4).
 
 **Request:**
 ```jsonc
@@ -3047,7 +3053,7 @@ sequenceDiagram
 | WFI-1 | The delegate-impact pre-check applies to the tenant-admin removal P-8 (`MembershipService.RemoveUser`) and cannot be bypassed on that path. The Keycloak-driven I-5 is deliberately not gated (DEC-1, TM-12): it runs `ProvisioningService.DeleteMember`, which makes no Workflow call. |
 | WFI-2 | `active_workflows == 0` is a **minimal change** to existing behavior: the pre-check adds one synchronous read (to Workflow Service) ahead of the §15.2.2 cascade; the only cascade change is enqueuing `MembershipRevoked` in-transaction (ADR-0008 §6.4) so the Delegation Service can end rows asynchronously — Core no longer ends `delegations` rows itself. |
 | WFI-3 | On `active_workflows > 0`, the `DELETE` call is a **pure read plus refusal**: no membership row changes, no `MembershipRevoked` (or any) event is emitted, and no `RunInTx` is opened. (Core has no `delegations` rows to change either.) |
-| WFI-4 | The resolution endpoint (P-26) requires `tenant_admin` or `tenant_owner` (AUTH-2) — the same authority level required to remove the user in the first place; it cannot be invoked by the affected delegate or delegator themselves as a self-service action. |
+| WFI-4 | The resolution endpoint (P-26) requires `tenant_admin` or `tenant_owner` (AUTH-2) — the same authority level required to remove the user in the first place; it cannot be invoked by the affected delegate or delegator themselves as a self-service action. Rev 2.58: for a target holding `tenant_owner`/`tenant_admin`, only `tenant_owner` (AUTH-2 exception). |
 | WFI-5 | A `replace_delegate` resolution is validated **before** calling Workflow Service: the replacement must hold an active `tenant_membership` in the same tenant (mirrors DEL-1). An invalid replacement never reaches Workflow Service. |
 | WFI-6 | **Not implemented — documented here as a known gap, not current behavior.** The original design called for O&M to re-check `GetDelegateImpact` synchronously immediately before applying the final removal, so a workflow that attached to this delegate concurrently with the resolution step would re-block with `409` rather than let a now-stale impact assessment through. **`MembershipService.RemovalResolution` performs no such re-check** (`internal/core/service/membership_service.go:572-607`) — it calls `ReassignDelegate`/`CancelByDelegate` and returns `204` unconditionally on success, §8.8.3. The actual re-validation the admin gets is coarser: the subsequent, separately-submitted P-8 `DELETE` re-runs the **original** `GetDelegateImpact` pre-check (§8.8.2) from scratch, so a race is still caught — just one HTTP round-trip later than this invariant originally intended, and only if the admin does resubmit. |
 | WFI-7 | **WorkflowClient and DelegationCheckClient calls never happen inside an open `RunInTx`.** `GetDelegateImpact`, `ReassignDelegate`, `CancelByDelegate`, and the §8.8.4 `DeptDelegate` lookup are all synchronous HTTP calls made **before** any transaction is opened — identical ordering discipline to the User Profile calls in the delegation write path (CONS-2, FAIL-1). A Workflow **or Delegation** Service outage therefore aborts cleanly with zero committed rows, never a half-applied removal. |
@@ -3102,6 +3108,8 @@ If it returns **nil**, the user holds no department-scoped delegation for *this*
 **Decision (C3).** `PATCH /api/v1/tenants/:id/members/:user_id` (P-7) **suspension** does **not** gate on the delegate-impact check the way full removal (§8.8) does. Two properties drive this: it is **reversible** — the user's roles and delegations are *retained* (frozen, restored on reactivation), unlike removal's cascade which *ends* delegate-side delegations — and it is frequently an **urgent security action** (compromised account, contractor freeze) that must never be blockable behind "resolve workflows first." Blocking it would be both semantically wrong (a paused delegation should resume, not be force-reassigned) and operationally hazardous.
 
 **Ownership note under ADR-0008.** The retain/freeze semantics of the delegation row itself now live in the **Delegation Service** (Core has no `delegations` table). A suspension emits **no `MembershipRevoked`** — the membership isn't removed, only frozen — so the Delegation Service ends nothing; the delegation stays `active` on its side, inert for routing exactly as any non-active membership's is (TM-9). Core's role at suspend time is only the advisory Workflow check plus the session-revocation call below.
+
+**Owner gate (rev 2.58).** Suspending or reactivating a member who holds `tenant_owner` or `tenant_admin` requires a `tenant_owner` caller — `403 insufficient_role` otherwise (AUTH-2 exception, HLD §6.4). For a non-owner caller the target's roles are re-read under the TM-13 tenant lock, which P-28 also takes when it changes an admin role.
 
 **Behaviour.** The suspend proceeds unconditionally. Around it, O&M calls `WorkflowClient.GetDelegateImpact` (§8.8.1) **best-effort**; if the user is a delegate on active workflows, the `200` response carries a non-fatal advisory:
 
@@ -3362,15 +3370,15 @@ At L4 the NetworkPolicy admits `billing`, `commercial` and `bff` only together w
 | Update tenant name/locale | `tenant_owner` |
 | Toggle `local_accounts_enabled` | `tenant_owner` only |
 | Update `mfa_freshness_seconds` (P-2, §16 A20) | `tenant_owner` only |
-| Invite user to tenant (P-6, two-step invite→accept, §16 A11) | `tenant_admin`, `tenant_owner` |
+| Invite user to tenant (P-6, two-step invite→accept, §16 A11) | `tenant_admin`, `tenant_owner`; `initial_tenant_roles` containing `tenant_owner`/`tenant_admin` requires `tenant_owner` (AUTH-2 exception, HLD §6.4) |
 | List / revoke pending invitations (P-30 / P-31, §16 A11) | `tenant_admin`, `tenant_owner` |
-| Remove user; suspend/reactivate (P-8, P-7) | `tenant_admin`, `tenant_owner` |
-| Grant/revoke tenant-level role(s) (P-28, §16 A14) | `tenant_admin`, `tenant_owner`; last-owner protected (TM-8) |
+| Remove user; suspend/reactivate (P-8, P-7) | `tenant_admin`, `tenant_owner`; removing, suspending or reactivating a member who holds `tenant_owner`/`tenant_admin` requires `tenant_owner` (AUTH-2 exception, rev 2.58); last-owner protected (TM-8) |
+| Grant/revoke tenant-level role(s) (P-28, §16 A14) | `tenant_admin`, `tenant_owner`; granting or revoking `tenant_owner`/`tenant_admin` requires `tenant_owner` (AUTH-2 exception, HLD §6.4); last-owner protected (TM-8) |
 | Assign user to department (P-10/P-11) | `tenant_admin`, `tenant_owner` |
 | Activate/deactivate a tenant department (P-24/P-25) | `tenant_admin`, `tenant_owner` |
 | Update a dept-role display label (P-13) | `tenant_admin`, `tenant_owner` |
-| Resolve a blocked removal/demotion (`replace_delegate`/`stop_workflows`, P-26) | `tenant_admin`, `tenant_owner` (§8.8.3/§8.8.4, WFI-4) |
-| Reset a member's MFA (P-34, §16 OQ-8/F6) | `tenant_admin`, `tenant_owner`; fail-closed on RP-9 outage |
+| Resolve a blocked removal/demotion (`replace_delegate`/`stop_workflows`, P-26) | `tenant_admin`, `tenant_owner` (§8.8.3/§8.8.4, WFI-4); `tenant_owner` only when the target holds `tenant_owner`/`tenant_admin` (rev 2.58) |
+| Reset a member's MFA (P-34, §16 OQ-8/F6) | `tenant_admin`, `tenant_owner`; `tenant_owner` only when the target holds `tenant_owner`/`tenant_admin` (rev 2.58); fail-closed on RP-9 outage |
 | Read own session context (P-35) | Any active member, about themself only (no parameter names anyone else) |
 | View seat usage (P-27) | `tenant_admin`, `tenant_owner`; Billing internally (I-11) |
 | Change `licensed_seats` | Billing only, via `TenantSeatsChanged` (§16 A10, SEAT-4) |
@@ -3565,7 +3573,7 @@ The `delegate_removal_blocked`, `delegate_reassigned`/`delegate_workflows_cancel
 | `INVITE_REINVITE_COOLDOWN_MINUTES` | `60` in code; `15` in `.env-example` and Helm | Per-email re-invite cooldown (§16 A41, PI-11). The shipped configs set 15; an unset variable gets the code's 60. A value ≤ 0 is ignored (the default applies) — the cooldown cannot be disabled through this variable |
 | `INVITE_MAX_PER_TENANT_PER_HOUR` | `200` in code; `60` in `.env-example` and Helm | Per-tenant invite ceiling (§16 A41, PI-12); same ≤ 0 → default behaviour |
 | `INVITE_MAX_PER_ACTOR_PER_HOUR` | `10` | Per-actor invite ceiling (SECURITY-5), checked after the tenant ceiling; `429 invite_rate_limited`. In `.env-example`, not in Helm values |
-| `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's (§16 OQ-9/RP-C3) cancellation-to-suspension grace window — the threshold `ListSubscriptionLapses` filters `cancelled_at` against. O&M owns this value so RP's sweep never keeps its own copy. **CD-23 (TL decision 2026-10-15):** must equal RP's CANCELLED_GRACE_DAYS; do not change without a joint RP+Core release. Now in Helm values (added CD-23). |
+| `SUBSCRIPTION_GRACE_DAYS` | `30` | I-16's (§16 OQ-9/RP-C3) cancellation-to-suspension grace window — the threshold `ListSubscriptionLapses` filters `cancelled_at` against. O&M owns this value so RP's sweep never keeps its own copy. **CD-23 (TL decision 2026-10-15):** must equal RP's CANCELLED_GRACE_DAYS; do not change without a joint RP+Core release. Now in Helm values (added CD-23). Also sets P-1/P-35 `read_only_until` (`cancelled_at + SUBSCRIPTION_GRACE_DAYS`, rev 2.58). |
 | `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` | `300s` | Future-time clamp for the EVT-14 recency guard (§16 A40, EVT-15). Despite the name it is parsed as a **Go duration**: the shipped bare `300` does not parse and falls back to the 300s default, so a different value must be written with a unit (e.g. `600s`) |
 | `DOCS_ENABLED` / `DOCS_AUTH_TOKEN` | `false` / (empty) | Gates the AsyncAPI/Swagger doc pages |
 | `STRICT_TENANT_PATH_VALIDATION` | `false` (Helm `iam.strictTenantPathValidation`) | IAPI-6. `false`: an `/internal/tenants/:id/*` request whose `x-tenant-id` differs from the path tenant is served for the path tenant, logged and counted. `true`: rejected with `400 TENANT_MISMATCH` before the handler. Enable per environment only after `iam_org_membership_tenant_header_path_mismatch_total` has stayed at zero there |
@@ -3902,6 +3910,7 @@ All errors returned via `gincommon.ErrorResponse`:
 | 403 | `tenant_trial_expired` | `RequireActiveTenant` middleware defense-in-depth (TRIAL-4, §16 A53): refuses API access on an expired-trial tenant even if an upstream Keycloak session-disable or JWT expiry hasn't yet taken effect |
 | 403 | `tenant_suspended` | Same middleware, for a suspended tenant |
 | 403 | `tenant_read_only` | Same middleware, for a tenant in the read-only lifecycle state (§16 A53) |
+| 403 | `member_suspended` | The caller's own membership is suspended: `RequireActiveMembership` on `/tenants/:id/*` and P-35 (rev 2.58). Final — no `Retry-After` |
 | 404 | `tenant_not_found` | No tenant matching given ID |
 | 404 | `member_not_found` | User not an active member of this tenant |
 | 404 | `department_not_found` | Department not found or not active for tenant |

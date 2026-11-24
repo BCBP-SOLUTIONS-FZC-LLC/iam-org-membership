@@ -390,6 +390,92 @@ func TestTenderAdminCannotGrantOwnerViaReconcile(t *testing.T) {
 		"P14-PRIV-001: tender_admin must not grant tenant_owner via reconcile (got %d body=%s)", code, string(body))
 }
 
+// ── P14-PRIV-001b (web-shell OM-6, HLD §6.4) ───────────────────────────────
+
+// TestTenantAdminCannotGrantAdminRolesViaReconcile — a tenant_admin may
+// manage members but may not grant tenant_admin or tenant_owner; only a
+// tenant_owner may.
+func TestTenantAdminCannotGrantAdminRolesViaReconcile(t *testing.T) {
+	e := newE2EEnv(t)
+	tenantID := e.seedTenant(t, "priv-001b")
+	e.seedOwner(t, tenantID)
+	admin := e.seedActiveMember(t, tenantID)
+	target := e.seedActiveMember(t, tenantID)
+
+	_, err := e.rawPool.Exec(e.ctx, `
+		INSERT INTO tenant_roles (id, tenant_id, tenant_membership_id, user_id, role_code, granted_by)
+		SELECT $1, $2, tm.id, $3, 'tenant_admin', $3
+		FROM tenant_memberships tm WHERE tm.tenant_id = $2 AND tm.user_id = $3`,
+		uuid.New(), tenantID, admin)
+	require.NoError(t, err)
+
+	for _, role := range []string{"tenant_admin", "tenant_owner"} {
+		code, _, body := e.do(t, reqOpts{
+			method:  http.MethodPut,
+			path:    "/api/v1/tenants/" + tenantID.String() + "/members/" + target.String() + "/roles",
+			headers: gatewayHeaders(admin, tenantID, "tenant_admin"),
+			body:    map[string]any{"roles": []string{role}},
+		})
+		assert.Equal(t, http.StatusForbidden, code,
+			"tenant_admin must not grant %s via reconcile (got %d body=%s)", role, code, string(body))
+	}
+
+	var n int
+	require.NoError(t, e.rawPool.QueryRow(e.ctx,
+		`SELECT count(*) FROM tenant_roles WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+		tenantID, target).Scan(&n))
+	assert.Zero(t, n, "no role was granted")
+}
+
+// ── P14-PRIV-001c (HLD §6.4 extended to lifecycle, rev 2.58) ───────────────
+
+// TestTenantAdminCannotSuspendOrRemovePrivilegedMember — a tenant_admin may
+// not suspend (P-7) or remove (P-8) a member who holds tenant_admin; the
+// target's membership and role are untouched.
+func TestTenantAdminCannotSuspendOrRemovePrivilegedMember(t *testing.T) {
+	e := newE2EEnv(t)
+	tenantID := e.seedTenant(t, "priv-001c")
+	e.seedOwner(t, tenantID)
+	admin := e.seedActiveMember(t, tenantID)
+	target := e.seedActiveMember(t, tenantID)
+	for _, u := range []uuid.UUID{admin, target} {
+		_, err := e.rawPool.Exec(e.ctx, `
+			INSERT INTO tenant_roles (id, tenant_id, tenant_membership_id, user_id, role_code, granted_by)
+			SELECT $1, $2, tm.id, $3, 'tenant_admin', $3
+			FROM tenant_memberships tm WHERE tm.tenant_id = $2 AND tm.user_id = $3`,
+			uuid.New(), tenantID, u)
+		require.NoError(t, err)
+	}
+	var rv int64
+	require.NoError(t, e.rawPool.QueryRow(e.ctx,
+		`SELECT record_version FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, target).Scan(&rv))
+
+	path := "/api/v1/tenants/" + tenantID.String() + "/members/" + target.String()
+	code, _, body := e.do(t, reqOpts{
+		method:  http.MethodPatch,
+		path:    path,
+		headers: gatewayHeaders(admin, tenantID, "tenant_admin"),
+		body:    map[string]any{"status": "suspended", "record_version": rv},
+	})
+	assert.Equal(t, http.StatusForbidden, code, "suspend: got %d body=%s", code, string(body))
+
+	code, _, body = e.do(t, reqOpts{
+		method:  http.MethodDelete,
+		path:    path,
+		headers: gatewayHeaders(admin, tenantID, "tenant_admin"),
+	})
+	assert.Equal(t, http.StatusForbidden, code, "remove: got %d body=%s", code, string(body))
+
+	var status string
+	var roles int
+	require.NoError(t, e.rawPool.QueryRow(e.ctx,
+		`SELECT status::text FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2`, tenantID, target).Scan(&status))
+	require.NoError(t, e.rawPool.QueryRow(e.ctx,
+		`SELECT count(*) FROM tenant_roles WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`, tenantID, target).Scan(&roles))
+	assert.Equal(t, "active", status)
+	assert.Equal(t, 1, roles, "tenant_admin role kept")
+}
+
 // ── P14-PRIV-002 ────────────────────────────────────────────────────────────
 
 // TestMemberCannotSelfElevate — a regular member (no elevated
