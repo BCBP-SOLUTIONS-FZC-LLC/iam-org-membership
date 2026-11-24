@@ -426,7 +426,7 @@ func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.U
 		return false, errPlanChangedSincePeek
 	}
 
-	newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trial, planStale)
+	newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, locked.TrialPlan, trial, planStale)
 	if err != nil {
 		return false, err
 	}
@@ -596,7 +596,7 @@ var planCarryingLifecycleEvents = map[string]bool{
 // applyProjection applies one event's UPDATE. planStale (only ever true for
 // planCarryingLifecycleEvents) keeps the current plan because a newer
 // TenantPlanChanged has already been applied.
-func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trial trialWindow, planStale bool) (domain.SubscriptionStatus, domain.TenantPlan, error) {
+func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialPlan *domain.TenantPlan, trial trialWindow, planStale bool) (domain.SubscriptionStatus, domain.TenantPlan, error) {
 	switch env.Type {
 	// ── tenant-orgm-q (Realm-Provisioner-produced) ──────────────────────
 	// TenantIdentityProvisioned never reaches here (handled before the
@@ -716,14 +716,31 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 			// is undone (subscription_started_at cleared), so the tenant no
 			// longer reads as converted (OM-4) and a later TenantReactivated
 			// derives trial, not active.
+			//
+			// The paid values end with the reversal (rev 2.65, agreed with
+			// Billing, which sends no billing.events after one): plan goes
+			// back to the plan recorded at conversion and licensed_seats to
+			// the trial allowance, in this same UPDATE. With no recorded trial
+			// plan the current plan is kept — the original cannot be
+			// determined, so none is invented — and a warning is logged.
+			revertPlan := prevPlan
+			if trialPlan != nil && *trialPlan != "" {
+				revertPlan = *trialPlan
+			} else {
+				c.logger.Warn("TrialReactivated(conversion_revert): no trial plan recorded, keeping the current plan",
+					"tenant_id", tenantID, "event_id", env.ID, "plan", prevPlan)
+			}
 			if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 				Op:                port.LifecycleRevertConversion,
 				TrialDurationDays: trial.Days,
 				TrialEndsAt:       trial.EndsAt,
+				Plan:              revertPlan,
+				LicensedSeats:     domain.DefaultTrialSeats,
+				EventTime:         env.Timestamp,
 			}); err != nil {
 				return prevStatus, prevPlan, err
 			}
-			return domain.StatusTrial, prevPlan, nil
+			return domain.StatusTrial, revertPlan, nil
 		case "", domain.TrialReactivationReasonTrial:
 		default:
 			c.logger.Warn("TrialReactivated: unknown reason, treated as a trial reactivation",

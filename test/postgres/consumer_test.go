@@ -770,6 +770,81 @@ func TestConsumer_TrialReactivated_NewTrialEndsAtIsAuthoritative(t *testing.T) {
 	}
 }
 
+// rev 2.65: a conversion records the trial plan; the revert restores it and
+// the trial seat allowance in one UPDATE, and raises the seat and plan
+// watermarks so paid events Billing committed before the reversal, still in
+// flight, are skipped instead of restoring the paid values.
+func TestConsumer_Revert_RestoresTrialPlanAndSeats_SkipsLatePaidEvents(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "revert-restore") // trial on 'starter', 10 seats
+
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+		pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
+
+	base := time.Now().UTC().Add(-time.Minute)
+	t0, tSeats, tLateSeats, tLatePlan, tRevert := base, base.Add(time.Second), base.Add(2*time.Second), base.Add(3*time.Second), base.Add(10*time.Second)
+
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TenantConverted", tenantID, t0, map[string]string{"plan": "pro"})))
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TenantSeatsChanged", tenantID, tSeats, map[string]int{"licensed_seats": 25})))
+
+	var plan string
+	var trialPlan *string
+	var seats int
+	require.NoError(t, rawPool.QueryRow(ctx, `SELECT plan, trial_plan, licensed_seats FROM tenants WHERE id = $1`, tenantID).
+		Scan(&plan, &trialPlan, &seats))
+	assert.Equal(t, "pro", plan)
+	require.NotNil(t, trialPlan, "the conversion records the trial plan")
+	assert.Equal(t, "starter", *trialPlan)
+	assert.Equal(t, 25, seats)
+
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantID, tRevert, map[string]string{"reason": "conversion_revert"})))
+
+	var status string
+	var seatsWM, planWM time.Time
+	require.NoError(t, rawPool.QueryRow(ctx, `
+		SELECT status, plan, licensed_seats, seats_last_event_at, plan_last_event_at FROM tenants WHERE id = $1`, tenantID).
+		Scan(&status, &plan, &seats, &seatsWM, &planWM))
+	assert.Equal(t, "trial", status)
+	assert.Equal(t, "starter", plan, "the revert restores the trial plan")
+	assert.Equal(t, 10, seats, "the revert resets the trial seat allowance")
+	assert.WithinDuration(t, tRevert, seatsWM, time.Millisecond)
+	assert.WithinDuration(t, tRevert, planWM, time.Millisecond)
+
+	// Paid events committed before the reversal, delivered after it.
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TenantSeatsChanged", tenantID, tLateSeats, map[string]int{"licensed_seats": 30})))
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TenantPlanChanged", tenantID, tLatePlan, map[string]string{"plan": "enterprise"})))
+	require.NoError(t, rawPool.QueryRow(ctx, `SELECT plan, licensed_seats FROM tenants WHERE id = $1`, tenantID).Scan(&plan, &seats))
+	assert.Equal(t, "starter", plan, "a late pre-reversal plan change is skipped")
+	assert.Equal(t, 10, seats, "a late pre-reversal seat change is skipped")
+}
+
+// rev 2.65: with no trial plan recorded the revert keeps the current plan —
+// no synthetic fallback — and still resets seats.
+func TestConsumer_Revert_NoTrialPlanKeepsCurrentPlan(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantID := seedTenant(t, ctx, rawPool, "revert-no-trial-plan")
+	_, err := rawPool.Exec(ctx, `
+		UPDATE tenants SET status = 'active', plan = 'pro', subscription_started_at = now(), licensed_seats = 40
+		WHERE id = $1`, tenantID)
+	require.NoError(t, err)
+
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+		pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), map[string]string{"reason": "conversion_revert"})))
+
+	var status, plan string
+	var seats int
+	require.NoError(t, rawPool.QueryRow(ctx, `SELECT status, plan, licensed_seats FROM tenants WHERE id = $1`, tenantID).
+		Scan(&status, &plan, &seats))
+	assert.Equal(t, "trial", status)
+	assert.Equal(t, "pro", plan, "no recorded trial plan: the current plan is kept")
+	assert.Equal(t, 10, seats)
+}
+
 // RP-14: the realm reset does not depend on the TRIAL-5 cap. A tenant that
 // used its one trial reactivation, then converted and was reverted, is still
 // in the shared realm on RP's side, so PUB-1 must follow.

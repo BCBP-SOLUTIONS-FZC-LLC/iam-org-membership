@@ -61,7 +61,7 @@ func mkEnv(eventType string, payload any) events.Envelope[json.RawMessage] {
 }
 
 func applyOn(c *MembershipEventConsumer, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan) (domain.SubscriptionStatus, domain.TenantPlan, error) {
-	return c.applyProjection(context.Background(), uuid.New(), env, prevStatus, prevPlan, trialWindow{Days: 30}, false)
+	return c.applyProjection(context.Background(), uuid.New(), env, prevStatus, prevPlan, nil, trialWindow{Days: 30}, false)
 }
 
 func newConsumer() (*MembershipEventConsumer, *recordingTenants) {
@@ -232,10 +232,13 @@ func TestApplyProjection_TrialReactivated_ConversionRevert(t *testing.T) {
 		domain.StatusActive, domain.TenantPlan("growth"))
 	require.NoError(t, err)
 	assert.Equal(t, domain.StatusTrial, st)
-	assert.Equal(t, domain.TenantPlan("growth"), pl, "plan is not changed by the revert")
+	assert.Equal(t, domain.TenantPlan("growth"), pl, "no trial plan recorded: the current plan is kept")
 	require.Len(t, tenants.patches, 2)
 	assert.Equal(t, port.LifecycleSetRealm, tenants.patches[0].Op)
-	assert.Equal(t, port.TenantLifecyclePatch{Op: port.LifecycleRevertConversion, TrialDurationDays: 30}, tenants.patches[1])
+	assert.Equal(t, port.TenantLifecyclePatch{
+		Op: port.LifecycleRevertConversion, TrialDurationDays: 30,
+		Plan: "growth", LicensedSeats: domain.DefaultTrialSeats,
+	}, tenants.patches[1])
 }
 
 func TestApplyProjection_TrialReactivated_ConversionRevertErrorPropagates(t *testing.T) {

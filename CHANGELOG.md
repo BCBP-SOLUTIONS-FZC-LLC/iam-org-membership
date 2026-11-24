@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed (2026-11-25 — a conversion revert restores the trial plan and seats, LLD rev 2.65)
+
+- **A reverted tenant no longer keeps the paid plan and seat count.** Billing sends no events after a conversion reversal, so Org & Membership now resets both itself, in the same update as the rest of the revert. A conversion now records the tenant's trial plan in the new `tenants.trial_plan` column (migration `000012_trial_plan`). On `TrialReactivated` with `reason: conversion_revert`, `plan` goes back to that trial plan and `licensed_seats` to the trial allowance of 10; members over 10 are kept and only new invites are blocked. The seat and plan recency watermarks move to the revert's time, so a paid seat or plan event Billing committed before the reversal and delivered after it is skipped. If no trial plan was recorded, the current plan is kept and a warning is logged; no fallback plan is invented. Entitlements resets its own trial profile on the same event.
+
 ### Changed (2026-11-25 — `SHARED_TRIAL_REALM`, LLD rev 2.64)
 
 - **The shared trial realm name is configured, not hard-coded.** New setting `SHARED_TRIAL_REALM` (default `trial`, Helm `env.SHARED_TRIAL_REALM`). I-1 records it as `realm_id` for every new trial tenant, and `TrialReactivated` resets a tenant to it after a revert, in both the server and the reconciler's parked-event replay. It must equal Realm Provisioner's setting of the same name. Nothing changes at the default. The shard stays `shard-0`, since there is no shared shard setting.

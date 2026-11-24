@@ -51,6 +51,11 @@ const (
 // configured, not hard-coded (LLD rev 2.64).
 const DefaultSharedTrialRealm = "trial"
 
+// DefaultTrialSeats is the trial seat allowance (T-8, HLD §6.6): what I-1
+// gives a new trial tenant, and what an RP-4 conversion revert resets
+// licensed_seats to (rev 2.65).
+const DefaultTrialSeats = 10
+
 // SharedTrialKeycloakShard is the shard of the shared trial realm. It stays a
 // constant: there is no shared configuration for shard selection.
 const SharedTrialKeycloakShard = "shard-0"
