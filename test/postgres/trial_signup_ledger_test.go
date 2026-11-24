@@ -26,9 +26,9 @@ import (
 func ledgerHash(b string) string { return strings.Repeat(b, 64/len(b)) }
 
 // The test harness grants the app role ALL TABLES, which would hide a
-// missing GRANT. Revoke it, roll back to just before 000006 and re-apply,
-// and check that the migration itself grants what CR-4, I-1 and the prune
-// need.
+// missing GRANT. Revoke it, roll back the consolidated 000000 migration and
+// re-apply it, then check that the migration itself grants what CR-4, I-1
+// and the prune need.
 func TestTrialLedger_MigrationGrantsAppRole(t *testing.T) {
 	t.Parallel()
 	fx := buildTestFixtures(t)
@@ -37,7 +37,7 @@ func TestTrialLedger_MigrationGrantsAppRole(t *testing.T) {
 	require.NoError(t, err)
 
 	runner := &pgmigrate.Runner{FS: loadMigrationDir(t), DSN: fx.rawPool.Config().ConnConfig.ConnString()}
-	require.NoError(t, runner.Down(ctx, 5)) // 000010, 000009, 000008, 000007, then 000006
+	require.NoError(t, runner.Down(ctx, 1)) // roll back the single consolidated 000000 migration
 	require.NoError(t, runner.Up(ctx))
 
 	for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {

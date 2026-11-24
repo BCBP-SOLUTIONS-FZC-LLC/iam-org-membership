@@ -177,7 +177,7 @@ func TestScriptTagInInvitationName(t *testing.T) {
 // ── P14-XSS-002 ─────────────────────────────────────────────────────────────
 //
 // TestHTMLInDelegationReason removed (ADR-0008 v2): `delegations` moved to
-// the standalone Delegation Service's own database (migration 000016);
+// the standalone Delegation Service.s own database (ADR-0008 extraction, folded into 000000);
 // this XSS defense-in-depth check is now that service's concern.
 
 // ── P14-AUTH-001 ────────────────────────────────────────────────────────────

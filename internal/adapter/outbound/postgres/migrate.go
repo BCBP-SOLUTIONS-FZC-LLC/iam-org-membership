@@ -44,7 +44,7 @@ func RunMigrations(ctx context.Context, dsn string, log ...port.Logger) error {
 // own, left as it defines it), then platform-audit's (pending_audit_entries,
 // tracked in platform_audit_schema_migrations), then the domain migrations,
 // whose GRANTs on the event outbox apply only if it already exists and whose
-// 000008 adds pending_audit_entries' RLS and grants (and fails without the
+// 000000 adds pending_audit_entries' RLS and grants (and fails without the
 // table). Both run over the direct
 // DSN under pgmigrate's advisory lock.
 //

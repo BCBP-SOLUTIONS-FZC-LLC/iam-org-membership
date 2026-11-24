@@ -9,7 +9,7 @@
 //     invitation → status transition guard permits one.
 //   - P15-DEL-CREATE-001/P15-DEL-CANCEL-001 — removed (ADR-0008 v2):
 //     `delegations` moved to the standalone Delegation Service's own
-//     database (migration 000016); these races are now that service's
+//     database (ADR-0008 extraction, folded into 000000); these races are now that service's
 //     concern, not Core's.
 //   - P15-B15-EXT-001 — two concurrent dept-membership assigns with
 //     different levels → uq_dm_active_membership rejects one.

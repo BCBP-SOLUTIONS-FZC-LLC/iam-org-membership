@@ -272,9 +272,8 @@ func TestTenantsRLSPolicy_UsesHelperFunction(t *testing.T) {
 	_, rawPool, _ := setupTestDB(t)
 	ctx := context.Background()
 
-	// Confirm the tenants policy's USING expression references
-	// rls_check_tenant(...) — the audit-logging helper. After migration
-	// 000008, both USING and WITH CHECK must invoke it.
+	// Confirm both USING and WITH CHECK of the tenants policy reference
+	// rls_check_tenant(...) — the audit-logging helper (000000).
 	var qual, withCheck string
 	err := rawPool.QueryRow(ctx, `
 		SELECT qual, with_check
