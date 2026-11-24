@@ -61,7 +61,7 @@ func mkEnv(eventType string, payload any) events.Envelope[json.RawMessage] {
 }
 
 func applyOn(c *MembershipEventConsumer, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan) (domain.SubscriptionStatus, domain.TenantPlan, error) {
-	return c.applyProjection(context.Background(), uuid.New(), env, prevStatus, prevPlan, 30)
+	return c.applyProjection(context.Background(), uuid.New(), env, prevStatus, prevPlan, 30, false)
 }
 
 func newConsumer() (*MembershipEventConsumer, *recordingTenants) {

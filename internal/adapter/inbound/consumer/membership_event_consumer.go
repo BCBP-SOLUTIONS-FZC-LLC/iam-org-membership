@@ -170,7 +170,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 		return c.handleTenantIdentityProvisioned(ctx, gucCtx, tenantID, env)
 	}
 
-	trialDurationDays, err := c.trialDurationDays(ctx, gucCtx, tenantID, env)
+	trial, err := c.trialDurationDays(ctx, gucCtx, tenantID, env)
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 				return errTenantNotYetProvisioned
 			}
 		}
-		gdprWipeRan, err = c.project(txCtx, tenantID, env, locked, trialDurationDays)
+		gdprWipeRan, err = c.project(txCtx, tenantID, env, locked, trial)
 		return err
 	})
 	if txErr != nil {
@@ -255,11 +255,25 @@ func tenantGUC(ctx context.Context, tenantID uuid.UUID) context.Context {
 	return pgcommon.WithGUCSet(ctx, g)
 }
 
+// trialWindow is what Handle peeks before the write transaction for a
+// TrialReactivated event: the trial length, and the plan it was resolved for.
+type trialWindow struct {
+	Days int
+	Plan domain.TenantPlan // empty when nothing was peeked
+}
+
+// errPlanChangedSincePeek redelivers a TrialReactivated whose trial length
+// was resolved for a plan the tenant no longer has: a TenantPlanChanged
+// committed between the pre-tx peek and the projection (possible since plan
+// changes stopped sharing last_event_at, rev 2.62). The redelivery peeks the
+// new plan.
+var errPlanChangedSincePeek = errors.New("TrialReactivated: plan changed since the trial length was resolved — retrying")
+
 // trialDurationDays resolves, for a TrialReactivated event, the trial length
 // of the tenant's current plan; every other event type needs none.
-func (c *MembershipEventConsumer) trialDurationDays(ctx, gucCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) (int, error) {
+func (c *MembershipEventConsumer) trialDurationDays(ctx, gucCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) (trialWindow, error) {
 	if env.Type != "TrialReactivated" {
-		return 0, nil
+		return trialWindow{}, nil
 	}
 	// TrialReactivated (§8.10.3/TR2) needs the tenant's current plan's
 	// trial_duration_days from the Catalog Service to compute the new
@@ -273,17 +287,17 @@ func (c *MembershipEventConsumer) trialDurationDays(ctx, gucCtx context.Context,
 	case err != nil && errors.Is(err, domain.ErrTenantNotFound), err == nil && tenant == nil:
 		// Tenant absent — the write tx hits the missing-row path (park, or
 		// drop for a soft-deleted tenant) and needs no duration.
-		return 0, nil
+		return trialWindow{}, nil
 	case err != nil:
-		return 0, fmt.Errorf("peek current plan for TrialReactivated: %w", err)
+		return trialWindow{}, fmt.Errorf("peek current plan for TrialReactivated: %w", err)
 	case c.catalog == nil:
-		return 0, errors.New("TrialReactivated: no PlanCatalogReader configured")
+		return trialWindow{}, errors.New("TrialReactivated: no PlanCatalogReader configured")
 	}
 	plan, err := c.catalog.PlanByCode(ctx, tenant.Plan)
 	if err != nil {
-		return 0, fmt.Errorf("resolve plan %q for TrialReactivated: %w", tenant.Plan, err)
+		return trialWindow{}, fmt.Errorf("resolve plan %q for TrialReactivated: %w", tenant.Plan, err)
 	}
-	return plan.TrialDurationDays, nil
+	return trialWindow{Days: plan.TrialDurationDays, Plan: tenant.Plan}, nil
 }
 
 // evictAfterWipe runs the GDPR wipe's cache invalidation (§15.5 step 3,
@@ -306,16 +320,24 @@ func (c *MembershipEventConsumer) evictAfterWipe(ctx context.Context, tenantID u
 // tenant row. The live path and parked-event replay (EVT-18) share it. It
 // reports whether the GDPR wipe ran, so the caller evicts the cache after
 // the transaction commits.
-func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], locked *port.TenantProjectionLock, trialDurationDays int) (gdprWipeRan bool, err error) {
+func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], locked *port.TenantProjectionLock, trial trialWindow) (gdprWipeRan bool, err error) {
 	// ── EVT-14 recency guard ─────────────────────────────────────────
 	// TenantSeatsChanged uses seats_last_event_at so that a seat-change
 	// event cannot advance the lifecycle watermark and cause a subsequent
 	// lifecycle event (e.g. TenantConverted) with an earlier timestamp to
-	// be skipped (BL-OQ-2). Tie rule: time == watermark → skip (defensive).
+	// be skipped (BL-OQ-2). TenantPlanChanged likewise uses
+	// plan_last_event_at (rev 2.62): after a conversion reversal Billing's
+	// plan change is stamped later than RP's TrialReactivated, and on the
+	// shared watermark it made the revert look stale. Tie rule: time ==
+	// watermark → skip (defensive).
 	isSeatsEvent := env.Type == "TenantSeatsChanged"
+	isPlanEvent := env.Type == "TenantPlanChanged"
 	guardAt := locked.LastEventAt
-	if isSeatsEvent {
+	switch {
+	case isSeatsEvent:
 		guardAt = locked.SeatsLastEventAt
+	case isPlanEvent:
+		guardAt = locked.PlanLastEventAt
 	}
 	if guardAt != nil && !env.Timestamp.After(*guardAt) {
 		if metrics.LifecycleEventSkipped != nil {
@@ -334,19 +356,47 @@ func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.U
 	prevStatus := locked.Status
 	prevPlan := locked.Plan
 
-	newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trialDurationDays)
+	// A lifecycle event that also carries a plan (TenantConverted,
+	// DirectPaidSignup) is ordered by last_event_at, but its plan must not
+	// overwrite a newer TenantPlanChanged: apply the plan only when the
+	// event is newer than plan_last_event_at, and advance that watermark
+	// when it is.
+	// Only a non-empty plan counts: a plan-less event (older RP versions)
+	// keeps the current plan and must not advance the plan watermark, or it
+	// would make a real, earlier TenantPlanChanged stale.
+	carriesPlan := planCarryingLifecycleEvents[env.Type] && payloadPlan(env.Payload) != ""
+	planStale := carriesPlan && locked.PlanLastEventAt != nil && !env.Timestamp.After(*locked.PlanLastEventAt)
+
+	// The trial length was resolved before this transaction for the plan
+	// peeked then. If a TenantPlanChanged has landed since, redeliver so it is
+	// resolved again for the current plan.
+	if trial.Plan != "" && trial.Plan != locked.Plan {
+		return false, errPlanChangedSincePeek
+	}
+
+	newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trial.Days, planStale)
 	if err != nil {
 		return false, err
 	}
 
 	// Bump the appropriate watermark only when projection actually ran.
-	if isSeatsEvent {
+	switch {
+	case isSeatsEvent:
 		if err := c.tenants.SetSeatsLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
 			return false, err
 		}
-	} else {
+	case isPlanEvent:
+		if err := c.tenants.SetPlanLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
+			return false, err
+		}
+	default:
 		if err := c.tenants.SetLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
 			return false, err
+		}
+		if carriesPlan && !planStale {
+			if err := c.tenants.SetPlanLastEventAt(txCtx, tenantID, env.Timestamp); err != nil {
+				return false, err
+			}
 		}
 	}
 
@@ -359,6 +409,13 @@ func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.U
 	pub, _ := port.EventPublisherFromContext(txCtx)
 
 	// ── EVT-16 tenant-state relay ────────────────────────────────────
+	// Status and plan are now ordered on separate watermarks (rev 2.62), so
+	// env.Timestamp alone is no longer monotonic across relays: Billing's
+	// TenantPlanChanged at T2 can relay before RP's TrialReactivated at T1.
+	// Every relay carries the full settled status and plan, so stamp it with
+	// the newest event time applied to either, keeping changed_at monotonic
+	// for a consumer that applies last-writer-wins on it.
+	changedAt := latest(env.Timestamp, locked.LastEventAt, locked.PlanLastEventAt)
 	if pub != nil && (newStatus != prevStatus || newPlan != prevPlan) {
 		if err := pub.Enqueue(txCtx, &domain.DomainEvent{
 			Type:      domain.EventTenantStateChanged,
@@ -373,7 +430,7 @@ func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.U
 				PreviousStatus: prevStatus,
 				Plan:           newPlan,
 				PreviousPlan:   prevPlan,
-				ChangedAt:      env.Timestamp,
+				ChangedAt:      changedAt,
 				Cause:          env.Type,
 			},
 		}); err != nil {
@@ -454,7 +511,40 @@ func gdprWipeCacheKeys(tenantID uuid.UUID) []string {
 	}
 }
 
-func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int) (domain.SubscriptionStatus, domain.TenantPlan, error) {
+// payloadPlan returns the "plan" member of an event payload, or "" when it is
+// missing, empty or the payload does not decode.
+func payloadPlan(payload json.RawMessage) string {
+	var p struct {
+		Plan string `json:"plan"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &p) != nil {
+		return ""
+	}
+	return p.Plan
+}
+
+// latest returns the newest of t and the non-nil watermarks.
+func latest(t time.Time, watermarks ...*time.Time) time.Time {
+	for _, w := range watermarks {
+		if w != nil && w.After(t) {
+			t = *w
+		}
+	}
+	return t
+}
+
+// planCarryingLifecycleEvents are the lifecycle events (last_event_at) that
+// also set tenants.plan, so their plan is additionally ordered by
+// plan_last_event_at (EVT-14, rev 2.62).
+var planCarryingLifecycleEvents = map[string]bool{
+	"TenantConverted":  true,
+	"DirectPaidSignup": true,
+}
+
+// applyProjection applies one event's UPDATE. planStale (only ever true for
+// planCarryingLifecycleEvents) keeps the current plan because a newer
+// TenantPlanChanged has already been applied.
+func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int, planStale bool) (domain.SubscriptionStatus, domain.TenantPlan, error) {
 	switch env.Type {
 	// ── tenant-orgm-q (Realm-Provisioner-produced) ──────────────────────
 	// TenantIdentityProvisioned never reaches here (handled before the
@@ -498,7 +588,7 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 			return prevStatus, prevPlan, err
 		}
 		newPlan := domain.TenantPlan(payload.Plan)
-		if newPlan == "" {
+		if newPlan == "" || planStale {
 			newPlan = prevPlan
 		}
 		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
@@ -519,7 +609,7 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 			return prevStatus, prevPlan, err
 		}
 		newPlan := domain.TenantPlan(payload.Plan)
-		if newPlan == "" {
+		if newPlan == "" || planStale {
 			newPlan = prevPlan
 		}
 		_, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
@@ -932,7 +1022,7 @@ func (c *MembershipEventConsumer) replayParked(ctx context.Context, tenantID uui
 		if err := json.Unmarshal(p.Envelope, &env); err != nil {
 			return replayed, fmt.Errorf("decode parked event %s: %w", p.EventID, err)
 		}
-		trialDurationDays, err := c.trialDurationDays(ctx, gucCtx, tenantID, env)
+		trial, err := c.trialDurationDays(ctx, gucCtx, tenantID, env)
 		if err != nil {
 			return replayed, err
 		}
@@ -958,7 +1048,7 @@ func (c *MembershipEventConsumer) replayParked(ctx context.Context, tenantID uui
 				}
 			}
 			applied = true
-			gdprWipeRan, err = c.project(txCtx, tenantID, env, locked, trialDurationDays)
+			gdprWipeRan, err = c.project(txCtx, tenantID, env, locked, trial)
 			return err
 		})
 		if errors.Is(err, errTenantNotYetProvisioned) {

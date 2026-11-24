@@ -409,11 +409,11 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 	var lock *port.TenantProjectionLock
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		var status, plan string
-		var lastEventAt, seatsLastEventAt *time.Time
+		var lastEventAt, seatsLastEventAt, planLastEventAt *time.Time
 		err := tx.QueryRow(ctx, `
-			SELECT status, plan, last_event_at, seats_last_event_at
+			SELECT status, plan, last_event_at, seats_last_event_at, plan_last_event_at
 			FROM tenants WHERE id = $1 AND deleted_at IS NULL
-			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt, &seatsLastEventAt)
+			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt, &seatsLastEventAt, &planLastEventAt)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
@@ -425,6 +425,7 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 			Plan:             domain.TenantPlan(plan),
 			LastEventAt:      lastEventAt,
 			SeatsLastEventAt: seatsLastEventAt,
+			PlanLastEventAt:  planLastEventAt,
 		}
 		return nil
 	})
@@ -441,6 +442,14 @@ func (r *TenantRepository) SetLastEventAt(ctx context.Context, id uuid.UUID, t t
 func (r *TenantRepository) SetSeatsLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error {
 	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE tenants SET seats_last_event_at = $2 WHERE id = $1`, id, t)
+		return err
+	})
+}
+
+// SetPlanLastEventAt advances the plan watermark (EVT-14, rev 2.62).
+func (r *TenantRepository) SetPlanLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error {
+	return withPool(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE tenants SET plan_last_event_at = $2 WHERE id = $1`, id, t)
 		return err
 	})
 }

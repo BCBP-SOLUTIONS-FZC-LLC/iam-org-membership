@@ -96,7 +96,7 @@ iam-org-membership/
 │       │       └── inbound_schema.go   # Validator/ValidatorFunc, validateConsumed, Handler (DLQ router → consumer span → validateConsumed → Handle)
 │       └── outbound/
 │           ├── postgres/               # repository impls + db.go (pools, wrapConnErr), migrate.go (MigrateSchema/RunMigrations), idempotency_repository.go (InboxRepository), gauge_repository.go, reconciler_store.go, authz_repository.go; tenant_repository.go's ResolveByIdentifier is PUB-1's single UNION ALL lookup
-│           │   └── migrations/         # 000000_initial_schema (consolidated — never deployed, so the decomposition history was squashed), 000001_check_constraints, 000002_pub1_pending_invitations_email_idx (idx_pi_email_pending for PUB-1) … 000008_audit_outbox (RLS + grants on platform-audit's pending_audit_entries), 000009_outbox_sequence_grants (USAGE, SELECT on outbox_events_ordering_seq, MIG-11)
+│           │   └── migrations/         # 000000_initial_schema (consolidated before first deployment — 000001–000010 squashed in), 000011_plan_last_event_at (EVT-14 plan watermark, LLD rev 2.62)
 │           ├── valkey/                 # cache impl (go-redis/v9)
 │           ├── auditrecorder/          # port.AuditRecorder over platform-audit's auditoutbox.Enqueuer (pending_audit_entries on the caller's tx); LoadConfig (AUDIT_*). Replaces the deleted auditlog/ HTTP client
 │           ├── eventbus/               # Publisher (outbox enqueue, ordered per <tenant_id>/<subject>), RoutingPublisher (2 topics); GlueCodec (publish, version by definition); ValidatingCodec over embedded schemas/*.json; consumers use the library's events.GlueDecodeCodec (no local decoder)

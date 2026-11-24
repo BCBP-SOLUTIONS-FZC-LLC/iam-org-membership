@@ -298,6 +298,73 @@ func TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle(t *testing.T) {
 	assert.Equal(t, "active", status, "BL-OQ-2: TenantConverted must NOT be blocked by an earlier TenantSeatsChanged")
 }
 
+// TestConsumerEVT14_PlanChangeDoesNotBlockRevert — rev 2.62 regression.
+//
+// After a conversion reversal Billing's TenantPlanChanged (T2) is stamped
+// later than RP's TrialReactivated (T1). Delivered first on the shared
+// last_event_at watermark, it made the revert stale: the tenant stayed active
+// on the deleted dedicated realm. TenantPlanChanged now advances only
+// plan_last_event_at, so the revert still applies.
+func TestConsumerEVT14_PlanChangeDoesNotBlockRevert(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "evt14-plan-revert")
+	_, err := rawPool.Exec(ctx, `
+		UPDATE tenants SET status = 'active', plan = 'pro', subscription_started_at = now(),
+		                   realm_id = 'tenant-evt14-plan-revert', realm_type = 'dedicated'
+		WHERE id = $1`, tenantA)
+	require.NoError(t, err)
+
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+		pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
+
+	t1 := time.Now().UTC().Add(-30 * time.Second)
+	t2 := t1.Add(5 * time.Second)
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TenantPlanChanged", tenantA, t2, map[string]string{"plan": "starter"})))
+
+	var lastEventAt, planLastEventAt *time.Time
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT last_event_at, plan_last_event_at FROM tenants WHERE id = $1`, tenantA).Scan(&lastEventAt, &planLastEventAt))
+	assert.Nil(t, lastEventAt, "TenantPlanChanged must NOT bump last_event_at")
+	require.NotNil(t, planLastEventAt, "TenantPlanChanged must bump plan_last_event_at")
+
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantA, t1, map[string]string{"reason": "conversion_revert"})))
+
+	var status, plan, realmID string
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, plan, realm_id FROM tenants WHERE id = $1`, tenantA).Scan(&status, &plan, &realmID))
+	assert.Equal(t, "trial", status, "the earlier-stamped revert must not be skipped")
+	assert.Equal(t, "trial", realmID)
+	assert.Equal(t, "starter", plan, "the revert keeps Billing's plan")
+}
+
+// TestConsumerEVT14_ConvertedDoesNotOverwriteNewerPlan — a TenantConverted
+// (T0) delivered after a newer TenantPlanChanged (T1) still activates the
+// tenant but keeps the newer plan.
+func TestConsumerEVT14_ConvertedDoesNotOverwriteNewerPlan(t *testing.T) {
+	t.Parallel()
+	appPool, rawPool, _ := setupTestDB(t)
+	ctx := context.Background()
+	tenantA := seedTenant(t, ctx, rawPool, "evt14-plan-converted")
+
+	c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+		pgadapter.NewTenantRepository(appPool), nil, nil, 5*time.Minute, nil)
+
+	t0 := time.Now().UTC().Add(-30 * time.Second)
+	t1 := t0.Add(5 * time.Second)
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TenantPlanChanged", tenantA, t1, map[string]string{"plan": "enterprise"})))
+	require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TenantConverted", tenantA, t0, map[string]string{"plan": "pro"})))
+
+	var status, plan string
+	var planLastEventAt time.Time
+	require.NoError(t, rawPool.QueryRow(ctx,
+		`SELECT status, plan, plan_last_event_at FROM tenants WHERE id = $1`, tenantA).Scan(&status, &plan, &planLastEventAt))
+	assert.Equal(t, "active", status)
+	assert.Equal(t, "enterprise", plan, "the older TenantConverted must not overwrite the newer plan")
+	assert.WithinDuration(t, t1, planLastEventAt, time.Millisecond, "plan watermark stays at the newer event")
+}
+
 // ── EVT-16: tenant-state relay ───────────────────────────────────────────
 
 // TestConsumerEVT16_StatusChangeEnqueuesRelay — a TenantSuspended that flips
