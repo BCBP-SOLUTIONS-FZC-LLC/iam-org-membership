@@ -15,6 +15,10 @@ This service has never been deployed to any environment — there is no released
 - **`read_only_until` and I-16 agree across DST.** `read_only_until` is computed in UTC, and I-16's lapse cutoff now subtracts whole 24-hour periods (`interval '24 hours'`) instead of calendar days, which Postgres evaluates in the session time zone. Neither can now shift an hour from the other in a non-UTC pod or database session.
 - **OM-7: PUB-1's 254 limit counts characters, not bytes.** A non-ASCII identifier of up to 254 Unicode code points is accepted; before, the check counted UTF-8 bytes.
 
+### Fixed (2026-11-24 — delegationcheck wire-format alignment, LLD rev 2.59)
+
+- **`deptDelegateResponse.DelegateID` JSON tag renamed from `delegate_id` to `delegate_user_id`.** iam-delegation renamed its `GET /internal/delegations/dept-delegate` response field as part of the cross-service HLD compatibility audit. The old tag would have silently decoded as `nil` after the upstream rename. The Go field name, the `DelegationCheckClient` port, and all business logic are unchanged. Unit test mock response key in `http_client_test.go` updated to match.
+
 ### Fixed (2026-11-19 — Billing open items BL-OQ-2, D-3, D-4, SRE-6, LLD rev 2.57)
 
 - **BL-OQ-2 (blocking): split EVT-14 watermark for `TenantSeatsChanged`.** `TenantSeatsChanged` now uses a separate `tenants.seats_last_event_at` column (migration `000010_seats_last_event_at`) for its EVT-14 recency guard instead of the shared `last_event_at`. A seat-change event can no longer advance the lifecycle watermark and cause a subsequent `TenantConverted` (or any other lifecycle event with an earlier timestamp) to be silently skipped. New port method `SetSeatsLastEventAt`; consumer `project()` routes by event type. Tie rule confirmed: `time ==` → skip. Regression test `TestConsumerEVT14_SeatsChangedDoesNotBlockLifecycle` added.

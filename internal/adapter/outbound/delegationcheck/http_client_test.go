@@ -47,10 +47,10 @@ func TestDeptDelegate_Happy_Found(t *testing.T) {
 
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"found":         true,
-			"delegation_id": delegationID,
-			"delegator_id":  userID,
-			"delegate_id":   uuid.New(),
+			"found":            true,
+			"delegation_id":    delegationID,
+			"delegator_id":     userID,
+			"delegate_user_id": uuid.New(),
 		})
 	}))
 	defer srv.Close()
