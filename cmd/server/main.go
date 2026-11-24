@@ -647,7 +647,8 @@ func main() {
 	tenantSvc := service.NewTenantService(tenantRepo, cache, rpClient).
 		WithPlanCatalog(catalogReader).
 		WithIDPReader(rpClient).
-		WithTxRunner(txRunner)
+		WithTxRunner(txRunner).
+		WithSubscriptionGraceDays(subscriptionGraceDays)
 	deptSvc := service.NewDepartmentService(catalogReader, tenantDeptRepo, cache)
 	membershipSvc := service.NewMembershipService(membershipRepo, tenantRoleRepo, deptMemRepo, tenantRepo, invitationRepo, cache, rpClient, wfClient, txRunner, log).
 		WithTokenServiceClient(tokenServiceClient)
@@ -683,7 +684,7 @@ func main() {
 	invitationH := httpadapter.NewInvitationHandler(invitationSvc)
 	operatorH := httpadapter.NewOperatorHandler(operatorSvc)
 	publicH := httpadapter.NewPublicHandler(tenantResolutionSvc)
-	meH := httpadapter.NewMeHandler(service.NewSessionContextService(authzSvc, tenantSvc))
+	meH := httpadapter.NewMeHandler(service.NewSessionContextService(authzSvc, tenantSvc).WithSubscriptionGraceDays(subscriptionGraceDays))
 	internalH := httpadapter.NewInternalHandler(provisioningSvc, authzSvc, membershipSvc, invitationSvc, groupMappingSvc, tenantSvc, subscriptionLapseSvc, deptMemSvc, deptSvc)
 
 	// ── Router — all routing/middleware wiring lives in the inbound HTTP

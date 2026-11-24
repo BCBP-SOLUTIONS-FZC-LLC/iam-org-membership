@@ -243,7 +243,7 @@ func (r *TenantRepository) ListSubscriptionLapses(ctx context.Context, graceDays
 			SELECT `+tenantSelectColumns+`
 			FROM tenants
 			WHERE status = 'cancelled'
-			  AND cancelled_at <= now() - ($1::int * interval '1 day')
+			  AND cancelled_at <= now() - ($1::int * interval '24 hours')
 			  AND deleted_at IS NULL
 			ORDER BY cancelled_at ASC
 			LIMIT 1000`, graceDays)

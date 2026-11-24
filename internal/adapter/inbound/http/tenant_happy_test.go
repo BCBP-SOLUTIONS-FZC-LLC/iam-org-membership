@@ -202,6 +202,45 @@ func TestTenantGet_SameTenant_200(t *testing.T) {
 	assert.Equal(t, tenantID, got.ID)
 }
 
+// Web-shell OM-2: P-1 is never cached by the browser, and a cancelled
+// tenant carries read_only_until = cancelled_at + SUBSCRIPTION_GRACE_DAYS.
+func TestTenantGet_NoStoreAndReadOnlyUntil(t *testing.T) {
+	tenantID := uuid.New()
+	cancelled := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	repo := &happyTenantRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+		return &domain.Tenant{ID: tenantID, Slug: "acme", Status: domain.StatusCancelled, CancelledAt: &cancelled}, nil
+	}}
+	svc := service.NewTenantService(repo, happyCacheStub{}, &happyRPClient{}).WithSubscriptionGraceDays(30)
+	h := &TenantHandler{svc: svc}
+
+	c, w := buildCtx(http.MethodGet, "/", ``, memberCtxForTenant(tenantID))
+	setParams(c, "id", tenantID.String())
+	h.Get(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	var got TenantResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.NotNil(t, got.ReadOnlyUntil)
+	assert.True(t, cancelled.AddDate(0, 0, 30).Equal(*got.ReadOnlyUntil))
+}
+
+func TestTenantGet_ActiveTenant_OmitsReadOnlyUntil(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &happyTenantRepo{findByIDFn: func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+		return &domain.Tenant{ID: tenantID, Status: domain.StatusActive}, nil
+	}}
+	h := &TenantHandler{svc: service.NewTenantService(repo, happyCacheStub{}, &happyRPClient{})}
+	c, w := buildCtx(http.MethodGet, "/", ``, memberCtxForTenant(tenantID))
+	setParams(c, "id", tenantID.String())
+	h.Get(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.NotContains(t, body, "read_only_until")
+}
+
 // Test Case ID: P19-P1-002
 // Feature:      P-1 · service returns not-found → 404
 func TestTenantGet_NotFound(t *testing.T) {

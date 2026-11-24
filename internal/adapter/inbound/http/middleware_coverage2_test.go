@@ -73,7 +73,7 @@ func TestRequireActiveMembership_SuspendedMember_Returns403(t *testing.T) {
 	assert.True(t, c.IsAborted())
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	body := decodeBody(t, w)
-	assert.Equal(t, "FORBIDDEN", body["errorCode"])
+	assert.Equal(t, "MEMBER_SUSPENDED", body["errorCode"])
 }
 
 func TestRequireActiveMembership_ActiveMember_Proceeds(t *testing.T) {

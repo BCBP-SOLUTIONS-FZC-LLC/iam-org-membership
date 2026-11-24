@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -157,4 +158,17 @@ func TestPUB1_Router_EveryOtherAPIRouteStill401sWithoutHeaders(t *testing.T) {
 		checked++
 	}
 	assert.Greater(t, checked, 30, "expected to sweep every protected /api/v1 route")
+}
+
+// Web-shell OM-7: the 254 limit counts characters (code points), not
+// bytes, so a non-ASCII identifier the browser accepts is not refused.
+func TestPUB1_Handler_IdentifierLimitCountsCharacters(t *testing.T) {
+	f := &fakeResolver{}
+	ok := strings.Repeat("é", maxIdentifierLen) // 254 characters, 508 bytes
+	w, _ := doPublic(t, publicRouter(f), "?identifier="+url.QueryEscape(ok))
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	w, body := doPublic(t, publicRouter(f), "?identifier="+url.QueryEscape(ok+"é"))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "invalid_identifier", body["code"])
 }

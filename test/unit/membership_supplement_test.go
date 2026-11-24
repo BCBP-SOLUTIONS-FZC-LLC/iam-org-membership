@@ -349,7 +349,7 @@ func TestReconcileRoles_CacheNotNil_InvalidatesPerUserMembershipsKey(t *testing.
 	}
 	cache := &spyCache{}
 	svc := service.NewMembershipService(
-		m, roles, nil, nil, nil,
+		m, roles, nil, &port.TenantRepositoryNoop{}, nil, // rev 2.58: an admin-role grant takes the TM-13 lock
 		cache, &fakeRPClient{}, nil, &passthroughTxRunner{}, nil,
 	)
 	_, _, err := svc.ReconcileRoles(context.Background(), tenantID, userID,

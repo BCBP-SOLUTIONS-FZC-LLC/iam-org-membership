@@ -332,6 +332,7 @@ func TestReconcileRoles_EmitsGrantAndRevokeEventsWithRequestContext(t *testing.T
 
 	ctx := requestctx.WithContext(context.Background(), &requestctx.RequestContext{
 		ClientIP: "192.0.2.55", UserAgent: "reconcile-test-agent",
+		Roles: []string{"tenant_owner"}, // OM-6: granting tenant_admin is owner-only
 	})
 	// Grant tenant_admin (new) while implicitly revoking tender_admin (not in desired).
 	granted, revoked, err := svc.ReconcileRoles(ctx, tenantID, userID,
@@ -420,6 +421,7 @@ func TestMembership_RemoveUser_RequestContextIPAndUAPropagateToEvents(t *testing
 
 	ctx := requestctx.WithContext(context.Background(), &requestctx.RequestContext{
 		ClientIP: "203.0.113.42", UserAgent: "removeuser-test-agent",
+		Roles: []string{"tenant_owner"}, // removing a privileged target is owner-only
 	})
 	err := s.svc.RemoveUser(ctx, tenantID, userID, actorID)
 	require.NoError(t, err)

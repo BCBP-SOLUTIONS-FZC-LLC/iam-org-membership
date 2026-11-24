@@ -62,7 +62,7 @@ func (h *InvitationHandler) List(c *gin.Context) {
 // Invite is P-6 — POST /tenants/:id/members. 202 Accepted with pending row.
 //
 // @Summary      P-6 — Invite user (staged pending_invitation)
-// @Description  AUTH-2 tenant_admin/owner. SEAT-1 transactional cap: `active + pending <= licensed_seats`. Two-step invite→accept. Returns 409 seat_limit_reached at/above cap; 409 invitation_already_exists on duplicate; 429 reinvite_too_soon (PI-11) or invite_rate_limited (PI-12).
+// @Description  AUTH-2 tenant_admin/owner; initial_tenant_roles containing tenant_owner or tenant_admin requires tenant_owner (HLD §6.4, 403 insufficient_role). SEAT-1 transactional cap: `active + pending <= licensed_seats`. Two-step invite→accept. Returns 409 seat_limit_reached at/above cap; 409 invitation_already_exists on duplicate; 429 reinvite_too_soon (PI-11) or invite_rate_limited (PI-12).
 // @Tags         invitations
 // @Accept       json
 // @Produce      json

@@ -34,12 +34,12 @@ func NewMeHandler(svc SessionContextReader) *MeHandler {
 // SessionContext is P-35 (LLD §5.4): the signed-in user's own tenant context.
 //
 // @Summary      P-35 — Read my session context
-// @Description  The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source), the tenant locale and the tenant's workspace slug (for /t/<slug>/ routing). No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 for a suspended member and for a trial_expired/suspended tenant (RequireActiveTenant).
+// @Description  The caller's own tenant context, for the UI: the roles, departments, plan and feature flags AuthZ Enrichment injects as x-tenant-roles / x-departments / x-plan / x-feature-flags (feature_flags includes read_only when the tenant is read-only), plus mfa_freshness_seconds (the step-up window, I-14's source), the tenant locale and the tenant's workspace slug (for /t/<slug>/ routing). No parameters: the caller is identified from the gateway-injected identity headers only. 404 member_not_found when the caller has no membership in x-tenant-id (I-8's answer); 403 member_suspended for a suspended member, 403 tenant_trial_expired / tenant_suspended for such a tenant (RequireActiveTenant, checked first). read_only_until (cancelled tenants only): when the read-only grace ends. Never sends Retry-After.
 // @Tags         me
 // @Produce      json
 // @Success      200  {object}  SessionContextResponse
 // @Failure      401  {object}  ProblemResponse  "Missing/malformed identity headers"
-// @Failure      403  {object}  ProblemResponse  "Suspended member, or tenant trial_expired/suspended"
+// @Failure      403  {object}  ProblemResponse  "member_suspended, tenant_trial_expired or tenant_suspended"
 // @Failure      404  {object}  ProblemResponse  "member_not_found / tenant_not_found"
 // @Failure      503  {object}  ProblemResponse  "db_unavailable"
 // @Security     UserID
@@ -85,5 +85,6 @@ func SessionContextToResponse(sc *service.SessionContext) SessionContextResponse
 		MFAFreshnessSeconds: sc.MFAFreshnessSeconds,
 		Locale:              sc.Locale,
 		Slug:                sc.Slug,
+		ReadOnlyUntil:       sc.ReadOnlyUntil,
 	}
 }

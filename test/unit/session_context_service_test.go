@@ -137,15 +137,15 @@ func TestSessionContext_NoMembership_MemberNotFound(t *testing.T) {
 	assert.Zero(t, tenants.calls)
 }
 
-// A suspended member gets RequireActiveMembership's 403 (AUTH-1), not the
-// roles I-8 still returns for them.
+// A suspended member gets RequireActiveMembership's 403 member_suspended
+// (AUTH-1, web-shell OM-1), not the roles I-8 still returns for them.
 func TestSessionContext_SuspendedMember_Forbidden(t *testing.T) {
 	tenants := scTenant()
 	svc := scService(scRow(domain.MembershipSuspended, domain.StatusActive), tenants)
 	_, err := svc.Get(context.Background(), uuid.New(), uuid.New())
 	var de *domain.DomainError
 	require.ErrorAs(t, err, &de)
-	assert.ErrorIs(t, err, domain.ErrInsufficientRole)
+	assert.ErrorIs(t, err, domain.ErrMemberSuspended)
 	assert.Equal(t, "suspended members cannot access tenant APIs", de.Message)
 	assert.Zero(t, tenants.calls)
 }

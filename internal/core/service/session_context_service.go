@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/google/uuid"
@@ -43,6 +44,9 @@ type SessionContext struct {
 	// returns none for an email. It is the caller's own tenant, so it
 	// discloses nothing.
 	Slug string
+	// ReadOnlyUntil is when a cancelled tenant's read-only grace ends
+	// (cancelled_at + SUBSCRIPTION_GRACE_DAYS); nil unless cancelled.
+	ReadOnlyUntil *time.Time
 }
 
 // SessionContextService owns P-35 (GET /api/v1/me/session-context, LLD
@@ -58,8 +62,16 @@ type SessionContext struct {
 //     own copies of those two fields are a per-user snapshot that a P-2
 //     PATCH does not evict.
 type SessionContextService struct {
-	authz   membershipProjector
-	tenants tenantGetter
+	authz     membershipProjector
+	tenants   tenantGetter
+	graceDays int // SUBSCRIPTION_GRACE_DAYS; 0 → domain.DefaultSubscriptionGraceDays
+}
+
+// WithSubscriptionGraceDays sets the grace window behind read_only_until;
+// it must match TenantService's and I-16's (SUBSCRIPTION_GRACE_DAYS).
+func (s *SessionContextService) WithSubscriptionGraceDays(days int) *SessionContextService {
+	s.graceDays = days
+	return s
 }
 
 // NewSessionContextService builds a SessionContextService. authz is the
@@ -73,8 +85,9 @@ func NewSessionContextService(authz membershipProjector, tenants tenantGetter) *
 //   - No membership row: I-8's own answer, 404 member_not_found. AuthZ
 //     Enrichment denies such a caller at the gateway already
 //     (DENY_UNRESOLVABLE_SUBJECT on I-8's 404), so this is defense in depth.
-//   - A row that is not active (suspended): 403, the same answer
-//     RequireActiveMembership gives on every tenant API (AUTH-1). I-8
+//   - A suspended row: 403 member_suspended, the same answer
+//     RequireActiveMembership gives on every tenant API (AUTH-1, web-shell
+//     OM-1). Any other non-active row: 403 insufficient_role. I-8
 //     itself returns such a row with its status, for AuthZ Enrichment to
 //     act on; a caller-facing read must not hand roles to a suspended
 //     member.
@@ -83,12 +96,11 @@ func (s *SessionContextService) Get(ctx context.Context, tenantID, userID uuid.U
 	if err != nil {
 		return nil, err
 	}
+	if proj.Status == domain.MembershipSuspended {
+		return nil, domain.NewError(domain.ErrMemberSuspended, "suspended members cannot access tenant APIs")
+	}
 	if proj.Status != domain.MembershipActive {
-		msg := "member is not an active member of this tenant"
-		if proj.Status == domain.MembershipSuspended {
-			msg = "suspended members cannot access tenant APIs"
-		}
-		return nil, domain.NewError(domain.ErrInsufficientRole, msg)
+		return nil, domain.NewError(domain.ErrInsufficientRole, "member is not an active member of this tenant")
 	}
 	t, err := s.tenants.Get(ctx, tenantID)
 	if err != nil {
@@ -104,7 +116,21 @@ func (s *SessionContextService) Get(ctx context.Context, tenantID, userID uuid.U
 		MFAFreshnessSeconds: t.MFAFreshnessSeconds,
 		Locale:              t.DefaultLocale,
 		Slug:                t.Slug,
+		ReadOnlyUntil:       s.readOnlyUntil(proj.ReadOnly, t),
 	}, nil
+}
+
+// readOnlyUntil is set only when the I-8 projection itself says read_only,
+// so read_only_until never appears without read_only while om:memberships
+// (300 s TTL) lags behind om:tenant after a cancellation. The reverse can
+// briefly happen — read_only true but no date — if om:tenant has not yet
+// been refilled with the cancelled row; read_only_until is advisory and
+// clients must tolerate its absence.
+func (s *SessionContextService) readOnlyUntil(readOnly bool, t *domain.Tenant) *time.Time {
+	if !readOnly {
+		return nil
+	}
+	return t.ReadOnlyUntil(s.graceDays)
 }
 
 // sessionFeatureFlags mirrors AuthZ Enrichment's x-feature-flags: I-8's

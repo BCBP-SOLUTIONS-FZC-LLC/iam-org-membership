@@ -201,6 +201,39 @@ func (s *MembershipService) Get(ctx context.Context, tenantID, userID uuid.UUID)
 	return &domain.MembershipListItem{Membership: *m, TenantRoles: codes, Departments: views}, nil
 }
 
+// setStatusGuarded writes a P-7 status change. For a caller that is not a
+// tenant_owner it takes the TM-13 tenant-row lock, re-reads the target's
+// roles and applies the HLD §6.4 lifecycle rule inside the same tx, so the
+// check serialises with a concurrent P-28 admin-role grant (which takes the
+// same lock). Grants made outside P-28 (JIT I-10, invite accept) do not take
+// it, so this narrows the window rather than closing it for those paths.
+// An owner caller, or a call with no request context, needs no check and
+// keeps the single-statement path.
+func (s *MembershipService) setStatusGuarded(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, expectedVersion int64) (*domain.TenantMembership, error) {
+	if !callerNeedsOwnerCheck(ctx) {
+		return s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
+	}
+	var m *domain.TenantMembership
+	err := s.txRunner.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
+			return err
+		}
+		trs, err := s.roles.ListByUser(txCtx, tenantID, userID)
+		if err != nil {
+			return err
+		}
+		if err := requireOwnerForPrivilegedTarget(txCtx, trs); err != nil {
+			return err
+		}
+		m, err = s.memberships.SetStatus(txCtx, tenantID, userID, status, expectedVersion)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // SetStatus is P-7 (suspend/reactivate). AUTH-8: after commit, call RP
 // RevokeUserSessions best-effort (fail-open, TTL backstop). On suspend we
 // also run the WFI-13 §8.8.5 advisory: a best-effort GetDelegateImpact
@@ -219,6 +252,12 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 		// whether to take the serialising lock.
 		trs, err := s.roles.ListByUser(ctx, tenantID, userID)
 		if err != nil {
+			return nil, err
+		}
+		// HLD §6.4 extended to lifecycle actions: suspending a tenant_owner
+		// or tenant_admin is tenant_owner-only. Fast pre-check; a non-owner
+		// caller is re-checked under the TM-13 lock (setStatusGuarded).
+		if err := requireOwnerForPrivilegedTarget(ctx, trs); err != nil {
 			return nil, err
 		}
 		isOwner := false
@@ -267,9 +306,10 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 			// is added (§16 open item B2-TODO, requires platform registry
 			// ratification), this will be wrapped in RunInTx with pub.Enqueue
 			// to satisfy CONS-1. Until then, wrapping in RunInTx adds an
-			// unnecessary BEGIN+COMMIT round-trip with no functional benefit.
+			// unnecessary BEGIN+COMMIT round-trip with no functional benefit —
+			// except for a non-owner caller, see setStatusGuarded.
 			var sErr error
-			m, sErr = s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
+			m, sErr = s.setStatusGuarded(ctx, tenantID, userID, status, expectedVersion)
 			if sErr != nil {
 				return nil, sErr
 			}
@@ -278,8 +318,10 @@ func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid
 		// Reactivate: direct SetStatus call for the same reason as non-owner
 		// suspend above. MembershipReactivated event (§16 open item B2-TODO)
 		// will wrap this in RunInTx + pub.Enqueue once the schema is registered.
+		// Reactivating a tenant_owner/tenant_admin is owner-only too (rev
+		// 2.58), so a tenant_admin cannot undo an owner's suspension.
 		var sErr error
-		m, sErr = s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
+		m, sErr = s.setStatusGuarded(ctx, tenantID, userID, status, expectedVersion)
 		if sErr != nil {
 			return nil, sErr
 		}
@@ -369,6 +411,24 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 		desiredSet[code] = struct{}{}
 	}
 
+	// HLD §6.4 / web-shell OM-6: only a tenant_owner may add or remove
+	// tenant_owner or tenant_admin. A tenant_admin may still reconcile
+	// tender_admin, as long as the admin roles are left as they are.
+	var touched []domain.TenantRoleCode
+	for code := range desiredSet {
+		if _, ok := currentSet[code]; !ok {
+			touched = append(touched, code)
+		}
+	}
+	for code := range currentSet {
+		if _, ok := desiredSet[code]; !ok {
+			touched = append(touched, code)
+		}
+	}
+	if err := requireOwnerForAdminRoles(ctx, touched); err != nil {
+		return nil, nil, err
+	}
+
 	// TM-8 pre-check outside tx: fast-path rejection avoids acquiring the lock.
 	// BUG-P28-1 fix: authoritative re-check with SELECT FOR UPDATE is inside the tx.
 	strippingOwner := false
@@ -392,10 +452,14 @@ func (s *MembershipService) ReconcileRoles(ctx context.Context, tenantID, userID
 		// BUG-P28-1: TM-13 SELECT FOR UPDATE + TM-8 re-check inside the tx
 		// so two concurrent P-28 calls stripping different owners serialize
 		// correctly and the last-owner invariant holds under contention.
-		if strippingOwner {
+		// Rev 2.58: a change to tenant_owner/tenant_admin also takes the lock,
+		// so it serialises with P-7's privileged-target re-check.
+		if strippingOwner || touchesAdminRole(touched) {
 			if err := s.tenants.LockByID(txCtx, tenantID); err != nil {
 				return err
 			}
+		}
+		if strippingOwner {
 			// BUG-9: re-read the target under the lock; its status may have
 			// changed since the read outside the tx.
 			cur, err := s.memberships.FindByUserID(txCtx, tenantID, userID)
@@ -544,6 +608,14 @@ const (
 //  5. Mark the tenant_memberships row status='left' (TM-4/TM-5; deleted_at stays NULL).
 //  6. AUTH-8: post-commit best-effort RP RevokeUserSessions (fail-open).
 func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, actorID uuid.UUID) error {
+	// HLD §6.4 extended to lifecycle actions: removing a tenant_owner or
+	// tenant_admin is tenant_owner-only. Checked first, so a refused caller
+	// never sees the delegate-impact answer; re-checked under the TM-13
+	// lock below against the authoritative role set.
+	if err := s.targetPrivilegeGuard(ctx, tenantID, userID); err != nil {
+		return err
+	}
+
 	// Step 1 — WFI-3 pre-check (outside tx, before any state change).
 	if s.workflow != nil {
 		impact, werr := s.workflow.GetDelegateImpact(ctx, tenantID, userID, nil)
@@ -576,6 +648,9 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 		}
 		trs, err := s.roles.ListByUser(txCtx, tenantID, userID)
 		if err != nil {
+			return err
+		}
+		if err := requireOwnerForPrivilegedTarget(txCtx, trs); err != nil {
 			return err
 		}
 		wasOwner := false
@@ -688,6 +763,13 @@ func (s *MembershipService) RemoveUser(ctx context.Context, tenantID, userID, ac
 func (s *MembershipService) RemovalResolution(ctx context.Context, tenantID, userID uuid.UUID, action RemovalAction, replacementUserID *uuid.UUID, actorID uuid.UUID) error {
 	if s.workflow == nil {
 		return domain.NewError(domain.ErrWorkflowServiceUnavailable, "workflow service not configured")
+	}
+	// HLD §6.4 extended (rev 2.58): resolving for a tenant_owner or
+	// tenant_admin target is tenant_owner-only, so a caller P-8 would refuse
+	// cannot reassign or cancel that member's delegated workflows. This
+	// also covers a P-10/P-11 department demotion of such a target.
+	if err := s.targetPrivilegeGuard(ctx, tenantID, userID); err != nil {
+		return err
 	}
 	switch action {
 	case RemovalReplaceDelegate:
@@ -826,6 +908,11 @@ func (s *MembershipService) ValidateAndEmitAssigneeOverride(ctx context.Context,
 // carries no actor-MFA-freshness signal, so O&M's own code has nothing to
 // check here (§16 OQ-8).
 func (s *MembershipService) ResetUserMFA(ctx context.Context, tenantID, userID, actorID uuid.UUID) error {
+	// HLD §6.4 extended (rev 2.58): resetting a tenant_owner's or
+	// tenant_admin's MFA is tenant_owner-only.
+	if err := s.targetPrivilegeGuard(ctx, tenantID, userID); err != nil {
+		return err
+	}
 	mem, err := s.memberships.FindByUserID(ctx, tenantID, userID)
 	if err != nil {
 		return err
