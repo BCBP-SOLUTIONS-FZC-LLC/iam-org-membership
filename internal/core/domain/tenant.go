@@ -43,6 +43,14 @@ const (
 	RealmDedicated RealmType = "dedicated"
 )
 
+// The shared trial realm every trial tenant lives in (I-1, §8.1), and the
+// shard it is on. A tenant returns to it after an RP-4 conversion revert
+// (TrialReactivated, RP-14).
+const (
+	SharedTrialRealmID       = "trial"
+	SharedTrialKeycloakShard = "shard-0"
+)
+
 // TenantResolution is PUB-1's result (LLD §5.4, IAM HLD §8.2.7): which
 // Keycloak realm an anonymous, pre-login browser should authenticate
 // against. Found=false carries no other field (PUBRES-2). TenantID is set

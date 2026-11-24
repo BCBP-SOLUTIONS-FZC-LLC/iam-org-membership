@@ -6,6 +6,10 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Fixed (2026-11-25 — RP-14: PUB-1 after a conversion revert, LLD rev 2.60)
+
+- **A reverted workspace resolves to the shared trial realm again.** Realm Provisioner's RP-4 revert deletes the dedicated realm and emits `TrialReactivated`, but the projection left `realm_id`/`realm_type` on the dedicated realm, so PUB-1 sent the workspace's users, and RP-4's welcome links, to a realm that no longer existed. The `TrialReactivated` projection now resets `realm_id`, `realm_type` and `keycloak_shard` to the shared trial realm (`trial`, `shared`, `shard-0`) in the same transaction, before the trial reactivation and regardless of the TRIAL-5 cap. An in-grace RP-10 reactivation is already on the shared realm, so nothing changes for it. No schema, event or route change.
+
 ### Changed (2026-11-24 — migration squash: 000001–000010 consolidated into 000000)
 
 - **Pre-deployment migration squash.** Migrations `000001`–`000010` were consolidated into the base `000000_initial_schema` before first deployment (no live data existed in any environment). The end-state database schema is identical. What was folded in: `chk_full_name_length`/`chk_display_name_length` constraints (000001), `idx_pi_email_pending` index (000002), `tenants.residency_mode` (000003), `pending_tenant_events` table + RLS (000004), `trial_signup_ledger` table + grants (000005+000006, superseded length check dropped), `org_membership_migrator` DML grants / MIG-10 (000007), `pending_audit_entries` RLS + grants (000008), `outbox_events_ordering_seq` grants / MIG-11 (000009), `tenants.seats_last_event_at` / BL-OQ-2 (000010). `trial_signup_ledger_test.go` `runner.Down(ctx, 5)` updated to `runner.Down(ctx, 1)`; stale migration-number comments updated across test files, `migrate.go`, `ARCHITECTURE.md`, `README.md`, `LLD`, and `data-model.mmd`.
