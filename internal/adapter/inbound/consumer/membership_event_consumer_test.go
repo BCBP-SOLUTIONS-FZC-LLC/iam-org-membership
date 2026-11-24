@@ -61,7 +61,7 @@ func mkEnv(eventType string, payload any) events.Envelope[json.RawMessage] {
 }
 
 func applyOn(c *MembershipEventConsumer, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan) (domain.SubscriptionStatus, domain.TenantPlan, error) {
-	return c.applyProjection(context.Background(), uuid.New(), env, prevStatus, prevPlan, 30, false)
+	return c.applyProjection(context.Background(), uuid.New(), env, prevStatus, prevPlan, trialWindow{Days: 30}, false)
 }
 
 func newConsumer() (*MembershipEventConsumer, *recordingTenants) {
@@ -198,7 +198,7 @@ func TestApplyProjection_TrialReactivated_RowsAffectedFlipsStatus(t *testing.T) 
 	require.Len(t, tenants.patches, 2)
 	assert.Equal(t, port.TenantLifecyclePatch{
 		Op:            port.LifecycleSetRealm,
-		RealmID:       domain.SharedTrialRealmID,
+		RealmID:       domain.DefaultSharedTrialRealm,
 		RealmType:     string(domain.RealmShared),
 		KeycloakShard: domain.SharedTrialKeycloakShard,
 	}, tenants.patches[0])

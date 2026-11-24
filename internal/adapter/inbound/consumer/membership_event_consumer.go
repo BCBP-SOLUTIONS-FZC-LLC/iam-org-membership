@@ -104,6 +104,8 @@ type MembershipEventConsumer struct {
 	txRunner    port.TxRunner
 	skew        time.Duration
 	logger      port.SlogStyleLogger
+	// sharedTrialRealm is SHARED_TRIAL_REALM — see WithSharedTrialRealm.
+	sharedTrialRealm string
 }
 
 // NewMembershipEventConsumer builds a MembershipEventConsumer. logger may be
@@ -128,6 +130,14 @@ func NewMembershipEventConsumer(inbox port.Inbox, tenants port.TenantRepository,
 // WithTenantProvisioner wires the I-1 flow the TenantIdentityProvisioned
 // backstop runs. Production wiring always sets it; without it such an event
 // is retried and lands in the DLQ rather than being silently dropped.
+// WithSharedTrialRealm sets the shared trial realm name TrialReactivated
+// resets a tenant to (SHARED_TRIAL_REALM, which must equal Realm
+// Provisioner's). Empty means domain.DefaultSharedTrialRealm.
+func (c *MembershipEventConsumer) WithSharedTrialRealm(name string) *MembershipEventConsumer {
+	c.sharedTrialRealm = name
+	return c
+}
+
 func (c *MembershipEventConsumer) WithTenantProvisioner(p TenantProvisioner) *MembershipEventConsumer {
 	c.provisioner = p
 	return c
@@ -191,8 +201,9 @@ func (c *MembershipEventConsumer) Handle(ctx context.Context, env events.Envelop
 			}
 			// I-1 created the tenant while this event waited for the
 			// provisioning lock. TrialReactivated's trial duration was peeked
-			// while the row was missing, so redeliver it to recompute.
-			if env.Type == "TrialReactivated" {
+			// while the row was missing, so redeliver it to recompute —
+			// unless the event carries its own trial end.
+			if env.Type == "TrialReactivated" && trial.EndsAt == nil {
 				return errTenantNotYetProvisioned
 			}
 		}
@@ -255,11 +266,41 @@ func tenantGUC(ctx context.Context, tenantID uuid.UUID) context.Context {
 	return pgcommon.WithGUCSet(ctx, g)
 }
 
-// trialWindow is what Handle peeks before the write transaction for a
-// TrialReactivated event: the trial length, and the plan it was resolved for.
+// trialWindow is how a TrialReactivated event's new trial end is set,
+// resolved before the write transaction. EndsAt, from the event's
+// new_trial_ends_at, is authoritative when present and valid (rev 2.63: it is
+// the date RP's trial-expiry sweep enforces). Otherwise the fallback is
+// now() + Days, the trial length of Plan, the plan peeked for it.
 type trialWindow struct {
-	Days int
-	Plan domain.TenantPlan // empty when nothing was peeked
+	EndsAt *time.Time        // authoritative end from the payload; nil = fall back
+	Days   int               // fallback trial length (plan trial_duration_days)
+	Plan   domain.TenantPlan // plan Days was resolved for; empty when nothing was peeked
+}
+
+// payloadTrialEndsAt returns the event's new_trial_ends_at when it is present
+// and valid (an RFC 3339 instant, non-zero), else nil. ok is false only when
+// the field is present but malformed, so the caller can log the fallback.
+func payloadTrialEndsAt(payload json.RawMessage) (endsAt *time.Time, ok bool) {
+	var p struct {
+		NewTrialEndsAt json.RawMessage `json:"new_trial_ends_at"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &p) != nil {
+		return nil, true
+	}
+	raw := string(p.NewTrialEndsAt)
+	if raw == "" || raw == "null" || raw == `""` {
+		return nil, true // absent
+	}
+	var s string
+	if json.Unmarshal(p.NewTrialEndsAt, &s) != nil {
+		return nil, false // present but not a string
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil || t.IsZero() {
+		return nil, false
+	}
+	t = t.UTC()
+	return &t, true
 }
 
 // errPlanChangedSincePeek redelivers a TrialReactivated whose trial length
@@ -274,6 +315,17 @@ var errPlanChangedSincePeek = errors.New("TrialReactivated: plan changed since t
 func (c *MembershipEventConsumer) trialDurationDays(ctx, gucCtx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage]) (trialWindow, error) {
 	if env.Type != "TrialReactivated" {
 		return trialWindow{}, nil
+	}
+	// The event's new_trial_ends_at is authoritative when present and valid:
+	// no plan peek and no Catalog call. Only an absent or malformed value
+	// falls back to the plan's trial_duration_days (rev 2.63).
+	endsAt, ok := payloadTrialEndsAt(env.Payload)
+	if endsAt != nil {
+		return trialWindow{EndsAt: endsAt}, nil
+	}
+	if !ok {
+		c.logger.Warn("TrialReactivated: malformed new_trial_ends_at, falling back to the plan's trial_duration_days",
+			"tenant_id", tenantID, "event_id", env.ID)
 	}
 	// TrialReactivated (§8.10.3/TR2) needs the tenant's current plan's
 	// trial_duration_days from the Catalog Service to compute the new
@@ -374,7 +426,7 @@ func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.U
 		return false, errPlanChangedSincePeek
 	}
 
-	newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trial.Days, planStale)
+	newStatus, newPlan, err := c.applyProjection(txCtx, tenantID, env, prevStatus, prevPlan, trial, planStale)
 	if err != nil {
 		return false, err
 	}
@@ -544,7 +596,7 @@ var planCarryingLifecycleEvents = map[string]bool{
 // applyProjection applies one event's UPDATE. planStale (only ever true for
 // planCarryingLifecycleEvents) keeps the current plan because a newer
 // TenantPlanChanged has already been applied.
-func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trialDurationDays int, planStale bool) (domain.SubscriptionStatus, domain.TenantPlan, error) {
+func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID uuid.UUID, env events.Envelope[json.RawMessage], prevStatus domain.SubscriptionStatus, prevPlan domain.TenantPlan, trial trialWindow, planStale bool) (domain.SubscriptionStatus, domain.TenantPlan, error) {
 	switch env.Type {
 	// ── tenant-orgm-q (Realm-Provisioner-produced) ──────────────────────
 	// TenantIdentityProvisioned never reaches here (handled before the
@@ -640,7 +692,7 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		// For RP-10 the tenant is already there and this changes nothing.
 		if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:            port.LifecycleSetRealm,
-			RealmID:       domain.SharedTrialRealmID,
+			RealmID:       domain.SharedTrialRealm(c.sharedTrialRealm),
 			RealmType:     string(domain.RealmShared),
 			KeycloakShard: domain.SharedTrialKeycloakShard,
 		}); err != nil {
@@ -666,7 +718,8 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 			// derives trial, not active.
 			if _, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 				Op:                port.LifecycleRevertConversion,
-				TrialDurationDays: trialDurationDays,
+				TrialDurationDays: trial.Days,
+				TrialEndsAt:       trial.EndsAt,
 			}); err != nil {
 				return prevStatus, prevPlan, err
 			}
@@ -678,7 +731,8 @@ func (c *MembershipEventConsumer) applyProjection(ctx context.Context, tenantID 
 		}
 		rows, err := c.tenants.ApplyLifecyclePatch(ctx, tenantID, port.TenantLifecyclePatch{
 			Op:                port.LifecycleTrialReactivate,
-			TrialDurationDays: trialDurationDays,
+			TrialDurationDays: trial.Days,
+			TrialEndsAt:       trial.EndsAt,
 		})
 		if err != nil {
 			return prevStatus, prevPlan, err

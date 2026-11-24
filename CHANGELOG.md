@@ -6,6 +6,14 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed (2026-11-25 — `SHARED_TRIAL_REALM`, LLD rev 2.64)
+
+- **The shared trial realm name is configured, not hard-coded.** New setting `SHARED_TRIAL_REALM` (default `trial`, Helm `env.SHARED_TRIAL_REALM`). I-1 records it as `realm_id` for every new trial tenant, and `TrialReactivated` resets a tenant to it after a revert, in both the server and the reconciler's parked-event replay. It must equal Realm Provisioner's setting of the same name. Nothing changes at the default. The shard stays `shard-0`, since there is no shared shard setting.
+
+### Changed (2026-11-25 — `new_trial_ends_at` is the authoritative trial end, LLD rev 2.63)
+
+- **`TrialReactivated` now stores the trial end Realm Provisioner sends.** When `new_trial_ends_at` is present and a valid RFC 3339 instant, it becomes `trial_ends_at` as is, for both a conversion revert and a trial reactivation. It is the date RP's trial-expiry sweep enforces, so both services now end the trial on the same day. Only an absent or malformed value falls back to the plan's `trial_duration_days` (and is logged when malformed). When the date is used, no plan is read and the Catalog Service is not called. The consumed `TrialReactivatedPayload` schema declares `new_trial_ends_at` as a plain string.
+
 ### Fixed (2026-11-25 — EVT-14 plan watermark, LLD rev 2.62)
 
 - **A plan change can no longer cause a conversion revert to be skipped.** `TenantPlanChanged` shared the `last_event_at` recency watermark with Realm Provisioner's lifecycle events. A Billing plan change sent after a conversion reversal is stamped later than RP's `TrialReactivated`; delivered first, it made the revert look stale, so the tenant stayed `active` on the deleted dedicated realm. `TenantPlanChanged` now uses its own watermark, `tenants.plan_last_event_at` (new migration `000011_plan_last_event_at`), as `TenantSeatsChanged` does with `seats_last_event_at` (BL-OQ-2). `TenantConverted` and `DirectPaidSignup` apply their plan only when newer than that watermark and advance it when they do, so an older conversion cannot overwrite a newer plan change; their status change is unaffected. A plan-less conversion no longer advances the plan watermark. The `TenantStateChanged` relay's `changed_at` is now the newest event time applied to status or plan, so it never goes backwards. A `TrialReactivated` whose trial length was resolved for a plan that changed before it applied is redelivered and resolved again. The migration is numbered `000011` because `000001`–`000010` were used before the squash.

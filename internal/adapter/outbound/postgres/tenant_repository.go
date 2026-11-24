@@ -489,10 +489,10 @@ func execLifecyclePatch(ctx context.Context, tx pgx.Tx, id uuid.UUID, patch port
 		tag, err = tx.Exec(ctx, `
 			UPDATE tenants t
 			SET status = 'trial',
-			    trial_ends_at = now() + make_interval(days => $2),
+			    trial_ends_at = COALESCE($3::timestamptz, now() + make_interval(days => $2)),
 			    trial_reactivation_count = trial_reactivation_count + 1,
 			    suspension_source = NULL
-			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, id, patch.TrialDurationDays)
+			WHERE t.id = $1 AND t.trial_reactivation_count < 1`, id, patch.TrialDurationDays, patch.TrialEndsAt)
 	case port.LifecycleSuspendBillingLapse:
 		tag, err = tx.Exec(ctx, `
 			UPDATE tenants SET status = 'suspended',
@@ -527,11 +527,11 @@ func execLifecyclePatch(ctx context.Context, tx pgx.Tx, id uuid.UUID, patch port
 		tag, err = tx.Exec(ctx, `
 			UPDATE tenants
 			SET status = 'trial',
-			    trial_ends_at = now() + make_interval(days => $2),
+			    trial_ends_at = COALESCE($3::timestamptz, now() + make_interval(days => $2)),
 			    subscription_started_at = NULL,
 			    cancelled_at = NULL,
 			    suspension_source = NULL
-			WHERE id = $1`, id, patch.TrialDurationDays)
+			WHERE id = $1`, id, patch.TrialDurationDays, patch.TrialEndsAt)
 	case port.LifecycleSetLicensedSeats:
 		tag, err = tx.Exec(ctx, `UPDATE tenants SET licensed_seats = $2 WHERE id = $1`, id, patch.LicensedSeats)
 	default:

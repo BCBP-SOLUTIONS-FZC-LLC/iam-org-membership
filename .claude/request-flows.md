@@ -373,12 +373,12 @@ Retention boundary anchored to `trial_ends_at + 15 days` — deterministic. Swee
 
 Within 15-d grace, `trial_expired` reactivatable **once** via signed link. RP validates single-use token, re-enables user, emits `TrialReactivated`. O&M consumes (`tenant-orgm-q`); `plan.trial_duration_days` is resolved via a pre-tx `CatalogService.PlanByCode` HTTP call (mirrors §8.1 TrialSignup — no outbound call runs inside an open tx), then the write transaction applies:
 1. `status='trial'` (audit `TrialReactivated`).
-2. **Fresh window:** `trial_ends_at = now() + plan.trial_duration_days` (HLD Invariant TRIAL-7, monotonic).
+2. **Trial end:** `trial_ends_at` = the event's `new_trial_ends_at` when present and valid (authoritative — the date RP's sweep enforces, LLD rev 2.63); only an absent or malformed value falls back to `now() + plan.trial_duration_days` (pre-tx Catalog call, skipped when the date is used).
 3. Increment `trial_reactivation_count` (T-14 CHECK backstop caps at 1).
 
 Layered one-time guarantee: (a) single-use token (RP redeems), (b) counter check + T-14 CHECK, (c) `processed_events` dedup.
 
-**Conversion revert (RP-4, RP-14, LLD rev 2.60).** RP emits `TrialReactivated` after a revert too, once it has moved the users back to the shared trial realm and deleted the dedicated one. Before the steps above, the same transaction resets `realm_id='trial'`, `realm_type='shared'`, `keycloak_shard='shard-0'`, whatever the T-14 cap, so PUB-1 never names the deleted realm. For an in-grace RP-10 reactivation this changes nothing.
+**Conversion revert (RP-4, RP-14, LLD rev 2.60).** RP emits `TrialReactivated` after a revert too, once it has moved the users back to the shared trial realm and deleted the dedicated one. Before the steps above, the same transaction resets `realm_id` to `SHARED_TRIAL_REALM` (default `trial`, LLD rev 2.64), `realm_type='shared'`, `keycloak_shard='shard-0'`, whatever the T-14 cap, so PUB-1 never names the deleted realm. For an in-grace RP-10 reactivation this changes nothing.
 
 **`reason` (LLD rev 2.61).** With `reason='conversion_revert'` the steps above are replaced by `LifecycleRevertConversion`: `status='trial'`, fresh `trial_ends_at`, `subscription_started_at` cleared, `trial_reactivation_count` neither checked nor incremented (a revert is not a TRIAL-5 reactivation). A missing, `trial_reactivation` or unknown reason keeps steps 1–3 under the cap.
 

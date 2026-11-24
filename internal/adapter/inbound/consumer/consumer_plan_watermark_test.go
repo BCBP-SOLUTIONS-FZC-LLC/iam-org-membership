@@ -237,3 +237,111 @@ func TestPlanWatermark_RelayChangedAtStaysMonotonic(t *testing.T) {
 		assert.Equal(t, now, pub.events[0].Data.(domain.TenantStateChangedPayload).ChangedAt)
 	})
 }
+
+// ── rev 2.63: new_trial_ends_at is authoritative ────────────────────────
+
+func TestPayloadTrialEndsAt(t *testing.T) {
+	want := time.Date(2026, 12, 9, 10, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct {
+		payload string
+		want    *time.Time
+		ok      bool
+	}{
+		"empty payload": {``, nil, true},
+		"absent":        {`{"reason":"conversion_revert"}`, nil, true},
+		"null":          {`{"new_trial_ends_at":null}`, nil, true},
+		"empty string":  {`{"new_trial_ends_at":""}`, nil, true},
+		"valid UTC":     {`{"new_trial_ends_at":"2026-12-09T10:00:00Z"}`, &want, true},
+		"valid offset":  {`{"new_trial_ends_at":"2026-12-09T14:00:00+04:00"}`, &want, true},
+		"fractional":    {`{"new_trial_ends_at":"2026-12-09T10:00:00.000Z"}`, &want, true},
+		"malformed":     {`{"new_trial_ends_at":"next tuesday"}`, nil, false},
+		"date only":     {`{"new_trial_ends_at":"2026-12-09"}`, nil, false},
+		"zero time":     {`{"new_trial_ends_at":"0001-01-01T00:00:00Z"}`, nil, false},
+		"not a string":  {`{"new_trial_ends_at":1765274400}`, nil, false},
+		"undecodable":   {`not json`, nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := payloadTrialEndsAt(json.RawMessage(tc.payload))
+			assert.Equal(t, tc.ok, ok)
+			if tc.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.True(t, tc.want.Equal(*got))
+			assert.Equal(t, time.UTC, got.Location())
+		})
+	}
+}
+
+// A valid new_trial_ends_at is used as is: no plan peek, no Catalog call
+// (the failing catalog would surface an error), and no plan-changed retry.
+func TestTrialEndsAt_PayloadDateWinsWithoutCatalog(t *testing.T) {
+	endsAt := time.Date(2026, 12, 9, 10, 0, 0, 0, time.UTC)
+	for _, reason := range []string{"conversion_revert", "trial_reactivation"} {
+		t.Run(reason, func(t *testing.T) {
+			repo := &pwTenantRepo{
+				lock:     port.TenantProjectionLock{Status: domain.StatusActive, Plan: domain.PlanStarter},
+				peekPlan: domain.PlanPro, // would trigger errPlanChangedSincePeek if peeked
+			}
+			c := NewMembershipEventConsumer(newFakeInbox(&htSyncTxRunner{}, &htIdempotency{}), repo,
+				&trErrCatalog{err: errors.New("catalog must not be called")}, nil, 5*time.Minute, nil)
+			repo.findByIDFn = func(context.Context, uuid.UUID) (*domain.Tenant, error) {
+				return nil, errors.New("plan must not be peeked")
+			}
+			b, _ := json.Marshal(map[string]string{"reason": reason, "new_trial_ends_at": endsAt.Format(time.RFC3339)})
+			require.NoError(t, c.Handle(context.Background(), events.Envelope[json.RawMessage]{
+				ID: uuid.New().String(), Type: "TrialReactivated", TenantID: uuid.New().String(),
+				Timestamp: time.Now().UTC(), Payload: b,
+			}))
+			require.Len(t, repo.patches, 2)
+			require.NotNil(t, repo.patches[1].TrialEndsAt)
+			assert.True(t, endsAt.Equal(*repo.patches[1].TrialEndsAt))
+			assert.Zero(t, repo.patches[1].TrialDurationDays)
+		})
+	}
+}
+
+// Absent or malformed new_trial_ends_at falls back to the plan's
+// trial_duration_days (14 from trNoopCatalog).
+func TestTrialEndsAt_AbsentOrMalformedFallsBackToPlan(t *testing.T) {
+	for name, payload := range map[string]map[string]string{
+		"absent":    {"reason": "conversion_revert"},
+		"malformed": {"reason": "conversion_revert", "new_trial_ends_at": "soon"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := &pwTenantRepo{lock: port.TenantProjectionLock{Status: domain.StatusActive, Plan: domain.PlanStarter}}
+			require.NoError(t, pwHandle(t, repo, "TrialReactivated", time.Now().UTC(), payload))
+			require.Len(t, repo.patches, 2)
+			assert.Nil(t, repo.patches[1].TrialEndsAt)
+			assert.Equal(t, 14, repo.patches[1].TrialDurationDays)
+		})
+	}
+}
+
+// ── rev 2.64: SHARED_TRIAL_REALM ────────────────────────────────────────
+
+// TrialReactivated resets the tenant to the configured shared trial realm,
+// or "trial" when unset; the shard stays shard-0.
+func TestTrialReactivated_ResetsToConfiguredSharedTrialRealm(t *testing.T) {
+	for name, tc := range map[string]struct{ configured, want string }{
+		"unset uses default": {"", "trial"},
+		"configured":         {"trial-eu", "trial-eu"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tenants := &recordingTenants{}
+			c := NewMembershipEventConsumer(newFakeInbox(nil, nil), tenants, nil, nil, 300*time.Second, nil).
+				WithSharedTrialRealm(tc.configured)
+			_, _, err := applyOn(c, mkEnv("TrialReactivated", map[string]string{"reason": "conversion_revert"}),
+				domain.StatusActive, domain.PlanStarter)
+			require.NoError(t, err)
+			require.NotEmpty(t, tenants.patches)
+			assert.Equal(t, port.TenantLifecyclePatch{
+				Op:            port.LifecycleSetRealm,
+				RealmID:       tc.want,
+				RealmType:     string(domain.RealmShared),
+				KeycloakShard: domain.SharedTrialKeycloakShard,
+			}, tenants.patches[0])
+		})
+	}
+}

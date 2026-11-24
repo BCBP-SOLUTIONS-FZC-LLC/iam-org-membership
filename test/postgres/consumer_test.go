@@ -663,7 +663,7 @@ func TestConsumer_TrialReactivated_AfterRevert_ResetsRealmForPUB1(t *testing.T) 
 		`SELECT status, realm_id, realm_type, keycloak_shard FROM tenants WHERE id = $1`, tenantID,
 	).Scan(&status, &realmID, &realmType, &shard))
 	assert.Equal(t, "trial", status)
-	assert.Equal(t, domain.SharedTrialRealmID, realmID)
+	assert.Equal(t, domain.DefaultSharedTrialRealm, realmID)
 	assert.Equal(t, string(domain.RealmShared), realmType)
 	assert.Equal(t, domain.SharedTrialKeycloakShard, shard)
 
@@ -671,7 +671,7 @@ func TestConsumer_TrialReactivated_AfterRevert_ResetsRealmForPUB1(t *testing.T) 
 	res, err := pgadapter.NewTenantRepository(sysPool).ResolveByIdentifier(ctx, "rp14-revert")
 	require.NoError(t, err)
 	require.True(t, res.Found)
-	assert.Equal(t, domain.SharedTrialRealmID, res.Realm, "PUB-1 must name the shared trial realm after a revert")
+	assert.Equal(t, domain.DefaultSharedTrialRealm, res.Realm, "PUB-1 must name the shared trial realm after a revert")
 	assert.Equal(t, domain.RealmShared, res.RealmType)
 }
 
@@ -707,10 +707,65 @@ func TestConsumer_TrialReactivated_ConversionRevert_UndoesConversion(t *testing.
 				FROM tenants WHERE id = $1`, tenantID,
 			).Scan(&status, &realmID, &gotCount, &subStarted, &trialEndsAt))
 			assert.Equal(t, "trial", status)
-			assert.Equal(t, domain.SharedTrialRealmID, realmID)
+			assert.Equal(t, domain.DefaultSharedTrialRealm, realmID)
 			assert.Equal(t, count, gotCount, "a revert is not a TRIAL-5 reactivation")
 			assert.Nil(t, subStarted, "the conversion is undone")
 			assert.WithinDuration(t, time.Now().UTC().Add(14*24*time.Hour), trialEndsAt, 2*time.Minute)
+		})
+	}
+}
+
+// rev 2.63: the event's new_trial_ends_at is the authoritative trial end.
+// When present and valid it is stored as is, for a revert and for a trial
+// reactivation; absent or malformed falls back to the plan's
+// trial_duration_days (14 from fakePlanCatalog).
+func TestConsumer_TrialReactivated_NewTrialEndsAtIsAuthoritative(t *testing.T) {
+	t.Parallel()
+	endsAt := time.Now().UTC().Add(9 * 24 * time.Hour).Truncate(time.Second)
+	for name, tc := range map[string]struct {
+		setup   string
+		payload map[string]string
+		want    time.Time
+	}{
+		"revert, valid date": {
+			`UPDATE tenants SET status = 'active', subscription_started_at = now() WHERE id = $1`,
+			map[string]string{"reason": "conversion_revert", "new_trial_ends_at": endsAt.Format(time.RFC3339)},
+			endsAt,
+		},
+		"trial reactivation, valid date": {
+			`UPDATE tenants SET status = 'trial_expired' WHERE id = $1`,
+			map[string]string{"reason": "trial_reactivation", "new_trial_ends_at": endsAt.Format(time.RFC3339)},
+			endsAt,
+		},
+		"revert, malformed date falls back": {
+			`UPDATE tenants SET status = 'active', subscription_started_at = now() WHERE id = $1`,
+			map[string]string{"reason": "conversion_revert", "new_trial_ends_at": "not-a-date"},
+			time.Now().UTC().Add(14 * 24 * time.Hour),
+		},
+		"trial reactivation, absent date falls back": {
+			`UPDATE tenants SET status = 'trial_expired' WHERE id = $1`,
+			map[string]string{"reason": "trial_reactivation"},
+			time.Now().UTC().Add(14 * 24 * time.Hour),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			appPool, rawPool, _ := setupTestDB(t)
+			ctx := context.Background()
+			tenantID := seedTenant(t, ctx, rawPool, "trial-ends-at")
+			_, err := rawPool.Exec(ctx, tc.setup, tenantID)
+			require.NoError(t, err)
+
+			c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
+				pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
+			require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), tc.payload)))
+
+			var status string
+			var got time.Time
+			require.NoError(t, rawPool.QueryRow(ctx,
+				`SELECT status, trial_ends_at FROM tenants WHERE id = $1`, tenantID).Scan(&status, &got))
+			assert.Equal(t, "trial", status)
+			assert.WithinDuration(t, tc.want, got, 2*time.Minute)
 		})
 	}
 }
@@ -738,7 +793,7 @@ func TestConsumer_TrialReactivated_CapReached_StillResetsRealm(t *testing.T) {
 	require.NoError(t, rawPool.QueryRow(ctx,
 		`SELECT realm_id, realm_type FROM tenants WHERE id = $1`, tenantID,
 	).Scan(&realmID, &realmType))
-	assert.Equal(t, domain.SharedTrialRealmID, realmID)
+	assert.Equal(t, domain.DefaultSharedTrialRealm, realmID)
 	assert.Equal(t, string(domain.RealmShared), realmType)
 }
 
