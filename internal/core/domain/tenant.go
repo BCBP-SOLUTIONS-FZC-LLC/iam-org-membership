@@ -51,6 +51,21 @@ const (
 	SharedTrialKeycloakShard = "shard-0"
 )
 
+// TrialReactivatedReason is the optional "reason" on Realm Provisioner's
+// TrialReactivated payload: which RP flow sent it. Missing means a normal
+// trial reactivation, since RP sent no reason before it added the field.
+type TrialReactivatedReason string
+
+const (
+	// TrialReactivationReasonTrial is RP-10's one-time in-grace trial
+	// reactivation. It counts against the TRIAL-5 cap (T-14).
+	TrialReactivationReasonTrial TrialReactivatedReason = "trial_reactivation"
+	// TrialReactivationReasonConversionRevert is RP-4 undoing a conversion
+	// within its revert window. It is not a second trial, so it skips the
+	// TRIAL-5 cap and clears subscription_started_at.
+	TrialReactivationReasonConversionRevert TrialReactivatedReason = "conversion_revert"
+)
+
 // TenantResolution is PUB-1's result (LLD §5.4, IAM HLD §8.2.7): which
 // Keycloak realm an anonymous, pre-login browser should authenticate
 // against. Found=false carries no other field (PUBRES-2). TenantID is set

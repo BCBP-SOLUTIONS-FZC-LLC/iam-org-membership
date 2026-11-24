@@ -151,6 +151,10 @@ const (
 	LifecycleReactivatePaid
 	LifecycleReactivateTrial
 	LifecycleSetLicensedSeats
+	// LifecycleRevertConversion undoes TenantConverted on an RP-4 revert:
+	// back to trial with a fresh window, subscription_started_at cleared,
+	// trial_reactivation_count untouched (not a TRIAL-5 reactivation).
+	LifecycleRevertConversion
 )
 
 // TenantLifecyclePatch is one consumer projection UPDATE.

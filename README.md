@@ -193,7 +193,7 @@ iam-org-membership/
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.60 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.61 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   ├── architecture/                  # Standalone Mermaid diagrams
 │   ├── observability/                 # Observability standard implementation, generated metric-registry.md, migration.md, runbooks.md
@@ -883,7 +883,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.60 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.61 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/observability/`](docs/observability/README.md) | Observability standard implementation: identity, tiers, CI enforcement, SLOs; generated [metric inventory](docs/observability/metric-registry.md); [renamed metrics](docs/observability/migration.md); [alert runbooks](docs/observability/runbooks.md) |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 | [`docs/runbook-outbox-dead-letter.md`](docs/runbook-outbox-dead-letter.md) | Inspecting and reprocessing `outbox_dead_letters` |

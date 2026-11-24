@@ -4051,9 +4051,23 @@ components:
       type: object
       additionalProperties: true
       description: |
-        No fields are read by this consumer. The new trial_ends_at is
-        computed server-side from plans.trial_duration_days for the
-        tenant's current plan, not taken from the payload.
+        Only the optional reason is read. The new trial_ends_at is
+        computed server-side from the Catalog Service's
+        trial_duration_days for the tenant's current plan, not taken from
+        the payload. Whatever the reason, the tenant is first reset to the
+        shared trial realm (RP-14, O&M LLD rev 2.60).
+      properties:
+        reason:
+          type: string
+          description: |
+            Optional (O&M LLD rev 2.61). Which Realm Provisioner flow sent
+            the event. 'conversion_revert' (RP-4) undoes the conversion:
+            back to trial with a fresh window, subscription_started_at
+            cleared, and the TRIAL-5 cap neither checked nor incremented.
+            'trial_reactivation' (RP-10) is the one-time, capped in-grace
+            reactivation. Missing or any other value is treated as
+            'trial_reactivation' (deliberately no enum, so a new value from
+            RP is not dead-lettered).
 
     TenantSuspendedPayload:
       type: object
