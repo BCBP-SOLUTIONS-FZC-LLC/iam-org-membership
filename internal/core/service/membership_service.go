@@ -201,22 +201,14 @@ func (s *MembershipService) Get(ctx context.Context, tenantID, userID uuid.UUID)
 	return &domain.MembershipListItem{Membership: *m, TenantRoles: codes, Departments: views}, nil
 }
 
-// SetStatus is P-7 (suspend/reactivate). AUTH-8: after commit, call RP
-// RevokeUserSessions best-effort (fail-open, TTL backstop). On suspend we
-// also run the WFI-13 §8.8.5 advisory: a best-effort GetDelegateImpact
-// whose result rides the 200 response — never a 409, never blocking.
-// A Workflow Service 5xx/timeout is logged and omitted (fail-open); an
-// urgent security freeze must not depend on Workflow availability.
-//
-// TM-13: if the target user holds tenant_owner, the suspend is wrapped in a
-// RunInTx with SELECT FOR UPDATE on the tenants row, then TM-8 is checked
-// inside the lock — same serialisation pattern as P-8 and P-28.
 // setStatusGuarded writes a P-7 status change. For a caller that is not a
 // tenant_owner it takes the TM-13 tenant-row lock, re-reads the target's
 // roles and applies the HLD §6.4 lifecycle rule inside the same tx, so the
 // check serialises with a concurrent P-28 admin-role grant (which takes the
-// same lock). An owner caller, or a call with no request context, needs no
-// check and keeps the single-statement path.
+// same lock). Grants made outside P-28 (JIT I-10, invite accept) do not take
+// it, so this narrows the window rather than closing it for those paths.
+// An owner caller, or a call with no request context, needs no check and
+// keeps the single-statement path.
 func (s *MembershipService) setStatusGuarded(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, expectedVersion int64) (*domain.TenantMembership, error) {
 	if !callerNeedsOwnerCheck(ctx) {
 		return s.memberships.SetStatus(ctx, tenantID, userID, status, expectedVersion)
@@ -242,6 +234,16 @@ func (s *MembershipService) setStatusGuarded(ctx context.Context, tenantID, user
 	return m, nil
 }
 
+// SetStatus is P-7 (suspend/reactivate). AUTH-8: after commit, call RP
+// RevokeUserSessions best-effort (fail-open, TTL backstop). On suspend we
+// also run the WFI-13 §8.8.5 advisory: a best-effort GetDelegateImpact
+// whose result rides the 200 response — never a 409, never blocking.
+// A Workflow Service 5xx/timeout is logged and omitted (fail-open); an
+// urgent security freeze must not depend on Workflow availability.
+//
+// TM-13: if the target user holds tenant_owner, the suspend is wrapped in a
+// RunInTx with SELECT FOR UPDATE on the tenants row, then TM-8 is checked
+// inside the lock — same serialisation pattern as P-8 and P-28.
 func (s *MembershipService) SetStatus(ctx context.Context, tenantID, userID uuid.UUID, status domain.MembershipStatus, expectedVersion int64) (*SetStatusResult, error) {
 	var m *domain.TenantMembership
 
