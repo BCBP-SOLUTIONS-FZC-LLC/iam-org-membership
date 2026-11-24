@@ -113,7 +113,7 @@ type TrialSignupInput struct {
 }
 
 // DefaultTrialSeats is the trial seat allowance (T-8, HLD §6.6).
-const DefaultTrialSeats = 10
+const DefaultTrialSeats = domain.DefaultTrialSeats
 
 var emailHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 

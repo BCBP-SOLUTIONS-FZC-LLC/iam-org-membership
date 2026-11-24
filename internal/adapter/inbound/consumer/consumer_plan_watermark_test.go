@@ -345,3 +345,54 @@ func TestTrialReactivated_ResetsToConfiguredSharedTrialRealm(t *testing.T) {
 		})
 	}
 }
+
+// ── rev 2.65: a revert restores the trial plan and seats ────────────────
+
+// With a trial plan recorded, the revert restores it and the trial seat
+// allowance in the same patch, raises the seat/plan watermarks to the event
+// time, and relays the restored plan.
+func TestRevert_RestoresRecordedTrialPlanAndSeats(t *testing.T) {
+	now := time.Now().UTC()
+	starter := domain.PlanStarter
+	pub := &htPublisher{}
+	repo := &pwTenantRepo{
+		lock: port.TenantProjectionLock{Status: domain.StatusActive, Plan: domain.PlanPro, TrialPlan: &starter},
+		pub:  pub,
+	}
+	require.NoError(t, pwHandle(t, repo, "TrialReactivated", now,
+		map[string]string{"reason": "conversion_revert", "new_trial_ends_at": now.Add(14 * 24 * time.Hour).Format(time.RFC3339)}))
+	require.Len(t, repo.patches, 2)
+	p := repo.patches[1]
+	assert.Equal(t, port.LifecycleRevertConversion, p.Op)
+	assert.Equal(t, domain.PlanStarter, p.Plan)
+	assert.Equal(t, domain.DefaultTrialSeats, p.LicensedSeats)
+	assert.Equal(t, now, p.EventTime)
+
+	require.Len(t, pub.events, 1)
+	payload := pub.events[0].Data.(domain.TenantStateChangedPayload)
+	assert.Equal(t, domain.StatusTrial, payload.Status)
+	assert.Equal(t, domain.PlanStarter, payload.Plan, "EVT-16 relays the restored plan")
+	assert.Equal(t, domain.PlanPro, payload.PreviousPlan)
+}
+
+// No trial plan recorded: the current plan is kept (never a synthetic
+// fallback such as starter), seats still reset.
+func TestRevert_NoRecordedTrialPlanKeepsCurrentPlan(t *testing.T) {
+	repo := &pwTenantRepo{lock: port.TenantProjectionLock{Status: domain.StatusActive, Plan: domain.PlanPro}}
+	require.NoError(t, pwHandle(t, repo, "TrialReactivated", time.Now().UTC(), map[string]string{"reason": "conversion_revert"}))
+	require.Len(t, repo.patches, 2)
+	assert.Equal(t, domain.PlanPro, repo.patches[1].Plan)
+	assert.Equal(t, domain.DefaultTrialSeats, repo.patches[1].LicensedSeats)
+}
+
+// A trial_reactivation (RP-10) is not a revert: it touches neither plan
+// nor seats.
+func TestTrialReactivation_LeavesPlanAndSeats(t *testing.T) {
+	starter := domain.PlanStarter
+	repo := &pwTenantRepo{lock: port.TenantProjectionLock{Status: domain.StatusTrialExpired, Plan: domain.PlanPro, TrialPlan: &starter}}
+	require.NoError(t, pwHandle(t, repo, "TrialReactivated", time.Now().UTC(), map[string]string{"reason": "trial_reactivation"}))
+	require.Len(t, repo.patches, 2)
+	assert.Equal(t, port.LifecycleTrialReactivate, repo.patches[1].Op)
+	assert.Empty(t, repo.patches[1].Plan)
+	assert.Zero(t, repo.patches[1].LicensedSeats)
+}

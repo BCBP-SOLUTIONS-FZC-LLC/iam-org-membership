@@ -15,6 +15,7 @@ erDiagram
         timestamptz last_event_at "EVT-14 recency high-water mark (lifecycle events)"
         timestamptz seats_last_event_at "EVT-14 recency high-water for TenantSeatsChanged — independent of last_event_at (BL-OQ-2)"
         timestamptz plan_last_event_at "EVT-14 recency high-water for the plan: TenantPlanChanged, and the plan TenantConverted/DirectPaidSignup carry — independent of last_event_at (rev 2.62)"
+        tenant_plan trial_plan "plan during the trial, recorded at conversion; restored by an RP-4 revert (rev 2.65)"
         text realm_id "unique WHERE realm_type=dedicated (T-6)"
         realm_type realm_type "ENUM shared-dedicated, explicit not derived (T-6)"
         text keycloak_shard "RP-owned projection, O&M never selects (T-12)"

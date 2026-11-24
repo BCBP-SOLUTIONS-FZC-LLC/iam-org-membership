@@ -410,10 +410,11 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 	err := withPool(ctx, r.pool, func(tx pgx.Tx) error {
 		var status, plan string
 		var lastEventAt, seatsLastEventAt, planLastEventAt *time.Time
+		var trialPlan *string
 		err := tx.QueryRow(ctx, `
-			SELECT status, plan, last_event_at, seats_last_event_at, plan_last_event_at
+			SELECT status, plan, last_event_at, seats_last_event_at, plan_last_event_at, trial_plan
 			FROM tenants WHERE id = $1 AND deleted_at IS NULL
-			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt, &seatsLastEventAt, &planLastEventAt)
+			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt, &seatsLastEventAt, &planLastEventAt, &trialPlan)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
@@ -426,6 +427,10 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 			LastEventAt:      lastEventAt,
 			SeatsLastEventAt: seatsLastEventAt,
 			PlanLastEventAt:  planLastEventAt,
+		}
+		if trialPlan != nil {
+			tp := domain.TenantPlan(*trialPlan)
+			lock.TrialPlan = &tp
 		}
 		return nil
 	})
@@ -480,6 +485,7 @@ func execLifecyclePatch(ctx context.Context, tx pgx.Tx, id uuid.UUID, patch port
 	case port.LifecycleActivatePaid:
 		tag, err = tx.Exec(ctx, `
 			UPDATE tenants SET status = 'active', subscription_started_at = now(), plan = $2,
+			                    trial_plan = CASE WHEN status IN ('trial', 'trial_expired') THEN plan ELSE trial_plan END,
 			                    suspension_source = NULL
 			WHERE id = $1`, id, string(patch.Plan))
 	case port.LifecycleSetStatusClearSuspension:
@@ -530,8 +536,12 @@ func execLifecyclePatch(ctx context.Context, tx pgx.Tx, id uuid.UUID, patch port
 			    trial_ends_at = COALESCE($3::timestamptz, now() + make_interval(days => $2)),
 			    subscription_started_at = NULL,
 			    cancelled_at = NULL,
-			    suspension_source = NULL
-			WHERE id = $1`, id, patch.TrialDurationDays, patch.TrialEndsAt)
+			    suspension_source = NULL,
+			    plan = $4,
+			    licensed_seats = $5,
+			    seats_last_event_at = GREATEST(seats_last_event_at, $6::timestamptz),
+			    plan_last_event_at = GREATEST(plan_last_event_at, $6::timestamptz)
+			WHERE id = $1`, id, patch.TrialDurationDays, patch.TrialEndsAt, string(patch.Plan), patch.LicensedSeats, patch.EventTime)
 	case port.LifecycleSetLicensedSeats:
 		tag, err = tx.Exec(ctx, `UPDATE tenants SET licensed_seats = $2 WHERE id = $1`, id, patch.LicensedSeats)
 	default:

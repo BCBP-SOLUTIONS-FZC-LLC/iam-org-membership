@@ -26,7 +26,7 @@ import (
 func ledgerHash(b string) string { return strings.Repeat(b, 64/len(b)) }
 
 // The test harness grants the app role ALL TABLES, which would hide a
-// missing GRANT. Revoke it, roll back every migration (000001, then 000000) and
+// missing GRANT. Revoke it, roll back every migration (down to the consolidated 000000) and
 // re-apply it, then check that the migration itself grants what CR-4, I-1
 // and the prune need.
 func TestTrialLedger_MigrationGrantsAppRole(t *testing.T) {
@@ -36,8 +36,9 @@ func TestTrialLedger_MigrationGrantsAppRole(t *testing.T) {
 	_, err := fx.rawPool.Exec(ctx, `REVOKE ALL ON trial_signup_ledger FROM org_membership_app`)
 	require.NoError(t, err)
 
-	runner := &pgmigrate.Runner{FS: loadMigrationDir(t), DSN: fx.rawPool.Config().ConnConfig.ConnString()}
-	require.NoError(t, runner.Down(ctx, 2)) // roll back 000001 and the consolidated 000000
+	migFS := loadMigrationDir(t)
+	runner := &pgmigrate.Runner{FS: migFS, DSN: fx.rawPool.Config().ConnConfig.ConnString()}
+	require.NoError(t, runner.Down(ctx, countUpFiles(t, migFS))) // roll back every migration, down to and including 000000
 	require.NoError(t, runner.Up(ctx))
 
 	for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {

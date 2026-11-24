@@ -139,6 +139,9 @@ type TenantProjectionLock struct {
 	LastEventAt      *time.Time // high-water for lifecycle events
 	SeatsLastEventAt *time.Time // high-water for TenantSeatsChanged (BL-OQ-2)
 	PlanLastEventAt  *time.Time // high-water for the plan column (rev 2.62)
+	// TrialPlan is the plan recorded at conversion (rev 2.65); nil when none
+	// was recorded. An RP-4 conversion revert restores it.
+	TrialPlan *domain.TenantPlan
 }
 
 // TenantLifecycleOp selects which projection UPDATE ApplyLifecyclePatch runs.
@@ -159,7 +162,10 @@ const (
 	LifecycleSetLicensedSeats
 	// LifecycleRevertConversion undoes TenantConverted on an RP-4 revert:
 	// back to trial with a fresh window, subscription_started_at cleared,
-	// trial_reactivation_count untouched (not a TRIAL-5 reactivation).
+	// trial_reactivation_count untouched (not a TRIAL-5 reactivation). It
+	// also sets plan (Plan) and licensed_seats (LicensedSeats) back to the
+	// trial values and raises the seat and plan watermarks to EventTime, so
+	// an older paid seat or plan event still in flight is skipped (rev 2.65).
 	LifecycleRevertConversion
 )
 
@@ -174,7 +180,10 @@ type TenantLifecyclePatch struct {
 	TrialDurationDays int
 	// TrialEndsAt, when set, is the authoritative new trial end (the
 	// event's new_trial_ends_at, rev 2.63); TrialDurationDays is then unused.
-	TrialEndsAt   *time.Time
+	TrialEndsAt *time.Time
+	// EventTime is the consumed event's time, for ops that also raise the
+	// seat/plan watermarks (LifecycleRevertConversion, rev 2.65).
+	EventTime     time.Time
 	LicensedSeats int
 }
 

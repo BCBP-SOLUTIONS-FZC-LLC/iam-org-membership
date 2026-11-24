@@ -382,6 +382,8 @@ Layered one-time guarantee: (a) single-use token (RP redeems), (b) counter check
 
 **`reason` (LLD rev 2.61).** With `reason='conversion_revert'` the steps above are replaced by `LifecycleRevertConversion`: `status='trial'`, fresh `trial_ends_at`, `subscription_started_at` cleared, `trial_reactivation_count` neither checked nor incremented (a revert is not a TRIAL-5 reactivation). A missing, `trial_reactivation` or unknown reason keeps steps 1–3 under the cap.
 
+**Paid values end with the revert (LLD rev 2.65).** In the same `LifecycleRevertConversion` UPDATE, `plan` goes back to `trial_plan` (recorded by `TenantConverted` when it converted a trial) and `licensed_seats` to the trial allowance (10, T-8), and `seats_last_event_at`/`plan_last_event_at` are raised to the revert's time so a late pre-reversal paid seat or plan event is skipped. Billing sends no events after a reversal. With no `trial_plan` recorded, the current plan is kept and a warning is logged (no synthetic fallback).
+
 ### 15.5 Tenant Offboarding (Paid)
 
 Billing owns status transitions; O&M and RP react. Sequence `cancelled → suspended → offboarded`:

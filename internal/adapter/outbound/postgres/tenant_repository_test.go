@@ -334,9 +334,10 @@ func TestTenantRepo_ApplyLifecyclePatch_DelegatesToExecLifecyclePatch(t *testing
 
 func TestTenantRepo_LockForProjection_HappyPath(t *testing.T) {
 	planWM := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	trialPlan := "starter"
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil), (*time.Time)(nil), &planWM}}
+			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil), (*time.Time)(nil), &planWM, &trialPlan}}
 		},
 	}
 	got, err := NewTenantRepository(nil).
@@ -346,6 +347,8 @@ func TestTenantRepo_LockForProjection_HappyPath(t *testing.T) {
 	assert.Equal(t, domain.SubscriptionStatus("active"), got.Status)
 	require.NotNil(t, got.PlanLastEventAt, "plan_last_event_at is read under the same lock (rev 2.62)")
 	assert.Equal(t, planWM, *got.PlanLastEventAt)
+	require.NotNil(t, got.TrialPlan, "trial_plan is read under the same lock (rev 2.65)")
+	assert.Equal(t, domain.PlanStarter, *got.TrialPlan)
 }
 
 func TestTenantRepo_LockForProjection_NoRowsReturnsNilNil(t *testing.T) {

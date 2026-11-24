@@ -2,7 +2,7 @@
 
 This document describes the internal structure, dependency rules, and runtime data flows of `iam-org-membership`.
 
-`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.11) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.64, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner, the platform-audit outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 8 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
+`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.11) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.65, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner, the platform-audit outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 8 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service. This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -760,6 +760,7 @@ erDiagram
         timestamptz last_event_at "EVT-14 recency high-water mark (lifecycle events)"
         timestamptz seats_last_event_at "EVT-14 recency high-water for TenantSeatsChanged — independent of last_event_at (BL-OQ-2)"
         timestamptz plan_last_event_at "EVT-14 recency high-water for the plan: TenantPlanChanged, and the plan TenantConverted/DirectPaidSignup carry — independent of last_event_at (rev 2.62)"
+        tenant_plan trial_plan "plan during the trial, recorded at conversion; restored by an RP-4 revert (rev 2.65)"
         text realm_id "unique WHERE realm_type=dedicated (T-6)"
         realm_type realm_type "ENUM shared-dedicated, explicit not derived (T-6)"
         text keycloak_shard "RP-owned projection, O&M never selects (T-12)"
@@ -1262,7 +1263,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Migration safety
 
-Since this service has never been deployed, all schema history is in the single consolidated `000000_initial_schema` migration. Later changes append numbered migrations: `000011_plan_last_event_at` (EVT-14 plan watermark, LLD rev 2.62). In Kubernetes it runs only in the migrate hook Job (above). `MIGRATION_DATABASE_URL` (a direct, non-PgBouncer DSN) is required whenever `PG_BOUNCER_MODE=true`, because the migration runner's `pg_advisory_lock` is session-scoped and breaks under transaction pooling.
+Since this service has never been deployed, all schema history is in the single consolidated `000000_initial_schema` migration. Later changes append numbered migrations: `000011_plan_last_event_at` (EVT-14 plan watermark, LLD rev 2.62) and `000012_trial_plan` (`tenants.trial_plan`, the plan restored by a conversion revert, LLD rev 2.65). In Kubernetes it runs only in the migrate hook Job (above). `MIGRATION_DATABASE_URL` (a direct, non-PgBouncer DSN) is required whenever `PG_BOUNCER_MODE=true`, because the migration runner's `pg_advisory_lock` is session-scoped and breaks under transaction pooling.
 
 ---
 
@@ -1392,7 +1393,7 @@ graph LR
         claude[".claude/CLAUDE.md + siblings\narchitecture.md · database-schema.md\napi-caching-events.md · request-flows.md · operations.md"]
         readme["README.md\nmental model · API/event overview · onboarding"]
         asyncapi_yaml["api/asyncapi.yaml\nAsyncAPI — iam.membership.events + iam.tenant.events"]
-        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.64"]
+        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.65"]
         obsdocs["docs/observability/\nmetric-registry.md (generated) · migration.md · runbooks.md"]
     end
 
