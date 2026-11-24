@@ -193,7 +193,7 @@ iam-org-membership/
 ├── api/
 │   └── asyncapi.yaml                  # AsyncAPI — iam.membership.events (12) + iam.tenant.events (2)
 ├── docs/
-│   ├── lld/                           # LLD v2.61 — §16 open-question register, §17 error taxonomy
+│   ├── lld/                           # LLD v2.62 — §16 open-question register, §17 error taxonomy
 │   ├── swagger/                       # Generated REST contract (make swag) — not hand-authored
 │   ├── architecture/                  # Standalone Mermaid diagrams
 │   ├── observability/                 # Observability standard implementation, generated metric-registry.md, migration.md, runbooks.md
@@ -699,7 +699,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Migration safety
 
-Since this service has never been deployed, all schema history is consolidated into a single `000000_initial_schema` migration (`internal/adapter/outbound/postgres/migrations/`). It includes every table, constraint, index, trigger, RLS policy, and grant — from the original decomposition squash (ADR-0007/ADR-0008) through the final pre-deployment additions (CD-37 residency_mode, CD-50 pending_tenant_events, CR-4 trial_signup_ledger, MIG-10 migrator grants, MIG-8 audit_outbox RLS, MIG-11 sequence grants, BL-OQ-2 seats_last_event_at). Going forward, new schema changes append numbered migrations after `000000`. platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema`, then platform-audit's (`pending_audit_entries`, tracked in `platform_audit_schema_migrations`) by `auditoutbox.ApplySchema`, before them.
+Since this service has never been deployed, all schema history is consolidated into a single `000000_initial_schema` migration (`internal/adapter/outbound/postgres/migrations/`). It includes every table, constraint, index, trigger, RLS policy, and grant — from the original decomposition squash (ADR-0007/ADR-0008) through the final pre-deployment additions (CD-37 residency_mode, CD-50 pending_tenant_events, CR-4 trial_signup_ledger, MIG-10 migrator grants, MIG-8 audit_outbox RLS, MIG-11 sequence grants, BL-OQ-2 seats_last_event_at). New schema changes append numbered migrations after `000000`: `000011_plan_last_event_at` (`tenants.plan_last_event_at`, EVT-14 plan watermark, LLD rev 2.62). platform-events' own outbox schema (`outbox_events`, `outbox_dead_letters`) is applied by `outbox.ApplySchema`, then platform-audit's (`pending_audit_entries`, tracked in `platform_audit_schema_migrations`) by `auditoutbox.ApplySchema`, before them.
 
 ---
 
@@ -883,7 +883,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, extending the serv
 | [`.claude/request-flows.md`](.claude/request-flows.md) | Provisioning, delegate-impact resolution, invite→accept, concurrency, GDPR |
 | [`.claude/operations.md`](.claude/operations.md) | Security, observability, configuration, CI/CD, dependency degradation matrix |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed architecture narrative with diagrams |
-| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.61 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
+| [`docs/lld/iam-lld-org-membership-service.md`](docs/lld/iam-lld-org-membership-service.md) | Full LLD v2.62 — §16 open-question register, §17 error taxonomy, §19 migration strategy |
 | [`docs/observability/`](docs/observability/README.md) | Observability standard implementation: identity, tiers, CI enforcement, SLOs; generated [metric inventory](docs/observability/metric-registry.md); [renamed metrics](docs/observability/migration.md); [alert runbooks](docs/observability/runbooks.md) |
 | [`docs/runbook-schema-registry.md`](docs/runbook-schema-registry.md) | Schema-governance operator runbook |
 | [`docs/runbook-outbox-dead-letter.md`](docs/runbook-outbox-dead-letter.md) | Inspecting and reprocessing `outbox_dead_letters` |

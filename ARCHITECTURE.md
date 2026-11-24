@@ -2,7 +2,7 @@
 
 This document describes the internal structure, dependency rules, and runtime data flows of `iam-org-membership`.
 
-`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.11) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.61, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner, the platform-audit outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 8 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
+`iam-org-membership` is a **private Go service** (`github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership`, Go 1.26.11) deployed as a containerised microservice (HPA 2–8 replicas), refining **IAM HLD v1.41 §5.6** (LLD v2.62, `docs/lld/iam-lld-org-membership-service.md`; where LLD and HLD disagree, HLD is authoritative). It owns the **organizational layer** of the IAM platform — tenants, department activation, tenant/department memberships, tenant-level role grants, and the invite→accept staging flow — and is the source of truth AuthZ Enrichment reads on **I-8** (`GET /api/v1/internal/users/:id/memberships`), the hottest path in the system, hit on every authenticated request (SLO 15 ms p99 hit / 30 ms p99 miss). It ships as **three binaries from one image**: `cmd/server` (the full HTTP surface — public/internal/operator — plus three inbound SQS consumers, the transactional outbox runner, the platform-audit outbox runner and five metric-exporter goroutines), `cmd/reconciler` (a single binary dispatched by `--job=<name>`, covering 8 CronJobs) and `cmd/migrate` (applies the schema once per release as a Helm pre-install/pre-upgrade hook Job, then exits).
 
 This repo is mid-way through a **service decomposition** (ADR-0007 + ADR-0008): departments/plans catalog ownership moved to Catalog / Admin Config Service, SAML group→dept/role mapping moved to Group Mapping / JIT Config Service, tender ACL overlays moved to Tender ACL Service, and delegation grants + OOO coordination moved to Delegation Service. This repo — "Core" — is what's left after all four extractions; the removal has already landed on this branch (pre-production, no staged expand/contract needed).
 
@@ -759,6 +759,7 @@ erDiagram
         suspension_source suspension_source "ENUM billing_lapse-operator, non-NULL iff status=suspended (T-16)"
         timestamptz last_event_at "EVT-14 recency high-water mark (lifecycle events)"
         timestamptz seats_last_event_at "EVT-14 recency high-water for TenantSeatsChanged — independent of last_event_at (BL-OQ-2)"
+        timestamptz plan_last_event_at "EVT-14 recency high-water for the plan: TenantPlanChanged, and the plan TenantConverted/DirectPaidSignup carry — independent of last_event_at (rev 2.62)"
         text realm_id "unique WHERE realm_type=dedicated (T-6)"
         realm_type realm_type "ENUM shared-dedicated, explicit not derived (T-6)"
         text keycloak_shard "RP-owned projection, O&M never selects (T-12)"
@@ -1172,7 +1173,7 @@ if tag.RowsAffected() == 0 {
 **SEAT-1 — transactional seat-cap enforcement.** `Invite`/`AddMember` (I-3) count `active + pending` against `licensed_seats` under the same `SELECT ... FOR UPDATE` on `tenants`, inside the same transaction as the insert — a pre-flight-only check would leave a race window where two concurrent invites both pass the check and both commit, overshooting the cap.
 
 **Idempotency (IDEMP-1..4, EVT-14/15/16).**
-- **EVT-14** — a `SELECT ... FOR UPDATE` on the `tenants` row compares the incoming event's `time` against a per-event-class watermark: lifecycle events use `tenants.last_event_at`; `TenantSeatsChanged` uses `tenants.seats_last_event_at` (BL-OQ-2 — separate column so a seat-change cannot advance the lifecycle watermark and block a subsequent `TenantConverted`). A stale event is skipped but still recorded in `processed_events` (last-writer-wins, §16 A33). Tie rule: `time ==` → skip.
+- **EVT-14** — a `SELECT ... FOR UPDATE` on the `tenants` row compares the incoming event's `time` against a per-event-class watermark: lifecycle events use `tenants.last_event_at`; `TenantPlanChanged` uses `tenants.plan_last_event_at` (rev 2.62 — so a plan change cannot make an earlier-stamped `TrialReactivated` stale; `TenantConverted`/`DirectPaidSignup` apply their plan only when newer than it); `TenantSeatsChanged` uses `tenants.seats_last_event_at` (BL-OQ-2 — separate column so a seat-change cannot advance the lifecycle watermark and block a subsequent `TenantConverted`). A stale event is skipped but still recorded in `processed_events` (last-writer-wins, §16 A33). Tie rule: `time ==` → skip.
 - **EVT-15** — an event whose `time` is more than `MAX_LIFECYCLE_EVENT_SKEW_SECONDS` (300 s) in the future is sent straight to the DLQ (`internal/adapter/inbound/sqspipeline/dlq.go`, `DLQReason=future_time_clamp`), not recorded in `processed_events` at all — a poison-pill / clock-skew guard, not a normal dedup path. Straight, not via retries: the clamp is re-evaluated per delivery, so retrying could let a skewed event through once wall-clock caught up.
 - **EVT-17** — before `Handle`, every inbound payload (already Glue-decoded by `events.GlueDecodeCodec`) is validated against the **embedded** consumed schema for its type (`internal/adapter/inbound/sqspipeline/inbound_schema.go`, no Glue call); a violation never reaches the projection and goes straight to the DLQ (`DLQReason=schema_violation`, `IAMConsumedEventSchemaViolation` pages). Unknown types pass through to `ackUnknown`.
 - **EVT-16** — when a consumed event changes `tenants.status`/`plan`, the consumer re-emits `TenantStateChanged` on `iam.membership.events` in the **same transaction**, so Workflow can subscribe to one topic instead of directly watching `iam.tenant.events`/`billing.events`.
@@ -1225,7 +1226,7 @@ if tag.RowsAffected() == 0 {
 | Seat cap is enforced transactionally, not just pre-flight (SEAT-1) | Same `FOR UPDATE` row lock backs the seat count and the insert |
 | Optimistic lock version is monotonic and DB-owned (TRG-1) | `touch_row()` trigger increments `record_version`; the client never sets it directly |
 | Bus-event consumption is exactly-once at this consumer (IDEMP-2) | `processed_events` PK `(event_id, consumer)` |
-| Stale/out-of-order lifecycle events never regress state (EVT-14) | `SELECT ... FOR UPDATE` + `last_event_at` (lifecycle) or `seats_last_event_at` (`TenantSeatsChanged`, BL-OQ-2) comparison before any status/plan/seats change |
+| Stale/out-of-order lifecycle events never regress state (EVT-14) | `SELECT ... FOR UPDATE` + `last_event_at` (lifecycle) `seats_last_event_at` (`TenantSeatsChanged`, BL-OQ-2) or `plan_last_event_at` (`TenantPlanChanged`, rev 2.62) comparison before any status/plan/seats change |
 | Clock-skewed future events never poison state (EVT-15) | `time > now() + MAX_LIFECYCLE_EVENT_SKEW_SECONDS` → DLQ, never recorded |
 | `app_tenant_id()`/`rls_check_tenant()` fail closed | `NULL` on any error (missing/malformed GUC) rather than open |
 | `org_membership_app` never holds `BYPASSRLS` (RLS-4) | Migration's final `DO $$` block strips it if ever found set |
@@ -1261,7 +1262,7 @@ Three-stage `Dockerfile`, every base image pinned to a SHA digest: a `golang:1.2
 
 ### Migration safety
 
-Since this service has never been deployed, all schema history is in the single consolidated `000000_initial_schema` migration. In Kubernetes it runs only in the migrate hook Job (above). `MIGRATION_DATABASE_URL` (a direct, non-PgBouncer DSN) is required whenever `PG_BOUNCER_MODE=true`, because the migration runner's `pg_advisory_lock` is session-scoped and breaks under transaction pooling.
+Since this service has never been deployed, all schema history is in the single consolidated `000000_initial_schema` migration. Later changes append numbered migrations: `000011_plan_last_event_at` (EVT-14 plan watermark, LLD rev 2.62). In Kubernetes it runs only in the migrate hook Job (above). `MIGRATION_DATABASE_URL` (a direct, non-PgBouncer DSN) is required whenever `PG_BOUNCER_MODE=true`, because the migration runner's `pg_advisory_lock` is session-scoped and breaks under transaction pooling.
 
 ---
 
@@ -1391,7 +1392,7 @@ graph LR
         claude[".claude/CLAUDE.md + siblings\narchitecture.md · database-schema.md\napi-caching-events.md · request-flows.md · operations.md"]
         readme["README.md\nmental model · API/event overview · onboarding"]
         asyncapi_yaml["api/asyncapi.yaml\nAsyncAPI — iam.membership.events + iam.tenant.events"]
-        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.61"]
+        lld["docs/lld/iam-lld-org-membership-service.md\nLLD v2.62"]
         obsdocs["docs/observability/\nmetric-registry.md (generated) · migration.md · runbooks.md"]
     end
 

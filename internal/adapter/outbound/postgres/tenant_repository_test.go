@@ -333,9 +333,10 @@ func TestTenantRepo_ApplyLifecyclePatch_DelegatesToExecLifecyclePatch(t *testing
 // ── LockForProjection (EVT-14 high-water lock) ──────────────────────────
 
 func TestTenantRepo_LockForProjection_HappyPath(t *testing.T) {
+	planWM := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil), (*time.Time)(nil)}}
+			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil), (*time.Time)(nil), &planWM}}
 		},
 	}
 	got, err := NewTenantRepository(nil).
@@ -343,6 +344,8 @@ func TestTenantRepo_LockForProjection_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, domain.SubscriptionStatus("active"), got.Status)
+	require.NotNil(t, got.PlanLastEventAt, "plan_last_event_at is read under the same lock (rev 2.62)")
+	assert.Equal(t, planWM, *got.PlanLastEventAt)
 }
 
 func TestTenantRepo_LockForProjection_NoRowsReturnsNilNil(t *testing.T) {
@@ -495,6 +498,18 @@ func TestTenantRepo_SetSeatsLastEventAt_ExecErrorPassesThrough(t *testing.T) {
 	}
 	err := NewTenantRepository(nil).
 		SetSeatsLastEventAt(injectTx(context.Background(), tx), uuid.New(), time.Now())
+	assert.ErrorIs(t, err, execErr)
+}
+
+func TestTenantRepo_SetPlanLastEventAt_ExecErrorPassesThrough(t *testing.T) {
+	execErr := errors.New("exec failed")
+	tx := &fakeTx{
+		execFn: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
+			return pgconn.CommandTag{}, execErr
+		},
+	}
+	err := NewTenantRepository(nil).
+		SetPlanLastEventAt(injectTx(context.Background(), tx), uuid.New(), time.Now())
 	assert.ErrorIs(t, err, execErr)
 }
 

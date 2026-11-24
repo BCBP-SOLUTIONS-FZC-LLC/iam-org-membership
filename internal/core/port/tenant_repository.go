@@ -113,6 +113,11 @@ type TenantRepository interface {
 	// (BL-OQ-2: separate from SetLastEventAt so seat changes cannot block
 	// lifecycle event processing).
 	SetSeatsLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error
+	// SetPlanLastEventAt is the EVT-14 watermark write for the plan:
+	// TenantPlanChanged, and the plan TenantConverted/DirectPaidSignup carry
+	// (rev 2.62: separate from SetLastEventAt so a plan change cannot make an
+	// earlier-stamped lifecycle event, e.g. an RP-4 TrialReactivated, stale).
+	SetPlanLastEventAt(ctx context.Context, id uuid.UUID, t time.Time) error
 
 	// ApplyLifecyclePatch applies one consumer projection UPDATE. rows is
 	// RowsAffected — TrialReactivated and TenantReactivated branch on it.
@@ -133,6 +138,7 @@ type TenantProjectionLock struct {
 	Plan             domain.TenantPlan
 	LastEventAt      *time.Time // high-water for lifecycle events
 	SeatsLastEventAt *time.Time // high-water for TenantSeatsChanged (BL-OQ-2)
+	PlanLastEventAt  *time.Time // high-water for the plan column (rev 2.62)
 }
 
 // TenantLifecycleOp selects which projection UPDATE ApplyLifecyclePatch runs.
@@ -211,6 +217,9 @@ func (TenantRepositoryNoop) LockForProjection(context.Context, uuid.UUID) (*Tena
 }
 func (TenantRepositoryNoop) SetLastEventAt(context.Context, uuid.UUID, time.Time) error { return nil }
 func (TenantRepositoryNoop) SetSeatsLastEventAt(context.Context, uuid.UUID, time.Time) error {
+	return nil
+}
+func (TenantRepositoryNoop) SetPlanLastEventAt(context.Context, uuid.UUID, time.Time) error {
 	return nil
 }
 func (TenantRepositoryNoop) ApplyLifecyclePatch(context.Context, uuid.UUID, TenantLifecyclePatch) (int64, error) {
