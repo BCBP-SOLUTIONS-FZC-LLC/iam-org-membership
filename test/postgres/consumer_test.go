@@ -725,27 +725,27 @@ func TestConsumer_TrialReactivated_NewTrialEndsAtIsAuthoritative(t *testing.T) {
 	for name, tc := range map[string]struct {
 		setup   string
 		payload map[string]string
-		want    time.Time
+		want    *time.Time // nil = fallback: handled-at + 14 days
 	}{
 		"revert, valid date": {
 			`UPDATE tenants SET status = 'active', subscription_started_at = now() WHERE id = $1`,
 			map[string]string{"reason": "conversion_revert", "new_trial_ends_at": endsAt.Format(time.RFC3339)},
-			endsAt,
+			&endsAt,
 		},
 		"trial reactivation, valid date": {
 			`UPDATE tenants SET status = 'trial_expired' WHERE id = $1`,
 			map[string]string{"reason": "trial_reactivation", "new_trial_ends_at": endsAt.Format(time.RFC3339)},
-			endsAt,
+			&endsAt,
 		},
 		"revert, malformed date falls back": {
 			`UPDATE tenants SET status = 'active', subscription_started_at = now() WHERE id = $1`,
 			map[string]string{"reason": "conversion_revert", "new_trial_ends_at": "not-a-date"},
-			time.Now().UTC().Add(14 * 24 * time.Hour),
+			nil,
 		},
 		"trial reactivation, absent date falls back": {
 			`UPDATE tenants SET status = 'trial_expired' WHERE id = $1`,
 			map[string]string{"reason": "trial_reactivation"},
-			time.Now().UTC().Add(14 * 24 * time.Hour),
+			nil,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -758,14 +758,22 @@ func TestConsumer_TrialReactivated_NewTrialEndsAtIsAuthoritative(t *testing.T) {
 
 			c := consumer.NewMembershipEventConsumer(pgadapter.NewInboxRepository(appPool, &captureOutbox{}),
 				pgadapter.NewTenantRepository(appPool), &fakePlanCatalog{trialDurationDays: 14}, nil, 5*time.Minute, nil)
-			require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantID, time.Now().UTC(), tc.payload)))
+			handledAt := time.Now().UTC()
+			require.NoError(t, c.Handle(ctx, mkEnvelope(t, "TrialReactivated", tenantID, handledAt, tc.payload)))
 
+			// The fallback is computed from when the event was handled, not
+			// when the table was built: parallel subtests can wait minutes
+			// for their containers on CI.
+			want := handledAt.Add(14 * 24 * time.Hour)
+			if tc.want != nil {
+				want = *tc.want
+			}
 			var status string
 			var got time.Time
 			require.NoError(t, rawPool.QueryRow(ctx,
 				`SELECT status, trial_ends_at FROM tenants WHERE id = $1`, tenantID).Scan(&status, &got))
 			assert.Equal(t, "trial", status)
-			assert.WithinDuration(t, tc.want, got, 2*time.Minute)
+			assert.WithinDuration(t, want, got, 2*time.Minute)
 		})
 	}
 }
