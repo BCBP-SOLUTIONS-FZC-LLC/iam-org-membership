@@ -1496,9 +1496,12 @@ paths:
   /internal/tenants/{id}/plan-context:
     get:
       description: Returns {tenant_id, plan, status, licensed_seats, feature_flags,
-        record_version} from the om:tenant cache. Entitlements calls this on every
-        billing/tenant event to re-derive the effective entitlement set (CD-13). Accepts
-        iam-system and commercial-system (CD-19).
+        residency_mode, record_version} + trial_ends_at (omitted when not in trial/trial_expired)
+        from the om:tenant cache. feature_flags[] is the per-tenant operator override
+        delta (O-4); commercial-entitlements merges it with plan baseline for the effective
+        set. TenantSettingChanged is published atomically on O-4 write, consumed by
+        commercial-entitlements via tenant-entitlements-q to trigger a Recompute.
+        Accepts iam-system and commercial-system (CD-19).
       parameters:
       - description: Tenant UUID
         format: uuid
