@@ -503,6 +503,20 @@ servers:
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
+  sqsTenantEntitlements:
+    host: "sqs.ap-south-1.amazonaws.com"
+    protocol: sqs
+    description: |
+      SQS queue for the commercial-entitlements consumer on the tenant lifecycle topic.
+      Queue: tenant-entitlements-q  |  DLQ: tenant-entitlements-q-dlq  (maxReceiveCount=5)
+      Owned and managed by: commercial-entitlements Service
+      SNS subscription filter: EventType IN [TenantSettingChanged]
+        (commercial-entitlements triggers a Recompute on TenantSettingChanged so
+         that feature_flags[] updates made via O-4 are reflected immediately in
+         the tenant's effective feature set — LLD rev 2.66, GAP-3 fix)
+    security:
+      - $ref: '#/components/securitySchemes/iamRole'
+
   # ── Inbound: the three queues this service consumes (§7.1) ────────────────
   # Owned by this service (iam-org-membership), NOT by the producer. Each is
   # subscribed to a topic owned and published by another service.
@@ -738,12 +752,15 @@ channels:
             audit trail. Added 2026-11-04.
 
       Fan-out queue registry (LLD §7.3.2):
-        Audit Log         tenant-audit-q          (all types)
-        Notification      tenant-notification-q   TenantCreated, TrialStarted
-        Realm Provisioner tenant-realm-q          TrialStarted only (trial_ends_at
-                                                    for its own local expiry sweep)
-        AuthZ Enrichment  tenant-authz-q          TenantSettingChanged only
-                                                    (cache eviction for residency_mode)
+        Audit Log              tenant-audit-q              (all types)
+        Notification           tenant-notification-q       TenantCreated, TrialStarted
+        Realm Provisioner      tenant-realm-q              TrialStarted only (trial_ends_at
+                                                             for its own local expiry sweep)
+        AuthZ Enrichment       tenant-authz-q              TenantSettingChanged only
+                                                             (cache eviction for residency_mode)
+        commercial-entitlements tenant-entitlements-q      TenantSettingChanged only
+                                                             (feature_flags O-4 override update
+                                                              → Recompute effective feature set)
 
       All queues: maxReceiveCount=5, standard (non-FIFO).
 
@@ -1136,6 +1153,33 @@ channels:
           redrivePolicy:
             deadLetterQueue:
               name: tenant-authz-q-dlq
+            maxReceiveCount: 5
+
+  tenantEntitlementsQueue:
+    address: "tenant-entitlements-q"
+    servers:
+      - $ref: '#/servers/sqsTenantEntitlements'
+    description: |
+      SQS queue on iam-tenant-events consumed by commercial-entitlements to
+      trigger a Recompute when feature_flags are updated via O-4, so the
+      effective feature set reflects the new operator override delta without
+      waiting for the next billing/membership event (LLD rev 2.66, GAP-3).
+      SNS subscription filter policy:
+        { "EventType": ["TenantSettingChanged"] }
+    messages:
+      TenantSettingChanged:
+        $ref: '#/components/messages/TenantSettingChanged'
+    bindings:
+      sqs:
+        queue:
+          name: tenant-entitlements-q
+          fifoQueue: false
+          receiveMessageWaitTime: 20
+          messageRetentionPeriod: 345600
+          visibilityTimeout: 30
+          redrivePolicy:
+            deadLetterQueue:
+              name: tenant-entitlements-q-dlq
             maxReceiveCount: 5
 
   # ── Inbound consumption channels (§7.1) ────────────────────────────────────
@@ -1677,6 +1721,29 @@ operations:
       Idempotency key: (id, consumer="authz-enrichment") in processed_events.
     messages:
       - $ref: '#/channels/tenantAuthZQueue/messages/TenantSettingChanged'
+
+  receiveTenantEntitlements:
+    action: receive
+    channel:
+      $ref: '#/channels/tenantEntitlementsQueue'
+    tags:
+      - $ref: '#/components/tags/published'
+    summary: commercial-entitlements triggers Recompute on feature_flags change (O-4)
+    description: |
+      Consumer: commercial-entitlements Service
+      Queue   : tenant-entitlements-q  |  DLQ: tenant-entitlements-q-dlq
+      Filter  : EventType IN [TenantSettingChanged]
+
+      On TenantSettingChanged (setting="feature_flags"): commercial-entitlements
+      calls I-17 GET /plan-context to re-read the updated feature_flags[] and
+      triggers a Recompute so the tenant's effective feature set (plan baseline
+      ∪ per-tenant operator override delta) is immediately current. Without this
+      queue a feature-flag change via O-4 would only be reflected on the next
+      billing or membership event that caused an independent Recompute.
+      Introduced by LLD rev 2.66, closing GAP-3 of the entitlement-service
+      compatibility check. Queue creation is the commercial-entitlements team's.
+    messages:
+      - $ref: '#/channels/tenantEntitlementsQueue/messages/TenantSettingChanged'
 
   # ── Inbound operations — the three queues this service consumes (§7.1) ─────
   consumeTenantOrgm:

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/domain"
 	"github.com/BCBP-SOLUTIONS-FZC-LLC/iam-org-membership/internal/core/port"
@@ -139,6 +140,59 @@ func TestInternalCheckMemberExists_ServiceError_Propagates(t *testing.T) {
 	h.CheckMemberExists(c)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ── GetPlanContext (I-17) gaps — GAP-1 fix ───────────────────────────────
+
+// TestGetPlanContext_TrialTenant_IncludesTrialEndsAt verifies that a trial
+// tenant's trial_ends_at is included in the I-17 response (GAP-1 fix).
+func TestGetPlanContext_TrialTenant_IncludesTrialEndsAt(t *testing.T) {
+	tenantID := uuid.New()
+	trialEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	tenants := &happyTenantRepo{findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+		return &domain.Tenant{
+			ID:            id,
+			Plan:          domain.PlanStarter,
+			Status:        domain.StatusTrial,
+			LicensedSeats: 5,
+			TrialEndsAt:   &trialEnd,
+		}, nil
+	}}
+	svc := service.NewTenantService(tenants, happyCacheStub{}, &happyRPClient{})
+	h := &InternalHandler{tenants: svc}
+
+	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
+	setParams(c, "id", tenantID.String())
+	h.GetPlanContext(c)
+
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), `"trial_ends_at"`)
+	assert.Contains(t, w.Body.String(), `"2026-04-01`)
+}
+
+// TestGetPlanContext_ActiveTenant_OmitsTrialEndsAt verifies that a non-trial
+// tenant's response does NOT include trial_ends_at (omitempty behaviour).
+func TestGetPlanContext_ActiveTenant_OmitsTrialEndsAt(t *testing.T) {
+	tenantID := uuid.New()
+	tenants := &happyTenantRepo{findByIDFn: func(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+		return &domain.Tenant{
+			ID:            id,
+			Plan:          domain.PlanPro,
+			Status:        domain.StatusActive,
+			LicensedSeats: 10,
+			TrialEndsAt:   nil,
+		}, nil
+	}}
+	svc := service.NewTenantService(tenants, happyCacheStub{}, &happyRPClient{})
+	h := &InternalHandler{tenants: svc}
+
+	c, w := buildCtx(http.MethodGet, "/", ``, systemCtx())
+	setParams(c, "id", tenantID.String())
+	h.GetPlanContext(c)
+
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.NotContains(t, w.Body.String(), `"trial_ends_at"`)
+	assert.Contains(t, w.Body.String(), `"status":"active"`)
 }
 
 // ── AssignFromGroups gaps ─────────────────────────────────────────────────
