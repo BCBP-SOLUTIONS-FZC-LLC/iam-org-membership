@@ -704,14 +704,17 @@ func (h *InternalHandler) CheckAssigneeEligibility(c *gin.Context) {
 // ── I-17 GET /tenants/:id/plan-context (CD-13) ─────────────────────────
 
 // GetPlanContext is I-17 — tenant plan context for the Entitlements Service.
-// Returns plan, status, licensed_seats, feature_flags and record_version
+// Returns plan, status, licensed_seats, feature_flags, residency_mode,
+// record_version, and trial_ends_at (only when status=trial/trial_expired)
 // from the om:tenant cache so the Entitlements Service can re-read a tenant's
 // commercial projection on every event it receives (CD-13, blocking).
+// feature_flags[] is the per-tenant operator override delta (O-4); commercial-
+// entitlements merges it with the plan baseline to form the effective set.
 // Auth: iam-system or commercial-system (Entitlements, CD-19) — see
 // commercialSystemAllowedRoutes in middleware.go.
 //
 // @Summary      I-17 — Tenant plan context (Entitlements Service)
-// @Description  Returns {tenant_id, plan, status, licensed_seats, feature_flags, record_version} from the om:tenant cache. Entitlements calls this on every billing/tenant event to re-derive the effective entitlement set (CD-13). Accepts iam-system and commercial-system (CD-19).
+// @Description  Returns {tenant_id, plan, status, licensed_seats, feature_flags, residency_mode, record_version} + trial_ends_at (omitted when not in trial) from the om:tenant cache. Entitlements calls this on every billing/tenant event to re-derive the effective entitlement set (CD-13). feature_flags[] is the per-tenant operator delta merged by commercial-entitlements with the plan baseline. Accepts iam-system and commercial-system (CD-19).
 // @Tags         internal
 // @Produce      json
 // @Param        id   path      string  true  "Tenant UUID"  format(uuid)
@@ -733,7 +736,7 @@ func (h *InternalHandler) GetPlanContext(c *gin.Context) {
 		HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"tenant_id":      t.ID,
 		"plan":           t.Plan,
 		"status":         t.Status,
@@ -741,7 +744,11 @@ func (h *InternalHandler) GetPlanContext(c *gin.Context) {
 		"feature_flags":  t.FeatureFlags,
 		"residency_mode": t.ResidencyMode,
 		"record_version": t.RecordVersion,
-	})
+	}
+	if t.TrialEndsAt != nil {
+		resp["trial_ends_at"] = t.TrialEndsAt
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // ── I-18 GET /tenants/:id/plan-change-check (CD-20) ────────────────────
