@@ -234,7 +234,7 @@ Plus **RLS-6**, CI-enforced by grep: every write to `app.tenant_id` must be `SET
 
 | Library | Version | Purpose |
 |---|---|---|
-| `platform-gincommon/v2` | v2.6.0 | HTTP middleware, Zap logging, OTel tracing, Prometheus metrics, the Platform Observability Registry and `metricslint` |
+| `platform-gincommon/v2` | v2.7.0 | HTTP middleware, Zap logging, OTel tracing, Prometheus metrics, the Platform Observability Registry and `metricslint` |
 | `platform-events/v2` | v2.3.0 | Transactional outbox (ordered enqueue), SNS publisher, SQS consumer with DLQ forwarding, inbox (`processed_events` dedup), Glue decode codec |
 | `platform-pgcommon/v2` | v2.0.2 | pgx/v5 pool, RLS GUC injection, per-transaction statement/lock timeouts, migrations, SQLSTATE error helpers |
 | `platform-audit` | v0.1.2 | Audit Log (AL-5) writes in outbox mode: `auditoutbox.Enqueuer` (entries in `pending_audit_entries`, same tx as the change) + `auditoutbox.Runner` (at-least-once delivery), `platform_audit_*` metrics; its audited operator helpers back `audit-admin` |

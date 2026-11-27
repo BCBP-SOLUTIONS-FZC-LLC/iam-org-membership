@@ -68,7 +68,7 @@ go test ./test/postgres/... -run TestRLS_Case5_NoCrossTenantLeakAcrossPool -v
 
 ## Architecture
 
-Clean Architecture — dependencies point inward; outer layers never import inner layers. Full directory tree, shared library dependencies (`platform-gincommon/v2` v2.6.0, `platform-events/v2` v2.3.0, `platform-pgcommon/v2` v2.0.2, `platform-audit` v0.1.0), `RoutingPublisher` two-topic wiring, and `go-arch-lint` dependency rules are in **[`.claude/architecture.md`](architecture.md)**.
+Clean Architecture — dependencies point inward; outer layers never import inner layers. Full directory tree, shared library dependencies (`platform-gincommon/v2` v2.7.0, `platform-events/v2` v2.3.0, `platform-pgcommon/v2` v2.0.2, `platform-audit` v0.1.2), `RoutingPublisher` two-topic wiring, and `go-arch-lint` dependency rules are in **[`.claude/architecture.md`](architecture.md)**.
 
 ## Key Files to Know
 
@@ -107,6 +107,8 @@ Security (three-layer isolation, AUTH-8 session revoke + TTL backstop); observab
 **`invariant-reviewer` agent** (`.claude/agents/invariant-reviewer.md`, Read-only): reviews a diff against RLS, migration grants, outbox, idempotency/check-then-act, concurrency, cache, authorization, consumer, CD-19 access-matrix, layering and personal-data invariants. Use it before opening a PR: write `git diff main...HEAD > <scratch>/review.diff; git diff HEAD >> <scratch>/review.diff` and pass the absolute path.
 
 **`docs-consistency-reviewer` agent** (`.claude/agents/docs-consistency-reviewer.md`; Read, Grep, Glob): checks the docs a diff touches, or should have touched, against the code and each other. It covers routes and roles, the endpoint count, env vars, events, cache keys, metrics, Helm and the CD-19 matrix, DB objects, invariant ids, LLD revision references, versions, release status, diagrams and links, and flags what `swag-check`, `metrics-lint`, `helm-access-check` and `changelog-check` would reject. Use it before a PR that changes behaviour, a default, a contract, a name or a path, or that is docs-only. Pass it a diff file the same way (`<scratch>/docs.diff`).
+
+**`contract-checker` agent** (`.claude/agents/contract-checker.md`; Read, Grep, Glob, read-only Bash): compares Core's cross-service contracts with the sibling repos under `~/XPertPMS/`. It covers outbound calls (Workflow, Delegation, Catalog, Group Mapping, Realm Provisioner, Token Service, Audit Log), the internal routes each caller uses (I-1..I-20, CR-4), the events Core produces and their consumers, and the queues it consumes (`tenant-orgm-q`, `billing-orgm-q`, `catalog-orgm-q`). It reports a verdict per aspect (OK/DRIFT/GAP/THEIRS/INCONSISTENT/UNVERIFIED). Use it when another team publishes a contract change or hand-off, or before enabling a dependency or flag. Name the contract(s) to check in the prompt; the default is all of them.
 
 ## See Also
 
