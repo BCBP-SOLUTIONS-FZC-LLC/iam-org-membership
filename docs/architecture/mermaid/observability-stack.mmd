@@ -21,7 +21,7 @@ graph LR
 
     subgraph otel["OpenTelemetry Traces"]
         ot1["OTel HTTP span\n· service name from APP_NAME (OTEL_SERVICE_NAME is not read)\n· attributes: http.method, http.route,\n  http.status_code, user_id, tenant_id\n· child spans: Workflow, RP, Catalog, GroupMapping,\n  Delegation, TokenService calls, db.query, SQS consume (linked to the producer)"]
-        ot2["OTLP/gRPC export\nOTEL_EXPORTER_OTLP_ENDPOINT (gincommon v2.6.0: unset/empty → localhost:4317;\n=none/off/disabled or OTEL_TRACES_EXPORTER=none turns export off)\nOTEL_TRACES_SAMPLER_RATIO 0.1 · OTEL_PROPAGATOR_BAGGAGE false\n→ OTel Collector → Tempo"]
+        ot2["OTLP/gRPC export\nOTEL_EXPORTER_OTLP_ENDPOINT (gincommon v2.7.0: unset/empty → localhost:4317;\n=none/off/disabled or OTEL_TRACES_EXPORTER=none turns export off)\nOTEL_TRACES_SAMPLER_RATIO 0.1 · OTEL_PROPAGATOR_BAGGAGE false\n→ OTel Collector → Tempo"]
     end
 
     subgraph logs["Structured Logs  (Zap → Loki, LOG_LEVEL / LOG_SAMPLING)"]

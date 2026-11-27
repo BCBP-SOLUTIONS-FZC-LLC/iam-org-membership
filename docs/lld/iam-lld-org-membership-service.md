@@ -369,14 +369,14 @@ iam-org-membership/
 
 ```
 require (
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2     v2.6.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-gincommon/v2     v2.7.0
     github.com/BCBP-SOLUTIONS-FZC-LLC/platform-events/v2        v2.3.0
     github.com/BCBP-SOLUTIONS-FZC-LLC/platform-pgcommon/v2      v2.0.2
-    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit            v0.1.0
+    github.com/BCBP-SOLUTIONS-FZC-LLC/platform-audit            v0.1.2
 )
 ```
 
-`platform-audit` v0.1.0 (rev 2.50) is used in **outbox mode**: `auditoutbox.Enqueuer` writes AL-5 entries into its own `pending_audit_entries` on the business transaction, `auditoutbox.Runner` delivers them from the sysPool, `auditoutbox.ApplySchema` owns the table's schema (this service adds RLS and grants in `000000_initial_schema`), and `audit.InitMetrics` registers `platform_audit_*`.
+`platform-audit` (adopted at v0.1.0 in rev 2.50, now v0.1.2) is used in **outbox mode**: `auditoutbox.Enqueuer` writes AL-5 entries into its own `pending_audit_entries` on the business transaction, `auditoutbox.Runner` delivers them from the sysPool, `auditoutbox.ApplySchema` owns the table's schema (this service adds RLS and grants in `000000_initial_schema`), and `audit.InitMetrics` registers `platform_audit_*`.
 
 `platform-pgcommon/v2` tracks `v2.0.0` (rev 2.15; history: v1.1.1 → v1.2.1 → v1.3.0 → v2.0.0). `postgres/logger_adapter.go` bridges `core/port.Logger` onto its public `domain.Logger`. Error classification uses its SQLSTATE helpers only — `IsConnectionException`/`IsInsufficientResources`/`IsOperatorIntervention`/`IsSystemError`/`IsPoolClosed` (503 `db_unavailable`), `IsQueryCanceled`/`IsLockNotAvailable` (503 `request_timeout`), `IsDeadlock`/`IsSerializationFailure` (409 `concurrent_update`), `IsUniqueViolation`/`ConstraintName` — with no SQLSTATE text matching (rev 2.16). `Config.StatementTimeout`/`LockTimeout` (`PG_STATEMENT_TIMEOUT` 5s, `PG_LOCK_TIMEOUT` 2s) are applied per transaction; cmd/reconciler overrides the statement timeout (`RECONCILER_STATEMENT_TIMEOUT` 120s). The BYPASSRLS pool has `PoolName = "system"`.
 
