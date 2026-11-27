@@ -25,7 +25,6 @@ Server assumed at `http://localhost:8080` (change `BASE` below if needed).
 | `$DEPT_ENG` | `dddddddd-dddd-dddd-dddd-dddddddddddd` | Engineering department (global catalog) |
 | `$TENDER_X` | `eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee` | Tender X |
 | `$INV_ID` | `ffffffff-ffff-ffff-ffff-ffffffffffff` | Invitation row id |
-| `$DEL_ID` | `12121212-1212-1212-1212-121212121212` | Delegation row id |
 
 Export before running any curl:
 ```bash
@@ -38,7 +37,6 @@ export CAROL=cccccccc-cccc-cccc-cccc-cccccccccccc
 export DEPT_ENG=dddddddd-dddd-dddd-dddd-dddddddddddd
 export TENDER_X=eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee
 export INV_ID=ffffffff-ffff-ffff-ffff-ffffffffffff
-export DEL_ID=12121212-1212-1212-1212-121212121212
 ```
 
 ### Required gateway headers on EVERY authenticated request
