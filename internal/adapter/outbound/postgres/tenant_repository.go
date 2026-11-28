@@ -411,10 +411,12 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 		var status, plan string
 		var lastEventAt, seatsLastEventAt, planLastEventAt *time.Time
 		var trialPlan *string
+		var revertedConversion bool
 		err := tx.QueryRow(ctx, `
-			SELECT status, plan, last_event_at, seats_last_event_at, plan_last_event_at, trial_plan
+			SELECT status, plan, last_event_at, seats_last_event_at, plan_last_event_at, trial_plan,
+			       subscription_started_at IS NULL AND trial_plan IS NOT NULL
 			FROM tenants WHERE id = $1 AND deleted_at IS NULL
-			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt, &seatsLastEventAt, &planLastEventAt, &trialPlan)
+			FOR UPDATE`, id).Scan(&status, &plan, &lastEventAt, &seatsLastEventAt, &planLastEventAt, &trialPlan, &revertedConversion)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
@@ -422,11 +424,12 @@ func (r *TenantRepository) LockForProjection(ctx context.Context, id uuid.UUID) 
 			return err
 		}
 		lock = &port.TenantProjectionLock{
-			Status:           domain.SubscriptionStatus(status),
-			Plan:             domain.TenantPlan(plan),
-			LastEventAt:      lastEventAt,
-			SeatsLastEventAt: seatsLastEventAt,
-			PlanLastEventAt:  planLastEventAt,
+			Status:             domain.SubscriptionStatus(status),
+			Plan:               domain.TenantPlan(plan),
+			LastEventAt:        lastEventAt,
+			SeatsLastEventAt:   seatsLastEventAt,
+			PlanLastEventAt:    planLastEventAt,
+			RevertedConversion: revertedConversion,
 		}
 		if trialPlan != nil {
 			tp := domain.TenantPlan(*trialPlan)

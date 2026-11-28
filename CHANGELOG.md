@@ -6,6 +6,12 @@ This service has never been deployed to any environment — there is no released
 
 ## [Unreleased]
 
+### Changed (2026-11-28 — Billing compatibility check C-1 to C-3, LLD rev 2.67)
+
+- **C-3: a cancel or past-due event for a reverted conversion is acked, not dead-lettered.** `TenantSubscriptionCancelled` and `TenantPaymentPastDue` for a tenant reset by an RP-4 conversion revert used to fail `chk_subscription_started_required`, be retried and land in `billing-orgm-q-dlq`. The consumer now records the event as processed and logs a warning, with no status, watermark or relay change. The projection lock reads the new `TenantProjectionLock.RevertedConversion` (`subscription_started_at IS NULL AND trial_plan IS NOT NULL`). A trial that never converted is excluded: the event may have overtaken RP's `TenantConverted`, so it is still retried until the conversion lands. Postgres tests `TestConsumer_BillingEventForRevertedConversion_AckedAsNoOp` and `TestConsumer_CancelBeforeTenantConverted_RetriedThenApplies`.
+- **C-1: `om:seat_usage` documented as a 30 s read-through cache.** The LLD (§6.1, CACHE-5, I-11) said `SeatUsage` never read the key; the code has always read and filled it. P-27/I-11 can be up to 30 s stale if an eviction fails, and after an `invitation-expiry` sweep (which does not evict the key); SEAT-1 is unaffected. Unit test `TestMembership_SeatUsage_CacheMissHitAndEvictionOnMembershipWrite`. No code change.
+- **C-2: AsyncAPI no longer names Billing as a producer on `iam-tenant-events`.** `TenantSuspended` comes from Realm Provisioner; Billing publishes only on `billing.events`.
+
 ### Changed (2026-11-26 — entitlement-service compatibility fixes, LLD rev 2.66)
 
 - **I-17 `GET /plan-context` now returns `trial_ends_at`.** The field is included in the response when `tenants.trial_ends_at IS NOT NULL` (status `trial` or `trial_expired`) and omitted entirely for all other statuses — no `null` in the JSON. The full response shape is now `{tenant_id, plan, status, licensed_seats, feature_flags, residency_mode, record_version, trial_ends_at?}`. Closes GAP-1 of the commercial-entitlements compatibility check (`trial_profile` is not added — commercial-entitlements already owns trial profiles via its own `tenant_trial_assignments` table; the `TrialProfile *string` field was dead code removed on the entitlements side).

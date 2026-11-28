@@ -142,6 +142,12 @@ type TenantProjectionLock struct {
 	// TrialPlan is the plan recorded at conversion (rev 2.65); nil when none
 	// was recorded. An RP-4 conversion revert restores it.
 	TrialPlan *domain.TenantPlan
+	// RevertedConversion is true when the tenant's conversion was undone by an
+	// RP-4 revert: subscription_started_at IS NULL but trial_plan IS NOT NULL
+	// (trial_plan is only recorded at conversion and survives the revert).
+	// A trial that never converted has both NULL and is NOT reverted: its
+	// TenantConverted may simply not have been applied yet (C-3, rev 2.67).
+	RevertedConversion bool
 }
 
 // TenantLifecycleOp selects which projection UPDATE ApplyLifecyclePatch runs.

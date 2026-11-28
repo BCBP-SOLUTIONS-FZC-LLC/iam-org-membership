@@ -337,7 +337,7 @@ func TestTenantRepo_LockForProjection_HappyPath(t *testing.T) {
 	trialPlan := "starter"
 	tx := &fakeTx{
 		queryRowFn: func(context.Context, string, ...any) pgx.Row {
-			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil), (*time.Time)(nil), &planWM, &trialPlan}}
+			return &fakeRow{values: []any{"active", "pro", (*time.Time)(nil), (*time.Time)(nil), &planWM, &trialPlan, false}}
 		},
 	}
 	got, err := NewTenantRepository(nil).
@@ -349,6 +349,22 @@ func TestTenantRepo_LockForProjection_HappyPath(t *testing.T) {
 	assert.Equal(t, planWM, *got.PlanLastEventAt)
 	require.NotNil(t, got.TrialPlan, "trial_plan is read under the same lock (rev 2.65)")
 	assert.Equal(t, domain.PlanStarter, *got.TrialPlan)
+	assert.False(t, got.RevertedConversion)
+}
+
+func TestTenantRepo_LockForProjection_ReadsRevertedConversion(t *testing.T) {
+	trialPlan := "starter"
+	tx := &fakeTx{
+		queryRowFn: func(_ context.Context, sql string, _ ...any) pgx.Row {
+			assert.Contains(t, sql, "subscription_started_at IS NULL AND trial_plan IS NOT NULL")
+			return &fakeRow{values: []any{"trial", "starter", (*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil), &trialPlan, true}}
+		},
+	}
+	got, err := NewTenantRepository(nil).
+		LockForProjection(injectTx(context.Background(), tx), uuid.New())
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.RevertedConversion, "C-3 (rev 2.67): a reverted conversion is read under the same lock")
 }
 
 func TestTenantRepo_LockForProjection_NoRowsReturnsNilNil(t *testing.T) {

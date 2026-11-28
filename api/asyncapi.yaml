@@ -459,7 +459,7 @@ servers:
       Owned and managed by: Audit Log Service
       SNS subscription filter: no filter (subscribes to TenantCreated + TrialStarted
         from this service and to all other tenant lifecycle events emitted onto
-        iam-tenant-events by other producers — Realm Provisioner, Billing)
+        iam-tenant-events by the other producer, Realm Provisioner)
     security:
       - $ref: '#/components/securitySchemes/iamRole'
 
@@ -727,10 +727,11 @@ channels:
     description: |
       SNS topic for tenant lifecycle creation events (3 event types from this
       service: TenantCreated, TrialStarted, TenantSettingChanged). This service
-      is a co-producer on this topic alongside Realm Provisioner and Billing
-      (per HLD §9.1.1 shared-producer arrangement); other services emit other
-      event types onto the same topic (e.g. TenantSuspended from Billing) —
-      those are documented in their own AsyncAPI specs.
+      is a co-producer on this topic alongside Realm Provisioner (per HLD
+      §9.1.1 shared-producer arrangement), which emits the other event types
+      onto the same topic (e.g. TenantSuspended, with source billing_lapse |
+      operator) — those are documented in its own AsyncAPI spec. Billing does
+      not publish here: it publishes only on billing.events.
 
       Backing Glue registry: iam-tenant-events (ap-south-1, JSON data format).
 
@@ -1650,7 +1651,7 @@ operations:
       Queue   : tenant-audit-q  |  DLQ: tenant-audit-q-dlq
       Filter  : none — subscribes to all event types on iam-tenant-events
       Purpose : Append-only compliance archival of tenant lifecycle across
-                the co-producer set (this service + Realm Provisioner + Billing).
+                the co-producer set (this service + Realm Provisioner).
       Idempotency key: (id, consumer="audit-log") in processed_events.
     messages:
       - $ref: '#/channels/tenantAuditQueue/messages/TenantCreated'

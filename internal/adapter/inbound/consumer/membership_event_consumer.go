@@ -405,6 +405,20 @@ func (c *MembershipEventConsumer) project(txCtx context.Context, tenantID uuid.U
 		return false, nil
 	}
 
+	// A cancel or past-due event for a tenant whose conversion was reverted
+	// (RP-4) has nothing to apply: the subscription it refers to is gone,
+	// 'cancelled'/'past_due' would violate chk_subscription_started_required,
+	// and retrying would only dead-letter it. Ack it as a no-op, with no
+	// watermark or relay (Billing compatibility check C-3, rev 2.67).
+	// Deliberately NOT for a trial that never converted: there the event may
+	// have overtaken RP's TenantConverted on the other queue, so it must keep
+	// failing and be retried (or stay parked) until the conversion lands.
+	if locked.RevertedConversion && (env.Type == "TenantSubscriptionCancelled" || env.Type == "TenantPaymentPastDue") {
+		c.logger.Warn("billing event for a reverted conversion — acked as a no-op",
+			"event_id", env.ID, "event_type", env.Type, "tenant_id", tenantID, "status", locked.Status)
+		return false, nil
+	}
+
 	prevStatus := locked.Status
 	prevPlan := locked.Plan
 
