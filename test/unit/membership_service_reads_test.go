@@ -413,8 +413,9 @@ func TestMembership_SeatUsage_UnderCap(t *testing.T) {
 	inv := &fakeInviteRepo{
 		countPendingFn: func(context.Context, uuid.UUID) (int, error) { return 2, nil },
 	}
-	// Non-nil cache exercises the cache parameter on the builder — the
-	// service ignores it in SeatUsage but the wiring must accept it.
+	// spyCache always misses, so this exercises the Postgres path; the
+	// read-through cache itself is covered by
+	// TestMembership_SeatUsage_CacheMissHitAndEvictionOnMembershipWrite.
 	svc := buildMembershipSvc(m, nil, nil, tenants, inv, &spyCache{})
 
 	got, err := svc.SeatUsage(context.Background(), tenantID)
